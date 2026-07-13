@@ -13,7 +13,7 @@ type TaskCreateIn struct {
 	ToKind   string `json:"to_kind" jsonschema:"agent, role, or broadcast"`
 	ToTarget string `json:"to_target" jsonschema:"the assignee alias or role"`
 	Subject  string `json:"subject" jsonschema:"a short task title"`
-	Ref      string `json:"ref" jsonschema:"pointer to the work (repo/branch/endpoint/file)"`
+	Ref      string `json:"ref,omitempty" jsonschema:"optional pointer to the work (repo/branch/endpoint/file)"`
 	Body     string `json:"body" jsonschema:"task details"`
 }
 
@@ -28,7 +28,7 @@ type TaskTransitionIn struct {
 	ThreadID int64  `json:"thread_id" jsonschema:"the task thread to update"`
 	By       string `json:"by" jsonschema:"the alias making the change"`
 	Status   string `json:"status" jsonschema:"new status: open, claimed, needs_info, blocked, completed, declined, or cancelled"`
-	Note     string `json:"note" jsonschema:"optional note recorded with the status change"`
+	Note     string `json:"note,omitempty" jsonschema:"optional note recorded with the status change"`
 }
 
 func taskCreateHandler(_ context.Context, _ *mcp.CallToolRequest, in TaskCreateIn) (*mcp.CallToolResult, ThreadIDOut, error) {

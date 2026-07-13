@@ -11,9 +11,9 @@ import (
 type SendMessageIn struct {
 	From     string `json:"from" jsonschema:"the sending agent's alias"`
 	ToKind   string `json:"to_kind" jsonschema:"agent, role, or broadcast"`
-	ToTarget string `json:"to_target" jsonschema:"the recipient alias or role (empty for broadcast)"`
+	ToTarget string `json:"to_target,omitempty" jsonschema:"the recipient alias or role (empty for broadcast)"`
 	Subject  string `json:"subject" jsonschema:"a short subject line"`
-	Ref      string `json:"ref" jsonschema:"optional pointer to the work (repo/branch/endpoint/file)"`
+	Ref      string `json:"ref,omitempty" jsonschema:"optional pointer to the work (repo/branch/endpoint/file)"`
 	Body     string `json:"body" jsonschema:"the message body"`
 }
 
