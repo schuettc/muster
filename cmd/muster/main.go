@@ -16,6 +16,7 @@ import (
 	"github.com/schuettc/muster/internal/paths"
 	"github.com/schuettc/muster/internal/proto"
 	"github.com/schuettc/muster/internal/store"
+	"github.com/schuettc/muster/internal/wake"
 )
 
 func main() {
@@ -54,7 +55,7 @@ func runServe() int {
 		return 1
 	}
 	defer func() { _ = s.Close() }()
-	d, err := daemon.Serve(paths.SocketPath(), s)
+	d, err := daemon.Serve(paths.SocketPath(), s, wake.NewTmuxWaker())
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "serve:", err)
 		return 1

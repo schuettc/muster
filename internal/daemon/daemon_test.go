@@ -19,7 +19,7 @@ func TestDaemonRegisterAndList(t *testing.T) {
 	t.Cleanup(func() { _ = s.Close() })
 
 	sock := filepath.Join(dir, "sock")
-	d, err := Serve(sock, s)
+	d, err := Serve(sock, s, nil)
 	if err != nil {
 		t.Fatalf("serve: %v", err)
 	}
@@ -57,7 +57,7 @@ func TestTaskClaimAcceptsStringThreadID(t *testing.T) {
 	t.Cleanup(func() { _ = s.Close() })
 
 	sock := filepath.Join(dir, "sock")
-	d, err := Serve(sock, s)
+	d, err := Serve(sock, s, nil)
 	if err != nil {
 		t.Fatalf("serve: %v", err)
 	}
