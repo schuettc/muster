@@ -52,3 +52,21 @@ func TestDispatchUnknownCommand(t *testing.T) {
 		t.Fatalf("expected error for unknown subcommand")
 	}
 }
+
+func TestSendThenInboxShowsMessage(t *testing.T) {
+	startTestDaemon(t)
+	if _, err := callData("register_agent", map[string]any{"alias": "consumer", "role": "consumer", "model_type": "codex"}); err != nil {
+		t.Fatal(err)
+	}
+	var sendBuf bytes.Buffer
+	if err := Dispatch([]string{"send", "consumer", "the API changed", "--from", "backend", "--subject", "heads up"}, &sendBuf); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	var inboxBuf bytes.Buffer
+	if err := Dispatch([]string{"inbox", "consumer"}, &inboxBuf); err != nil {
+		t.Fatalf("inbox: %v", err)
+	}
+	if !strings.Contains(inboxBuf.String(), "heads up") {
+		t.Fatalf("inbox missing sent message:\n%s", inboxBuf.String())
+	}
+}
