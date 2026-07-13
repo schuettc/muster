@@ -2,6 +2,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/schuettc/muster/internal/client"
 	"github.com/schuettc/muster/internal/daemon"
+	"github.com/schuettc/muster/internal/mcpserver"
 	"github.com/schuettc/muster/internal/paths"
 	"github.com/schuettc/muster/internal/proto"
 	"github.com/schuettc/muster/internal/store"
@@ -17,7 +19,7 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: muster <serve|debug> [args]")
+		fmt.Fprintln(os.Stderr, "usage: muster <serve|debug|mcp> [args]")
 		os.Exit(2)
 	}
 	switch os.Args[1] {
@@ -25,6 +27,8 @@ func main() {
 		os.Exit(runServe())
 	case "debug":
 		runDebug(os.Args[2:])
+	case "mcp":
+		runMCP()
 	default:
 		fmt.Fprintf(os.Stderr, "muster: unknown subcommand %q\n", os.Args[1])
 		os.Exit(2)
@@ -84,6 +88,15 @@ func runDebug(args []string) {
 	out, _ := json.MarshalIndent(resp, "", "  ")
 	fmt.Println(string(out))
 	if !resp.OK {
+		os.Exit(1)
+	}
+}
+
+// runMCP serves the MCP stdio server. IMPORTANT: stdout is the MCP channel;
+// all diagnostics go to stderr.
+func runMCP() {
+	if err := mcpserver.Run(context.Background()); err != nil {
+		fmt.Fprintln(os.Stderr, "mcp:", err)
 		os.Exit(1)
 	}
 }

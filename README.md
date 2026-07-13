@@ -23,6 +23,28 @@ Landing page: **muster.tools**
 Pre-implementation. The approved v1 design lives in
 [`docs/design.md`](docs/design.md).
 
+## MCP mode
+
+`muster mcp` runs muster as an MCP server over stdio, exposing the bus as tools
+any MCP client (Claude Code, Codex) can call. Register it once per tool:
+
+```bash
+# Claude Code
+claude mcp add muster -s user -- muster mcp
+# Codex
+codex mcp add muster -- muster mcp
+```
+
+Then, inside a session, the agent calls `register_agent` once, and can
+`send_message` / `task_create` / `task_claim` / `task_transition` / `reply` /
+`get_inbox` / `get_thread` / `list_agents` / `kv_set` / `kv_get`. The server
+talks to the local `muster` daemon (auto-started); nothing is sent to any model
+provider — muster only routes between agents already running on their own
+subscriptions.
+
+> Note: stdout is the MCP channel in this mode; muster writes all diagnostics to
+> stderr.
+
 ## License
 
 TBD

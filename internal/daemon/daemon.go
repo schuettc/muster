@@ -137,6 +137,12 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 			return fail(err)
 		}
 		return ok(threads)
+	case "get_thread":
+		th, entries, err := d.s.GetThread(i64(a, "thread_id"))
+		if err != nil {
+			return fail(err)
+		}
+		return ok(map[string]any{"thread": th, "entries": entries})
 	case "kv_set":
 		if err := d.s.KVSet(str(a, "key"), str(a, "value"), str(a, "by")); err != nil {
 			return fail(err)
