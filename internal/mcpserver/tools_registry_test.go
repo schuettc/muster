@@ -31,4 +31,7 @@ func TestRegisterAgentCapturesTmuxEnv(t *testing.T) {
 	if listOut.Agents[0].Alias != "backend" {
 		t.Fatalf("unexpected agent: %+v", listOut.Agents[0])
 	}
+	if listOut.Agents[0].ModelType != "claude" {
+		t.Fatalf("unexpected model_type: %+v", listOut.Agents[0])
+	}
 }
