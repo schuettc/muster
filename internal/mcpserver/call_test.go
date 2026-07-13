@@ -19,7 +19,7 @@ func startTestDaemon(t *testing.T) string {
 		t.Fatalf("store.Open: %v", err)
 	}
 	t.Cleanup(func() { _ = s.Close() })
-	d, err := daemon.Serve(paths.SocketPath(), s)
+	d, err := daemon.Serve(paths.SocketPath(), s, nil)
 	if err != nil {
 		t.Fatalf("daemon.Serve: %v", err)
 	}
