@@ -48,7 +48,8 @@ func runServe() int {
 		return 1
 	}
 	defer func() { _ = s.Close() }()
-	d, err := daemon.Serve(paths.SocketPath(), s)
+	// TODO(Milestone C, Task 3): pass a real wake.TmuxWaker here.
+	d, err := daemon.Serve(paths.SocketPath(), s, nil)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "serve:", err)
 		return 1
