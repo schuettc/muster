@@ -1,0 +1,8 @@
+pre-commit:
+  commands:
+    fmt:
+      run: just fmt && git add -u
+pre-push:
+  commands:
+    verify:
+      run: just verify
