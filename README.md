@@ -45,6 +45,20 @@ subscriptions.
 > Note: stdout is the MCP channel in this mode; muster writes all diagnostics to
 > stderr.
 
+## CLI
+
+Beyond `muster mcp` (for agents), muster has operator commands you can run from
+any shell to observe and drive the bus (they auto-start the daemon):
+
+```bash
+muster agents                              # who's registered
+muster inbox <alias>                       # threads addressed to an agent
+muster tasks <alias>                       # just the tasks for an agent
+muster send <alias> "message"  --from me   # send a directed message
+muster send --role reviewer "please look"  --from me   # to a role
+muster send --broadcast "heads up"         --from me   # to everyone
+```
+
 ## License
 
 TBD

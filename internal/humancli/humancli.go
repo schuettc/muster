@@ -63,6 +63,8 @@ func Dispatch(args []string, out io.Writer) error {
 		return cmdSend(args[1:], out)
 	case "inbox":
 		return cmdInbox(args[1:], out)
+	case "tasks":
+		return cmdTasks(args[1:], out)
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}
@@ -176,6 +178,14 @@ func cmdInbox(args []string, out io.Writer) error {
 		return fmt.Errorf("usage: muster inbox <alias>")
 	}
 	return printThreads(out, args[0], false)
+}
+
+// cmdTasks prints the given alias's inbox filtered to kind=task threads.
+func cmdTasks(args []string, out io.Writer) error {
+	if len(args) < 1 {
+		return fmt.Errorf("usage: muster tasks <alias>")
+	}
+	return printThreads(out, args[0], true)
 }
 
 // printThreads fetches an alias's inbox and prints it; if tasksOnly, only
