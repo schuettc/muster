@@ -50,3 +50,13 @@ func TestTransitionTaskValidatesAndRecords(t *testing.T) {
 		t.Fatalf("transition not recorded as entry: %+v", last)
 	}
 }
+
+func TestTransitionTaskOnMissingThreadReturnsErrThreadNotFound(t *testing.T) {
+	s := newTestStore(t)
+
+	const missingThreadID = int64(999999)
+	err := s.TransitionTask(missingThreadID, "rev1", "completed", "LGTM")
+	if !errors.Is(err, ErrThreadNotFound) {
+		t.Fatalf("expected ErrThreadNotFound, got %v", err)
+	}
+}

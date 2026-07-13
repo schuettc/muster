@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net"
 	"os"
+	"strconv"
 
 	"github.com/schuettc/muster/internal/proto"
 	"github.com/schuettc/muster/internal/store"
@@ -65,8 +66,12 @@ func str(m map[string]any, k string) string {
 }
 
 func i64(m map[string]any, k string) int64 {
-	if v, ok := m[k].(float64); ok { // JSON numbers decode to float64
+	switch v := m[k].(type) {
+	case float64:
 		return int64(v)
+	case string:
+		n, _ := strconv.ParseInt(v, 10, 64)
+		return n
 	}
 	return 0
 }

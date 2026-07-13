@@ -2,9 +2,14 @@ package store
 
 import (
 	"database/sql"
+	"errors"
 
 	"github.com/schuettc/muster/internal/clock"
 )
+
+// ErrThreadNotFound is returned when an operation targets a threadID that
+// does not exist.
+var ErrThreadNotFound = errors.New("thread not found")
 
 func nullable(s string) any {
 	if s == "" {
@@ -56,8 +61,16 @@ VALUES (?, ?, ?, ?, ?)`, threadID, fromAgent, body, nullable(statusChange), now)
 	if err != nil {
 		return 0, err
 	}
-	if _, err := tx.Exec(`UPDATE threads SET updated_at=? WHERE id=?`, now, threadID); err != nil {
+	upd, err := tx.Exec(`UPDATE threads SET updated_at=? WHERE id=?`, now, threadID)
+	if err != nil {
 		return 0, err
+	}
+	n, err := upd.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	if n != 1 {
+		return 0, ErrThreadNotFound
 	}
 	id, err := res.LastInsertId()
 	if err != nil {
@@ -109,7 +122,7 @@ func (s *Store) Inbox(alias string) ([]Thread, error) {
 	rows, err := s.db.Query(`
 SELECT `+threadCols+` FROM threads
 WHERE (to_kind='agent'     AND to_target=?)
-   OR (to_kind='role'      AND to_target=(SELECT role FROM agents WHERE alias=?))
+   OR (to_kind='role'      AND to_target != '' AND to_target=(SELECT role FROM agents WHERE alias=?))
    OR (to_kind='broadcast')
 ORDER BY updated_at DESC`, alias, alias)
 	if err != nil {

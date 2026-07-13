@@ -1,6 +1,9 @@
 package store
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
 
 func TestCreateThreadAppendAndGet(t *testing.T) {
 	s := newTestStore(t)
@@ -47,5 +50,23 @@ func TestInboxMatchesAgentRoleAndBroadcast(t *testing.T) {
 	}
 	if len(in) != 3 {
 		t.Fatalf("expected 3 inbox threads for rev1, got %d", len(in))
+	}
+}
+
+func TestAppendEntryOnMissingThreadReturnsErrThreadNotFoundAndNoOrphan(t *testing.T) {
+	s := newTestStore(t)
+
+	const missingThreadID = int64(999999)
+	_, err := s.AppendEntry(missingThreadID, "backend", "hello", "")
+	if !errors.Is(err, ErrThreadNotFound) {
+		t.Fatalf("expected ErrThreadNotFound, got %v", err)
+	}
+
+	var n int
+	if err := s.DB().QueryRow(`SELECT count(*) FROM entries WHERE thread_id=?`, missingThreadID).Scan(&n); err != nil {
+		t.Fatalf("query entries: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("expected no orphan entries for missing thread, got %d", n)
 	}
 }

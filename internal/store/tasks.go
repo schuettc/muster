@@ -54,8 +54,16 @@ func (s *Store) TransitionTask(threadID int64, byAgent, newStatus, note string) 
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	if _, err := tx.Exec(`UPDATE threads SET status=?, updated_at=? WHERE id=?`, newStatus, now, threadID); err != nil {
+	res, err := tx.Exec(`UPDATE threads SET status=?, updated_at=? WHERE id=?`, newStatus, now, threadID)
+	if err != nil {
 		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n != 1 {
+		return ErrThreadNotFound
 	}
 	if _, err := tx.Exec(`INSERT INTO entries (thread_id, from_agent, body, status_change, created_at) VALUES (?, ?, ?, ?, ?)`, threadID, byAgent, note, newStatus, now); err != nil {
 		return err

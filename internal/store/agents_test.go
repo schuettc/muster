@@ -8,6 +8,16 @@ func TestRegisterAgentUpsertAndList(t *testing.T) {
 	if err := s.RegisterAgent(Agent{Alias: "backend", Role: "producer", ModelType: "claude", SocketPath: "/s", PaneID: "%1", SessionName: "bhw"}); err != nil {
 		t.Fatalf("register: %v", err)
 	}
+
+	firstList, err := s.ListAgents()
+	if err != nil {
+		t.Fatalf("list (first): %v", err)
+	}
+	if len(firstList) != 1 {
+		t.Fatalf("expected 1 agent after first register, got %d", len(firstList))
+	}
+	firstRegisteredAt := firstList[0].RegisteredAt
+
 	// Re-register (restart) with a new pane — upsert, not duplicate.
 	if err := s.RegisterAgent(Agent{Alias: "backend", Role: "producer", ModelType: "claude", SocketPath: "/s2", PaneID: "%9", SessionName: "bhw"}); err != nil {
 		t.Fatalf("re-register: %v", err)
@@ -25,5 +35,11 @@ func TestRegisterAgentUpsertAndList(t *testing.T) {
 	}
 	if agents[0].RegisteredAt == 0 || agents[0].LastSeen == 0 {
 		t.Fatalf("timestamps not set: %+v", agents[0])
+	}
+	if agents[0].RegisteredAt != firstRegisteredAt {
+		t.Fatalf("RegisteredAt should be immutable across upsert: first=%d second=%d", firstRegisteredAt, agents[0].RegisteredAt)
+	}
+	if agents[0].LastSeen < firstList[0].LastSeen {
+		t.Fatalf("LastSeen should not go backwards across upsert: first=%d second=%d", firstList[0].LastSeen, agents[0].LastSeen)
 	}
 }
