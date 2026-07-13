@@ -14,6 +14,9 @@ jobs:
           go-version: "1.26"
       - uses: extractions/setup-just@v2
       - name: Install golangci-lint
-        run: curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b "$(go env GOPATH)/bin" latest
+        # Pinned + installed via the Go toolchain: deterministic and avoids the
+        # install.sh 'latest' checksum-verify flakiness. Keep this version in
+        # sync with the version developers run locally.
+        run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
       - name: Verify
         run: just verify
