@@ -11,6 +11,7 @@ import (
 
 	"github.com/schuettc/muster/internal/client"
 	"github.com/schuettc/muster/internal/daemon"
+	"github.com/schuettc/muster/internal/humancli"
 	"github.com/schuettc/muster/internal/mcpserver"
 	"github.com/schuettc/muster/internal/paths"
 	"github.com/schuettc/muster/internal/proto"
@@ -20,7 +21,7 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: muster <serve|debug|mcp> [args]")
+		fmt.Fprintln(os.Stderr, "usage: muster <serve|debug|mcp|agents|inbox|send|tasks> [args]")
 		os.Exit(2)
 	}
 	switch os.Args[1] {
@@ -30,6 +31,11 @@ func main() {
 		runDebug(os.Args[2:])
 	case "mcp":
 		runMCP()
+	case "agents", "inbox", "send", "tasks":
+		if err := humancli.Dispatch(os.Args[1:], os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, "muster:", err)
+			os.Exit(1)
+		}
 	default:
 		fmt.Fprintf(os.Stderr, "muster: unknown subcommand %q\n", os.Args[1])
 		os.Exit(2)
