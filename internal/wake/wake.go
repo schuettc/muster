@@ -6,6 +6,7 @@ package wake
 import (
 	"context"
 	"os/exec"
+	"strconv"
 	"time"
 )
 
@@ -13,7 +14,7 @@ import (
 // notified of bus activity. Best-effort: errors mean the signal couldn't be
 // delivered and should be ignored (the inbox is authoritative).
 type Notifier interface {
-	Notify(socketPath, sessionID string) error
+	Notify(socketPath, sessionID string, count int) error
 	Clear(socketPath, sessionID string) error
 }
 
@@ -48,10 +49,13 @@ func (n TmuxNotifier) run(args ...string) error {
 	return run(ctx, args...)
 }
 
-// Notify sets the option on the session and repaints that session's clients so
-// a title-based banner updates. Best-effort; a missing client is fine.
-func (n TmuxNotifier) Notify(socketPath, sessionID string) error {
-	if err := n.run("-S", socketPath, "set-option", "-t", sessionID, n.Option, "1"); err != nil {
+// Notify sets the option to count (unsetting it when count <= 0), then
+// repaints the session's clients so a title-based banner updates. Best-effort;
+// a missing client is fine.
+func (n TmuxNotifier) Notify(socketPath, sessionID string, count int) error {
+	if count <= 0 {
+		_ = n.Clear(socketPath, sessionID)
+	} else if err := n.run("-S", socketPath, "set-option", "-t", sessionID, n.Option, strconv.Itoa(count)); err != nil {
 		return err
 	}
 	// Repaint each client attached to the session (a bare refresh-client from the

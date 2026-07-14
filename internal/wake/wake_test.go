@@ -13,7 +13,7 @@ func TestTmuxNotifierNotifySetsOptionAndRefreshes(t *testing.T) {
 		calls = append(calls, args)
 		return nil
 	}}
-	if err := n.Notify("/sock", "$3"); err != nil {
+	if err := n.Notify("/sock", "$3", 1); err != nil {
 		t.Fatalf("Notify: %v", err)
 	}
 	// First call must set the option on the session, socket-aware. No send-keys anywhere.
@@ -28,6 +28,23 @@ func TestTmuxNotifierNotifySetsOptionAndRefreshes(t *testing.T) {
 		if strings.Contains(strings.Join(c, " "), "send-keys") {
 			t.Fatalf("Notify must NEVER send-keys, got: %v", c)
 		}
+	}
+}
+
+func TestNotifySetsCountAndUnsetsOnZero(t *testing.T) {
+	var cmds [][]string
+	n := TmuxNotifier{Option: "@muster_inbox", Run: func(_ context.Context, args ...string) error {
+		cmds = append(cmds, args)
+		return nil
+	}}
+	_ = n.Notify("/s", "$1", 3)
+	if cmds[0][5] != "@muster_inbox" || cmds[0][6] != "3" {
+		t.Fatalf("set cmd = %v", cmds[0])
+	}
+	cmds = nil
+	_ = n.Notify("/s", "$1", 0)
+	if joined := strings.Join(cmds[0], " "); !strings.Contains(joined, "-u") || !strings.Contains(joined, "@muster_inbox") {
+		t.Fatalf("zero should unset, got %v", cmds[0])
 	}
 }
 
