@@ -32,7 +32,12 @@ type agentRow struct {
 	Alias       string `json:"alias"`
 	Role        string `json:"role"`
 	ModelType   string `json:"model_type"`
+	SocketPath  string `json:"socket_path"`
+	SessionID   string `json:"session_id"`
 	SessionName string `json:"session_name"`
+	Project     string `json:"project"`
+	Label       string `json:"label"`
+	LabelManual bool   `json:"label_manual"`
 	LastSeen    int64  `json:"last_seen"`
 }
 
@@ -67,7 +72,7 @@ func callData(op string, args map[string]any) (json.RawMessage, error) {
 // Dispatch routes an operator subcommand. args[0] is the subcommand name.
 func Dispatch(args []string, out io.Writer) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: muster <agents|inbox|send|tasks|nudge> [args]")
+		return fmt.Errorf("usage: muster <agents|inbox|send|tasks|nudge|register|deregister|gc> [args]")
 	}
 	switch args[0] {
 	case "agents":
@@ -80,6 +85,12 @@ func Dispatch(args []string, out io.Writer) error {
 		return cmdTasks(args[1:], out)
 	case "nudge":
 		return cmdNudge(args[1:], out)
+	case "register":
+		return cmdRegister(args[1:], out)
+	case "deregister":
+		return cmdDeregister(args[1:], out)
+	case "gc":
+		return cmdGC(out)
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}
@@ -165,7 +176,19 @@ var sendBoolFlags = map[string]bool{"role": true, "broadcast": true}
 // and positional arguments, regardless of whether flags appear before or
 // after the positionals — Go's flag.Parse otherwise stops at the first
 // non-flag token, which breaks `send <target> <body> [--from X ...]`.
-func splitFlagsAndPositional(args []string) (flagArgs, positional []string) {
+//
+// boolFlags names the calling command's no-value flags (so the following
+// token isn't mistaken for that flag's value); when omitted it defaults to
+// sendBoolFlags for backward compatibility with cmdSend's original call
+// site. Commands whose flags are all value flags (e.g. register's
+// --role/--model) must pass an explicit empty set rather than rely on that
+// default, since flag names collide across commands (send's --role is
+// boolean; register's --role takes a value).
+func splitFlagsAndPositional(args []string, boolFlags ...map[string]bool) (flagArgs, positional []string) {
+	bf := sendBoolFlags
+	if len(boolFlags) > 0 {
+		bf = boolFlags[0]
+	}
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		if !strings.HasPrefix(a, "-") {
@@ -179,7 +202,7 @@ func splitFlagsAndPositional(args []string) (flagArgs, positional []string) {
 		if hasValue {
 			name = name[:idx]
 		}
-		if !hasValue && !sendBoolFlags[name] && i+1 < len(args) {
+		if !hasValue && !bf[name] && i+1 < len(args) {
 			i++
 			flagArgs = append(flagArgs, args[i])
 		}
