@@ -1,0 +1,30 @@
+name: CI
+on:
+  pull_request:
+    branches: [dev, main]
+  push:
+    branches: [dev, main]
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+      - uses: extractions/setup-just@v2
+      - name: Cache golangci-lint binary
+        id: cache-golangci
+        uses: actions/cache@v4
+        with:
+          path: ~/go/bin/golangci-lint
+          key: golangci-lint-v2.12.2-${{ runner.os }}
+      - name: Install golangci-lint
+        # Pinned + installed via the Go toolchain: deterministic and avoids the
+        # install.sh 'latest' checksum-verify flakiness. Keep this version in
+        # sync with the version developers run locally. Skipped on a cache hit —
+        # the compile is slow, the pinned binary never changes for a given key.
+        if: steps.cache-golangci.outputs.cache-hit != 'true'
+        run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
+      - name: Verify
+        run: just verify
