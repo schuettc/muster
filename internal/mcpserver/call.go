@@ -12,8 +12,8 @@ import (
 
 // callDaemon sends one op to the daemon (lazily starting it) and returns the
 // response Data as JSON, or an error if the transport failed or the daemon
-// reported !OK.
-func callDaemon(op string, args map[string]any) (json.RawMessage, error) {
+// reported !OK. It is a package-level var so tests can stub it.
+var callDaemon = func(op string, args map[string]any) (json.RawMessage, error) {
 	resp, err := client.Call(paths.SocketPath(), proto.Request{Op: op, Args: args})
 	if err != nil {
 		return nil, err
