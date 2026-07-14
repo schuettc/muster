@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/schuettc/muster/internal/client"
 	"github.com/schuettc/muster/internal/daemon"
@@ -21,7 +22,7 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: muster <serve|debug|mcp|agents|inbox|send|tasks> [args]")
+		fmt.Fprintln(os.Stderr, "usage: muster <serve|debug|mcp|agents|inbox|send|tasks|nudge> [args]")
 		os.Exit(2)
 	}
 	switch os.Args[1] {
@@ -31,7 +32,7 @@ func main() {
 		runDebug(os.Args[2:])
 	case "mcp":
 		runMCP()
-	case "agents", "inbox", "send", "tasks":
+	case "agents", "inbox", "send", "tasks", "nudge":
 		if err := humancli.Dispatch(os.Args[1:], os.Stdout); err != nil {
 			fmt.Fprintln(os.Stderr, "muster:", err)
 			os.Exit(1)
@@ -55,7 +56,7 @@ func runServe() int {
 		return 1
 	}
 	defer func() { _ = s.Close() }()
-	d, err := daemon.Serve(paths.SocketPath(), s, wake.NewTmuxWaker())
+	d, err := daemon.Serve(paths.SocketPath(), s, wake.NewTmuxNotifier("@claude_attn", 500*time.Millisecond))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "serve:", err)
 		return 1

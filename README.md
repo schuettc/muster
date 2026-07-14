@@ -59,6 +59,24 @@ muster send --role reviewer "please look"  --from me   # to a role
 muster send --broadcast "heads up"         --from me   # to everyone
 ```
 
+### Notifications & nudging
+
+When bus activity is addressed to an agent, muster **notifies** its tmux session
+(sets `@claude_attn`, which lights the status-bar banner for tabs you're not
+looking at) — it never types into a pane. The flag clears when that agent next
+reads its inbox (`get_inbox`).
+
+To actively poke an agent to act now:
+
+```bash
+muster nudge <alias>              # types "check your inbox" into the agent's pane
+muster nudge <alias> --no-submit  # type only; don't press Enter
+```
+
+Nudge auto-submits for Claude Code; Codex holds the text in its composer, so
+you press Enter there (muster tells you). Autonomous Codex wake (via its
+app-server) is possible but requires launching Codex differently — deferred.
+
 ## License
 
 TBD

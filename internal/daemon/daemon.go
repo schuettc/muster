@@ -4,7 +4,6 @@ package daemon
 import (
 	"bufio"
 	"encoding/json"
-	"fmt"
 	"net"
 	"os"
 	"strconv"
@@ -18,18 +17,18 @@ import (
 type Daemon struct {
 	ln net.Listener
 	s  *store.Store
-	w  wake.Waker
+	n  wake.Notifier
 }
 
 // Serve binds socketPath (replacing any stale socket) and serves in a
-// goroutine. w may be nil, in which case no wake knocks are delivered.
-func Serve(socketPath string, s *store.Store, w wake.Waker) (*Daemon, error) {
+// goroutine. n may be nil, in which case no notifications are delivered.
+func Serve(socketPath string, s *store.Store, n wake.Notifier) (*Daemon, error) {
 	_ = os.Remove(socketPath) // clear a stale socket from a previous run
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {
 		return nil, err
 	}
-	d := &Daemon{ln: ln, s: s, w: w}
+	d := &Daemon{ln: ln, s: s, n: n}
 	go d.acceptLoop()
 	return d, nil
 }
@@ -83,11 +82,11 @@ func i64(m map[string]any, k string) int64 {
 func ok(data any) proto.Response    { return proto.Response{OK: true, Data: data} }
 func fail(err error) proto.Response { return proto.Response{Error: err.Error()} }
 
-// wakeForThread knocks every agent affected by activity on threadID — the
-// thread's originator plus its recipients (by agent, role, or broadcast) —
-// except the actor who just acted. Best-effort; failures are ignored.
-func (d *Daemon) wakeForThread(threadID int64, actor string) {
-	if d.w == nil {
+// notifyForThread flags every agent affected by activity on threadID — the
+// thread's originator plus its recipients (agent/role/broadcast), minus the
+// actor — by notifying their tmux SESSION. Best-effort; never types into a pane.
+func (d *Daemon) notifyForThread(threadID int64, actor string) {
+	if d.n == nil {
 		return
 	}
 	th, _, err := d.s.GetThread(threadID)
@@ -108,7 +107,7 @@ func (d *Daemon) wakeForThread(threadID int64, actor string) {
 		recipients[th.ToTarget] = struct{}{}
 	case "role":
 		for _, a := range agents {
-			if a.Role == th.ToTarget {
+			if a.Role == th.ToTarget && th.ToTarget != "" {
 				recipients[a.Alias] = struct{}{}
 			}
 		}
@@ -118,14 +117,12 @@ func (d *Daemon) wakeForThread(threadID int64, actor string) {
 		}
 	}
 	delete(recipients, actor)
-
-	msg := fmt.Sprintf("📬 muster: activity on %q from %s — call get_inbox to read", th.Subject, actor)
 	for alias := range recipients {
 		a, ok := byAlias[alias]
-		if !ok || a.SocketPath == "" || a.PaneID == "" {
+		if !ok || a.SocketPath == "" || a.SessionID == "" {
 			continue
 		}
-		_ = d.w.Wake(a.SocketPath, a.PaneID, msg)
+		_ = d.n.Notify(a.SocketPath, a.SessionID)
 	}
 }
 
@@ -136,6 +133,7 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 		err := d.s.RegisterAgent(store.Agent{
 			Alias: str(a, "alias"), Role: str(a, "role"), ModelType: str(a, "model_type"),
 			SocketPath: str(a, "socket_path"), PaneID: str(a, "pane_id"), SessionName: str(a, "session_name"),
+			SessionID: str(a, "session_id"),
 		})
 		if err != nil {
 			return fail(err)
@@ -155,7 +153,7 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 		if err != nil {
 			return fail(err)
 		}
-		d.wakeForThread(id, str(a, "from"))
+		d.notifyForThread(id, str(a, "from"))
 		return ok(map[string]any{"thread_id": id})
 	case "task_create":
 		id, err := d.s.CreateThread(store.Thread{
@@ -165,7 +163,7 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 		if err != nil {
 			return fail(err)
 		}
-		d.wakeForThread(id, str(a, "from"))
+		d.notifyForThread(id, str(a, "from"))
 		return ok(map[string]any{"thread_id": id})
 	case "task_claim":
 		if err := d.s.ClaimTask(i64(a, "thread_id"), str(a, "by")); err != nil {
@@ -176,19 +174,25 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 		if err := d.s.TransitionTask(i64(a, "thread_id"), str(a, "by"), str(a, "status"), str(a, "note")); err != nil {
 			return fail(err)
 		}
-		d.wakeForThread(i64(a, "thread_id"), str(a, "by"))
+		d.notifyForThread(i64(a, "thread_id"), str(a, "by"))
 		return ok(nil)
 	case "reply":
 		id, err := d.s.AppendEntry(i64(a, "thread_id"), str(a, "from"), str(a, "body"), "")
 		if err != nil {
 			return fail(err)
 		}
-		d.wakeForThread(i64(a, "thread_id"), str(a, "from"))
+		d.notifyForThread(i64(a, "thread_id"), str(a, "from"))
 		return ok(map[string]any{"entry_id": id})
 	case "get_inbox":
-		threads, err := d.s.Inbox(str(a, "alias"))
+		alias := str(a, "alias")
+		threads, err := d.s.Inbox(alias)
 		if err != nil {
 			return fail(err)
+		}
+		if d.n != nil {
+			if ag, ok, _ := d.s.GetAgent(alias); ok && ag.SocketPath != "" && ag.SessionID != "" {
+				_ = d.n.Clear(ag.SocketPath, ag.SessionID)
+			}
 		}
 		return ok(threads)
 	case "get_thread":
@@ -208,6 +212,12 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 			return fail(err)
 		}
 		return ok(map[string]any{"found": found, "pair": p})
+	case "get_agent":
+		ag, found, err := d.s.GetAgent(str(a, "alias"))
+		if err != nil {
+			return fail(err)
+		}
+		return ok(map[string]any{"found": found, "agent": ag})
 	default:
 		return proto.Response{Error: "unknown op: " + req.Op}
 	}

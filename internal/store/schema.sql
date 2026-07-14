@@ -5,6 +5,7 @@ CREATE TABLE IF NOT EXISTS agents (
     socket_path   TEXT NOT NULL DEFAULT '',
     pane_id       TEXT NOT NULL DEFAULT '',
     session_name  TEXT NOT NULL DEFAULT '',
+    session_id    TEXT NOT NULL DEFAULT '',
     registered_at INTEGER NOT NULL,
     last_seen     INTEGER NOT NULL
 );

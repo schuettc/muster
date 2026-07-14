@@ -11,9 +11,22 @@ import (
 	"text/tabwriter"
 
 	"github.com/schuettc/muster/internal/client"
+	"github.com/schuettc/muster/internal/nudge"
 	"github.com/schuettc/muster/internal/paths"
 	"github.com/schuettc/muster/internal/proto"
 )
+
+// nudgeRun lets tests intercept the tmux command executor for nudges.
+var nudgeRun func(args ...string) error
+
+// agentFull decodes the daemon's get_agent response.
+type agentFull struct {
+	Alias       string `json:"alias"`
+	ModelType   string `json:"model_type"`
+	SocketPath  string `json:"socket_path"`
+	PaneID      string `json:"pane_id"`
+	SessionName string `json:"session_name"`
+}
 
 type agentRow struct {
 	Alias       string `json:"alias"`
@@ -54,7 +67,7 @@ func callData(op string, args map[string]any) (json.RawMessage, error) {
 // Dispatch routes an operator subcommand. args[0] is the subcommand name.
 func Dispatch(args []string, out io.Writer) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: muster <agents|inbox|send|tasks> [args]")
+		return fmt.Errorf("usage: muster <agents|inbox|send|tasks|nudge> [args]")
 	}
 	switch args[0] {
 	case "agents":
@@ -65,6 +78,8 @@ func Dispatch(args []string, out io.Writer) error {
 		return cmdInbox(args[1:], out)
 	case "tasks":
 		return cmdTasks(args[1:], out)
+	case "nudge":
+		return cmdNudge(args[1:], out)
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}
@@ -216,4 +231,49 @@ func printThreads(out io.Writer, alias string, tasksOnly bool) error {
 		}
 	}
 	return tw.Flush()
+}
+
+// cmdNudge resolves alias to its registered tmux pane and types the
+// check-inbox line into it, auto-submitting when the model type accepts it.
+func cmdNudge(args []string, out io.Writer) error {
+	fs := flag.NewFlagSet("nudge", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	noSubmit := fs.Bool("no-submit", false, "type the nudge but do not press Enter")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	rest := fs.Args()
+	if len(rest) != 1 {
+		return fmt.Errorf("usage: muster nudge <alias> [--no-submit]")
+	}
+	alias := rest[0]
+	raw, err := callData("get_agent", map[string]any{"alias": alias})
+	if err != nil {
+		return err
+	}
+	var res struct {
+		Found bool      `json:"found"`
+		Agent agentFull `json:"agent"`
+	}
+	if err := json.Unmarshal(raw, &res); err != nil {
+		return err
+	}
+	if !res.Found {
+		return fmt.Errorf("no agent registered as %q", alias)
+	}
+	ag := res.Agent
+	if _, err := fmt.Fprintf(out, "nudging %s → session %s / pane %s on %s\n", ag.Alias, ag.SessionName, ag.PaneID, ag.SocketPath); err != nil {
+		return err
+	}
+	n := nudge.TmuxNudger{Run: nudgeRun} // nil in prod → real tmux
+	submitted, err := n.Nudge(ag.SocketPath, ag.PaneID, ag.ModelType, !*noSubmit)
+	if err != nil {
+		return err
+	}
+	if submitted {
+		_, err = fmt.Fprintln(out, "delivered + submitted.")
+	} else {
+		_, err = fmt.Fprintf(out, "delivered (not auto-submitted for %s — press Enter in that pane).\n", ag.ModelType)
+	}
+	return err
 }

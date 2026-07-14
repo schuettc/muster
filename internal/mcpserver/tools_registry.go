@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -42,14 +43,34 @@ func tmuxSocketPath() string {
 	return strings.SplitN(tmux, ",", 2)[0]
 }
 
+// tmuxQuery resolves a tmux format for a pane, socket-aware. Overridable in tests.
+var tmuxQuery = func(socket, pane, format string) string {
+	if socket == "" || pane == "" {
+		return ""
+	}
+	out, err := exec.Command("tmux", "-S", socket, "display-message", "-p", "-t", pane, format).Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
 func registerAgentHandler(_ context.Context, _ *mcp.CallToolRequest, in RegisterAgentIn) (*mcp.CallToolResult, OKOut, error) {
+	socket := tmuxSocketPath()
+	pane := os.Getenv("TMUX_PANE")
+	sessionID := tmuxQuery(socket, pane, "#{session_id}")
+	sessionName := in.SessionName
+	if sessionName == "" {
+		sessionName = tmuxQuery(socket, pane, "#{session_name}")
+	}
 	_, err := callDaemon("register_agent", map[string]any{
 		"alias":        in.Alias,
 		"role":         in.Role,
 		"model_type":   in.ModelType,
-		"session_name": in.SessionName,
-		"socket_path":  tmuxSocketPath(),
-		"pane_id":      os.Getenv("TMUX_PANE"),
+		"session_name": sessionName,
+		"session_id":   sessionID,
+		"socket_path":  socket,
+		"pane_id":      pane,
 	})
 	if err != nil {
 		return nil, OKOut{}, err
