@@ -106,3 +106,14 @@ func TestNilNotifierIsSafe(t *testing.T) {
 		t.Fatalf("op should succeed with nil notifier: %+v", resp)
 	}
 }
+
+func TestGetInboxClearsFlag(t *testing.T) {
+	n := &fakeNotifier{}
+	sock := startWithNotifier(t, n)
+	call(t, sock, "register_agent", map[string]any{"alias": "reviewer", "role": "reviewer", "model_type": "codex", "socket_path": "/s", "session_id": "$5"})
+	call(t, sock, "get_inbox", map[string]any{"alias": "reviewer"})
+	got := n.snap(&n.cleared)
+	if len(got) != 1 || got[0] != "$5" {
+		t.Fatalf("get_inbox should clear reviewer's session $5, got %v", got)
+	}
+}

@@ -184,9 +184,15 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 		d.notifyForThread(i64(a, "thread_id"), str(a, "from"))
 		return ok(map[string]any{"entry_id": id})
 	case "get_inbox":
-		threads, err := d.s.Inbox(str(a, "alias"))
+		alias := str(a, "alias")
+		threads, err := d.s.Inbox(alias)
 		if err != nil {
 			return fail(err)
+		}
+		if d.n != nil {
+			if ag, ok, _ := d.s.GetAgent(alias); ok && ag.SocketPath != "" && ag.SessionID != "" {
+				_ = d.n.Clear(ag.SocketPath, ag.SessionID)
+			}
 		}
 		return ok(threads)
 	case "get_thread":
