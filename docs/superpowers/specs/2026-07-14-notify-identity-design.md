@@ -6,9 +6,11 @@
 PR #10), so SessionStart-hook registration works for both agents and the wrapper is
 unnecessary. Hooks + Codex nudge-submit + self-resolving inbox are owned by
 `feat/codex-nudge-submit`. The sections below on the wrapper (5), the `tmuxenv`
-fallback (muster change 1), and the Codex-autostart handoff are superseded; the
-**mailbox** (`@muster_inbox` count + `last_read_at`) and its `📬` render survive and
-are the whole of this branch. Actionable plan: `../plans/2026-07-14-notify-identity.md`.
+fallback (muster change 1), the `muster inbox --count` CLI (muster change 4 —
+deferred to the autonomy build, where the self-resolving Stop hook needs it), and
+the Codex-autostart handoff are superseded; the **mailbox** (`@muster_inbox` count
++ `last_read_at`) and its `📬` render survive and are the whole of this branch.
+Actionable plan: `../plans/2026-07-14-notify-identity.md`.
 
 ## Goal
 

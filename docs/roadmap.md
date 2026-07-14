@@ -25,9 +25,11 @@ heartbeats, no reaping timers. *(In progress — see
 
 ## 3. tmux status-bar integration
 
-A `muster inbox <self> --count` query the tmux status-right polls (same pattern
-as the dotfiles git/context segments) → an ambient per-pane unread indicator,
-e.g. `backend ⬦ 2`. The richer cousin of the `@claude_attn` banner.
+The daemon already sets `@muster_inbox=<unread count>` on the recipient's session
+(persists until `get_inbox`), rendered as a `📬<count>` mailbox. Remaining: a
+`muster inbox <self> --count` query the tmux status-right can poll (same pattern
+as the dotfiles git/context segments) for an ambient indicator without waiting on
+inbound activity.
 
 ## 4. CLI as the full operator / observability surface
 

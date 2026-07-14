@@ -94,9 +94,10 @@ elsewhere, muster errors and lists the `proj:label` candidates.
 ### Notifications & nudging
 
 When bus activity is addressed to an agent, muster **notifies** its tmux session
-(sets `@claude_attn`, which lights the status-bar banner for tabs you're not
-looking at) — it never types into a pane. The flag clears when that agent next
-reads its inbox (`get_inbox`).
+by setting `@muster_inbox` to that agent's unread count (rendered as a `📬<count>`
+mailbox in the status bar / tab title) — it never types into a pane. Unlike a
+transient bell, the mailbox **persists until that agent reads its inbox**
+(`get_inbox`), which clears it.
 
 To actively poke an agent to act now:
 
