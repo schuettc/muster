@@ -9,6 +9,7 @@ CREATE TABLE IF NOT EXISTS agents (
     project       TEXT NOT NULL DEFAULT '',
     label         TEXT NOT NULL DEFAULT '',
     label_manual  INTEGER NOT NULL DEFAULT 0,
+    last_read_at  INTEGER NOT NULL DEFAULT 0,
     registered_at INTEGER NOT NULL,
     last_seen     INTEGER NOT NULL
 );

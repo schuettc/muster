@@ -79,3 +79,23 @@ func (s *Store) DeleteAgent(alias string) error {
 	_, err := s.db.Exec(`DELETE FROM agents WHERE alias=?`, alias)
 	return err
 }
+
+// UnreadCount returns how many threads addressed to alias have activity newer
+// than the agent's last inbox read. Recipient matching mirrors Inbox.
+func (s *Store) UnreadCount(alias string) (int, error) {
+	var n int
+	err := s.db.QueryRow(`
+SELECT COUNT(*) FROM threads
+WHERE ((to_kind='agent'     AND to_target=?)
+    OR (to_kind='role'      AND to_target != '' AND to_target=(SELECT role FROM agents WHERE alias=?))
+    OR (to_kind='broadcast'))
+  AND updated_at > COALESCE((SELECT last_read_at FROM agents WHERE alias=?), 0)`,
+		alias, alias, alias).Scan(&n)
+	return n, err
+}
+
+// MarkRead records that alias has read its inbox up to now.
+func (s *Store) MarkRead(alias string) error {
+	_, err := s.db.Exec(`UPDATE agents SET last_read_at=? WHERE alias=?`, clock.NowMillis(), alias)
+	return err
+}
