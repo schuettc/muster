@@ -97,6 +97,34 @@ func TestTasksCommandShowsOnlyTasks(t *testing.T) {
 	}
 }
 
+func TestNudgeCommandRejectsUnknownAlias(t *testing.T) {
+	startTestDaemon(t)
+	var buf bytes.Buffer
+	if err := Dispatch([]string{"nudge", "ghost"}, &buf); err == nil {
+		t.Fatalf("expected error nudging an unregistered alias")
+	}
+}
+
+func TestNudgeCommandResolvesAndNudges(t *testing.T) {
+	startTestDaemon(t)
+	// register an agent with a pane via the daemon op directly
+	if _, err := callData("register_agent", map[string]any{"alias": "rev", "role": "reviewer", "model_type": "codex", "socket_path": "/s", "pane_id": "%2", "session_id": "$1"}); err != nil {
+		t.Fatal(err)
+	}
+	var recorded [][]string
+	origNudge := nudgeRun
+	nudgeRun = func(args ...string) error { recorded = append(recorded, args); return nil }
+	t.Cleanup(func() { nudgeRun = origNudge })
+
+	var buf bytes.Buffer
+	if err := Dispatch([]string{"nudge", "rev"}, &buf); err != nil {
+		t.Fatalf("nudge: %v", err)
+	}
+	if !strings.Contains(buf.String(), "rev") || len(recorded) == 0 {
+		t.Fatalf("expected resolved-target output + a send-keys call; out=%q calls=%v", buf.String(), recorded)
+	}
+}
+
 func TestSplitFlagsAndPositional(t *testing.T) {
 	cases := []struct {
 		name           string

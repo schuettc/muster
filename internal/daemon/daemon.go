@@ -212,6 +212,12 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 			return fail(err)
 		}
 		return ok(map[string]any{"found": found, "pair": p})
+	case "get_agent":
+		ag, found, err := d.s.GetAgent(str(a, "alias"))
+		if err != nil {
+			return fail(err)
+		}
+		return ok(map[string]any{"found": found, "agent": ag})
 	default:
 		return proto.Response{Error: "unknown op: " + req.Op}
 	}
