@@ -61,7 +61,7 @@ Store adds `session_id` to the `agents` table + `store.Agent`. `register_agent` 
 
 The notify option is a boolean that intentionally coalesces multiple events, so it must be cleared on **acknowledgement**, not per-notification, or the banner sticks forever:
 
-- **Clear on inbox read:** when an agent calls `get_inbox` for its own alias, the daemon clears the notify option for that agent's session (`tmux -S <socket> set-option -t <session-id> -u <option>`). This ties the banner to "has unread bus activity."
+- **Clear on inbox read (unconditional):** any `get_inbox` call for an alias clears the notify option for that agent's session (`tmux -S <socket> set-option -t <session-id> -u <option>`) — no unread-cursor tracking; reading = acknowledged. Ties the banner to "hasn't looked since last activity." (Mild failure mode: a routine `get_inbox` clears the 🔔 even if you hadn't noticed it — accepted for simplicity; a read-cursor is deferred.)
 - Focus-clear (the operator switching to the tab) is handled by the operator's existing banner semantics and is complementary.
 - Note: the option is session-scoped, so multiple agents sharing one tmux session share attention state — acceptable given the banner is per-session; documented.
 
@@ -70,7 +70,11 @@ The notify option is a boolean that intentionally coalesces multiple events, so 
 `muster nudge <alias> [--submit]`:
 - Resolves `<alias>` to its `socket_path` + `pane_id`. **Exact alias only** — reject role/broadcast fan-out (a nudge is a deliberate single poke).
 - **Prints the resolved target** (`alias → session/pane on <socket>`) so the operator sees what it'll hit.
-- Types the literal "📬 check your muster inbox (get_inbox)" into the pane via `tmux -S <socket> send-keys -t <pane> -l <text>`. **Enter is sent only with `--submit`** (default is type-only — the operator submits, avoiding a surprise auto-run; `--submit` for panes known to accept it, e.g. Claude Code).
+- Types the literal "📬 check your muster inbox (get_inbox)" into the pane via `tmux -S <socket> send-keys -t <pane> -l <text>`.
+- **Auto-submits by default, agent-aware** (`--no-submit` forces type-only): muster knows the target's `model_type`, so it submits wherever that genuinely works and falls back honestly where it doesn't.
+  - `model_type=claude` → send Enter after the text (confirmed to submit).
+  - `model_type=codex` → auto-submit does **not** work today (`send-keys` Enter is a no-op in Codex's composer). Type the text and print "Codex won't auto-submit — press Enter in that pane." **Build-time investigation:** test whether typing the keys (not `-l` bracketed-paste) or `load-buffer`+`paste-buffer`+Enter makes Codex actually submit; if reliable, enable auto-submit for Codex too and drop the fallback.
+  - unknown/other `model_type` → attempt Enter, best-effort.
 - If the pane is gone/stale, return a clear best-effort error (don't silently claim success).
 - Implemented by a separate `TmuxNudger` (in the CLI layer, not the daemon).
 
@@ -113,7 +117,7 @@ Existing `Serve(sock, store, waker)` callers (daemon_test, mcpserver startTestDa
 - Fully-async notification queue with drop/coalesce — start with bounded/timeout; upgrade only if fan-out latency bites.
 - Auto composer-empty detection for nudge — rejected as unreliable; operator judgment is the guard.
 
-## Open questions
+## Resolved decisions
 
-1. `nudge` default: type-only (`--submit` opt-in) as specced, or submit-by-default with `--no-submit`? (Leaning type-only for safety.)
-2. Should `get_inbox` clearing the flag be unconditional, or only when there were unread items? (Leaning unconditional — simpler; reading = acknowledged.)
+1. **`nudge` default = auto-submit, agent-aware** (`--no-submit` forces type-only). Submits for Claude; Codex falls back to type-only + operator prompt, with a build-time attempt to make Codex submit. (See §4.)
+2. **`get_inbox` clears the flag unconditionally** — any read acknowledges; no read-cursor. (See §3.)
