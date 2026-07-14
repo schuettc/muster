@@ -60,3 +60,41 @@ func TestRegisterAgentRoundTripsSessionIDAndGetAgent(t *testing.T) {
 		t.Fatalf("GetAgent should report ok=false for unknown alias")
 	}
 }
+
+func TestAgentLabelAndDelete(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.RegisterAgent(Agent{
+		Alias: "muster-2", Role: "peer", ModelType: "codex",
+		SocketPath: "/tmp/tmux-0/proj-muster", SessionID: "$1",
+		Project: "muster", Label: "frontend", LabelManual: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := s.GetAgent("muster-2")
+	if err != nil || !ok {
+		t.Fatalf("get: ok=%v err=%v", ok, err)
+	}
+	if got.Project != "muster" || got.Label != "frontend" || !got.LabelManual {
+		t.Fatalf("round-trip=%+v", got)
+	}
+
+	// upsert refreshes label fields
+	if err := s.RegisterAgent(Agent{Alias: "muster-2", Label: "backend", LabelManual: false}); err != nil {
+		t.Fatal(err)
+	}
+	got, _, _ = s.GetAgent("muster-2")
+	if got.Label != "backend" || got.LabelManual {
+		t.Fatalf("after upsert=%+v", got)
+	}
+
+	// delete removes the row, leaves the table usable
+	if err := s.DeleteAgent("muster-2"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, _ := s.GetAgent("muster-2"); ok {
+		t.Fatal("agent should be gone after DeleteAgent")
+	}
+	if err := s.DeleteAgent("nonexistent"); err != nil {
+		t.Fatalf("DeleteAgent of unknown alias must be a no-op, got %v", err)
+	}
+}

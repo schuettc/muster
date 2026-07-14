@@ -22,7 +22,7 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: muster <serve|debug|mcp|agents|inbox|send|tasks|nudge> [args]")
+		fmt.Fprintln(os.Stderr, "usage: muster <serve|debug|mcp|agents|inbox|send|tasks|nudge|register|deregister|gc> [args]")
 		os.Exit(2)
 	}
 	switch os.Args[1] {
@@ -32,7 +32,7 @@ func main() {
 		runDebug(os.Args[2:])
 	case "mcp":
 		runMCP()
-	case "agents", "inbox", "send", "tasks", "nudge":
+	case "agents", "inbox", "send", "tasks", "nudge", "register", "deregister", "gc":
 		if err := humancli.Dispatch(os.Args[1:], os.Stdout); err != nil {
 			fmt.Fprintln(os.Stderr, "muster:", err)
 			os.Exit(1)
