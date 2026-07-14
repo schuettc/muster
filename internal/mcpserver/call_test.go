@@ -6,13 +6,18 @@ import (
 	"testing"
 
 	"github.com/schuettc/muster/internal/daemon"
+	"github.com/schuettc/muster/internal/mustertest"
 	"github.com/schuettc/muster/internal/paths"
 	"github.com/schuettc/muster/internal/store"
 )
 
 func startTestDaemon(t *testing.T) string {
 	t.Helper()
-	dir := t.TempDir()
+	dir, cleanup, err := mustertest.ShortHome()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(cleanup)
 	t.Setenv("MUSTER_HOME", dir)
 	s, err := store.Open(filepath.Join(dir, "bus.db"))
 	if err != nil {
