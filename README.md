@@ -13,15 +13,17 @@ only routes between agents already running on their own plans.
   session files a request to its producer. All async, all local.
 - **One static Go binary**, multi-mode: a lazy-started daemon, a stdio MCP server
   each agent registers, and a human CLI.
-- **tmux-native wake** — a `send-keys` knock on the target pane, socket-aware so
-  it works across per-project tmux servers.
+- **tmux-native wake** — the daemon lights a status-bar banner on the recipient's
+  session (socket-aware, across per-project tmux servers) without ever typing into
+  a pane; an operator `muster nudge` is the only send-keys path.
 
 Landing page: **muster.tools**
 
 ## Status
 
-Pre-implementation. The approved v1 design lives in
-[`docs/design.md`](docs/design.md).
+**v0.1.0** — Milestones A–E shipped: SQLite store + lazy unix-socket daemon, the
+`muster mcp` server (11 tools), the human CLI, and the notify/nudge wake. The
+approved v1 design lives in [`docs/design.md`](docs/design.md).
 
 ## MCP mode
 
