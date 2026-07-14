@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/schuettc/muster/internal/client"
 	"github.com/schuettc/muster/internal/daemon"
@@ -55,7 +56,7 @@ func runServe() int {
 		return 1
 	}
 	defer func() { _ = s.Close() }()
-	d, err := daemon.Serve(paths.SocketPath(), s, wake.NewTmuxWaker())
+	d, err := daemon.Serve(paths.SocketPath(), s, wake.NewTmuxNotifier("@claude_attn", 500*time.Millisecond))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "serve:", err)
 		return 1
