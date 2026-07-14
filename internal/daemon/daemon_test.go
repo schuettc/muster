@@ -6,12 +6,17 @@ import (
 	"testing"
 
 	"github.com/schuettc/muster/internal/client"
+	"github.com/schuettc/muster/internal/mustertest"
 	"github.com/schuettc/muster/internal/proto"
 	"github.com/schuettc/muster/internal/store"
 )
 
 func TestDaemonRegisterAndList(t *testing.T) {
-	dir := t.TempDir()
+	dir, cleanup, err := mustertest.ShortHome()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(cleanup)
 	s, err := store.Open(filepath.Join(dir, "bus.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -49,7 +54,11 @@ func TestDaemonRegisterAndList(t *testing.T) {
 // understood float64 and silently coerced the string thread_id to 0,
 // so the claim landed on thread 0 instead of the real thread.
 func TestTaskClaimAcceptsStringThreadID(t *testing.T) {
-	dir := t.TempDir()
+	dir, cleanup, err := mustertest.ShortHome()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(cleanup)
 	s, err := store.Open(filepath.Join(dir, "bus.db"))
 	if err != nil {
 		t.Fatal(err)

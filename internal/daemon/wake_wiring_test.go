@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/schuettc/muster/internal/client"
+	"github.com/schuettc/muster/internal/mustertest"
 	"github.com/schuettc/muster/internal/paths"
 	"github.com/schuettc/muster/internal/proto"
 	"github.com/schuettc/muster/internal/store"
@@ -41,7 +42,11 @@ func (f *fakeNotifier) snap(which *[]string) []string {
 
 func startWithNotifier(t *testing.T, n *fakeNotifier) string {
 	t.Helper()
-	dir := t.TempDir()
+	dir, cleanup, err := mustertest.ShortHome()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(cleanup)
 	t.Setenv("MUSTER_HOME", dir)
 	s, err := store.Open(filepath.Join(dir, "bus.db"))
 	if err != nil {
@@ -89,7 +94,11 @@ func TestNotifySkipsAgentsWithoutSession(t *testing.T) {
 }
 
 func TestNilNotifierIsSafe(t *testing.T) {
-	dir := t.TempDir()
+	dir, cleanup, err := mustertest.ShortHome()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(cleanup)
 	t.Setenv("MUSTER_HOME", dir)
 	s, err := store.Open(filepath.Join(dir, "bus.db"))
 	if err != nil {
