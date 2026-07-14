@@ -135,7 +135,11 @@ func (d *Daemon) notifyForThread(threadID int64, actor string) {
 		if !ok || a.SocketPath == "" || a.SessionID == "" {
 			continue
 		}
-		_ = d.n.Notify(a.SocketPath, a.SessionID)
+		count, err := d.s.UnreadCount(alias)
+		if err != nil {
+			continue
+		}
+		_ = d.n.Notify(a.SocketPath, a.SessionID, count)
 	}
 }
 
@@ -203,6 +207,7 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 		if err != nil {
 			return fail(err)
 		}
+		_ = d.s.MarkRead(alias)
 		if d.n != nil {
 			if ag, ok, _ := d.s.GetAgent(alias); ok && ag.SocketPath != "" && ag.SessionID != "" {
 				_ = d.n.Clear(ag.SocketPath, ag.SessionID)

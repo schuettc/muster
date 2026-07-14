@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/schuettc/muster/internal/client"
+	"github.com/schuettc/muster/internal/clock"
 	"github.com/schuettc/muster/internal/mustertest"
 	"github.com/schuettc/muster/internal/paths"
 	"github.com/schuettc/muster/internal/proto"
@@ -18,7 +19,7 @@ type fakeNotifier struct {
 	cleared  []string // session IDs Clear'd
 }
 
-func (f *fakeNotifier) Notify(_, sessionID string) error {
+func (f *fakeNotifier) Notify(_, sessionID string, _ int) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.notified = append(f.notified, sessionID)
@@ -42,6 +43,12 @@ func (f *fakeNotifier) snap(which *[]string) []string {
 
 func startWithNotifier(t *testing.T, n *fakeNotifier) string {
 	t.Helper()
+	sock, _ := startWithNotifierAndStore(t, n)
+	return sock
+}
+
+func startWithNotifierAndStore(t *testing.T, n *fakeNotifier) (string, *store.Store) {
+	t.Helper()
 	dir, cleanup, err := mustertest.ShortHome()
 	if err != nil {
 		t.Fatal(err)
@@ -58,7 +65,7 @@ func startWithNotifier(t *testing.T, n *fakeNotifier) string {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = d.Close() })
-	return paths.SocketPath()
+	return paths.SocketPath(), s
 }
 
 func call(t *testing.T, sock, op string, args map[string]any) proto.Response {
@@ -124,5 +131,31 @@ func TestGetInboxClearsFlag(t *testing.T) {
 	got := n.snap(&n.cleared)
 	if len(got) != 1 || got[0] != "$5" {
 		t.Fatalf("get_inbox should clear reviewer's session $5, got %v", got)
+	}
+}
+
+// TestGetInboxMarksRead ensures get_inbox marks the alias's inbox as read, so
+// a subsequent UnreadCount is 0. UnreadCount/MarkRead compare
+// clock.NowMillis() timestamps with a strict ">", so this drives a fake,
+// strictly-increasing clock to avoid same-millisecond flakiness (see
+// internal/store TestUnreadCountAndMarkRead).
+func TestGetInboxMarksRead(t *testing.T) {
+	var tick int64
+	clock.SetForTesting(func() int64 {
+		tick++
+		return tick
+	})
+	t.Cleanup(clock.ResetForTesting)
+
+	n := &fakeNotifier{}
+	sock, s := startWithNotifierAndStore(t, n)
+	call(t, sock, "register_agent", map[string]any{"alias": "reviewer", "role": "reviewer", "model_type": "codex", "socket_path": "/s", "session_id": "$5"})
+	call(t, sock, "send_message", map[string]any{"from": "backend", "to_kind": "agent", "to_target": "reviewer", "subject": "hi", "body": "x"})
+	if n, err := s.UnreadCount("reviewer"); err != nil || n != 1 {
+		t.Fatalf("unread before get_inbox = %d (%v), want 1", n, err)
+	}
+	call(t, sock, "get_inbox", map[string]any{"alias": "reviewer"})
+	if got, err := s.UnreadCount("reviewer"); err != nil || got != 0 {
+		t.Fatalf("unread after get_inbox = %d (%v), want 0", got, err)
 	}
 }

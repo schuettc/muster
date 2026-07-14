@@ -56,7 +56,7 @@ func runServe() int {
 		return 1
 	}
 	defer func() { _ = s.Close() }()
-	d, err := daemon.Serve(paths.SocketPath(), s, wake.NewTmuxNotifier("@claude_attn", 500*time.Millisecond))
+	d, err := daemon.Serve(paths.SocketPath(), s, wake.NewTmuxNotifier("@muster_inbox", 500*time.Millisecond))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "serve:", err)
 		return 1
