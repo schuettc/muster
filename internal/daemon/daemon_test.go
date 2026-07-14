@@ -1,15 +1,39 @@
 package daemon
 
 import (
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"testing"
 
 	"github.com/schuettc/muster/internal/client"
 	"github.com/schuettc/muster/internal/mustertest"
+	"github.com/schuettc/muster/internal/paths"
 	"github.com/schuettc/muster/internal/proto"
 	"github.com/schuettc/muster/internal/store"
 )
+
+// startTestDaemon boots a real in-process daemon on a temp socket.
+func startTestDaemon(t *testing.T) string {
+	t.Helper()
+	dir, cleanup, err := mustertest.ShortHome()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(cleanup)
+	t.Setenv("MUSTER_HOME", dir)
+	s, err := store.Open(filepath.Join(dir, "bus.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	d, err := Serve(paths.SocketPath(), s, nil)
+	if err != nil {
+		t.Fatalf("Serve: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+	return paths.SocketPath()
+}
 
 func TestDaemonRegisterAndList(t *testing.T) {
 	dir, cleanup, err := mustertest.ShortHome()
@@ -104,5 +128,54 @@ func TestTaskClaimAcceptsStringThreadID(t *testing.T) {
 	}
 	if !claim.OK {
 		t.Fatalf("expected task_claim to succeed with string thread_id, got resp=%+v", claim)
+	}
+}
+
+// decodeGetAgent re-marshals a get_agent response's Data (already a
+// map[string]any from the wire) into a typed found/agent pair, matching the
+// approach internal/humancli uses for the same response shape.
+func decodeGetAgent(t *testing.T, resp proto.Response) (store.Agent, bool) {
+	t.Helper()
+	raw, err := json.Marshal(resp.Data)
+	if err != nil {
+		t.Fatalf("marshal resp.Data: %v", err)
+	}
+	var res struct {
+		Found bool        `json:"found"`
+		Agent store.Agent `json:"agent"`
+	}
+	if err := json.Unmarshal(raw, &res); err != nil {
+		t.Fatalf("unmarshal get_agent response: %v", err)
+	}
+	return res.Agent, res.Found
+}
+
+func TestRegisterCapturesLabelAndDeregister(t *testing.T) {
+	sock := startTestDaemon(t) // existing helper
+	if _, err := client.Call(sock, proto.Request{Op: "register_agent", Args: map[string]any{
+		"alias": "muster-2", "role": "peer", "model_type": "codex",
+		"socket_path": "/s", "session_id": "$1",
+		"project": "muster", "label": "frontend", "label_manual": true,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	resp, err := client.Call(sock, proto.Request{Op: "get_agent", Args: map[string]any{"alias": "muster-2"}})
+	if err != nil || !resp.OK {
+		t.Fatalf("get_agent: %v %+v", err, resp)
+	}
+	ag, found := decodeGetAgent(t, resp)
+	if !found || ag.Project != "muster" || ag.Label != "frontend" || !ag.LabelManual {
+		t.Fatalf("expected project/label/label_manual to round-trip, got found=%v agent=%+v", found, ag)
+	}
+
+	if _, err := client.Call(sock, proto.Request{Op: "deregister_agent", Args: map[string]any{"alias": "muster-2"}}); err != nil {
+		t.Fatal(err)
+	}
+	resp, err = client.Call(sock, proto.Request{Op: "get_agent", Args: map[string]any{"alias": "muster-2"}})
+	if err != nil || !resp.OK {
+		t.Fatalf("get_agent after deregister: %v %+v", err, resp)
+	}
+	if _, found := decodeGetAgent(t, resp); found {
+		t.Fatal("expected agent to be gone after deregister_agent")
 	}
 }
