@@ -53,11 +53,12 @@ func cmdRegister(args []string, out io.Writer) error {
 // register: explicit arg → $MUSTER_ALIAS → tmux session name.
 func cmdDeregister(args []string, out io.Writer) error {
 	alias := ""
-	if len(args) > 0 {
+	switch {
+	case len(args) > 0:
 		alias = args[0]
-	} else if os.Getenv("MUSTER_ALIAS") != "" {
+	case os.Getenv("MUSTER_ALIAS") != "":
 		alias = os.Getenv("MUSTER_ALIAS")
-	} else {
+	default:
 		alias = tmuxenv.CaptureEnv().SessionName
 	}
 	if alias == "" {

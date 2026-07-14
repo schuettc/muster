@@ -1,6 +1,7 @@
 package mcpserver
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 
@@ -25,13 +26,13 @@ func TestRegisterAgentCapturesTmuxEnv(t *testing.T) {
 
 	var got map[string]any
 	prevDaemon := callDaemon
-	callDaemon = func(op string, args map[string]any) (json.RawMessage, error) {
+	callDaemon = func(_ string, args map[string]any) (json.RawMessage, error) {
 		got = args
 		return []byte(`{}`), nil
 	}
 	t.Cleanup(func() { callDaemon = prevDaemon })
 
-	_, _, err := registerAgentHandler(nil, nil, RegisterAgentIn{Alias: "backend", Role: "producer", ModelType: "claude"})
+	_, _, err := registerAgentHandler(context.TODO(), nil, RegisterAgentIn{Alias: "backend", Role: "producer", ModelType: "claude"})
 	if err != nil {
 		t.Fatal(err)
 	}
