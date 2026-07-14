@@ -48,7 +48,7 @@ func TestAgentsCommandListsRegistered(t *testing.T) {
 		t.Fatalf("agents: %v", err)
 	}
 	out := buf.String()
-	if !strings.Contains(out, "backend") || !strings.Contains(out, "consumer") || !strings.Contains(out, "producer") {
+	if !strings.Contains(out, "backend") || !strings.Contains(out, "consumer") || !strings.Contains(out, "claude") || !strings.Contains(out, "codex") {
 		t.Fatalf("agents output missing rows:\n%s", out)
 	}
 }

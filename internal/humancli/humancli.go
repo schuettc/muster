@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"text/tabwriter"
 
@@ -96,21 +97,45 @@ func Dispatch(args []string, out io.Writer) error {
 	}
 }
 
+// cmdAgents lists registered agents grouped by project, showing each
+// agent's addressable label and live tmux session status.
 func cmdAgents(out io.Writer) error {
 	raw, err := callData("list_agents", nil)
 	if err != nil {
 		return err
 	}
-	var agents []agentRow
-	if err := json.Unmarshal(raw, &agents); err != nil {
+	var rows []agentRow
+	if err := json.Unmarshal(raw, &rows); err != nil {
 		return err
 	}
+	agents := enrichAgents(rows)
+	sort.Slice(agents, func(i, j int) bool {
+		if agents[i].Project != agents[j].Project {
+			return agents[i].Project < agents[j].Project
+		}
+		return agents[i].Alias < agents[j].Alias
+	})
 	tw := tabwriter.NewWriter(out, 0, 2, 2, ' ', 0)
-	if _, err := fmt.Fprintln(tw, "ALIAS\tROLE\tMODEL\tSESSION"); err != nil {
+	if _, err := fmt.Fprintln(tw, "PROJECT\tALIAS\tLABEL\tMODEL\tLIVE"); err != nil {
 		return err
 	}
 	for _, a := range agents {
-		if _, err := fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", a.Alias, a.Role, a.ModelType, a.SessionName); err != nil {
+		proj := a.Project
+		if proj == "" {
+			proj = "(none)"
+		}
+		label := a.EffLabel
+		switch {
+		case label == "":
+			label = "—"
+		case !a.EffManual:
+			label = "(" + label + ")" // auto-topic: shown but not addressable
+		}
+		live := "✗"
+		if a.Live {
+			live = "●"
+		}
+		if _, err := fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", proj, a.Alias, label, a.ModelType, live); err != nil {
 			return err
 		}
 	}
@@ -146,9 +171,16 @@ func cmdSend(args []string, out io.Writer) error {
 		body = strings.Join(rest, " ")
 	} else {
 		if len(rest) < 2 {
-			return fmt.Errorf("usage: muster send <target> <body> [--from X --subject S --ref R --role --broadcast]")
+			return fmt.Errorf("usage: muster send <alias|label|proj:label> <body> [--from X --subject S --ref R --role --broadcast]")
 		}
 		toTarget = rest[0]
+		if toKind == "agent" {
+			resolved, err := resolveVia(rest[0])
+			if err != nil {
+				return err
+			}
+			toTarget = resolved
+		}
 		body = strings.Join(rest[1:], " ")
 	}
 	raw, err := callData("send_message", map[string]any{
@@ -213,17 +245,25 @@ func splitFlagsAndPositional(args []string, boolFlags ...map[string]bool) (flagA
 // cmdInbox prints the given alias's threads.
 func cmdInbox(args []string, out io.Writer) error {
 	if len(args) < 1 {
-		return fmt.Errorf("usage: muster inbox <alias>")
+		return fmt.Errorf("usage: muster inbox <alias|label|proj:label>")
 	}
-	return printThreads(out, args[0], false)
+	alias, err := resolveVia(args[0])
+	if err != nil {
+		return err
+	}
+	return printThreads(out, alias, false)
 }
 
 // cmdTasks prints the given alias's inbox filtered to kind=task threads.
 func cmdTasks(args []string, out io.Writer) error {
 	if len(args) < 1 {
-		return fmt.Errorf("usage: muster tasks <alias>")
+		return fmt.Errorf("usage: muster tasks <alias|label|proj:label>")
 	}
-	return printThreads(out, args[0], true)
+	alias, err := resolveVia(args[0])
+	if err != nil {
+		return err
+	}
+	return printThreads(out, alias, true)
 }
 
 // printThreads fetches an alias's inbox and prints it; if tasksOnly, only
@@ -267,9 +307,12 @@ func cmdNudge(args []string, out io.Writer) error {
 	}
 	rest := fs.Args()
 	if len(rest) != 1 {
-		return fmt.Errorf("usage: muster nudge <alias> [--no-submit]")
+		return fmt.Errorf("usage: muster nudge <alias|label|proj:label> [--no-submit]")
 	}
-	alias := rest[0]
+	alias, err := resolveVia(rest[0])
+	if err != nil {
+		return err
+	}
 	raw, err := callData("get_agent", map[string]any{"alias": alias})
 	if err != nil {
 		return err
