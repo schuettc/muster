@@ -1,48 +1,47 @@
 package wake
 
 import (
-	"reflect"
+	"context"
+	"strings"
 	"testing"
+	"time"
 )
 
-func TestTmuxWakerSendsLiteralThenEnter(t *testing.T) {
+func TestTmuxNotifierNotifySetsOptionAndRefreshes(t *testing.T) {
 	var calls [][]string
-	w := TmuxWaker{Run: func(args ...string) error {
+	n := TmuxNotifier{Option: "@claude_attn", Timeout: time.Second, Run: func(_ context.Context, args ...string) error {
 		calls = append(calls, args)
 		return nil
 	}}
-	if err := w.Wake("/tmp/tmux-501/proj-x", "%6", "hello there"); err != nil {
-		t.Fatalf("Wake: %v", err)
+	if err := n.Notify("/sock", "$3"); err != nil {
+		t.Fatalf("Notify: %v", err)
 	}
-	want := [][]string{
-		{"-S", "/tmp/tmux-501/proj-x", "send-keys", "-t", "%6", "-l", "hello there"},
-		{"-S", "/tmp/tmux-501/proj-x", "send-keys", "-t", "%6", "Enter"},
+	// First call must set the option on the session, socket-aware. No send-keys anywhere.
+	if len(calls) == 0 {
+		t.Fatal("no tmux calls")
 	}
-	if !reflect.DeepEqual(calls, want) {
-		t.Fatalf("unexpected tmux calls:\n got %v\nwant %v", calls, want)
+	set := strings.Join(calls[0], " ")
+	if !strings.Contains(set, "-S /sock") || !strings.Contains(set, "set-option") || !strings.Contains(set, "-t $3") || !strings.Contains(set, "@claude_attn 1") {
+		t.Fatalf("first call not a socket-aware set-option: %v", calls[0])
 	}
-}
-
-func TestTmuxWakerSkipsEnterWhenLiteralFails(t *testing.T) {
-	var calls int
-	boom := func(_ ...string) error {
-		calls++
-		if calls == 1 {
-			return errPaneGone
+	for _, c := range calls {
+		if strings.Contains(strings.Join(c, " "), "send-keys") {
+			t.Fatalf("Notify must NEVER send-keys, got: %v", c)
 		}
-		return nil
-	}
-	w := TmuxWaker{Run: boom}
-	if err := w.Wake("/s", "%9", "hi"); err == nil {
-		t.Fatalf("expected error when literal send fails")
-	}
-	if calls != 1 {
-		t.Fatalf("Enter should not be sent after a failed literal; calls=%d", calls)
 	}
 }
 
-var errPaneGone = &wakeErr{"pane gone"}
-
-type wakeErr struct{ s string }
-
-func (e *wakeErr) Error() string { return e.s }
+func TestTmuxNotifierClearUnsetsOption(t *testing.T) {
+	var calls [][]string
+	n := TmuxNotifier{Option: "@claude_attn", Timeout: time.Second, Run: func(_ context.Context, args ...string) error {
+		calls = append(calls, args)
+		return nil
+	}}
+	if err := n.Clear("/sock", "$3"); err != nil {
+		t.Fatalf("Clear: %v", err)
+	}
+	got := strings.Join(calls[0], " ")
+	if !strings.Contains(got, "-S /sock") || !strings.Contains(got, "set-option") || !strings.Contains(got, "-u") || !strings.Contains(got, "@claude_attn") || !strings.Contains(got, "-t $3") {
+		t.Fatalf("Clear not a socket-aware unset: %v", calls[0])
+	}
+}
