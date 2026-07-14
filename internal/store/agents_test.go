@@ -43,3 +43,20 @@ func TestRegisterAgentUpsertAndList(t *testing.T) {
 		t.Fatalf("LastSeen should not go backwards across upsert: first=%d second=%d", firstList[0].LastSeen, agents[0].LastSeen)
 	}
 }
+
+func TestRegisterAgentRoundTripsSessionIDAndGetAgent(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.RegisterAgent(Agent{Alias: "backend", Role: "producer", ModelType: "claude", SocketPath: "/s", PaneID: "%1", SessionName: "muster", SessionID: "$3"}); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	got, ok, err := s.GetAgent("backend")
+	if err != nil || !ok {
+		t.Fatalf("GetAgent: ok=%v err=%v", ok, err)
+	}
+	if got.SessionID != "$3" || got.SessionName != "muster" {
+		t.Fatalf("session fields not round-tripped: %+v", got)
+	}
+	if _, ok, _ := s.GetAgent("nope"); ok {
+		t.Fatalf("GetAgent should report ok=false for unknown alias")
+	}
+}
