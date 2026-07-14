@@ -11,27 +11,35 @@ import (
 	"github.com/schuettc/muster/internal/store"
 )
 
-type fakeWaker struct {
-	mu    sync.Mutex
-	panes []string // pane IDs knocked
+type fakeNotifier struct {
+	mu       sync.Mutex
+	notified []string // session IDs Notify'd
+	cleared  []string // session IDs Clear'd
 }
 
-func (f *fakeWaker) Wake(_, paneID, _ string) error {
+func (f *fakeNotifier) Notify(_, sessionID string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.panes = append(f.panes, paneID)
+	f.notified = append(f.notified, sessionID)
 	return nil
 }
 
-func (f *fakeWaker) knocked() []string {
+func (f *fakeNotifier) Clear(_, sessionID string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	out := make([]string, len(f.panes))
-	copy(out, f.panes)
+	f.cleared = append(f.cleared, sessionID)
+	return nil
+}
+
+func (f *fakeNotifier) snap(which *[]string) []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]string, len(*which))
+	copy(out, *which)
 	return out
 }
 
-func startWithWaker(t *testing.T, w *fakeWaker) string {
+func startWithNotifier(t *testing.T, n *fakeNotifier) string {
 	t.Helper()
 	dir := t.TempDir()
 	t.Setenv("MUSTER_HOME", dir)
@@ -40,7 +48,7 @@ func startWithWaker(t *testing.T, w *fakeWaker) string {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = s.Close() })
-	d, err := Serve(paths.SocketPath(), s, w)
+	d, err := Serve(paths.SocketPath(), s, n)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,36 +65,30 @@ func call(t *testing.T, sock, op string, args map[string]any) proto.Response {
 	return resp
 }
 
-func TestWakeDirectedExcludesActor(t *testing.T) {
-	w := &fakeWaker{}
-	sock := startWithWaker(t, w)
-	call(t, sock, "register_agent", map[string]any{"alias": "backend", "role": "producer", "model_type": "claude", "socket_path": "/s", "pane_id": "%1"})
-	call(t, sock, "register_agent", map[string]any{"alias": "consumer", "role": "consumer", "model_type": "codex", "socket_path": "/s", "pane_id": "%2"})
-
+func TestNotifyDirectedExcludesActorBySession(t *testing.T) {
+	n := &fakeNotifier{}
+	sock := startWithNotifier(t, n)
+	call(t, sock, "register_agent", map[string]any{"alias": "backend", "role": "producer", "model_type": "claude", "socket_path": "/s", "session_id": "$1"})
+	call(t, sock, "register_agent", map[string]any{"alias": "consumer", "role": "consumer", "model_type": "codex", "socket_path": "/s", "session_id": "$2"})
 	call(t, sock, "send_message", map[string]any{"from": "backend", "to_kind": "agent", "to_target": "consumer", "subject": "hi", "body": "x"})
-
-	got := w.knocked()
-	if len(got) != 1 || got[0] != "%2" {
-		t.Fatalf("expected only consumer (%%2) knocked, got %v", got)
+	got := n.snap(&n.notified)
+	if len(got) != 1 || got[0] != "$2" {
+		t.Fatalf("expected only consumer session $2 notified, got %v", got)
 	}
 }
 
-func TestWakeRoleFanoutAndBroadcast(t *testing.T) {
-	w := &fakeWaker{}
-	sock := startWithWaker(t, w)
-	call(t, sock, "register_agent", map[string]any{"alias": "backend", "role": "producer", "model_type": "claude", "socket_path": "/s", "pane_id": "%1"})
-	call(t, sock, "register_agent", map[string]any{"alias": "rev1", "role": "reviewer", "model_type": "codex", "socket_path": "/s", "pane_id": "%2"})
-	call(t, sock, "register_agent", map[string]any{"alias": "rev2", "role": "reviewer", "model_type": "codex", "socket_path": "/s", "pane_id": "%3"})
-
-	call(t, sock, "task_create", map[string]any{"from": "backend", "to_kind": "role", "to_target": "reviewer", "subject": "review", "body": "y"})
-	got := w.knocked()
-	if len(got) != 2 {
-		t.Fatalf("role fan-out should knock both reviewers, got %v", got)
+func TestNotifySkipsAgentsWithoutSession(t *testing.T) {
+	n := &fakeNotifier{}
+	sock := startWithNotifier(t, n)
+	// no session_id → not notifiable
+	call(t, sock, "register_agent", map[string]any{"alias": "consumer", "role": "consumer", "model_type": "codex", "socket_path": "/s"})
+	call(t, sock, "send_message", map[string]any{"from": "backend", "to_kind": "agent", "to_target": "consumer", "subject": "hi", "body": "x"})
+	if got := n.snap(&n.notified); len(got) != 0 {
+		t.Fatalf("agent without session_id must not be notified, got %v", got)
 	}
 }
 
-func TestNoWakeWhenWakerNil(t *testing.T) {
-	// Sanity: a nil waker must not panic on an op.
+func TestNilNotifierIsSafe(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("MUSTER_HOME", dir)
 	s, err := store.Open(filepath.Join(dir, "bus.db"))
@@ -99,9 +101,8 @@ func TestNoWakeWhenWakerNil(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = d.Close() })
-	call(t, paths.SocketPath(), "register_agent", map[string]any{"alias": "a", "role": "r", "model_type": "claude", "socket_path": "/s", "pane_id": "%1"})
-	resp := call(t, paths.SocketPath(), "send_message", map[string]any{"from": "a", "to_kind": "broadcast", "subject": "s", "body": "b"})
-	if !resp.OK {
-		t.Fatalf("op should succeed with nil waker: %+v", resp)
+	call(t, paths.SocketPath(), "register_agent", map[string]any{"alias": "a", "role": "r", "model_type": "claude", "socket_path": "/s", "session_id": "$1"})
+	if resp := call(t, paths.SocketPath(), "send_message", map[string]any{"from": "a", "to_kind": "broadcast", "subject": "s", "body": "b"}); !resp.OK {
+		t.Fatalf("op should succeed with nil notifier: %+v", resp)
 	}
 }
