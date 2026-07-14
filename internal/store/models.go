@@ -9,6 +9,9 @@ type Agent struct {
 	PaneID       string `json:"pane_id"`
 	SessionName  string `json:"session_name"`
 	SessionID    string `json:"session_id"`
+	Project      string `json:"project"`
+	Label        string `json:"label"`
+	LabelManual  bool   `json:"label_manual"`
 	RegisteredAt int64  `json:"registered_at"`
 	LastSeen     int64  `json:"last_seen"`
 }
