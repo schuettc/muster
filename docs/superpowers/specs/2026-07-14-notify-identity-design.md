@@ -1,9 +1,14 @@
 # Notify + Identity foundation: mailbox indicator & launch-wrapper registration — Design
 
-**Status:** approved-in-principle 2026-07-14. Post-session-identity. This is the
-**foundation** build; the autonomy layer (busy/idle state, self-resolving Stop-hook
-inbox, state-aware auto-nudge) is a deliberate **follow-up** build, and Codex
-autonomy is deferred to `docs/research/codex-autostart-handoff.md`.
+**Status:** RESCOPED 2026-07-14 → **mailbox only**. The launch-wrapper and the
+`tmuxenv` MUSTER_* fallback described below are **DROPPED**: Codex's interactive TUI
+*does* run hooks (the "no hooks" premise was a false negative — see project memory /
+PR #10), so SessionStart-hook registration works for both agents and the wrapper is
+unnecessary. Hooks + Codex nudge-submit + self-resolving inbox are owned by
+`feat/codex-nudge-submit`. The sections below on the wrapper (5), the `tmuxenv`
+fallback (muster change 1), and the Codex-autostart handoff are superseded; the
+**mailbox** (`@muster_inbox` count + `last_read_at`) and its `📬` render survive and
+are the whole of this branch. Actionable plan: `../plans/2026-07-14-notify-identity.md`.
 
 ## Goal
 

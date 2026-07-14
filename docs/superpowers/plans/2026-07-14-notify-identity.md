@@ -1,149 +1,72 @@
-# Notify + Identity Foundation — Implementation Plan (muster Go)
+# Mailbox (`@muster_inbox`) — Implementation Plan (muster Go)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax.
 
-**Goal:** The muster-side foundation for the mailbox + wrapper design: `tmuxenv` gains a `MUSTER_*` env fallback (so capture works without `$TMUX`), the store tracks unread state, and the daemon's notify carries an unread **count** in a new `@muster_inbox` option (cleared on inbox read). The dotfiles wrapper + `📬` render are applied separately (not in this plan).
+> **RESCOPED 2026-07-14.** The launch-wrapper + `tmuxenv` MUSTER_* fallback that this
+> branch originally carried are **dropped**: Codex's interactive TUI *does* run hooks
+> (the earlier "no hooks" finding was a false negative — see project memory / PR #10),
+> so SessionStart-hook registration works for both agents and the wrapper is
+> unnecessary. Hooks + Codex nudge-submit + self-resolving inbox are owned by
+> `feat/codex-nudge-submit`. **This branch now = the mailbox only.**
 
-**Architecture:** Additive, same layering as before. `internal/tmuxenv` stays the one capture path; the daemon core stays tmux-agnostic (notify only via the injected `wake.Notifier`).
+**Goal:** Give muster a distinct, persistent unread-mail signal. The store tracks
+unread state; the daemon sets `@muster_inbox=<unread count>` on the recipient's tmux
+session on activity and clears it when the agent reads its inbox. The dotfiles
+render `📬<count>` (applied separately by the controller — render only, no wrapper).
 
-**Tech Stack:** Go 1.26, cgo-free, `modernc.org/sqlite`.
+**Why it matters beyond the operator's 📬:** `@muster_inbox` is the signal the
+self-resolving `Stop` hook (on `feat/codex-nudge-submit`) reads at turn-end to decide
+whether to auto-drain the inbox. This branch produces that signal.
+
+**Architecture:** Additive. The daemon core stays tmux-agnostic — notify only via the
+injected `wake.Notifier`.
 
 ## Global Constraints
 
-- cgo-free; `just verify` green (gofmt, golangci-lint 0 issues, `go test -race`, build). Run the linter, not just `go test` — prefix macOS runs with `TMPDIR=/tmp`.
-- Exported symbols get doc comments (revive); ignored params `_`; prefer `switch` over long if/else chains (gocritic); pass `context.TODO()` not nil Context (staticcheck).
-- `internal/daemon` and `internal/store` must NOT import `internal/tmuxenv`.
-- Tests inject seams (`tmuxenv.Run`, fake `wake.Notifier`), never real tmux; no `t.Parallel()` while mutating package vars/env; use `internal/mustertest.ShortHome()` for daemon sockets on macOS.
-- The `@muster_inbox` option holds an integer count; on count `0`/clear it must be **unset** (not set to `"0"`), so the dotfiles `#{?@muster_inbox,…}` conditional reads falsy.
+- cgo-free; `just verify` green (gofmt, golangci-lint **0 issues** — run the linter per task, not just `go test`), `-race`, build. `TMPDIR=/tmp` on macOS.
+- Exported symbols get doc comments (revive); ignored params `_`; `switch` over long if/else (gocritic); `context.TODO()` not nil ctx (staticcheck).
+- `internal/store` must NOT import `internal/tmuxenv`; daemon touches tmux only via `wake.Notifier`.
+- Tests inject seams (fake `wake.Notifier`), never real tmux; no `t.Parallel()` while mutating package vars; `mustertest.ShortHome()` for daemon sockets.
+- `@muster_inbox` holds an integer count; on count `0`/clear it is **unset** (not `"0"`), so the dotfiles `#{?@muster_inbox,…}` conditional reads falsy (never `📬0`).
+- **Rebase note:** once PR #10 (`feat/codex-nudge-submit`) merges to `dev`, rebuild this branch on the updated `dev` before the final review (it touches `nudge.go`; this branch touches `store`/`wake`/`daemon`/`main` — no overlap, but stay current).
 
 ---
 
-### Task 1: `internal/tmuxenv` — `MUSTER_*` env fallback
+### Task 1: store — `last_read_at`, `UnreadCount`, `MarkRead`
 
-**Files:** Modify `internal/tmuxenv/tmuxenv.go`; Test `internal/tmuxenv/tmuxenv_test.go`.
+**Files:** Modify `internal/store/schema.sql`, `internal/store/store.go` (migration), `internal/store/agents.go`; Test `internal/store/threads_test.go` (or agents_test.go).
 
-**Interfaces:** Produces the same `Capture`/`CaptureEnv`/`SocketFromEnv` API; behavior extended to fall back to `MUSTER_SOCKET`/`MUSTER_PANE`/`MUSTER_SESSION_ID`/`MUSTER_SESSION_NAME`/`MUSTER_PROJECT` when the live tmux env is absent.
-
-- [ ] **Step 1: Write the failing test** (append to `tmuxenv_test.go`)
-
-```go
-func TestCaptureEnvFallsBackToMusterVars(t *testing.T) {
-	t.Setenv("TMUX", "")       // no live tmux
-	t.Setenv("TMUX_PANE", "")
-	t.Setenv("MUSTER_SOCKET", "/tmp/tmux-0/proj-bhw")
-	t.Setenv("MUSTER_PANE", "%9")
-	t.Setenv("MUSTER_SESSION_ID", "$3")
-	t.Setenv("MUSTER_SESSION_NAME", "bhw-2")
-	t.Setenv("MUSTER_PROJECT", "bhw")
-	// tmux would be queried for label; stub it empty (no live session)
-	prev := Run
-	Run = func(args ...string) (string, error) { return "", nil }
-	t.Cleanup(func() { Run = prev })
-
-	c := CaptureEnv()
-	if c.SocketPath != "/tmp/tmux-0/proj-bhw" || c.PaneID != "%9" ||
-		c.SessionID != "$3" || c.SessionName != "bhw-2" || c.Project != "bhw" {
-		t.Fatalf("fallback capture = %+v", c)
-	}
-}
-
-func TestSocketFromEnvPrefersLiveTmux(t *testing.T) {
-	t.Setenv("TMUX", "/live/proj-x,1,0")
-	t.Setenv("MUSTER_SOCKET", "/fallback/proj-y")
-	if got := SocketFromEnv(); got != "/live/proj-x" {
-		t.Fatalf("want live socket, got %q", got)
-	}
-}
-```
-
-- [ ] **Step 2: Run to verify fail** — `TMPDIR=/tmp go test ./internal/tmuxenv/ -run 'FallsBack|PrefersLive'` → FAIL.
-
-- [ ] **Step 3: Implement the fallback**
-
-Replace `SocketFromEnv` and `CaptureEnv`:
-
-```go
-// SocketFromEnv returns the tmux socket path: the live $TMUX socket if present,
-// else the wrapper-exported $MUSTER_SOCKET.
-func SocketFromEnv() string {
-	if tmux := os.Getenv("TMUX"); tmux != "" {
-		return strings.SplitN(tmux, ",", 2)[0]
-	}
-	return os.Getenv("MUSTER_SOCKET")
-}
-
-// CaptureEnv reads identity from the live tmux env, falling back field-by-field
-// to the wrapper-exported MUSTER_* vars (so capture works even where $TMUX is
-// absent, e.g. an MCP subprocess).
-func CaptureEnv() Capture {
-	socket := SocketFromEnv()
-	pane := os.Getenv("TMUX_PANE")
-	if pane == "" {
-		pane = os.Getenv("MUSTER_PANE")
-	}
-	c := Capture{SocketPath: socket, PaneID: pane, Project: ProjectFromSocket(socket)}
-	if c.Project == "" {
-		c.Project = os.Getenv("MUSTER_PROJECT")
-	}
-	if socket != "" && pane != "" {
-		c.SessionID = query(socket, pane, "#{session_id}")
-		c.SessionName = query(socket, pane, "#{session_name}")
-		c.Label, c.LabelManual = SessionLabel(socket, pane)
-	}
-	if c.SessionID == "" {
-		c.SessionID = os.Getenv("MUSTER_SESSION_ID")
-	}
-	if c.SessionName == "" {
-		c.SessionName = os.Getenv("MUSTER_SESSION_NAME")
-	}
-	return c
-}
-```
-
-- [ ] **Step 4: Run to verify pass** — `TMPDIR=/tmp go test ./internal/tmuxenv/` → PASS (new + existing).
-- [ ] **Step 5: Lint** — `TMPDIR=/tmp golangci-lint run ./internal/tmuxenv/` → 0 issues (run standalone; check exit code).
-- [ ] **Step 6: Commit** — `feat(tmuxenv): fall back to MUSTER_* env when $TMUX absent`.
-
----
-
-### Task 2: store — `last_read_at`, `UnreadCount`, `MarkRead`
-
-**Files:** Modify `internal/store/schema.sql`, `internal/store/store.go` (migration), `internal/store/agents.go` or `threads.go`; Test `internal/store/threads_test.go` (or agents_test.go).
-
-**Interfaces produced (consumed by Task 3):** `func (s *Store) UnreadCount(alias string) (int, error)`, `func (s *Store) MarkRead(alias string) error`.
+**Interfaces produced (consumed by Task 2):** `func (s *Store) UnreadCount(alias string) (int, error)`, `func (s *Store) MarkRead(alias string) error`.
 
 - [ ] **Step 1: Write the failing test**
 
 ```go
 func TestUnreadCountAndMarkRead(t *testing.T) {
 	s := openTestStore(t) // existing helper
-	must(t, s.RegisterAgent(Agent{Alias: "a", Role: "r"}))
-	// two messages addressed to a
-	_, err := s.CreateThread(Thread{Kind: "message", FromAgent: "x", ToKind: "agent", ToTarget: "a"}, "one")
-	must(t, err)
-	_, err = s.CreateThread(Thread{Kind: "message", FromAgent: "x", ToKind: "agent", ToTarget: "a"}, "two")
-	must(t, err)
-
-	n, err := s.UnreadCount("a")
-	if err != nil || n != 2 {
+	if err := s.RegisterAgent(Agent{Alias: "a", Role: "r"}); err != nil { t.Fatal(err) }
+	for _, b := range []string{"one", "two"} {
+		if _, err := s.CreateThread(Thread{Kind: "message", FromAgent: "x", ToKind: "agent", ToTarget: "a"}, b); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n, err := s.UnreadCount("a"); err != nil || n != 2 {
 		t.Fatalf("unread before read = %d (%v), want 2", n, err)
 	}
-	must(t, s.MarkRead("a"))
-	n, err = s.UnreadCount("a")
-	if err != nil || n != 0 {
-		t.Fatalf("unread after MarkRead = %d (%v), want 0", n, err)
+	if err := s.MarkRead("a"); err != nil { t.Fatal(err) }
+	if n, _ := s.UnreadCount("a"); n != 0 {
+		t.Fatalf("unread after MarkRead = %d, want 0", n)
 	}
-	// a new message after read counts again
-	_, err = s.CreateThread(Thread{Kind: "message", FromAgent: "x", ToKind: "agent", ToTarget: "a"}, "three")
-	must(t, err)
+	if _, err := s.CreateThread(Thread{Kind: "message", FromAgent: "x", ToKind: "agent", ToTarget: "a"}, "three"); err != nil {
+		t.Fatal(err)
+	}
 	if n, _ := s.UnreadCount("a"); n != 1 {
 		t.Fatalf("unread after new msg = %d, want 1", n)
 	}
 }
 ```
-(Use the store package's existing temp-store + `must` helpers; if `must` doesn't exist, inline `if err != nil { t.Fatal(err) }`.)
+(Use the store package's existing temp-store helper; match its real name.)
 
-- [ ] **Step 2: Run to verify fail** — FAIL (methods undefined).
+- [ ] **Step 2: Run to verify fail** — `TMPDIR=/tmp go test ./internal/store/ -run TestUnreadCountAndMarkRead` → FAIL.
 
 - [ ] **Step 3: Schema + migration**
 
@@ -180,20 +103,20 @@ func (s *Store) MarkRead(alias string) error {
 }
 ```
 
-- [ ] **Step 5: Run tests + lint** — `TMPDIR=/tmp go test ./internal/store/` PASS; `golangci-lint run ./internal/store/` 0 issues.
+- [ ] **Step 5: Run tests + lint** — `TMPDIR=/tmp go test ./internal/store/` PASS; `TMPDIR=/tmp golangci-lint run ./internal/store/` → 0 issues (standalone, check exit code).
 - [ ] **Step 6: Commit** — `feat(store): unread-count via last_read_at (UnreadCount/MarkRead)`.
 
 ---
 
-### Task 3: wake + daemon — count-bearing `@muster_inbox` notify, clear on read
+### Task 2: wake + daemon — count-bearing `@muster_inbox` notify, clear on read
 
-**Files:** Modify `internal/wake/wake.go`, `internal/daemon/daemon.go`, `cmd/muster/main.go`; update any `wake.Notifier` implementations/fakes; Tests in `internal/wake/` and `internal/daemon/`.
+**Files:** Modify `internal/wake/wake.go`, `internal/daemon/daemon.go`, `cmd/muster/main.go`; update every `wake.Notifier` implementer/fake; Tests in `internal/wake/` and `internal/daemon/`.
 
-**Interfaces:** `Notifier.Notify` gains a `count int` param. All implementers + call sites update.
+**Interfaces:** `Notifier.Notify` gains a `count int` param — all implementers + call sites update.
 
 - [ ] **Step 1: Write/adjust failing tests**
 
-Wake test (`internal/wake/wake_test.go`) — assert the option is set to the count and unset on 0:
+Wake test (`internal/wake/wake_test.go`):
 ```go
 func TestNotifySetsCountAndUnsetsOnZero(t *testing.T) {
 	var cmds [][]string
@@ -201,20 +124,17 @@ func TestNotifySetsCountAndUnsetsOnZero(t *testing.T) {
 		cmds = append(cmds, args); return nil
 	}}
 	_ = n.Notify("/s", "$1", 3)
-	// first cmd sets the option to "3"
-	if got := cmds[0]; got[4] != "@muster_inbox" || got[5] != "3" {
-		t.Fatalf("set cmd = %v", got)
+	if cmds[0][4] != "@muster_inbox" || cmds[0][5] != "3" {
+		t.Fatalf("set cmd = %v", cmds[0])
 	}
 	cmds = nil
 	_ = n.Notify("/s", "$1", 0)
-	// count 0 → unset (-u), no value
-	joined := strings.Join(cmds[0], " ")
-	if !strings.Contains(joined, "-u") || !strings.Contains(joined, "@muster_inbox") {
+	if joined := strings.Join(cmds[0], " "); !strings.Contains(joined, "-u") || !strings.Contains(joined, "@muster_inbox") {
 		t.Fatalf("zero should unset, got %v", cmds[0])
 	}
 }
 ```
-Daemon test — extend the wake-wiring test's fake Notifier to the new signature and assert `get_inbox` marks read (unread→0). Update the existing fake `Notifier` in `internal/daemon` tests to implement `Notify(sock, sess string, count int) error`.
+Daemon: update the existing fake `Notifier` in `internal/daemon` tests to the new `Notify(sock, sess string, count int) error` signature, and assert `get_inbox` marks read (a subsequent `UnreadCount` is 0).
 
 - [ ] **Step 2: Run to verify fail / compile error.**
 
@@ -242,7 +162,7 @@ Add `"strconv"` import.
 
 - [ ] **Step 4: daemon.go — compute count, mark read**
 
-In `notifyForThread`, the recipient loop becomes:
+`notifyForThread` recipient loop:
 ```go
 	for alias := range recipients {
 		a, ok := byAlias[alias]
@@ -256,7 +176,7 @@ In `notifyForThread`, the recipient loop becomes:
 		_ = d.n.Notify(a.SocketPath, a.SessionID, count)
 	}
 ```
-In the `get_inbox` case, mark read before clearing:
+`get_inbox` case — mark read before clearing:
 ```go
 	case "get_inbox":
 		alias := str(a, "alias")
@@ -273,17 +193,16 @@ In the `get_inbox` case, mark read before clearing:
 		return ok(threads)
 ```
 
-- [ ] **Step 5: main.go — option name**
+- [ ] **Step 5: main.go — option name** — `wake.NewTmuxNotifier("@claude_attn", …)` → `wake.NewTmuxNotifier("@muster_inbox", …)`.
 
-Change `wake.NewTmuxNotifier("@claude_attn", 500*time.Millisecond)` → `wake.NewTmuxNotifier("@muster_inbox", 500*time.Millisecond)`.
+- [ ] **Step 6: Fix all other `Notifier` implementers/call sites** (grep `Notify(`), then `TMPDIR=/tmp go build ./...`.
 
-- [ ] **Step 6: Update all other `Notifier` implementers/call sites** so the build passes (grep `Notify(` — any test fake, `mustertest`, etc.). Run `TMPDIR=/tmp go build ./...`.
-
-- [ ] **Step 7: Run tests + lint** — `TMPDIR=/tmp go test ./...` PASS; `golangci-lint run ./...` 0 issues.
+- [ ] **Step 7: Run tests + lint** — `TMPDIR=/tmp go test ./...` PASS; `TMPDIR=/tmp golangci-lint run ./...` → 0 issues.
 - [ ] **Step 8: Commit** — `feat(daemon,wake): count-bearing @muster_inbox notify; clear on inbox read`.
 
 ---
 
 ## Final verification
 
-`TMPDIR=/tmp GODEBUG=netdns=go just verify` green. Then whole-branch review, then merge to `dev`. **After merge:** rebuild `~/.local/bin/muster`, apply the dotfiles wrapper + `📬` render (separate, done by the controller), restart the daemon, and live-re-test the two throwaway sessions.
+`TMPDIR=/tmp GODEBUG=netdns=go just verify` green → whole-branch review → merge to `dev`.
+**After merge:** rebuild `~/.local/bin/muster`, apply the dotfiles `📬` render (title + status-left, render only — no wrapper), restart the daemon, and confirm `@muster_inbox` lights on inbound and clears on inbox-read for a live agent. Coordinate with `feat/codex-nudge-submit` so the self-resolving Stop hook reads `@muster_inbox` as its unread signal.
