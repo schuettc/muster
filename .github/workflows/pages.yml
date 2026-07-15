@@ -1,0 +1,39 @@
+name: deploy-site
+
+# Deploys muster.tools from the repo: site/index.html plus the root install.sh
+# (served at https://muster.tools/install.sh). Runs on every merge to main that
+# touches the site or the installer — no manual deploy steps.
+on:
+  push:
+    branches: [main]
+    paths: ['site/**', 'install.sh', '.github/workflows/pages.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Assemble the site
+        run: |
+          mkdir dist
+          cp site/index.html dist/
+          cp install.sh dist/
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+      - id: deployment
+        uses: actions/deploy-pages@v4
