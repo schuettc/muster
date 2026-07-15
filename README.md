@@ -1,30 +1,51 @@
 # muster
 
-**Coordinate your coding agents — no copy/paste, subscription-only.**
+**A local coordination bus for coding agents.**
 
-`muster` is a local coordination bus that lets independent coding-agent
-sessions (Claude Code and OpenAI Codex, each in its own tmux tab) hand tasks to
-each other and talk back and forth — without you copy/pasting between terminals,
-and without leaving your standard subscriptions. The bus never calls a model; it
-only routes between agents already running on their own plans.
+`muster` lets coding-agent sessions in separate terminals send messages and hand
+tasks to each other. Any agent that can register an MCP server can join the bus —
+Claude Code and OpenAI Codex are the two it's tested with. Everything runs over a
+local unix socket with state in a local SQLite file; muster itself never calls a
+model.
 
-- **Task-board orchestration, multi-model.** Claude posts a "review this branch"
-  task → a standing Codex session claims it, reviews, and replies. A consumer
-  session files a request to its producer. All async, all local.
-- **One static Go binary**, multi-mode: a lazy-started daemon, a stdio MCP server
-  each agent registers, and a human CLI.
-- **tmux-native wake** — the daemon lights a status-bar banner on the recipient's
-  session (socket-aware, across per-project tmux servers) without ever typing into
-  a pane; an operator `muster nudge` is the only send-keys path.
+- **Messages and tasks between sessions.** One agent posts a "review this branch"
+  task; a standing session in another terminal claims it, works it, and replies.
+- **One static Go binary**, three modes: a lazy-started daemon, a stdio MCP server
+  each agent registers, and a CLI for you.
+- **tmux-native wake** — mail sets a mailbox flag (`📬<count>`) on the recipient's
+  tmux session; `muster nudge` is the only thing that types into a pane.
 
 Landing page: **muster.tools**
 
 ## Status
 
-**v0.2.1** — session identity (project-scoped agents, addressable labels,
+**v0.2.2** — session identity (project-scoped agents, addressable labels,
 tmux-verified liveness), the `@muster_inbox` mailbox, and Codex autonomy on top of
 the v0.1.0 core (SQLite store, lazy daemon, MCP server, human CLI, notify/nudge
 wake). See [releases](https://github.com/schuettc/muster/releases) for the changelog.
+
+## Setup
+
+```bash
+# 1. build the binary (Go 1.22+; macOS or Linux — on Windows use WSL2)
+go install github.com/schuettc/muster/cmd/muster@latest
+
+# 2. register the MCP server with each agent
+claude mcp add muster -s user -- muster mcp     # Claude Code
+codex mcp add muster -- muster mcp              # Codex
+# (any other MCP client: point it at `muster mcp` over stdio)
+
+# 3. in each session, have the agent call register_agent once
+#    (or add that instruction to your project's CLAUDE.md / AGENTS.md)
+```
+
+That's a working bus. Two optional layers, both in [`contrib/`](contrib/):
+
+- **See the mailbox** — two lines of tmux config render `📬<count>` on tabs with
+  unread mail ([`contrib/tmux-mailbox.conf`](contrib/tmux-mailbox.conf)).
+- **Automate the lifecycle** — session hooks auto-register agents on start and
+  have them drain their own inbox at turn end
+  ([`contrib/muster-session-hook.sh`](contrib/muster-session-hook.sh)).
 
 ## MCP mode
 
@@ -38,20 +59,25 @@ claude mcp add muster -s user -- muster mcp
 codex mcp add muster -- muster mcp
 ```
 
-Then, inside a session, the agent calls `register_agent` once, and can
-`send_message` / `task_create` / `task_claim` / `task_transition` / `reply` /
-`get_inbox` / `get_thread` / `list_agents` / `kv_set` / `kv_get`. The server
-talks to the local `muster` daemon (auto-started); nothing is sent to any model
-provider — muster only routes between agents already running on their own
-subscriptions.
+The tools, by what they do:
+
+| Group | Tools | Notes |
+|---|---|---|
+| Identity | `register_agent`, `list_agents` | join the bus once per session; see who's on it |
+| Conversation | `send_message`, `reply`, `get_inbox`, `get_thread` | a **message** is a plain thread — no state, just an exchange |
+| Work | `task_create`, `task_claim`, `task_transition` | a **task** is a thread with a lifecycle: `open → claimed → needs_info \| blocked → completed \| declined \| cancelled`. Claiming is atomic — two agents can't take the same task |
+| Shared state | `kv_set`, `kv_get` | a key/value scratchpad both sides can read (an API contract, a port, a decision) |
+
+The MCP server talks to the local daemon (auto-started on first use).
 
 > Note: stdout is the MCP channel in this mode; muster writes all diagnostics to
 > stderr.
 
 ## CLI
 
-Beyond `muster mcp` (for agents), muster has operator commands you can run from
-any shell to observe and drive the bus (they auto-start the daemon):
+Agents coordinate through the MCP tools above — the CLI is for **you** (and for
+hooks): commands you run from any shell to watch the bus and step in when you
+want to (they auto-start the daemon):
 
 ```bash
 muster agents                              # who's registered
@@ -67,18 +93,26 @@ muster send --broadcast "heads up"         --from me   # to everyone
 Agents can self-register (so a shell hook can do it at session start):
 
 ```bash
-muster register [alias] --role <r> --model <claude|codex>
+muster register [alias] --role <r> --model <name>
 muster deregister [alias]
 muster gc                 # reap agents whose tmux session is gone
 ```
 
 `register` captures the tmux pane automatically. Alias precedence: explicit
-arg → `$MUSTER_ALIAS` → tmux session name.
+arg → `$MUSTER_ALIAS` → tmux session name. `--model` is stored on the agent and
+tunes `muster nudge`'s submit keystroke (`claude` and `codex` auto-submit; other
+values are typed without submitting).
 
-`muster agents` shows each agent's **project** (derived from the per-project
-tmux socket) and its live **label** — the manually-pinned `@claude_task`
-session option (`prefix T`). Auto-topics are shown parenthesized and are not
-addressable.
+`muster agents` shows each agent's **project** and live **label**:
+
+- **project** is derived from the tmux socket name when it follows a
+  `proj-<name>` convention (one tmux server per project). On the default tmux
+  server there's no project — everything shares one namespace, and the rest of
+  muster works the same.
+- **label** is read from a tmux session option (default `@claude_task`,
+  override with `$MUSTER_LABEL_OPTION`). A label is addressable only when its
+  `<option>_manual` companion is set — i.e. you named the session deliberately;
+  auto-generated values are shown parenthesized and are not addressable.
 
 ### Addressing
 
@@ -94,34 +128,36 @@ elsewhere, muster errors and lists the `proj:label` candidates.
 
 ### Notifications & nudging
 
-When bus activity is addressed to an agent, muster **notifies** its tmux session
-by setting `@muster_inbox` to that agent's unread count (rendered as a `📬<count>`
-mailbox in the status bar / tab title) — it never types into a pane. Unlike a
-transient bell, the mailbox **persists until that agent reads its inbox**
-(`get_inbox`), which clears it.
+When bus activity is addressed to an agent, muster sets `@muster_inbox` on its
+tmux session to that agent's unread count. It never types into a pane, and unlike
+a transient bell the flag **persists until the agent reads its inbox**
+(`get_inbox`), which clears it. tmux doesn't display the option by default — add
+the two render lines from [`contrib/tmux-mailbox.conf`](contrib/tmux-mailbox.conf)
+to see `📬<count>` on the tab title and status bar.
 
 To actively poke an agent to act now:
 
 ```bash
-muster nudge <alias>              # types "check your inbox" into the agent's pane
+muster nudge <alias>              # types "check your inbox" into the agent's pane and submits
 muster nudge <alias> --no-submit  # type only; don't press Enter
 ```
 
-Nudge auto-submits for Claude Code; Codex holds the text in its composer, so
-you press Enter there (muster tells you). Autonomous Codex wake (via its
-app-server) is possible but requires launching Codex differently — deferred.
+Nudge submits for both Claude Code (immediate Enter) and Codex (a short delayed
+Enter — Codex treats an Enter bundled with pasted text as part of the paste).
+Other model types are typed without submitting.
 
-### Hooks
+### Hooks (optional)
 
-Registration and deregistration are meant to be driven by session
-lifecycle hooks, not typed by hand:
+Registration and inbox-draining can be driven by session lifecycle hooks instead
+of typed by hand:
 
-- **SessionStart** → `muster register --model <claude|codex> || true`
-- **SessionEnd** → `muster deregister || true`
+- **SessionStart** → `muster register` — every session joins the bus on start.
+- **Stop** (turn end) → if the session has unread muster mail, the hook tells the
+  agent to drain its inbox and reply, autonomously.
+- **SessionEnd** (Claude Code) → `muster deregister`; `muster gc` covers the rest.
 
-These are wired into Claude Code's `settings.json` (`SessionStart` /
-`SessionEnd` hooks) and into the equivalent Codex config. The actual
-dotfiles wiring for a given machine is maintained separately from this repo.
+The hook script and copy-paste config for both Claude Code and Codex are in
+[`contrib/`](contrib/README.md).
 
 ## License
 
