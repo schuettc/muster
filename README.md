@@ -21,9 +21,10 @@ Landing page: **muster.tools**
 
 ## Status
 
-**v0.1.0** — Milestones A–E shipped: SQLite store + lazy unix-socket daemon, the
-`muster mcp` server (11 tools), the human CLI, and the notify/nudge wake. The
-approved v1 design lives in [`docs/design.md`](docs/design.md).
+**v0.2.1** — session identity (project-scoped agents, addressable labels,
+tmux-verified liveness), the `@muster_inbox` mailbox, and Codex autonomy on top of
+the v0.1.0 core (SQLite store, lazy daemon, MCP server, human CLI, notify/nudge
+wake). See [releases](https://github.com/schuettc/muster/releases) for the changelog.
 
 ## MCP mode
 
