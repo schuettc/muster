@@ -4,3 +4,6 @@
 bus.db
 bus.db-shm
 bus.db-wal
+
+# SDD / superpowers scratch (transient build artifacts)
+.superpowers/
