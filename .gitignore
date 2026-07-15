@@ -1,1 +1,6 @@
 /bin/
+
+# runtime state (the local daemon's SQLite DB + WAL)
+bus.db
+bus.db-shm
+bus.db-wal
