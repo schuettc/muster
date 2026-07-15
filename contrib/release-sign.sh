@@ -24,7 +24,7 @@ echo "signing as: $identity"
 src="$work/src"
 git clone --quiet --depth 1 --branch "$tag" "https://github.com/$repo" "$src"
 for arch in arm64 amd64; do
-  dir="$work/muster_${tag}_darwin_${arch}"
+  dir="$work/muster_darwin_${arch}"
   mkdir -p "$dir"
   (cd "$src" && CGO_ENABLED=0 GOOS=darwin GOARCH="$arch" \
     go build -trimpath -ldflags "-s -w" -o "$dir/muster" ./cmd/muster)
@@ -32,12 +32,12 @@ for arch in arm64 amd64; do
   ditto -c -k --keepParent "$dir/muster" "$work/notarize_${arch}.zip"
   xcrun notarytool submit "$work/notarize_${arch}.zip" \
     --keychain-profile "$profile" --wait | grep -E "status:" | tail -1
-  tar -C "$dir" -czf "$work/muster_${tag}_darwin_${arch}.tar.gz" muster
+  tar -C "$dir" -czf "$work/muster_darwin_${arch}.tar.gz" muster
 done
 
 # recompute checksums across the full asset set (signed darwin + CI's linux)
 (cd "$work" && \
-  gh release download "$tag" --repo "$repo" --pattern "muster_${tag}_linux_*.tar.gz" && \
-  shasum -a 256 muster_${tag}_*.tar.gz > checksums.txt && \
-  gh release upload "$tag" muster_${tag}_darwin_*.tar.gz checksums.txt --clobber --repo "$repo")
+  gh release download "$tag" --repo "$repo" --pattern "muster_linux_*.tar.gz" && \
+  shasum -a 256 muster_*.tar.gz > checksums.txt && \
+  gh release upload "$tag" muster_darwin_*.tar.gz checksums.txt --clobber --repo "$repo")
 echo "done: darwin assets for $tag are signed + notarized"
