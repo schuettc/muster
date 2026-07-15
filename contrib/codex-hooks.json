@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/ABSOLUTE/PATH/TO/muster/contrib/muster-session-hook.sh SessionStart codex"
+            "command": "muster hook SessionStart codex"
           }
         ]
       }
@@ -15,7 +15,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/ABSOLUTE/PATH/TO/muster/contrib/muster-session-hook.sh Stop codex"
+            "command": "muster hook Stop codex"
           }
         ]
       }

@@ -97,6 +97,48 @@ func SessionLabel(socket, target string) (string, bool) {
 	return label, manual
 }
 
+// CurrentSessionOption reads a tmux user option's raw value for the ambient
+// session — no -S/-t, relying on $TMUX in the process environment, as when
+// running inside a hook or shell spawned from a tmux pane. Returns "" if
+// tmux isn't reachable or the option is unset.
+func CurrentSessionOption(name string) string {
+	out, err := Run("show-options", "-qv", name)
+	if err != nil {
+		return ""
+	}
+	return out
+}
+
+// CurrentSessionName returns the ambient session's name (no -S/-t), or "" if
+// tmux isn't reachable (e.g. not running inside tmux).
+func CurrentSessionName() string {
+	out, err := Run("display-message", "-p", "#{session_name}")
+	if err != nil {
+		return ""
+	}
+	return out
+}
+
+// SetSessionOption sets a tmux user option on the ambient session.
+func SetSessionOption(name, value string) error {
+	_, err := Run("set-option", name, value)
+	return err
+}
+
+// UnsetSessionOption unsets a tmux user option on the ambient session.
+func UnsetSessionOption(name string) error {
+	_, err := Run("set-option", "-u", name)
+	return err
+}
+
+// RefreshClient repaints the ambient session's attached clients (e.g. so a
+// title bar reflects a just-changed label). Best-effort: callers should treat
+// a returned error as non-fatal.
+func RefreshClient() error {
+	_, err := Run("refresh-client", "-S")
+	return err
+}
+
 // CaptureEnv reads the current process's tmux environment into a Capture.
 func CaptureEnv() Capture {
 	socket := SocketFromEnv()
