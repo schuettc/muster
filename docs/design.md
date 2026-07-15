@@ -18,8 +18,8 @@ scenarios define "done":
    a standing Codex session claims it, reviews, and posts the verdict back;
    Claude sees it and acts. All async, no copy/paste.
 2. **Consumer → producer feedback** — a session working in the *consumer*
-   (`~/bettor-help`) files a request/bug to the *producer*
-   (`bettor-help-workspace`); the producer session picks it up, ships it, and
+   (`~/app`) files a request/bug to the *producer*
+   (`app-workspace`); the producer session picks it up, ships it, and
    replies. The consumer gets used the way it's meant to be, and its feedback
    reaches the producer automatically.
 
@@ -33,7 +33,7 @@ scenarios define "done":
   pane can participate. Claude and Codex are the v1 clients.
 - **Per-project tmux servers.** Verified: this machine runs **one tmux server
   per project**, each on its own socket (`__proj_srv() → proj-<project>`), e.g.
-  `proj-bettor-help` and `proj-bettor-help-workspace` are *different servers*. A
+  `proj-app` and `proj-app-workspace` are *different servers*. A
   naive `tmux send-keys -t <session>` on the default socket silently misses
   them. The wake mechanism must be socket-aware.
 
@@ -143,7 +143,7 @@ agent {
   alias,                      # you choose, e.g. "backend" / "reviewer" (addressable)
   role,                       # producer | consumer | reviewer | ... (addressable)
   model_type,                 # claude | codex
-  socket_path,                # from $TMUX field 1  → e.g. /private/tmp/tmux-501/proj-bettor-help
+  socket_path,                # from $TMUX field 1  → e.g. /private/tmp/tmux-501/proj-app
   pane_id,                    # from $TMUX_PANE     → e.g. %6
   session_name,               # #S, display + secondary lookup
   registered_at, last_seen
@@ -205,7 +205,7 @@ tmux -S <socket_path> send-keys -t <pane_id> -l "<message>" ; send Enter
 
 - **v2 — Contracts:** producer publishes its API surface; consumers subscribe
   and get diffs on change (`register_contract` / `subscribe_contract` /
-  `diff_contracts`). The bettor-help killer feature.
+  `diff_contracts`). The app killer feature.
 - **v3 — Control plane:** `muster tui` dashboard (agents, live activity from
   pane titles, inbox depths, task board) + richer human CLI.
 - **Later:** advisory file leases, append-only event/timeline log, cross-machine
@@ -217,8 +217,8 @@ tmux -S <socket_path> send-keys -t <pane_id> -l "<message>" ; send Enter
 2. **Wake:** integration test that spawns two tmux sessions on *different*
    sockets, registers both, sends a task, asserts the knock lands in the right
    pane (assert via `capture-pane`).
-3. **Cross-server:** explicitly exercise `proj-bettor-help` ↔
-   `proj-bettor-help-workspace` addressing.
+3. **Cross-server:** explicitly exercise `proj-app` ↔
+   `proj-app-workspace` addressing.
 4. **Multi-model:** register a Claude `mcp` client and a Codex `mcp` client
    against the same daemon; round-trip a task both directions.
 5. **End-to-end (scenario 1):** Claude `task_create` → Codex `task_claim` →

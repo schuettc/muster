@@ -40,6 +40,6 @@ another daemon client" that also overlays tmux liveness.
 ## Further out (from the v1 design)
 
 - **v2 Contracts** — a producer publishes its API surface; consumers subscribe and
-  get diffs on change (the bettor-help producer/consumer use case).
+  get diffs on change (the app producer/consumer use case).
 - **v3 Dashboard TUI** — `muster tui`: live agents/activity/tasks.
 - Advisory file leases; append-only event log; cross-machine.

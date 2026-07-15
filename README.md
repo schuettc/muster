@@ -124,4 +124,4 @@ dotfiles wiring for a given machine is maintained separately from this repo.
 
 ## License
 
-TBD
+[MIT](LICENSE) © Court Schuett

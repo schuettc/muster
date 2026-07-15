@@ -325,7 +325,7 @@ import (
 
 func TestRegisterAgentCapturesTmuxEnv(t *testing.T) {
 	startTestDaemon(t)
-	t.Setenv("TMUX", "/private/tmp/tmux-501/proj-bettor-help,123,4")
+	t.Setenv("TMUX", "/private/tmp/tmux-501/proj-app,123,4")
 	t.Setenv("TMUX_PANE", "%6")
 
 	_, out, err := registerAgentHandler(context.Background(), nil, RegisterAgentIn{
