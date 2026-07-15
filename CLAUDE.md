@@ -24,8 +24,16 @@ agents already running on their own plans). One static Go binary, multi-mode
 ## Branch model
 
 `feat/* → dev → main`. CI (`just verify`) is required on `dev` and `main`; `main` is
-the release line (tags + GitHub releases). Never develop on `main` — do feature work
-in a git worktree off `dev`, merged via PR.
+the release line. Never develop on `main` — do feature work in a git worktree off
+`dev`, merged via PR.
+
+**Releases are automated.** The `VERSION` file is the knob: bump it on `dev`, and
+when the promotion PR merges to `main`, the release workflow tags `v<VERSION>`,
+creates the GitHub release with generated notes, and attaches cross-compiled
+binaries (darwin/linux × arm64/amd64) with checksums. A merge to `main` that
+doesn't bump `VERSION` releases nothing. Afterwards, run
+`contrib/release-sign.sh v<VERSION>` from a Mac to sign + notarize the darwin
+assets in place (CI attaches unsigned ones).
 
 ## Architecture (the mental model)
 
