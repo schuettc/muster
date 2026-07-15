@@ -28,8 +28,7 @@ wake). See [releases](https://github.com/schuettc/muster/releases) for the chang
 
 ```bash
 # 1. install the binary (macOS or Linux; on Windows use WSL2)
-mkdir -p ~/.local/bin   # any directory on your PATH works
-curl -fsSL "https://github.com/schuettc/muster/releases/latest/download/muster_$(uname -s | tr 'A-Z' 'a-z')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar -xz -C ~/.local/bin
+curl -fsSL https://muster.tools/install.sh | sh
 #    (or build from source with Go 1.22+: go install github.com/schuettc/muster/cmd/muster@latest)
 
 # 2. register the MCP server with each agent
