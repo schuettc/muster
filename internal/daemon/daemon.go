@@ -79,6 +79,19 @@ func i64(m map[string]any, k string) int64 {
 	return 0
 }
 
+// boolArg reads a bool arg, accepting a JSON bool or the strings "true"/"1"
+// (the debug CLI passes all args as strings).
+func boolArg(a map[string]any, key string) bool {
+	switch v := a[key].(type) {
+	case bool:
+		return v
+	case string:
+		return v == "true" || v == "1"
+	default:
+		return false
+	}
+}
+
 func ok(data any) proto.Response    { return proto.Response{OK: true, Data: data} }
 func fail(err error) proto.Response { return proto.Response{Error: err.Error()} }
 
@@ -122,7 +135,11 @@ func (d *Daemon) notifyForThread(threadID int64, actor string) {
 		if !ok || a.SocketPath == "" || a.SessionID == "" {
 			continue
 		}
-		_ = d.n.Notify(a.SocketPath, a.SessionID)
+		count, err := d.s.UnreadCount(alias)
+		if err != nil {
+			continue
+		}
+		_ = d.n.Notify(a.SocketPath, a.SessionID, count)
 	}
 }
 
@@ -134,6 +151,7 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 			Alias: str(a, "alias"), Role: str(a, "role"), ModelType: str(a, "model_type"),
 			SocketPath: str(a, "socket_path"), PaneID: str(a, "pane_id"), SessionName: str(a, "session_name"),
 			SessionID: str(a, "session_id"),
+			Project:   str(a, "project"), Label: str(a, "label"), LabelManual: boolArg(a, "label_manual"),
 		})
 		if err != nil {
 			return fail(err)
@@ -189,6 +207,7 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 		if err != nil {
 			return fail(err)
 		}
+		_ = d.s.MarkRead(alias)
 		if d.n != nil {
 			if ag, ok, _ := d.s.GetAgent(alias); ok && ag.SocketPath != "" && ag.SessionID != "" {
 				_ = d.n.Clear(ag.SocketPath, ag.SessionID)
@@ -218,6 +237,11 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 			return fail(err)
 		}
 		return ok(map[string]any{"found": found, "agent": ag})
+	case "deregister_agent":
+		if err := d.s.DeleteAgent(str(a, "alias")); err != nil {
+			return fail(err)
+		}
+		return ok(nil)
 	default:
 		return proto.Response{Error: "unknown op: " + req.Op}
 	}

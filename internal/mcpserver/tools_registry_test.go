@@ -4,66 +4,40 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+
+	"github.com/schuettc/muster/internal/tmuxenv"
 )
 
 func TestRegisterAgentCapturesTmuxEnv(t *testing.T) {
-	startTestDaemon(t)
-	t.Setenv("TMUX", "/private/tmp/tmux-501/proj-bettor-help,123,4")
+	t.Setenv("TMUX", "/private/tmp/tmux-501/proj-muster,123,0")
 	t.Setenv("TMUX_PANE", "%6")
-
-	_, out, err := registerAgentHandler(context.Background(), nil, RegisterAgentIn{
-		Alias: "backend", Role: "producer", ModelType: "claude",
-	})
-	if err != nil {
-		t.Fatalf("register handler: %v", err)
-	}
-	if !out.OK {
-		t.Fatalf("expected ok")
-	}
-
-	// Verify via list that the socket/pane were captured from the env.
-	_, listOut, err := listAgentsHandler(context.Background(), nil, ListAgentsIn{})
-	if err != nil {
-		t.Fatalf("list handler: %v", err)
-	}
-	if len(listOut.Agents) != 1 {
-		t.Fatalf("expected 1 agent, got %d", len(listOut.Agents))
-	}
-	if listOut.Agents[0].Alias != "backend" {
-		t.Fatalf("unexpected agent: %+v", listOut.Agents[0])
-	}
-	if listOut.Agents[0].ModelType != "claude" {
-		t.Fatalf("unexpected model_type: %+v", listOut.Agents[0])
-	}
-}
-
-func TestRegisterAgentResolvesSessionID(t *testing.T) {
-	startTestDaemon(t)
-	t.Setenv("TMUX", "/private/tmp/tmux-501/proj-muster,123,4")
-	t.Setenv("TMUX_PANE", "%2")
-	// stub the tmux query so we don't need a real tmux
-	orig := tmuxQuery
-	tmuxQuery = func(_, _, format string) string {
-		switch format {
+	prev := tmuxenv.Run
+	tmuxenv.Run = func(args ...string) (string, error) {
+		switch args[len(args)-1] {
 		case "#{session_id}":
-			return "$7"
+			return "$5", nil
 		case "#{session_name}":
-			return "muster-2"
+			return "muster-2", nil
+		default:
+			return "backend\x1f1", nil
 		}
-		return ""
 	}
-	t.Cleanup(func() { tmuxQuery = orig })
+	t.Cleanup(func() { tmuxenv.Run = prev })
 
-	if _, _, err := registerAgentHandler(context.Background(), nil, RegisterAgentIn{Alias: "reviewer", Role: "reviewer", ModelType: "codex"}); err != nil {
-		t.Fatalf("register: %v", err)
+	var got map[string]any
+	prevDaemon := callDaemon
+	callDaemon = func(_ string, args map[string]any) (json.RawMessage, error) {
+		got = args
+		return []byte(`{}`), nil
 	}
-	raw, err := callDaemon("list_agents", nil)
+	t.Cleanup(func() { callDaemon = prevDaemon })
+
+	_, _, err := registerAgentHandler(context.TODO(), nil, RegisterAgentIn{Alias: "backend", Role: "producer", ModelType: "claude"})
 	if err != nil {
-		t.Fatalf("list: %v", err)
+		t.Fatal(err)
 	}
-	var agents []AgentView
-	_ = json.Unmarshal(raw, &agents)
-	if len(agents) != 1 || agents[0].SessionName != "muster-2" {
-		t.Fatalf("session_name not captured: %+v", agents)
+	if got["socket_path"] != "/private/tmp/tmux-501/proj-muster" || got["session_id"] != "$5" ||
+		got["project"] != "muster" || got["label"] != "backend" || got["label_manual"] != true {
+		t.Fatalf("captured args = %+v", got)
 	}
 }

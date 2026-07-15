@@ -6,6 +6,10 @@ CREATE TABLE IF NOT EXISTS agents (
     pane_id       TEXT NOT NULL DEFAULT '',
     session_name  TEXT NOT NULL DEFAULT '',
     session_id    TEXT NOT NULL DEFAULT '',
+    project       TEXT NOT NULL DEFAULT '',
+    label         TEXT NOT NULL DEFAULT '',
+    label_manual  INTEGER NOT NULL DEFAULT 0,
+    last_read_at  INTEGER NOT NULL DEFAULT 0,
     registered_at INTEGER NOT NULL,
     last_seen     INTEGER NOT NULL
 );

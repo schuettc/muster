@@ -3,6 +3,8 @@ package store
 import (
 	"errors"
 	"testing"
+
+	"github.com/schuettc/muster/internal/clock"
 )
 
 func TestCreateThreadAppendAndGet(t *testing.T) {
@@ -26,6 +28,45 @@ func TestCreateThreadAppendAndGet(t *testing.T) {
 	}
 	if th.UpdatedAt < th.CreatedAt {
 		t.Fatalf("updated_at should advance on append")
+	}
+}
+
+func TestUnreadCountAndMarkRead(t *testing.T) {
+	// UnreadCount/MarkRead compare millisecond timestamps with a strict ">",
+	// so this test needs each clock.NowMillis() call (CreateThread,
+	// MarkRead, CreateThread) to land on a distinct tick. The real clock
+	// can collide within the same millisecond on fast hardware, so drive
+	// a fake, strictly-increasing clock instead of the wall clock.
+	var tick int64
+	clock.SetForTesting(func() int64 {
+		tick++
+		return tick
+	})
+	t.Cleanup(clock.ResetForTesting)
+
+	s := newTestStore(t)
+	if err := s.RegisterAgent(Agent{Alias: "a", Role: "r"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, b := range []string{"one", "two"} {
+		if _, err := s.CreateThread(Thread{Kind: "message", FromAgent: "x", ToKind: "agent", ToTarget: "a"}, b); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n, err := s.UnreadCount("a"); err != nil || n != 2 {
+		t.Fatalf("unread before read = %d (%v), want 2", n, err)
+	}
+	if err := s.MarkRead("a"); err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := s.UnreadCount("a"); n != 0 {
+		t.Fatalf("unread after MarkRead = %d, want 0", n)
+	}
+	if _, err := s.CreateThread(Thread{Kind: "message", FromAgent: "x", ToKind: "agent", ToTarget: "a"}, "three"); err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := s.UnreadCount("a"); n != 1 {
+		t.Fatalf("unread after new msg = %d, want 1", n)
 	}
 }
 

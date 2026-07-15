@@ -13,15 +13,17 @@ only routes between agents already running on their own plans.
   session files a request to its producer. All async, all local.
 - **One static Go binary**, multi-mode: a lazy-started daemon, a stdio MCP server
   each agent registers, and a human CLI.
-- **tmux-native wake** — a `send-keys` knock on the target pane, socket-aware so
-  it works across per-project tmux servers.
+- **tmux-native wake** — the daemon lights a status-bar banner on the recipient's
+  session (socket-aware, across per-project tmux servers) without ever typing into
+  a pane; an operator `muster nudge` is the only send-keys path.
 
 Landing page: **muster.tools**
 
 ## Status
 
-Pre-implementation. The approved v1 design lives in
-[`docs/design.md`](docs/design.md).
+**v0.1.0** — Milestones A–E shipped: SQLite store + lazy unix-socket daemon, the
+`muster mcp` server (11 tools), the human CLI, and the notify/nudge wake. The
+approved v1 design lives in [`docs/design.md`](docs/design.md).
 
 ## MCP mode
 
@@ -59,12 +61,43 @@ muster send --role reviewer "please look"  --from me   # to a role
 muster send --broadcast "heads up"         --from me   # to everyone
 ```
 
+### Registering & liveness
+
+Agents can self-register (so a shell hook can do it at session start):
+
+```bash
+muster register [alias] --role <r> --model <claude|codex>
+muster deregister [alias]
+muster gc                 # reap agents whose tmux session is gone
+```
+
+`register` captures the tmux pane automatically. Alias precedence: explicit
+arg → `$MUSTER_ALIAS` → tmux session name.
+
+`muster agents` shows each agent's **project** (derived from the per-project
+tmux socket) and its live **label** — the manually-pinned `@claude_task`
+session option (`prefix T`). Auto-topics are shown parenthesized and are not
+addressable.
+
+### Addressing
+
+Any command that takes a target — `send`, `nudge`, `inbox`, `tasks` —
+accepts a target of the form `<alias|label|proj:label>`:
+
+- an **alias** (the tmux session name, globally unique): `muster nudge muster-2`
+- a **label**, resolved within your current project: `muster send frontend "…"`
+- a **qualified label** to cross projects: `muster send timewalk:frontend "…"`
+
+A bare label never silently crosses projects; if it's ambiguous or only exists
+elsewhere, muster errors and lists the `proj:label` candidates.
+
 ### Notifications & nudging
 
 When bus activity is addressed to an agent, muster **notifies** its tmux session
-(sets `@claude_attn`, which lights the status-bar banner for tabs you're not
-looking at) — it never types into a pane. The flag clears when that agent next
-reads its inbox (`get_inbox`).
+by setting `@muster_inbox` to that agent's unread count (rendered as a `📬<count>`
+mailbox in the status bar / tab title) — it never types into a pane. Unlike a
+transient bell, the mailbox **persists until that agent reads its inbox**
+(`get_inbox`), which clears it.
 
 To actively poke an agent to act now:
 
@@ -76,6 +109,18 @@ muster nudge <alias> --no-submit  # type only; don't press Enter
 Nudge auto-submits for Claude Code; Codex holds the text in its composer, so
 you press Enter there (muster tells you). Autonomous Codex wake (via its
 app-server) is possible but requires launching Codex differently — deferred.
+
+### Hooks
+
+Registration and deregistration are meant to be driven by session
+lifecycle hooks, not typed by hand:
+
+- **SessionStart** → `muster register --model <claude|codex> || true`
+- **SessionEnd** → `muster deregister || true`
+
+These are wired into Claude Code's `settings.json` (`SessionStart` /
+`SessionEnd` hooks) and into the equivalent Codex config. The actual
+dotfiles wiring for a given machine is maintained separately from this repo.
 
 ## License
 
