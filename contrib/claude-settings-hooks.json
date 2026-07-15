@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "~/path/to/muster/contrib/muster-session-hook.sh SessionStart claude"
+            "command": "muster hook SessionStart claude"
           }
         ]
       }
@@ -16,7 +16,17 @@
         "hooks": [
           {
             "type": "command",
-            "command": "~/path/to/muster/contrib/muster-session-hook.sh Stop claude"
+            "command": "muster hook Stop claude"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "muster hook SessionEnd claude"
           }
         ]
       }
