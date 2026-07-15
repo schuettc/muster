@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
 	"sort"
 	"strings"
 	"text/tabwriter"
@@ -73,7 +74,7 @@ func callData(op string, args map[string]any) (json.RawMessage, error) {
 // Dispatch routes an operator subcommand. args[0] is the subcommand name.
 func Dispatch(args []string, out io.Writer) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: muster <agents|inbox|send|tasks|nudge|register|deregister|gc> [args]")
+		return fmt.Errorf("usage: muster <agents|inbox|send|tasks|nudge|register|deregister|gc|hook|label> [args]")
 	}
 	switch args[0] {
 	case "agents":
@@ -92,6 +93,10 @@ func Dispatch(args []string, out io.Writer) error {
 		return cmdDeregister(args[1:], out)
 	case "gc":
 		return cmdGC(out)
+	case "hook":
+		return cmdHook(args[1:], os.Stdin, out)
+	case "label":
+		return cmdLabel(args[1:], out)
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}
