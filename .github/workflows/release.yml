@@ -1,0 +1,46 @@
+name: release-assets
+
+# Attach prebuilt binaries to every GitHub release, so users can install
+# without a Go toolchain. muster is cgo-free, so plain cross-compilation
+# covers all targets from one runner.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to (re)build assets for"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  assets:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve tag
+        id: tag
+        run: echo "tag=${{ github.event.release.tag_name || inputs.tag }}" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.tag.outputs.tag }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Build and package all targets
+        run: |
+          set -euo pipefail
+          tag="${{ steps.tag.outputs.tag }}"
+          for target in darwin/arm64 darwin/amd64 linux/amd64 linux/arm64; do
+            goos="${target%/*}"; goarch="${target#*/}"
+            out="muster_${tag}_${goos}_${goarch}"
+            CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
+              go build -trimpath -ldflags "-s -w" -o "dist/${out}/muster" ./cmd/muster
+            tar -C "dist/${out}" -czf "dist/${out}.tar.gz" muster
+          done
+          (cd dist && shasum -a 256 *.tar.gz > checksums.txt)
+      - name: Upload to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ steps.tag.outputs.tag }}" dist/*.tar.gz dist/checksums.txt --clobber --repo "$GITHUB_REPOSITORY"
