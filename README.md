@@ -43,9 +43,9 @@ That's a working bus. Two optional layers, both in [`contrib/`](contrib/):
 
 - **See the mailbox** — two lines of tmux config render `📬<count>` on tabs with
   unread mail ([`contrib/tmux-mailbox.conf`](contrib/tmux-mailbox.conf)).
-- **Automate the lifecycle** — session hooks auto-register agents on start and
-  have them drain their own inbox at turn end
-  ([`contrib/muster-session-hook.sh`](contrib/muster-session-hook.sh)).
+- **Automate the lifecycle** — session hooks (`muster hook <event> <model>`)
+  auto-register agents on start and have them drain their own inbox at turn
+  end ([config for both harnesses in `contrib/`](contrib/README.md)).
 
 ## MCP mode
 
@@ -109,10 +109,11 @@ values are typed without submitting).
   `proj-<name>` convention (one tmux server per project). On the default tmux
   server there's no project — everything shares one namespace, and the rest of
   muster works the same.
-- **label** is read from a tmux session option (default `@claude_task`,
-  override with `$MUSTER_LABEL_OPTION`). A label is addressable only when its
-  `<option>_manual` companion is set — i.e. you named the session deliberately;
-  auto-generated values are shown parenthesized and are not addressable.
+- **label** is a name you give a session: run `muster label backend` inside it
+  (or `muster label --clear` to remove it). Only deliberately-set labels are
+  addressable; auto-generated values are shown parenthesized and are not.
+  (Stored in a tmux session option — default `@claude_task`, override with
+  `$MUSTER_LABEL_OPTION`.)
 
 ### Addressing
 
@@ -156,8 +157,9 @@ of typed by hand:
   agent to drain its inbox and reply, autonomously.
 - **SessionEnd** (Claude Code) → `muster deregister`; `muster gc` covers the rest.
 
-The hook script and copy-paste config for both Claude Code and Codex are in
-[`contrib/`](contrib/README.md).
+The muster binary is its own hook — point your harness at `muster hook <event>
+<model>` (e.g. `muster hook Stop claude`). Copy-paste config for both Claude
+Code and Codex is in [`contrib/`](contrib/README.md).
 
 ## License
 
