@@ -1,0 +1,25 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/path/to/muster/contrib/muster-session-hook.sh SessionStart claude"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/path/to/muster/contrib/muster-session-hook.sh Stop claude"
+          }
+        ]
+      }
+    ]
+  }
+}
