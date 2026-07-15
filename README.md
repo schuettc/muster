@@ -27,10 +27,9 @@ wake). See [releases](https://github.com/schuettc/muster/releases) for the chang
 ## Setup
 
 ```bash
-# 1. install the binary: download a prebuilt one from the releases page
-#    (https://github.com/schuettc/muster/releases) and put it on your PATH,
-#    or build from source (Go 1.22+; macOS or Linux — on Windows use WSL2):
-go install github.com/schuettc/muster/cmd/muster@latest
+# 1. install the binary (macOS or Linux; on Windows use WSL2)
+curl -fsSL https://muster.tools/install.sh | sh
+#    (or build from source with Go 1.22+: go install github.com/schuettc/muster/cmd/muster@latest)
 
 # 2. register the MCP server with each agent
 claude mcp add muster -s user -- muster mcp     # Claude Code
