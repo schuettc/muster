@@ -1,0 +1,82 @@
+name: release
+
+# Merge to main = release. The VERSION file is the knob: when a merge lands on
+# main and no tag v<VERSION> exists yet, this workflow tags it, creates the
+# GitHub release (auto-generated notes), and attaches cross-compiled binaries
+# (cgo-free: darwin/linux × arm64/amd64) with sha256 checksums. A merge that
+# doesn't bump VERSION releases nothing. macOS binaries are re-signed and
+# notarized locally afterwards via contrib/release-sign.sh <tag>.
+#
+# workflow_dispatch rebuilds assets for an existing release (backfill/repair).
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to (re)build assets for"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Resolve tag and mode
+        id: rel
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+            echo "create=false" >> "$GITHUB_OUTPUT"
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          tag="v$(tr -d ' \n' < VERSION)"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "VERSION $tag already released — nothing to do."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "create=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "create=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/setup-go@v5
+        if: steps.rel.outputs.skip == 'false'
+        with:
+          go-version-file: go.mod
+      - name: Checkout the tag (dispatch mode)
+        if: steps.rel.outputs.skip == 'false' && steps.rel.outputs.create == 'false'
+        run: git fetch --tags && git checkout "${{ steps.rel.outputs.tag }}"
+      - name: Create the release
+        if: steps.rel.outputs.create == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ steps.rel.outputs.tag }}" \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "muster ${{ steps.rel.outputs.tag }}" --generate-notes
+      - name: Build and package all targets
+        if: steps.rel.outputs.skip == 'false'
+        run: |
+          set -euo pipefail
+          tag="${{ steps.rel.outputs.tag }}"
+          for target in darwin/arm64 darwin/amd64 linux/amd64 linux/arm64; do
+            goos="${target%/*}"; goarch="${target#*/}"
+            out="muster_${tag}_${goos}_${goarch}"
+            CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
+              go build -trimpath -ldflags "-s -w" -o "dist/${out}/muster" ./cmd/muster
+            tar -C "dist/${out}" -czf "dist/${out}.tar.gz" muster
+          done
+          (cd dist && shasum -a 256 *.tar.gz > checksums.txt)
+      - name: Upload assets
+        if: steps.rel.outputs.skip == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ steps.rel.outputs.tag }}" dist/*.tar.gz dist/checksums.txt --clobber --repo "$GITHUB_REPOSITORY"
