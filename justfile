@@ -23,6 +23,7 @@ build:
 
 # Cross-compile all release targets (no output, fail fast).
 cross:
+    set -e; \
     for goos in darwin linux; do \
       for goarch in arm64 amd64; do \
         CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" go build -o /dev/null ./cmd/muster; \
