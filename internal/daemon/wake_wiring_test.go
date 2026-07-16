@@ -625,6 +625,37 @@ func TestSessionAliasesRejectsEmptyTuple(t *testing.T) {
 	}
 }
 
+// TestSessionUnreadOpRejectsEmptyTupleAndReturnsCounts: the session_unread op
+// (spec §3/§4, added for the Stop hook's multi-alias drain wording) requires
+// both fields non-empty like session_aliases, and on success returns the
+// store's {total, action} pair as-is.
+func TestSessionUnreadOpRejectsEmptyTupleAndReturnsCounts(t *testing.T) {
+	sock := startWithNotifier(t, &fakeNotifier{})
+	call(t, sock, "register_agent", map[string]any{"alias": "worker", "role": "peer", "model_type": "claude", "socket_path": "/s", "session_id": "$9"})
+	call(t, sock, "register_agent", map[string]any{"alias": "other", "role": "peer", "model_type": "claude", "socket_path": "/p", "session_id": "$2"})
+	call(t, sock, "send_message", map[string]any{"from": "other", "to_kind": "agent", "to_target": "worker", "subject": "s", "body": "b", "intent": "action-requested"})
+
+	if resp := call(t, sock, "session_unread", map[string]any{"socket_path": "", "session_id": "$9"}); resp.OK {
+		t.Fatal("session_unread must reject an empty socket_path")
+	}
+	if resp := call(t, sock, "session_unread", map[string]any{"socket_path": "/s", "session_id": ""}); resp.OK {
+		t.Fatal("session_unread must reject an empty session_id")
+	}
+
+	resp := call(t, sock, "session_unread", map[string]any{"socket_path": "/s", "session_id": "$9"})
+	if !resp.OK {
+		t.Fatalf("session_unread: %+v", resp)
+	}
+	var out struct {
+		Total  int `json:"total"`
+		Action int `json:"action"`
+	}
+	decode(t, resp, &out)
+	if out.Total != 1 || out.Action != 1 {
+		t.Fatalf("session_unread = %+v, want total=1 action=1", out)
+	}
+}
+
 // TestReRegisterReconcilesOldSessionBadge: re-registering an agent under a
 // NEW session tuple must rewrite the OLD tuple's badge too (spec §3), so a
 // stale lit flag doesn't survive the move.

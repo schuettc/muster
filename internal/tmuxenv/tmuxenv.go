@@ -119,6 +119,19 @@ func CurrentSessionName() string {
 	return out
 }
 
+// CurrentSessionID returns the ambient session's tmux session_id (e.g. "$3"),
+// the stable identity half of the (socket_path, session_id) tuple used to
+// group sibling aliases (spec §3) — no -S/-t, relying on $TMUX in the process
+// environment. Returns "" if tmux isn't reachable (e.g. not running inside
+// tmux).
+func CurrentSessionID() string {
+	out, err := Run("display-message", "-p", "#{session_id}")
+	if err != nil {
+		return ""
+	}
+	return out
+}
+
 // SetSessionOption sets a tmux user option on the ambient session.
 func SetSessionOption(name, value string) error {
 	_, err := Run("set-option", name, value)

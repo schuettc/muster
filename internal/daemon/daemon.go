@@ -415,6 +415,20 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 		sort.Strings(aliases)
 		aliases = compactStrings(aliases)
 		return ok(map[string]any{"aliases": aliases})
+	case "session_unread":
+		// Read-only display data (spec §3/§4 hook wiring): no lock needed —
+		// unlike setSessionBadge, this neither mutates the tmux badge nor
+		// journals anything, so there is nothing for the session lock to
+		// serialize against.
+		socketPath, sessionID := str(a, "socket_path"), str(a, "session_id")
+		if socketPath == "" || sessionID == "" {
+			return fail(fmt.Errorf("session_unread: socket_path and session_id are required"))
+		}
+		total, action, err := d.s.SessionUnread(socketPath, sessionID)
+		if err != nil {
+			return fail(err)
+		}
+		return ok(map[string]any{"total": total, "action": action})
 	case "get_thread":
 		th, entries, err := d.s.GetThread(i64(a, "thread_id"))
 		if err != nil {
