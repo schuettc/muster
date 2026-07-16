@@ -283,3 +283,67 @@ func TestThreadConcernsSessionJoinEquivalence(t *testing.T) {
 		}
 	}
 }
+
+// TestSessionUnreadPerAliasWatermarks: two aliases in one session tuple must
+// each respect their own last_read_entry_id watermark — alias A's read
+// position must not suppress unread threads concerning alias B within the
+// same session, and vice versa. SessionUnread evaluates each alias's
+// watermark independently when building the set of unread threads.
+func TestSessionUnreadPerAliasWatermarks(t *testing.T) {
+	s := newTestStore(t)
+	// Register two aliases sharing the same (socket_path, session_id) tuple.
+	if err := s.RegisterAgent(Agent{Alias: "aliasA", SocketPath: "/s", SessionID: "$1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RegisterAgent(Agent{Alias: "aliasB", SocketPath: "/s", SessionID: "$1"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a thread addressed to A, from an outsider.
+	if _, err := s.CreateThread(Thread{Kind: "message", FromAgent: "outsider", ToKind: "agent", ToTarget: "aliasA"}, "msg for A"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a thread addressed to B, from an outsider.
+	if _, err := s.CreateThread(Thread{Kind: "message", FromAgent: "outsider", ToKind: "agent", ToTarget: "aliasB"}, "msg for B"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Before any MarkRead, both threads unread.
+	total, _, err := s.SessionUnread("/s", "$1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 2 {
+		t.Fatalf("before MarkRead: expected 2 unread, got %d", total)
+	}
+
+	// Mark A as read — advances A's watermark past all existing entries.
+	if err := s.MarkRead("aliasA"); err != nil {
+		t.Fatal(err)
+	}
+
+	// SessionUnread should still see B's thread as unread (total=1).
+	// A's read watermark must not suppress B's threads.
+	total, _, err = s.SessionUnread("/s", "$1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 1 {
+		t.Fatalf("after MarkRead(aliasA): expected 1 unread, got %d", total)
+	}
+
+	// Now mark B as read.
+	if err := s.MarkRead("aliasB"); err != nil {
+		t.Fatal(err)
+	}
+
+	// SessionUnread should return total=0.
+	total, _, err = s.SessionUnread("/s", "$1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 0 {
+		t.Fatalf("after MarkRead(aliasB): expected 0 unread, got %d", total)
+	}
+}
