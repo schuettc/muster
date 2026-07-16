@@ -26,18 +26,22 @@ func cmdEvents(args []string, out io.Writer) error {
 	fs := flag.NewFlagSet("events", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	agent := fs.String("agent", "", "only events for this agent alias")
-	limit := fs.Int("limit", 0, "max events to show (default 50)")
+	limit := fs.Int("limit", 50, "max events to show (default 50)")
 	if err := fs.Parse(args); err != nil {
 		return fmt.Errorf("usage: muster events [--agent <alias>] [--limit <n>]")
 	}
-	raw, err := callData("list_events", map[string]any{"agent": *agent, "limit": *limit})
+	raw, err := callData("list_events", map[string]any{"agent": *agent, "limit": *limit, "backlog": true})
 	if err != nil {
 		return err
 	}
-	var events []eventRow
-	if err := json.Unmarshal(raw, &events); err != nil {
+	var res struct {
+		Events []eventRow `json:"events"`
+		MaxID  int64      `json:"max_id"`
+	}
+	if err := json.Unmarshal(raw, &res); err != nil {
 		return err
 	}
+	events := res.Events
 	tw := tabwriter.NewWriter(out, 0, 2, 2, ' ', 0)
 	if _, err := fmt.Fprintln(tw, "TIME\tKIND\tAGENT\tTHREAD\tCOUNT\tDETAIL"); err != nil {
 		return err

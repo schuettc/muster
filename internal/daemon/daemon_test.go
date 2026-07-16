@@ -226,3 +226,56 @@ func TestPruneEventsOpRejectsNonPositiveCutoff(t *testing.T) {
 		t.Fatalf("older_than_ms=0 should be rejected, got %+v", resp)
 	}
 }
+
+// TestLogEventConstructsCanonicalNudge: log_event builds the nudge row
+// server-side — target must be a registered alias, detail must be
+// typed|submitted, and any other client-supplied fields (kind/agent/thread_id/
+// count) are ignored rather than trusted.
+func TestLogEventConstructsCanonicalNudge(t *testing.T) {
+	n := &fakeNotifier{}
+	sock, s := startWithNotifierAndStore(t, n)
+	call(t, sock, "register_agent", map[string]any{"alias": "api", "model_type": "claude", "socket_path": "/s", "session_id": "$2"})
+	// attempted pollution: kind/agent/thread_id/count must all be overwritten
+	resp := call(t, sock, "log_event", map[string]any{"target": "api", "detail": "submitted", "kind": "send", "agent": "fake", "thread_id": 9, "count": 5})
+	if !resp.OK {
+		t.Fatalf("log_event: %+v", resp)
+	}
+	evs, _ := s.Events(store.EventQuery{Kind: "nudge", Backlog: true, Limit: 5})
+	if len(evs) != 1 {
+		t.Fatalf("want 1 nudge row, got %+v", evs)
+	}
+	e := evs[0]
+	if e.Agent != "" || e.Target != "api" || e.ThreadID != 0 || e.Count != 0 || e.Detail != "submitted" {
+		t.Fatalf("canonical nudge row violated: %+v", e)
+	}
+	if resp := call(t, sock, "log_event", map[string]any{"target": "ghost", "detail": "typed"}); resp.OK {
+		t.Fatal("unregistered target must be rejected")
+	}
+	if resp := call(t, sock, "log_event", map[string]any{"target": "api", "detail": "hacked"}); resp.OK {
+		t.Fatal("detail outside typed|submitted must be rejected")
+	}
+}
+
+// TestListEventsMaxIDAndFollow: max_id is present even on an empty journal,
+// and after_id-as-string follow mode returns rows past that id.
+func TestListEventsMaxIDAndFollow(t *testing.T) {
+	n := &fakeNotifier{}
+	sock, _ := startWithNotifierAndStore(t, n)
+	call(t, sock, "register_agent", map[string]any{"alias": "api", "model_type": "claude", "socket_path": "/s", "session_id": "$2"})
+	// empty journal: backlog with limit 0 must still return max_id 0
+	resp := call(t, sock, "list_events", map[string]any{"backlog": true, "limit": 0})
+	var out struct {
+		Events []store.Event `json:"events"`
+		MaxID  int64         `json:"max_id"`
+	}
+	decode(t, resp, &out) // helper: json.Marshal(resp.Data) → Unmarshal
+	if out.MaxID != 0 || len(out.Events) != 0 {
+		t.Fatalf("empty journal: %+v", out)
+	}
+	call(t, sock, "send_message", map[string]any{"from": "web", "to_kind": "agent", "to_target": "api", "subject": "s", "body": "b"})
+	resp = call(t, sock, "list_events", map[string]any{"after_id": "0"})
+	decode(t, resp, &out)
+	if out.MaxID < 1 || len(out.Events) < 1 || out.Events[0].Kind != "send" {
+		t.Fatalf("follow from 0: %+v", out)
+	}
+}

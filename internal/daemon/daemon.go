@@ -261,12 +261,32 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 			return fail(err)
 		}
 		return ok(map[string]any{"found": found, "pair": p})
+	case "log_event":
+		target, detail := str(a, "target"), str(a, "detail")
+		if detail != "typed" && detail != "submitted" {
+			return fail(fmt.Errorf("log_event: detail must be typed|submitted"))
+		}
+		if _, found, err := d.s.GetAgent(target); err != nil || !found {
+			return fail(fmt.Errorf("log_event: unknown target %q", target))
+		}
+		// The daemon constructs the canonical event; client fields beyond
+		// target/detail are ignored so the journal can't be polluted.
+		d.logEvent(store.Event{Kind: "nudge", Target: target, Detail: detail})
+		return ok(nil)
 	case "list_events":
-		evs, err := d.s.Events(store.EventQuery{Agent: str(a, "agent"), Backlog: true, Limit: 50})
+		evs, err := d.s.Events(store.EventQuery{
+			Agent: str(a, "agent"), Kind: str(a, "kind"),
+			ThreadID: i64(a, "thread_id"), AfterID: i64(a, "after_id"),
+			Limit: int(i64(a, "limit")), Backlog: boolArg(a, "backlog"),
+		})
 		if err != nil {
 			return fail(err)
 		}
-		return ok(evs)
+		maxID, err := d.s.MaxEventID()
+		if err != nil {
+			return fail(err)
+		}
+		return ok(map[string]any{"events": evs, "max_id": maxID})
 	case "prune_events":
 		cutoff := i64(a, "older_than_ms")
 		if cutoff <= 0 {

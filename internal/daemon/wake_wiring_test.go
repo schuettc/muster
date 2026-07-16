@@ -95,6 +95,19 @@ func call(t *testing.T, sock, op string, args map[string]any) proto.Response {
 	return resp
 }
 
+// decode re-marshals resp.Data (already a map[string]any/[]any from the wire)
+// into out, matching the approach used elsewhere for typed daemon responses.
+func decode(t *testing.T, resp proto.Response, out any) {
+	t.Helper()
+	raw, err := json.Marshal(resp.Data)
+	if err != nil {
+		t.Fatalf("marshal resp.Data: %v", err)
+	}
+	if err := json.Unmarshal(raw, out); err != nil {
+		t.Fatalf("unmarshal resp.Data: %v (%s)", err, raw)
+	}
+}
+
 func TestNotifyDirectedExcludesActorBySession(t *testing.T) {
 	n := &fakeNotifier{}
 	sock := startWithNotifier(t, n)
@@ -234,14 +247,14 @@ func TestEventsLogged(t *testing.T) {
 	call(t, sock, "send_message", map[string]any{"from": "web", "to_kind": "agent", "to_target": "api", "subject": "req", "body": "x"})
 	call(t, sock, "get_inbox", map[string]any{"alias": "api"})
 
-	resp := call(t, sock, "list_events", map[string]any{})
-	data, _ := json.Marshal(resp.Data)
-	var events []store.Event
-	if err := json.Unmarshal(data, &events); err != nil {
-		t.Fatalf("list_events decode: %v (%s)", err, data)
+	resp := call(t, sock, "list_events", map[string]any{"backlog": true, "limit": 50})
+	var out struct {
+		Events []store.Event `json:"events"`
+		MaxID  int64         `json:"max_id"`
 	}
+	decode(t, resp, &out)
 	var sawLit, sawRead bool
-	for _, e := range events {
+	for _, e := range out.Events {
 		if e.Kind == "notify" && e.Agent == "api" && e.Detail == "lit" && e.Count == 1 {
 			sawLit = true
 		}
@@ -250,7 +263,7 @@ func TestEventsLogged(t *testing.T) {
 		}
 	}
 	if !sawLit || !sawRead {
-		t.Fatalf("event log missing notify-lit or read (lit=%v read=%v): %+v", sawLit, sawRead, events)
+		t.Fatalf("event log missing notify-lit or read (lit=%v read=%v): %+v", sawLit, sawRead, out.Events)
 	}
 }
 
