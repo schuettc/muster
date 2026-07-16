@@ -87,6 +87,8 @@ func Dispatch(args []string, out io.Writer) error {
 		return cmdTasks(args[1:], out)
 	case "events":
 		return cmdEvents(args[1:], out)
+	case "watch":
+		return cmdWatch(args[1:], out, watchOpts{})
 	case "nudge":
 		return cmdNudge(args[1:], out)
 	case "register":

@@ -22,7 +22,7 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: muster <serve|debug|mcp|agents|inbox|send|tasks|events|nudge|register|deregister|gc|hook|label> [args]")
+		fmt.Fprintln(os.Stderr, "usage: muster <serve|debug|mcp|agents|inbox|send|tasks|events|watch|nudge|register|deregister|gc|hook|label> [args]")
 		os.Exit(2)
 	}
 	switch os.Args[1] {
