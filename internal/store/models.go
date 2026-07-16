@@ -39,10 +39,12 @@ type Thread struct {
 	Subject   string `json:"subject"`
 	Ref       string `json:"ref"`
 	Status    string `json:"status"` // "" means NULL (message)
-	// Intent is the stored value: "" (unspecified) | fyi | reply-requested |
-	// action-requested — validated by CreateThread. Threads() overrides this
-	// with the effective intent (see effectiveIntent in threads.go); other
-	// readers (GetThread, Inbox) return the raw stored value.
+	// Intent is validated by CreateThread against the raw stored vocabulary
+	// (""/fyi/reply-requested/action-requested), but every READ surface —
+	// Threads, GetThread, Inbox — returns the EFFECTIVE intent (see
+	// effectiveIntent in threads.go), never the raw stored value: one
+	// vocabulary everywhere a Thread is read, so an old task row (stored
+	// intent "") reads as action-requested consistently across all three.
 	Intent    string `json:"intent"`
 	CreatedAt int64  `json:"created_at"`
 	UpdatedAt int64  `json:"updated_at"`
@@ -81,6 +83,10 @@ type Event struct {
 	// Subject is joined from the event's thread at query time (empty for
 	// thread-less events). Never stored on the row.
 	Subject string `json:"subject"`
+	// Intent is the event's thread's EFFECTIVE intent (effectiveIntent in
+	// threads.go), joined at query time exactly like Subject (empty for
+	// thread-less events). Never stored on the row.
+	Intent string `json:"intent"`
 }
 
 // KVPair is a shared blackboard fact.

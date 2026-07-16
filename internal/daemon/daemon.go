@@ -11,10 +11,16 @@ import (
 	"strconv"
 	"sync"
 
+	"github.com/schuettc/muster/internal/display"
 	"github.com/schuettc/muster/internal/proto"
 	"github.com/schuettc/muster/internal/store"
 	"github.com/schuettc/muster/internal/wake"
 )
+
+// replyPreviewWidth caps how much of a reply's body is journaled into the
+// event row's Detail (spec §4) — a display-length preview, not the reply
+// itself (the full body lives on the thread's entry).
+const replyPreviewWidth = 80
 
 // storeAPI is the slice of *store.Store the daemon depends on. It exists so
 // tests can substitute an error-injecting wrapper around a real *store.Store
@@ -30,6 +36,7 @@ type storeAPI interface {
 	ClaimTask(threadID int64, byAgent string) error
 	TransitionTask(threadID int64, byAgent, newStatus, note string) error
 	GetThread(id int64) (store.Thread, []store.Entry, error)
+	Threads(limit int) ([]store.Thread, error)
 	Inbox(alias string) ([]store.Thread, error)
 	MarkRead(alias string) error
 	SessionUnread(socketPath, sessionID string) (total, action int, err error)
@@ -326,6 +333,7 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 		id, err := d.s.CreateThread(store.Thread{
 			Kind: "message", FromAgent: str(a, "from"), ToKind: str(a, "to_kind"),
 			ToTarget: str(a, "to_target"), Subject: str(a, "subject"), Ref: str(a, "ref"),
+			Intent: str(a, "intent"),
 		}, str(a, "body"))
 		if err != nil {
 			return fail(err)
@@ -337,6 +345,7 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 		id, err := d.s.CreateThread(store.Thread{
 			Kind: "task", FromAgent: str(a, "from"), ToKind: str(a, "to_kind"),
 			ToTarget: str(a, "to_target"), Subject: str(a, "subject"), Ref: str(a, "ref"), Status: "open",
+			Intent: str(a, "intent"),
 		}, str(a, "body"))
 		if err != nil {
 			return fail(err)
@@ -363,7 +372,7 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 		if err != nil {
 			return fail(err)
 		}
-		d.logEvent(store.Event{Kind: "reply", Agent: str(a, "from"), ThreadID: i64(a, "thread_id")})
+		d.logEvent(store.Event{Kind: "reply", Agent: str(a, "from"), ThreadID: i64(a, "thread_id"), Detail: display.Sanitize(str(a, "body"), replyPreviewWidth)})
 		d.notifyForThread(i64(a, "thread_id"), str(a, "from"))
 		return ok(map[string]any{"entry_id": id})
 	case "get_inbox":
@@ -411,7 +420,14 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 		if err != nil {
 			return fail(err)
 		}
+		entries = paginateEntries(entries, i64(a, "offset"), i64(a, "limit"))
 		return ok(map[string]any{"thread": th, "entries": entries})
+	case "list_threads":
+		threads, err := d.s.Threads(int(i64(a, "limit")))
+		if err != nil {
+			return fail(err)
+		}
+		return ok(map[string]any{"threads": threads})
 	case "kv_set":
 		if err := d.s.KVSet(str(a, "key"), str(a, "value"), str(a, "by")); err != nil {
 			return fail(err)
@@ -478,6 +494,30 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 	default:
 		return proto.Response{Error: "unknown op: " + req.Op}
 	}
+}
+
+// paginateEntries slices entries (already ordered oldest-first by
+// GetThread) by offset and limit. Both are optional; absent/0 for BOTH
+// returns entries unchanged (spec: back-compat with every existing MCP/CLI
+// caller, none of which pass either arg). offset skips that many entries
+// from the start; limit caps how many follow (0 = no cap, i.e. "the rest").
+// A negative offset clamps to 0; an offset at or past the end returns an
+// empty (non-nil) slice rather than panicking or wrapping.
+func paginateEntries(entries []store.Entry, offset, limit int64) []store.Entry {
+	if offset <= 0 && limit <= 0 {
+		return entries
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	if offset >= int64(len(entries)) {
+		return []store.Entry{}
+	}
+	end := int64(len(entries))
+	if limit > 0 && offset+limit < end {
+		end = offset + limit
+	}
+	return entries[offset:end]
 }
 
 // compactStrings removes adjacent duplicates from a sorted slice, in place.

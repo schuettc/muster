@@ -104,7 +104,12 @@ func scanThread(row interface{ Scan(...any) error }) (Thread, error) {
 	return t, err
 }
 
-const threadCols = `id, kind, from_agent, to_kind, to_target, subject, ref, status, intent, created_at, updated_at`
+// threadColsEffectiveIntent is the SELECT column list every Thread-reading
+// surface (GetThread, Inbox) uses: like a plain column list but with the raw
+// "intent" column replaced by the effectiveIntent CASE expression (same
+// position, so scanThread's positional Scan is unaffected) — so every
+// surface agrees on the operative intent (models.go, spec §2 ledger note).
+const threadColsEffectiveIntent = `id, kind, from_agent, to_kind, to_target, subject, ref, status, ` + effectiveIntent + ` AS intent, created_at, updated_at`
 
 // effectiveIntent is the ONE canonical SQL fragment for a thread's operative
 // intent (spec §2): a task is a request for action, including every
@@ -117,9 +122,11 @@ const threadCols = `id, kind, from_agent, to_kind, to_target, subject, ref, stat
 // inside a CTE's own SELECT FROM threads).
 const effectiveIntent = `CASE WHEN threads.kind='task' AND COALESCE(threads.intent,'')='' THEN 'action-requested' ELSE COALESCE(threads.intent,'') END`
 
-// GetThread returns the thread and its entries (ordered by id).
+// GetThread returns the thread and its entries (ordered by id). The
+// returned Thread.Intent is the EFFECTIVE intent (threadColsEffectiveIntent),
+// matching Threads() and Inbox — one vocabulary across every read surface.
 func (s *Store) GetThread(id int64) (Thread, []Entry, error) {
-	t, err := scanThread(s.db.QueryRow(`SELECT `+threadCols+` FROM threads WHERE id=?`, id))
+	t, err := scanThread(s.db.QueryRow(`SELECT `+threadColsEffectiveIntent+` FROM threads WHERE id=?`, id))
 	if err != nil {
 		return Thread{}, nil, err
 	}
@@ -170,10 +177,12 @@ const threadConcernsJoin = `((threads.to_kind='agent' AND threads.to_target=sess
 
 // Inbox returns every thread that concerns alias (see threadConcerns):
 // addressed to it directly, to its role, broadcast, or originated by it —
-// so replies on threads the agent started show up here too.
+// so replies on threads the agent started show up here too. Thread.Intent is
+// the EFFECTIVE intent (threadColsEffectiveIntent), matching Threads() and
+// GetThread.
 func (s *Store) Inbox(alias string) ([]Thread, error) {
 	rows, err := s.db.Query(`
-SELECT `+threadCols+` FROM threads
+SELECT `+threadColsEffectiveIntent+` FROM threads
 WHERE `+threadConcerns+`
 ORDER BY updated_at DESC`, alias, alias, alias)
 	if err != nil {
