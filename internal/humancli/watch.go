@@ -29,8 +29,11 @@ func cmdWatch(args []string, out io.Writer, o watchOpts) error {
 	thread := fs.Int64("thread", 0, "only this thread")
 	interval := fs.Duration("interval", time.Second, "poll interval")
 	backlog := fs.Int("backlog", 10, "history lines to print before following (0 = none)")
+	aliases := fs.Bool("aliases", false, "show raw aliases instead of current labels")
+	fullTime := fs.Bool("full-time", false, "show dates, not just times")
+	width := fs.Int("width", 0, "line budget in columns (default $COLUMNS or 120)")
 	if err := fs.Parse(args); err != nil {
-		return fmt.Errorf("usage: muster watch [--agent <alias>] [--thread <id>] [--kind <k>] [--interval <dur>] [--backlog <n>]")
+		return fmt.Errorf("usage: muster watch [--agent <alias>] [--thread <id>] [--kind <k>] [--interval <dur>] [--backlog <n>] [--aliases] [--full-time] [--width <cols>]")
 	}
 	if o.errw == nil {
 		o.errw = os.Stderr
@@ -43,9 +46,10 @@ func cmdWatch(args []string, out io.Writer, o watchOpts) error {
 	if err != nil {
 		return err
 	}
-	eventHeader(out)
+	r := newRenderer(page.Events, loadLabels(), *aliases, *fullTime, *width)
+	r.header(out)
 	for i := len(page.Events) - 1; i >= 0; i-- { // newest-first → print oldest-first
-		printEventLine(out, page.Events[i])
+		r.line(out, page.Events[i])
 	}
 	cursor := page.MaxID
 
@@ -64,7 +68,14 @@ func cmdWatch(args []string, out io.Writer, o watchOpts) error {
 			continue
 		}
 		for _, e := range page.Events { // follow mode is oldest-first
-			printEventLine(out, e)
+			if !*aliases && r.labels[e.Agent] == "" && e.Agent != "" {
+				// A newly-seen agent may have registered since the map was
+				// loaded — refresh once so its label renders. Best-effort.
+				if m := loadLabels(); m != nil {
+					r.labels = m
+				}
+			}
+			r.line(out, e)
 		}
 		cursor = page.MaxID
 	}
