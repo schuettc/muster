@@ -31,11 +31,18 @@ func threadIDOf(t *testing.T, resp proto.Response) int64 {
 	return created.ThreadID
 }
 
+type notifierCall struct {
+	kind    string // "Notify" or "Clear"
+	session string
+	count   int // only populated for Notify
+}
+
 type fakeNotifier struct {
 	mu       sync.Mutex
-	notified []string // session IDs Notify'd
-	counts   []int    // unread counts carried, aligned with notified
-	cleared  []string // session IDs Clear'd
+	notified []string       // session IDs Notify'd
+	counts   []int          // unread counts carried, aligned with notified
+	cleared  []string       // session IDs Clear'd
+	log      []notifierCall // combined ordered log of all Notify/Clear calls
 }
 
 func (f *fakeNotifier) Notify(_, sessionID string, count int) error {
@@ -43,6 +50,7 @@ func (f *fakeNotifier) Notify(_, sessionID string, count int) error {
 	defer f.mu.Unlock()
 	f.notified = append(f.notified, sessionID)
 	f.counts = append(f.counts, count)
+	f.log = append(f.log, notifierCall{kind: "Notify", session: sessionID, count: count})
 	return nil
 }
 
@@ -50,6 +58,7 @@ func (f *fakeNotifier) Clear(_, sessionID string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.cleared = append(f.cleared, sessionID)
+	f.log = append(f.log, notifierCall{kind: "Clear", session: sessionID})
 	return nil
 }
 
@@ -58,6 +67,14 @@ func (f *fakeNotifier) snap(which *[]string) []string {
 	defer f.mu.Unlock()
 	out := make([]string, len(*which))
 	copy(out, *which)
+	return out
+}
+
+func (f *fakeNotifier) snapLog() []notifierCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]notifierCall, len(f.log))
+	copy(out, f.log)
 	return out
 }
 
@@ -563,9 +580,18 @@ func TestNotifyDrainInterleaving(t *testing.T) {
 		t.Fatalf("test setup: expected solo fully drained by get_inbox, SessionUnread=%d", remainder)
 	}
 
-	cleared := n.snap(&n.cleared)
-	if len(cleared) == 0 || cleared[len(cleared)-1] != "$9" {
-		t.Fatalf("final $9 badge must be the get_inbox drain's Clear (post-drain remainder 0), notified=%v cleared=%v", n.snap(&n.notified), cleared)
+	// Check combined log to ensure the last operation for $9 is a Clear
+	// (not a stale Notify that landed after). This guards against lock removal.
+	log := n.snapLog()
+	var lastFor9 *notifierCall
+	for i := len(log) - 1; i >= 0; i-- {
+		if log[i].session == "$9" {
+			lastFor9 = &log[i]
+			break
+		}
+	}
+	if lastFor9 == nil || lastFor9.kind != "Clear" {
+		t.Fatalf("final $9 badge must be the get_inbox drain's Clear (post-drain remainder 0), log=%v", log)
 	}
 }
 
