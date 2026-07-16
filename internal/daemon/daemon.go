@@ -157,6 +157,15 @@ func (d *Daemon) notifyForThread(threadID int64, actor string) {
 // never fail or slow the bus operation it describes.
 func (d *Daemon) logEvent(e store.Event) { _ = d.s.AppendEvent(e) }
 
+// targetOf renders a thread address as a journal target: 'broadcast' or
+// '<to_kind>:<to_target>'.
+func targetOf(a map[string]any) string {
+	if str(a, "to_kind") == "broadcast" {
+		return "broadcast"
+	}
+	return str(a, "to_kind") + ":" + str(a, "to_target")
+}
+
 func (d *Daemon) dispatch(req proto.Request) proto.Response {
 	a := req.Args
 	switch req.Op {
@@ -185,6 +194,7 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 		if err != nil {
 			return fail(err)
 		}
+		d.logEvent(store.Event{Kind: "send", Agent: str(a, "from"), Target: targetOf(a), ThreadID: id, Detail: str(a, "subject")})
 		d.notifyForThread(id, str(a, "from"))
 		return ok(map[string]any{"thread_id": id})
 	case "task_create":
@@ -195,17 +205,21 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 		if err != nil {
 			return fail(err)
 		}
+		d.logEvent(store.Event{Kind: "task", Agent: str(a, "from"), Target: targetOf(a), ThreadID: id, Detail: str(a, "subject")})
 		d.notifyForThread(id, str(a, "from"))
 		return ok(map[string]any{"thread_id": id})
 	case "task_claim":
 		if err := d.s.ClaimTask(i64(a, "thread_id"), str(a, "by")); err != nil {
 			return fail(err)
 		}
+		d.logEvent(store.Event{Kind: "claim", Agent: str(a, "by"), ThreadID: i64(a, "thread_id")})
+		d.notifyForThread(i64(a, "thread_id"), str(a, "by"))
 		return ok(nil)
 	case "task_transition":
 		if err := d.s.TransitionTask(i64(a, "thread_id"), str(a, "by"), str(a, "status"), str(a, "note")); err != nil {
 			return fail(err)
 		}
+		d.logEvent(store.Event{Kind: "transition", Agent: str(a, "by"), ThreadID: i64(a, "thread_id"), Detail: str(a, "status")})
 		d.notifyForThread(i64(a, "thread_id"), str(a, "by"))
 		return ok(nil)
 	case "reply":
@@ -213,6 +227,7 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 		if err != nil {
 			return fail(err)
 		}
+		d.logEvent(store.Event{Kind: "reply", Agent: str(a, "from"), ThreadID: i64(a, "thread_id")})
 		d.notifyForThread(i64(a, "thread_id"), str(a, "from"))
 		return ok(map[string]any{"entry_id": id})
 	case "get_inbox":

@@ -3,6 +3,7 @@ package daemon
 import (
 	"encoding/json"
 	"path/filepath"
+	"slices"
 	"sync"
 	"testing"
 
@@ -13,6 +14,20 @@ import (
 	"github.com/schuettc/muster/internal/proto"
 	"github.com/schuettc/muster/internal/store"
 )
+
+// threadIDOf unmarshals resp.Data.thread_id from a send_message/task_create
+// response.
+func threadIDOf(t *testing.T, resp proto.Response) int64 {
+	t.Helper()
+	data, _ := json.Marshal(resp.Data)
+	var created struct {
+		ThreadID int64 `json:"thread_id"`
+	}
+	if err := json.Unmarshal(data, &created); err != nil || created.ThreadID == 0 {
+		t.Fatalf("thread_id result: %v (%s)", err, data)
+	}
+	return created.ThreadID
+}
 
 type fakeNotifier struct {
 	mu       sync.Mutex
@@ -181,14 +196,8 @@ func TestReplyNotifiesOriginatorWithUnread(t *testing.T) {
 	call(t, sock, "register_agent", map[string]any{"alias": "web", "model_type": "claude", "socket_path": "/s", "session_id": "$1"})
 	call(t, sock, "register_agent", map[string]any{"alias": "api", "model_type": "claude", "socket_path": "/s", "session_id": "$2"})
 	resp := call(t, sock, "send_message", map[string]any{"from": "web", "to_kind": "agent", "to_target": "api", "subject": "req", "body": "x"})
-	data, _ := json.Marshal(resp.Data)
-	var created struct {
-		ThreadID int64 `json:"thread_id"`
-	}
-	if err := json.Unmarshal(data, &created); err != nil || created.ThreadID == 0 {
-		t.Fatalf("send_message result: %v (%s)", err, data)
-	}
-	call(t, sock, "reply", map[string]any{"thread_id": created.ThreadID, "from": "api", "body": "done"})
+	tid := threadIDOf(t, resp)
+	call(t, sock, "reply", map[string]any{"thread_id": tid, "from": "api", "body": "done"})
 
 	f := struct {
 		sessions []string
@@ -242,5 +251,56 @@ func TestEventsLogged(t *testing.T) {
 	}
 	if !sawLit || !sawRead {
 		t.Fatalf("event log missing notify-lit or read (lit=%v read=%v): %+v", sawLit, sawRead, events)
+	}
+}
+
+// TestBusActionsJournalInOrder: one send + reply must produce an interleaved
+// journal — send row BEFORE its notify row, reply row BEFORE its notify row —
+// and task claim must both journal and notify.
+func TestBusActionsJournalInOrder(t *testing.T) {
+	n := &fakeNotifier{}
+	sock, s := startWithNotifierAndStore(t, n)
+	call(t, sock, "register_agent", map[string]any{"alias": "web", "model_type": "claude", "socket_path": "/s", "session_id": "$1"})
+	call(t, sock, "register_agent", map[string]any{"alias": "api", "model_type": "claude", "socket_path": "/s", "session_id": "$2"})
+	resp := call(t, sock, "send_message", map[string]any{"from": "web", "to_kind": "agent", "to_target": "api", "subject": "subj", "body": "x"})
+	tid := threadIDOf(t, resp) // helper: unmarshal resp.Data.thread_id (extract from TestReplyNotifiesOriginatorWithUnread)
+	call(t, sock, "reply", map[string]any{"thread_id": tid, "from": "api", "body": "done"})
+
+	evs, err := s.Events(store.EventQuery{Backlog: true, Limit: 50})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// oldest-first for assertion readability
+	for i, j := 0, len(evs)-1; i < j; i, j = i+1, j-1 {
+		evs[i], evs[j] = evs[j], evs[i]
+	}
+	var kinds []string
+	for _, e := range evs {
+		kinds = append(kinds, e.Kind)
+	}
+	want := []string{"send", "notify", "reply", "notify"}
+	if len(kinds) != 4 || !slices.Equal(kinds, want) {
+		t.Fatalf("journal order = %v, want %v", kinds, want)
+	}
+	if evs[0].Target != "agent:api" || evs[0].Detail != "subj" || evs[0].Agent != "web" {
+		t.Fatalf("send row: %+v", evs[0])
+	}
+}
+
+func TestTaskClaimJournalsAndNotifies(t *testing.T) {
+	n := &fakeNotifier{}
+	sock, s := startWithNotifierAndStore(t, n)
+	call(t, sock, "register_agent", map[string]any{"alias": "web", "model_type": "claude", "socket_path": "/s", "session_id": "$1"})
+	call(t, sock, "register_agent", map[string]any{"alias": "api", "model_type": "claude", "socket_path": "/s", "session_id": "$2"})
+	resp := call(t, sock, "task_create", map[string]any{"from": "web", "to_kind": "agent", "to_target": "api", "subject": "do it", "body": "x"})
+	tid := threadIDOf(t, resp)
+	before := len(n.snap(&n.notified))
+	call(t, sock, "task_claim", map[string]any{"thread_id": tid, "by": "api"})
+	if got := n.snap(&n.notified); len(got) != before+1 || got[len(got)-1] != "$1" {
+		t.Fatalf("claim must notify the originator's session, notified=%v", got)
+	}
+	evs, _ := s.Events(store.EventQuery{Kind: "claim", Backlog: true, Limit: 5})
+	if len(evs) != 1 || evs[0].Agent != "api" || evs[0].ThreadID != tid {
+		t.Fatalf("claim journal row: %+v", evs)
 	}
 }
