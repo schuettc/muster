@@ -35,19 +35,12 @@ func TestMigrateAddsTargetToV04Events(t *testing.T) {
 		if err != nil {
 			t.Fatalf("open %d: %v", i, err)
 		}
-		var target string
-		if err := s.DB().QueryRow(`SELECT target FROM events`).Scan(&target); err != nil {
-			t.Fatalf("query target %d: %v", i, err)
+		evs, err := s.Events(EventQuery{Backlog: true, Limit: 10})
+		if err != nil {
+			t.Fatalf("events %d: %v", i, err)
 		}
-		if target != "" {
-			t.Fatalf("v0.4 row after migrate: target = %q, want ''", target)
-		}
-		var agent string
-		if err := s.DB().QueryRow(`SELECT agent FROM events`).Scan(&agent); err != nil {
-			t.Fatalf("query agent %d: %v", i, err)
-		}
-		if agent != "api" {
-			t.Fatalf("v0.4 row after migrate: agent = %q, want api", agent)
+		if len(evs) != 1 || evs[0].Target != "" || evs[0].Agent != "api" {
+			t.Fatalf("v0.4 row after migrate: %+v", evs)
 		}
 		_ = s.Close()
 	}

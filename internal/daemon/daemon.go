@@ -246,7 +246,7 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 		}
 		return ok(map[string]any{"found": found, "pair": p})
 	case "list_events":
-		evs, err := d.s.RecentEvents(str(a, "agent"), int(i64(a, "limit")))
+		evs, err := d.s.Events(store.EventQuery{Agent: str(a, "agent"), Backlog: true, Limit: 50})
 		if err != nil {
 			return fail(err)
 		}
