@@ -1,5 +1,13 @@
 package store
 
+// Intent vocabulary for threads. "" (unspecified) is also valid — CreateThread
+// accepts it and effectiveIntent (threads.go) derives the operative value.
+const (
+	IntentFYI    = "fyi"
+	IntentReply  = "reply-requested"
+	IntentAction = "action-requested"
+)
+
 // Agent is a registered participant on the bus.
 type Agent struct {
 	Alias        string `json:"alias"`
@@ -14,6 +22,11 @@ type Agent struct {
 	LabelManual  bool   `json:"label_manual"`
 	RegisteredAt int64  `json:"registered_at"`
 	LastSeen     int64  `json:"last_seen"`
+	// LastReadEntryID is the entry-ID read watermark (see MarkRead/UnreadCount
+	// in agents.go): the highest entries.id visible the last time this
+	// agent's inbox was read. Supersedes the wall-clock last_read_at for
+	// unread math; last_read_at is retained internally for display only.
+	LastReadEntryID int64 `json:"last_read_entry_id"`
 }
 
 // Thread is a conversation: a message (no status) or a task (status set).
@@ -26,8 +39,20 @@ type Thread struct {
 	Subject   string `json:"subject"`
 	Ref       string `json:"ref"`
 	Status    string `json:"status"` // "" means NULL (message)
+	// Intent is the stored value: "" (unspecified) | fyi | reply-requested |
+	// action-requested — validated by CreateThread. Threads() overrides this
+	// with the effective intent (see effectiveIntent in threads.go); other
+	// readers (GetThread, Inbox) return the raw stored value.
+	Intent    string `json:"intent"`
 	CreatedAt int64  `json:"created_at"`
 	UpdatedAt int64  `json:"updated_at"`
+	// LastFrom, LastAt, and EntryCount are query-time only, populated by
+	// Threads() from the thread's last entry (by MAX(id), never MAX(created_at)
+	// — same-millisecond entries must not tie-break on timestamp) and its
+	// total entry count. GetThread/Inbox/CreateThread leave them zero.
+	LastFrom   string `json:"last_from"`
+	LastAt     int64  `json:"last_at"`
+	EntryCount int    `json:"entry_count"`
 }
 
 // Entry is one append-only message within a thread.

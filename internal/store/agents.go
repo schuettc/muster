@@ -33,7 +33,7 @@ ON CONFLICT(alias) DO UPDATE SET
 // ListAgents returns all agents ordered by alias.
 func (s *Store) ListAgents() ([]Agent, error) {
 	rows, err := s.db.Query(`
-SELECT alias, role, model_type, socket_path, pane_id, session_name, session_id, project, label, label_manual, registered_at, last_seen
+SELECT alias, role, model_type, socket_path, pane_id, session_name, session_id, project, label, label_manual, registered_at, last_seen, last_read_entry_id
 FROM agents ORDER BY alias`)
 	if err != nil {
 		return nil, err
@@ -42,7 +42,7 @@ FROM agents ORDER BY alias`)
 	var out []Agent
 	for rows.Next() {
 		var a Agent
-		if err := rows.Scan(&a.Alias, &a.Role, &a.ModelType, &a.SocketPath, &a.PaneID, &a.SessionName, &a.SessionID, &a.Project, &a.Label, &a.LabelManual, &a.RegisteredAt, &a.LastSeen); err != nil {
+		if err := rows.Scan(&a.Alias, &a.Role, &a.ModelType, &a.SocketPath, &a.PaneID, &a.SessionName, &a.SessionID, &a.Project, &a.Label, &a.LabelManual, &a.RegisteredAt, &a.LastSeen, &a.LastReadEntryID); err != nil {
 			return nil, err
 		}
 		out = append(out, a)
@@ -54,9 +54,9 @@ FROM agents ORDER BY alias`)
 func (s *Store) GetAgent(alias string) (Agent, bool, error) {
 	var a Agent
 	err := s.db.QueryRow(`
-SELECT alias, role, model_type, socket_path, pane_id, session_name, session_id, project, label, label_manual, registered_at, last_seen
+SELECT alias, role, model_type, socket_path, pane_id, session_name, session_id, project, label, label_manual, registered_at, last_seen, last_read_entry_id
 FROM agents WHERE alias=?`, alias).
-		Scan(&a.Alias, &a.Role, &a.ModelType, &a.SocketPath, &a.PaneID, &a.SessionName, &a.SessionID, &a.Project, &a.Label, &a.LabelManual, &a.RegisteredAt, &a.LastSeen)
+		Scan(&a.Alias, &a.Role, &a.ModelType, &a.SocketPath, &a.PaneID, &a.SessionName, &a.SessionID, &a.Project, &a.Label, &a.LabelManual, &a.RegisteredAt, &a.LastSeen, &a.LastReadEntryID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Agent{}, false, nil
 	}
@@ -81,10 +81,13 @@ func (s *Store) DeleteAgent(alias string) error {
 }
 
 // UnreadCount returns how many threads concerning alias (threadConcerns —
-// matching Inbox exactly) contain an entry newer than the agent's last inbox
-// read that was written by someone else. Judging entries rather than the
-// thread's updated_at means an agent's own reply never re-flags its own
-// inbox, and a peer's reply on a thread the agent originated does.
+// matching Inbox exactly) contain an entry with id greater than the agent's
+// entry-ID read watermark (last_read_entry_id) that was written by someone
+// else. Judging entries rather than the thread's updated_at means an agent's
+// own reply never re-flags its own inbox, and a peer's reply on a thread the
+// agent originated does. The watermark is an entry ID, not a wall-clock
+// timestamp, so two entries landing in the same millisecond never race a
+// strict "after last read" comparison (see MarkRead).
 func (s *Store) UnreadCount(alias string) (int, error) {
 	var n int
 	err := s.db.QueryRow(`
@@ -92,14 +95,63 @@ SELECT COUNT(*) FROM threads
 WHERE `+threadConcerns+`
   AND EXISTS (SELECT 1 FROM entries e
               WHERE e.thread_id = threads.id
-                AND e.created_at > COALESCE((SELECT last_read_at FROM agents WHERE alias=?), 0)
+                AND e.id > COALESCE((SELECT last_read_entry_id FROM agents WHERE alias=?), 0)
                 AND e.from_agent != ?)`,
 		alias, alias, alias, alias, alias).Scan(&n)
 	return n, err
 }
 
-// MarkRead records that alias has read its inbox up to now.
+// MarkRead records that alias has read its inbox up to the highest entry ID
+// that exists right now: the read and the watermark snapshot happen in one
+// transaction, so an entry appended concurrently (even in the same
+// millisecond) is never mistaken for already read. last_read_at is also
+// stamped, for display purposes only — it is no longer consulted by any
+// unread predicate.
 func (s *Store) MarkRead(alias string) error {
-	_, err := s.db.Exec(`UPDATE agents SET last_read_at=? WHERE alias=?`, clock.NowMillis(), alias)
-	return err
+	now := clock.NowMillis()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var maxID int64
+	if err := tx.QueryRow(`SELECT COALESCE(MAX(id), 0) FROM entries`).Scan(&maxID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`UPDATE agents SET last_read_entry_id=?, last_read_at=? WHERE alias=?`, maxID, now, alias); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// SessionUnread is the ONE canonical session-level unread query (spec §3):
+// all aliases sharing the exact (socketPath, sessionID) tuple are one actor
+// identity for unread math and actor exclusion. total is the count of
+// distinct threads concerning ANY alias of the session (threadConcernsJoin —
+// semantically threadConcerns, re-expressed as a join; see
+// TestThreadConcernsSessionJoinEquivalence) that have an entry newer than
+// that alias's own watermark written by someone who is NOT any alias of the
+// session — so a session's own writes under either alias never make its own
+// threads unread, and a broadcast concerning two sibling aliases counts once,
+// never twice (no summing of per-alias counts). action is the subset whose
+// effective intent (effectiveIntent) is action-requested. An empty
+// socketPath or sessionID never groups: it matches no agents, so both
+// results are 0 (per-alias identity is UnreadCount's job for such agents,
+// e.g. one registered without a live tmux pane).
+func (s *Store) SessionUnread(socketPath, sessionID string) (total, action int, err error) {
+	err = s.db.QueryRow(`
+WITH sess AS (SELECT alias, last_read_entry_id FROM agents
+              WHERE socket_path = ?1 AND session_id = ?2 AND ?1 != '' AND ?2 != '')
+SELECT
+  COUNT(DISTINCT threads.id),
+  COUNT(DISTINCT CASE WHEN `+effectiveIntent+` = 'action-requested' THEN threads.id END)
+FROM threads
+JOIN sess ON `+threadConcernsJoin+`
+WHERE EXISTS (SELECT 1 FROM entries e
+              WHERE e.thread_id = threads.id
+                AND e.id > sess.last_read_entry_id
+                AND e.from_agent NOT IN (SELECT alias FROM sess))`,
+		socketPath, sessionID).Scan(&total, &action)
+	return total, action, err
 }

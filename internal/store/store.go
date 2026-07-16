@@ -45,11 +45,26 @@ func migrate(db *sql.DB) error {
 		`ALTER TABLE agents ADD COLUMN label_manual INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE agents ADD COLUMN last_read_at INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE events ADD COLUMN target TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE threads ADD COLUMN intent TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE agents ADD COLUMN last_read_entry_id INTEGER NOT NULL DEFAULT 0`,
 	}
 	for _, ddl := range alters {
 		if _, err := db.Exec(ddl); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
 			return err
 		}
+	}
+
+	// One-time entry-ID watermark backfill, run on every migrate() since
+	// "column was just added" isn't detectable after the ALTER above: for any
+	// agent whose watermark is still at its zero-value default and who has a
+	// wall-clock read timestamp, initialize last_read_entry_id from the
+	// highest entry visible as of that timestamp. Idempotent — once set
+	// (non-zero) or with no prior read, the WHERE clause stops matching.
+	if _, err := db.Exec(`
+UPDATE agents SET last_read_entry_id =
+  COALESCE((SELECT MAX(e.id) FROM entries e WHERE e.created_at <= agents.last_read_at), 0)
+WHERE last_read_entry_id = 0 AND last_read_at > 0`); err != nil {
+		return err
 	}
 	return nil
 }

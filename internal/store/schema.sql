@@ -10,6 +10,7 @@ CREATE TABLE IF NOT EXISTS agents (
     label         TEXT NOT NULL DEFAULT '',
     label_manual  INTEGER NOT NULL DEFAULT 0,
     last_read_at  INTEGER NOT NULL DEFAULT 0,
+    last_read_entry_id INTEGER NOT NULL DEFAULT 0,
     registered_at INTEGER NOT NULL,
     last_seen     INTEGER NOT NULL
 );
@@ -23,6 +24,7 @@ CREATE TABLE IF NOT EXISTS threads (
     subject    TEXT NOT NULL DEFAULT '',
     ref        TEXT NOT NULL DEFAULT '',
     status     TEXT,                          -- NULL for messages
+    intent     TEXT NOT NULL DEFAULT '',       -- '' | fyi | reply-requested | action-requested
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
 );
