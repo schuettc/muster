@@ -117,14 +117,26 @@ func (s *Store) GetThread(id int64) (Thread, []Entry, error) {
 	return t, entries, rows.Err()
 }
 
-// Inbox returns threads addressed to alias directly, to alias's role, or broadcast.
+// threadConcerns is the ONE canonical predicate for "does this thread concern
+// agent X": addressed to X directly, to X's role, broadcast, or originated by
+// X. Every surface that answers that question — Inbox, UnreadCount, and (by
+// construction, since it walks originator+recipients) the daemon's notify
+// fan-out — must agree with this fragment; the surfaces diverging is exactly
+// how replies to originated threads once went invisible. Binds the alias
+// three times.
+const threadConcerns = `((threads.to_kind='agent'  AND threads.to_target=?)
+   OR (threads.to_kind='role'      AND threads.to_target != '' AND threads.to_target=(SELECT role FROM agents WHERE alias=?))
+   OR (threads.to_kind='broadcast')
+   OR (threads.from_agent=?))`
+
+// Inbox returns every thread that concerns alias (see threadConcerns):
+// addressed to it directly, to its role, broadcast, or originated by it —
+// so replies on threads the agent started show up here too.
 func (s *Store) Inbox(alias string) ([]Thread, error) {
 	rows, err := s.db.Query(`
 SELECT `+threadCols+` FROM threads
-WHERE (to_kind='agent'     AND to_target=?)
-   OR (to_kind='role'      AND to_target != '' AND to_target=(SELECT role FROM agents WHERE alias=?))
-   OR (to_kind='broadcast')
-ORDER BY updated_at DESC`, alias, alias)
+WHERE `+threadConcerns+`
+ORDER BY updated_at DESC`, alias, alias, alias)
 	if err != nil {
 		return nil, err
 	}

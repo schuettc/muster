@@ -85,6 +85,8 @@ func Dispatch(args []string, out io.Writer) error {
 		return cmdInbox(args[1:], out)
 	case "tasks":
 		return cmdTasks(args[1:], out)
+	case "events":
+		return cmdEvents(args[1:], out)
 	case "nudge":
 		return cmdNudge(args[1:], out)
 	case "register":

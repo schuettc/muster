@@ -111,3 +111,83 @@ func TestAppendEntryOnMissingThreadReturnsErrThreadNotFoundAndNoOrphan(t *testin
 		t.Fatalf("expected no orphan entries for missing thread, got %d", n)
 	}
 }
+
+// fakeTick installs a strictly-increasing fake clock (see
+// TestUnreadCountAndMarkRead for why: strict ">" comparisons collide within
+// one real millisecond on fast hardware).
+func fakeTick(t *testing.T) {
+	t.Helper()
+	var tick int64
+	clock.SetForTesting(func() int64 {
+		tick++
+		return tick
+	})
+	t.Cleanup(clock.ResetForTesting)
+}
+
+func TestInboxIncludesOriginatedThreads(t *testing.T) {
+	s := newTestStore(t)
+	if _, err := s.CreateThread(Thread{Kind: "message", FromAgent: "web", ToKind: "agent", ToTarget: "api"}, "req"); err != nil {
+		t.Fatal(err)
+	}
+	in, err := s.Inbox("web")
+	if err != nil {
+		t.Fatalf("inbox: %v", err)
+	}
+	if len(in) != 1 {
+		t.Fatalf("originator's inbox should include the thread it started, got %d threads", len(in))
+	}
+}
+
+// TestUnreadCountOriginatorSeesPeerReply is the regression test for
+// originator blindness: a reply on a thread you started must count as unread
+// for you, so the notify fan-out lights your mailbox instead of clearing it.
+func TestUnreadCountOriginatorSeesPeerReply(t *testing.T) {
+	fakeTick(t)
+	s := newTestStore(t)
+	if err := s.RegisterAgent(Agent{Alias: "web"}); err != nil {
+		t.Fatal(err)
+	}
+	id, err := s.CreateThread(Thread{Kind: "message", FromAgent: "web", ToKind: "agent", ToTarget: "api"}, "req")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n, err := s.UnreadCount("web"); err != nil || n != 0 {
+		t.Fatalf("own send must not count as unread, got %d (%v)", n, err)
+	}
+	if _, err := s.AppendEntry(id, "api", "done", ""); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := s.UnreadCount("web"); err != nil || n != 1 {
+		t.Fatalf("peer reply on originated thread = %d unread (%v), want 1", n, err)
+	}
+	if err := s.MarkRead("web"); err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := s.UnreadCount("web"); n != 0 {
+		t.Fatalf("unread after MarkRead = %d, want 0", n)
+	}
+}
+
+// TestUnreadCountIgnoresOwnReply: an agent replying on a thread addressed to
+// it must not re-flag its own inbox.
+func TestUnreadCountIgnoresOwnReply(t *testing.T) {
+	fakeTick(t)
+	s := newTestStore(t)
+	if err := s.RegisterAgent(Agent{Alias: "api"}); err != nil {
+		t.Fatal(err)
+	}
+	id, err := s.CreateThread(Thread{Kind: "message", FromAgent: "web", ToKind: "agent", ToTarget: "api"}, "req")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.MarkRead("api"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AppendEntry(id, "api", "done", ""); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := s.UnreadCount("api"); err != nil || n != 0 {
+		t.Fatalf("own reply re-flagged own inbox: %d unread (%v), want 0", n, err)
+	}
+}
