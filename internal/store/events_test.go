@@ -2,6 +2,20 @@ package store
 
 import "testing"
 
+func TestAppendEventPersistsTarget(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.AppendEvent(Event{Kind: "send", Agent: "web", Target: "agent:api", ThreadID: 3, Detail: "subj"}); err != nil {
+		t.Fatal(err)
+	}
+	var target string
+	if err := s.DB().QueryRow(`SELECT target FROM events`).Scan(&target); err != nil {
+		t.Fatal(err)
+	}
+	if target != "agent:api" {
+		t.Fatalf("target = %q, want agent:api", target)
+	}
+}
+
 func TestEventsAppendListFilterAndLimit(t *testing.T) {
 	s := newTestStore(t)
 	for _, e := range []Event{

@@ -49,9 +49,13 @@ type Event struct {
 	TS       int64  `json:"ts"`
 	Kind     string `json:"kind"` // 'notify' | 'read'
 	Agent    string `json:"agent"`
+	Target   string `json:"target"`    // 'agent:x' / 'role:r' / 'broadcast' / bare alias (nudge)
 	ThreadID int64  `json:"thread_id"` // 0 = no thread
 	Count    int    `json:"count"`
 	Detail   string `json:"detail"` // 'lit' | 'cleared' | 'skipped: …' | 'error: …'
+	// Subject is joined from the event's thread at query time (empty for
+	// thread-less events). Never stored on the row.
+	Subject string `json:"subject"`
 }
 
 // KVPair is a shared blackboard fact.

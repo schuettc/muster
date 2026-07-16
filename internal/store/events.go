@@ -10,9 +10,9 @@ const defaultEventLimit = 50
 // operation it describes.
 func (s *Store) AppendEvent(e Event) error {
 	_, err := s.db.Exec(`
-INSERT INTO events (ts, kind, agent, thread_id, count, detail)
-VALUES (?, ?, ?, ?, ?, ?)`,
-		clock.NowMillis(), e.Kind, e.Agent, e.ThreadID, e.Count, e.Detail)
+INSERT INTO events (ts, kind, agent, target, thread_id, count, detail)
+VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		clock.NowMillis(), e.Kind, e.Agent, e.Target, e.ThreadID, e.Count, e.Detail)
 	return err
 }
 
