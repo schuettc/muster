@@ -80,17 +80,21 @@ func (s *Store) DeleteAgent(alias string) error {
 	return err
 }
 
-// UnreadCount returns how many threads addressed to alias have activity newer
-// than the agent's last inbox read. Recipient matching mirrors Inbox.
+// UnreadCount returns how many threads concerning alias (threadConcerns —
+// matching Inbox exactly) contain an entry newer than the agent's last inbox
+// read that was written by someone else. Judging entries rather than the
+// thread's updated_at means an agent's own reply never re-flags its own
+// inbox, and a peer's reply on a thread the agent originated does.
 func (s *Store) UnreadCount(alias string) (int, error) {
 	var n int
 	err := s.db.QueryRow(`
 SELECT COUNT(*) FROM threads
-WHERE ((to_kind='agent'     AND to_target=?)
-    OR (to_kind='role'      AND to_target != '' AND to_target=(SELECT role FROM agents WHERE alias=?))
-    OR (to_kind='broadcast'))
-  AND updated_at > COALESCE((SELECT last_read_at FROM agents WHERE alias=?), 0)`,
-		alias, alias, alias).Scan(&n)
+WHERE `+threadConcerns+`
+  AND EXISTS (SELECT 1 FROM entries e
+              WHERE e.thread_id = threads.id
+                AND e.created_at > COALESCE((SELECT last_read_at FROM agents WHERE alias=?), 0)
+                AND e.from_agent != ?)`,
+		alias, alias, alias, alias, alias).Scan(&n)
 	return n, err
 }
 

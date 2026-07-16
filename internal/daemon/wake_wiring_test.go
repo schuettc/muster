@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"encoding/json"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -16,13 +17,15 @@ import (
 type fakeNotifier struct {
 	mu       sync.Mutex
 	notified []string // session IDs Notify'd
+	counts   []int    // unread counts carried, aligned with notified
 	cleared  []string // session IDs Clear'd
 }
 
-func (f *fakeNotifier) Notify(_, sessionID string, _ int) error {
+func (f *fakeNotifier) Notify(_, sessionID string, count int) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.notified = append(f.notified, sessionID)
+	f.counts = append(f.counts, count)
 	return nil
 }
 
@@ -157,5 +160,87 @@ func TestGetInboxMarksRead(t *testing.T) {
 	call(t, sock, "get_inbox", map[string]any{"alias": "reviewer"})
 	if got, err := s.UnreadCount("reviewer"); err != nil || got != 0 {
 		t.Fatalf("unread after get_inbox = %d (%v), want 0", got, err)
+	}
+}
+
+// TestReplyNotifiesOriginatorWithUnread is the regression test for originator
+// blindness (live incident, 2026-07-16): a reply on a thread must light the
+// ORIGINATOR's mailbox with a real unread count — before the participation
+// predicate was shared, UnreadCount(originator) was 0 and the notify cleared
+// the mailbox instead, leaving the reply invisible on every surface.
+func TestReplyNotifiesOriginatorWithUnread(t *testing.T) {
+	var tick int64
+	clock.SetForTesting(func() int64 {
+		tick++
+		return tick
+	})
+	t.Cleanup(clock.ResetForTesting)
+
+	n := &fakeNotifier{}
+	sock := startWithNotifier(t, n)
+	call(t, sock, "register_agent", map[string]any{"alias": "web", "model_type": "claude", "socket_path": "/s", "session_id": "$1"})
+	call(t, sock, "register_agent", map[string]any{"alias": "api", "model_type": "claude", "socket_path": "/s", "session_id": "$2"})
+	resp := call(t, sock, "send_message", map[string]any{"from": "web", "to_kind": "agent", "to_target": "api", "subject": "req", "body": "x"})
+	data, _ := json.Marshal(resp.Data)
+	var created struct {
+		ThreadID int64 `json:"thread_id"`
+	}
+	if err := json.Unmarshal(data, &created); err != nil || created.ThreadID == 0 {
+		t.Fatalf("send_message result: %v (%s)", err, data)
+	}
+	call(t, sock, "reply", map[string]any{"thread_id": created.ThreadID, "from": "api", "body": "done"})
+
+	f := struct {
+		sessions []string
+		counts   []int
+	}{n.snap(&n.notified), func() []int {
+		n.mu.Lock()
+		defer n.mu.Unlock()
+		out := make([]int, len(n.counts))
+		copy(out, n.counts)
+		return out
+	}()}
+	// First notify: api on the send. Second: web on the reply, count >= 1.
+	if len(f.sessions) != 2 || f.sessions[1] != "$1" {
+		t.Fatalf("reply must notify the originator's session $1, got %v", f.sessions)
+	}
+	if f.counts[1] < 1 {
+		t.Fatalf("originator notified with count %d — a reply must LIGHT the mailbox, not clear it", f.counts[1])
+	}
+}
+
+// TestEventsLogged: notify outcomes and inbox reads land in the event log and
+// come back via the list_events op.
+func TestEventsLogged(t *testing.T) {
+	var tick int64
+	clock.SetForTesting(func() int64 {
+		tick++
+		return tick
+	})
+	t.Cleanup(clock.ResetForTesting)
+
+	n := &fakeNotifier{}
+	sock := startWithNotifier(t, n)
+	call(t, sock, "register_agent", map[string]any{"alias": "api", "model_type": "claude", "socket_path": "/s", "session_id": "$2"})
+	call(t, sock, "send_message", map[string]any{"from": "web", "to_kind": "agent", "to_target": "api", "subject": "req", "body": "x"})
+	call(t, sock, "get_inbox", map[string]any{"alias": "api"})
+
+	resp := call(t, sock, "list_events", map[string]any{})
+	data, _ := json.Marshal(resp.Data)
+	var events []store.Event
+	if err := json.Unmarshal(data, &events); err != nil {
+		t.Fatalf("list_events decode: %v (%s)", err, data)
+	}
+	var sawLit, sawRead bool
+	for _, e := range events {
+		if e.Kind == "notify" && e.Agent == "api" && e.Detail == "lit" && e.Count == 1 {
+			sawLit = true
+		}
+		if e.Kind == "read" && e.Agent == "api" {
+			sawRead = true
+		}
+	}
+	if !sawLit || !sawRead {
+		t.Fatalf("event log missing notify-lit or read (lit=%v read=%v): %+v", sawLit, sawRead, events)
 	}
 }
