@@ -113,7 +113,7 @@ func TestRendererKindShapes(t *testing.T) {
 	r := newRenderer(rows, labels, false, false, 120)
 	var out bytes.Buffer
 	for _, e := range rows {
-		r.line(&out, e)
+		r.Line(&out, e)
 	}
 	got := out.String()
 	for _, want := range []string{
@@ -144,7 +144,7 @@ func TestRendererReplyShowsPreviewNotSubject(t *testing.T) {
 	r := newRenderer(rows, nil, false, false, 120)
 	var out bytes.Buffer
 	for _, e := range rows {
-		r.line(&out, e)
+		r.Line(&out, e)
 	}
 	got := out.String()
 	if !strings.Contains(got, "↳ looks good, shipping") {
@@ -170,7 +170,7 @@ func TestRendererIntentTags(t *testing.T) {
 	r := newRenderer(rows, nil, false, false, 120)
 	var out bytes.Buffer
 	for _, e := range rows {
-		r.line(&out, e)
+		r.Line(&out, e)
 	}
 	got := out.String()
 	for _, want := range []string{"ship it [fyi]", "please check [reply?]", "do the thing [action]"} {
