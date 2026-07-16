@@ -179,3 +179,129 @@ func TestSanitizeEmptyString(t *testing.T) {
 		t.Fatalf("Sanitize(\"\", 80) = %q, want empty", got)
 	}
 }
+
+func TestSanitizeStripsOSCSequenceWithBEL(t *testing.T) {
+	// OSC sequences are terminated by BEL (0x07)
+	// Payload "evil-title" must NOT appear in output
+	in := "before\x1b]0;evil-title\x07after"
+	got := Sanitize(in, 200)
+	want := "beforeafter"
+	if got != want {
+		t.Fatalf("Sanitize(%q) = %q, want %q", in, got, want)
+	}
+	if strings.Contains(got, "evil-title") {
+		t.Fatalf("Sanitize(%q) leaked payload in output: %q", in, got)
+	}
+}
+
+func TestSanitizeStripsOSCSequenceWithST(t *testing.T) {
+	// OSC sequences can also be terminated by ST (ESC \)
+	// Payload "evil-payload" must NOT appear in output
+	in := "text\x1b]0;evil-payload\x1b\\done"
+	got := Sanitize(in, 200)
+	want := "textdone"
+	if got != want {
+		t.Fatalf("Sanitize(%q) = %q, want %q", in, got, want)
+	}
+	if strings.Contains(got, "evil-payload") {
+		t.Fatalf("Sanitize(%q) leaked payload in output: %q", in, got)
+	}
+}
+
+func TestSanitizeStripsUnterminatedOSCSequence(t *testing.T) {
+	// An unterminated OSC consumes to end of input
+	// Payload "unterminated" must NOT appear in output
+	in := "before\x1b]unterminated"
+	got := Sanitize(in, 200)
+	want := "before"
+	if got != want {
+		t.Fatalf("Sanitize(%q) = %q, want %q", in, got, want)
+	}
+	if strings.Contains(got, "unterminated") {
+		t.Fatalf("Sanitize(%q) leaked unterminated OSC payload in output: %q", in, got)
+	}
+}
+
+func TestSanitizeStripsDCSSequence(t *testing.T) {
+	// DCS sequences are ESC 'P' ... BEL/ST
+	// Payload "dcs-payload" must NOT appear in output
+	in := "start\x1bPdcs-payload\x07end"
+	got := Sanitize(in, 200)
+	if strings.Contains(got, "dcs-payload") {
+		t.Fatalf("Sanitize(%q) leaked DCS payload in output: %q", in, got)
+	}
+}
+
+func TestSanitizeStripsPMSequence(t *testing.T) {
+	// PM sequences are ESC '^' ... BEL/ST
+	// Payload "pm-payload" must NOT appear in output
+	in := "start\x1b^pm-payload\x07end"
+	got := Sanitize(in, 200)
+	if strings.Contains(got, "pm-payload") {
+		t.Fatalf("Sanitize(%q) leaked PM payload in output: %q", in, got)
+	}
+}
+
+func TestSanitizeStripsAPCSequence(t *testing.T) {
+	// APC sequences are ESC '_' ... BEL/ST
+	// Payload "apc-payload" must NOT appear in output
+	in := "start\x1b_apc-payload\x07end"
+	got := Sanitize(in, 200)
+	if strings.Contains(got, "apc-payload") {
+		t.Fatalf("Sanitize(%q) leaked APC payload in output: %q", in, got)
+	}
+}
+
+func TestSanitizeStrips8BitOSCSequence(t *testing.T) {
+	// 8-bit OSC introducer is U+009D
+	// Payload "8bit-osc" must NOT appear in output
+	in := "before\x9d0;8bit-osc\x07after"
+	got := Sanitize(in, 200)
+	if strings.Contains(got, "8bit-osc") {
+		t.Fatalf("Sanitize(%q) leaked 8-bit OSC payload in output: %q", in, got)
+	}
+}
+
+func TestSanitizeStrips8BitCSISequence(t *testing.T) {
+	// 8-bit CSI introducer is U+009B
+	// The "31m" parameter must NOT appear in output
+	in := "a\x9b31mred"
+	got := Sanitize(in, 200)
+	if strings.Contains(got, "31m") {
+		t.Fatalf("Sanitize(%q) leaked 8-bit CSI parameters in output: %q", in, got)
+	}
+	want := "ared"
+	if got != want {
+		t.Fatalf("Sanitize(%q) = %q, want %q", in, got, want)
+	}
+}
+
+func TestSanitizeStrips8BitDCSSequence(t *testing.T) {
+	// 8-bit DCS introducer is U+0090
+	// Payload "8bit-dcs" must NOT appear in output
+	in := "before\x908bit-dcs\x07after"
+	got := Sanitize(in, 200)
+	if strings.Contains(got, "8bit-dcs") {
+		t.Fatalf("Sanitize(%q) leaked 8-bit DCS payload in output: %q", in, got)
+	}
+}
+
+func TestSanitizeStrips8BitPMSequence(t *testing.T) {
+	// 8-bit PM introducer is U+009E
+	// Payload "8bit-pm" must NOT appear in output
+	in := "before\x9e8bit-pm\x07after"
+	got := Sanitize(in, 200)
+	if strings.Contains(got, "8bit-pm") {
+		t.Fatalf("Sanitize(%q) leaked 8-bit PM payload in output: %q", in, got)
+	}
+}
+
+func TestSanitizeStrips8BitAPCSequence(t *testing.T) {
+	// 8-bit APC introducer is U+009F
+	// Payload "8bit-apc" must NOT appear in output
+	in := "before\x9f8bit-apc\x07after"
+	got := Sanitize(in, 200)
+	if strings.Contains(got, "8bit-apc") {
+		t.Fatalf("Sanitize(%q) leaked 8-bit APC payload in output: %q", in, got)
+	}
+}

@@ -38,6 +38,20 @@ func FuzzSanitize(f *testing.F) {
 		{"", 80},
 		{"plain ascii text that is quite long indeed for truncation", 10},
 		{"\x1b[38;5;196mmulti-param CSI\x1b[0m", 15},
+		// OSC/DCS/PM/APC sequences (ESC-prefixed)
+		{"before\x1b]0;evil-title\x07after", 80},  // OSC with BEL
+		{"text\x1b]0;evil-payload\x1b\\done", 80}, // OSC with ST
+		{"before\x1b]unterminated", 80},           // unterminated OSC
+		{"start\x1bPdcs-payload\x07end", 80},      // DCS with BEL
+		{"start\x1b^pm-payload\x07end", 80},       // PM with BEL
+		{"start\x1b_apc-payload\x07end", 80},      // APC with BEL
+		// 8-bit C1 introducers
+		{"a\x9b31mred", 80},                   // 8-bit CSI
+		{"before\x9d0;8bit-osc\x07after", 80}, // 8-bit OSC
+		{"before\x908bit-dcs\x07after", 80},   // 8-bit DCS
+		{"before\x9e8bit-pm\x07after", 80},    // 8-bit PM
+		{"before\x9f8bit-apc\x07after", 80},   // 8-bit APC
+
 	}
 	for _, sd := range seeds {
 		f.Add(sd.s, sd.w)
