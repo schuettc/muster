@@ -16,6 +16,7 @@ import (
 	"github.com/schuettc/muster/internal/nudge"
 	"github.com/schuettc/muster/internal/paths"
 	"github.com/schuettc/muster/internal/proto"
+	"github.com/schuettc/muster/internal/station"
 )
 
 // nudgeRun lets tests intercept the tmux command executor for nudges.
@@ -74,11 +75,13 @@ func callData(op string, args map[string]any) (json.RawMessage, error) {
 // Dispatch routes an operator subcommand. args[0] is the subcommand name.
 func Dispatch(args []string, out io.Writer) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: muster <agents|inbox|send|tasks|events|watch|nudge|register|deregister|gc|hook|label> [args]")
+		return fmt.Errorf("usage: muster <agents|inbox|send|tasks|events|watch|station|nudge|register|deregister|gc|hook|label> [args]")
 	}
 	switch args[0] {
 	case "agents":
 		return cmdAgents(out)
+	case "station":
+		return station.Run(args[1:])
 	case "send":
 		return cmdSend(args[1:], out)
 	case "inbox":
