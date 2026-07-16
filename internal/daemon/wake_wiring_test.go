@@ -2,10 +2,12 @@ package daemon
 
 import (
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"slices"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/schuettc/muster/internal/client"
 	"github.com/schuettc/muster/internal/clock"
@@ -158,10 +160,14 @@ func TestGetInboxClearsFlag(t *testing.T) {
 	n := &fakeNotifier{}
 	sock := startWithNotifier(t, n)
 	call(t, sock, "register_agent", map[string]any{"alias": "reviewer", "role": "reviewer", "model_type": "codex", "socket_path": "/s", "session_id": "$5"})
+	// register_agent itself now reconciles the fresh session's badge (spec
+	// §3), so it already emits one Clear($5) before get_inbox runs — assert
+	// the DELTA get_inbox contributes, not the raw total.
+	before := len(n.snap(&n.cleared))
 	call(t, sock, "get_inbox", map[string]any{"alias": "reviewer"})
 	got := n.snap(&n.cleared)
-	if len(got) != 1 || got[0] != "$5" {
-		t.Fatalf("get_inbox should clear reviewer's session $5, got %v", got)
+	if len(got) != before+1 || got[len(got)-1] != "$5" {
+		t.Fatalf("get_inbox should clear reviewer's session $5, got %v (before=%d)", got, before)
 	}
 }
 
@@ -315,5 +321,304 @@ func TestTaskClaimJournalsAndNotifies(t *testing.T) {
 	evs, _ := s.Events(store.EventQuery{Kind: "claim", Backlog: true, Limit: 5})
 	if len(evs) != 1 || evs[0].Agent != "api" || evs[0].ThreadID != tid {
 		t.Fatalf("claim journal row: %+v", evs)
+	}
+}
+
+// countsSnap is snap's int-slice counterpart (fakeNotifier.counts has no
+// dedicated snap helper — several tests below need it).
+func countsSnap(n *fakeNotifier) []int {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	out := make([]int, len(n.counts))
+	copy(out, n.counts)
+	return out
+}
+
+// TestNotifyCoalescesSiblingAliases: two aliases sharing one exact
+// (socket_path, session_id) tuple are ONE actor identity (spec §3) — a
+// broadcast that would otherwise fan out to both must produce exactly one
+// Notify call and one journaled notify row for their shared session, with
+// Count equal to the session's distinct-thread total (1), never 2.
+func TestNotifyCoalescesSiblingAliases(t *testing.T) {
+	n := &fakeNotifier{}
+	sock, s := startWithNotifierAndStore(t, n)
+	call(t, sock, "register_agent", map[string]any{"alias": "sess-name", "role": "peer", "model_type": "claude", "socket_path": "/s", "session_id": "$9"})
+	call(t, sock, "register_agent", map[string]any{"alias": "chosen", "role": "peer", "model_type": "claude", "socket_path": "/s", "session_id": "$9"})
+
+	call(t, sock, "send_message", map[string]any{"from": "operator", "to_kind": "broadcast", "subject": "s", "body": "b"})
+
+	notified := n.snap(&n.notified)
+	counts := countsSnap(n)
+	if len(notified) != 1 || notified[0] != "$9" || counts[0] != 1 {
+		t.Fatalf("sibling aliases must coalesce into ONE notify to $9 count 1, got sessions=%v counts=%v", notified, counts)
+	}
+
+	evs, err := s.Events(store.EventQuery{Kind: "notify", Backlog: true, Limit: 50})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var litRows int
+	for _, e := range evs {
+		if e.Detail == "lit" && e.Count == 1 {
+			litRows++
+		}
+	}
+	if litRows != 1 {
+		t.Fatalf("expected exactly one lit notify journal row, got %d (%+v)", litRows, evs)
+	}
+}
+
+// TestLit2Regression is the lit(2) fix (spec §3): a peer's messages address
+// TWO sibling aliases of the same session on two distinct threads, lighting
+// the badge to a distinct-thread count of 2. Draining only ONE alias's inbox
+// must rewrite the badge to the remainder (1) — not blind-Clear it, which is
+// exactly the bug session-level recompute closes.
+func TestLit2Regression(t *testing.T) {
+	n := &fakeNotifier{}
+	sock, s := startWithNotifierAndStore(t, n)
+	call(t, sock, "register_agent", map[string]any{"alias": "aliasA", "role": "peer", "model_type": "claude", "socket_path": "/s", "session_id": "$9"})
+	call(t, sock, "register_agent", map[string]any{"alias": "aliasB", "role": "peer", "model_type": "claude", "socket_path": "/s", "session_id": "$9"})
+	call(t, sock, "register_agent", map[string]any{"alias": "peer", "role": "other", "model_type": "codex", "socket_path": "/p", "session_id": "$1"})
+
+	call(t, sock, "send_message", map[string]any{"from": "peer", "to_kind": "agent", "to_target": "aliasA", "subject": "a", "body": "x"})
+	call(t, sock, "send_message", map[string]any{"from": "peer", "to_kind": "agent", "to_target": "aliasB", "subject": "b", "body": "y"})
+
+	total, _, err := s.SessionUnread("/s", "$9")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 2 {
+		t.Fatalf("expected 2 distinct unread threads before drain, got %d", total)
+	}
+
+	// Drain ONLY aliasA.
+	call(t, sock, "get_inbox", map[string]any{"alias": "aliasA"})
+
+	remainder, _, err := s.SessionUnread("/s", "$9")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if remainder != 1 {
+		t.Fatalf("draining one alias must leave the OTHER alias's thread unread (remainder=1), got %d", remainder)
+	}
+
+	notified := n.snap(&n.notified)
+	counts := countsSnap(n)
+	if len(notified) == 0 || notified[len(notified)-1] != "$9" || counts[len(counts)-1] != 1 {
+		t.Fatalf("get_inbox drain must re-Notify $9 with the remainder (1), got notified=%v counts=%v", notified, counts)
+	}
+}
+
+// TestGetInboxFailsWhenMarkReadFails: if Inbox succeeds but the MarkRead
+// persist fails, get_inbox must fail outright — no read event journaled, no
+// badge touch — because a read that didn't persist must not report success
+// (spec §3). markReadFailingStore is the injectable seam: it wraps a real
+// *store.Store and fails MarkRead on command while every other method
+// passes through untouched.
+type markReadFailingStore struct {
+	*store.Store
+	failMarkRead bool
+}
+
+func (m *markReadFailingStore) MarkRead(alias string) error {
+	if m.failMarkRead {
+		return fmt.Errorf("injected MarkRead failure")
+	}
+	return m.Store.MarkRead(alias)
+}
+
+func TestGetInboxFailsWhenMarkReadFails(t *testing.T) {
+	dir, cleanup, err := mustertest.ShortHome()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(cleanup)
+	t.Setenv("MUSTER_HOME", dir)
+	realStore, err := store.Open(filepath.Join(dir, "bus.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = realStore.Close() })
+	fs := &markReadFailingStore{Store: realStore}
+
+	n := &fakeNotifier{}
+	d, err := Serve(paths.SocketPath(), fs, n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+	sock := paths.SocketPath()
+
+	call(t, sock, "register_agent", map[string]any{"alias": "reviewer", "role": "reviewer", "model_type": "codex", "socket_path": "/s", "session_id": "$5"})
+	call(t, sock, "send_message", map[string]any{"from": "backend", "to_kind": "agent", "to_target": "reviewer", "subject": "hi", "body": "x"})
+
+	beforeCleared := len(n.snap(&n.cleared))
+	beforeNotified := len(n.snap(&n.notified))
+
+	fs.failMarkRead = true
+	resp := call(t, sock, "get_inbox", map[string]any{"alias": "reviewer"})
+	if resp.OK {
+		t.Fatalf("get_inbox must fail when MarkRead fails, got %+v", resp)
+	}
+	if got := len(n.snap(&n.cleared)); got != beforeCleared {
+		t.Fatalf("badge must be untouched when MarkRead fails: cleared grew from %d to %d", beforeCleared, got)
+	}
+	if got := len(n.snap(&n.notified)); got != beforeNotified {
+		t.Fatalf("badge must be untouched when MarkRead fails: notified grew from %d to %d", beforeNotified, got)
+	}
+	evs, err := realStore.Events(store.EventQuery{Kind: "read", Backlog: true, Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(evs) != 0 {
+		t.Fatalf("no read event must be journaled when MarkRead fails, got %+v", evs)
+	}
+}
+
+// blockingNotifier lets a test hold a session's lock open across a Notify
+// call, so a concurrent get_inbox drain can be driven mid-flight
+// (TestNotifyDrainInterleaving) — Notify for the armed session blocks until
+// the test closes proceed, signaling entered once it starts blocking.
+type blockingNotifier struct {
+	fakeNotifier
+	blockSession string
+	proceed      chan struct{}
+	entered      chan struct{}
+	enteredOnce  sync.Once
+}
+
+func (b *blockingNotifier) Notify(socketPath, sessionID string, count int) error {
+	if sessionID == b.blockSession {
+		b.enteredOnce.Do(func() { close(b.entered) })
+		<-b.proceed
+	}
+	return b.fakeNotifier.Notify(socketPath, sessionID, count)
+}
+
+// TestNotifyDrainInterleaving drives the race the per-session lock exists to
+// close (spec §3): a reply's notify computes its session recompute and then
+// blocks inside Notify (still holding the session lock); while it's blocked,
+// a get_inbox drain of the same session runs its Inbox+MarkRead (no lock
+// needed) and then blocks on the SAME lock for its own recompute+push.
+// Releasing the block lets the reply's (now-stale) Notify land first, but
+// the get_inbox recompute — which acquires the lock strictly afterward and
+// so sees the drain already applied — must be the one that lands last, i.e.
+// the true post-drain state must win, not the stale count.
+func TestNotifyDrainInterleaving(t *testing.T) {
+	dir, cleanup, err := mustertest.ShortHome()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(cleanup)
+	t.Setenv("MUSTER_HOME", dir)
+	s, err := store.Open(filepath.Join(dir, "bus.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	n := &blockingNotifier{proceed: make(chan struct{}), entered: make(chan struct{})}
+	d, err := Serve(paths.SocketPath(), s, n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+	sock := paths.SocketPath()
+
+	call(t, sock, "register_agent", map[string]any{"alias": "solo", "role": "peer", "model_type": "claude", "socket_path": "/s", "session_id": "$9"})
+	call(t, sock, "register_agent", map[string]any{"alias": "author", "role": "other", "model_type": "codex", "socket_path": "/p", "session_id": "$1"})
+
+	// Seed one unread thread while the block is still disarmed.
+	resp := call(t, sock, "send_message", map[string]any{"from": "author", "to_kind": "agent", "to_target": "solo", "subject": "s1", "body": "x"})
+	tid := threadIDOf(t, resp)
+
+	// Arm the block for solo's session: the reply below will compute its
+	// (stale, pre-drain) recompute, then block inside Notify holding $9's
+	// session lock.
+	n.blockSession = "$9"
+	replyDone := make(chan struct{})
+	go func() {
+		call(t, sock, "reply", map[string]any{"thread_id": tid, "from": "author", "body": "y"})
+		close(replyDone)
+	}()
+	<-n.entered // reply's Notify($9, ...) is now blocked, holding the lock
+
+	getInboxDone := make(chan struct{})
+	go func() {
+		call(t, sock, "get_inbox", map[string]any{"alias": "solo"})
+		close(getInboxDone)
+	}()
+	// Give get_inbox's Inbox+MarkRead (unlocked, fast local DB ops) time to
+	// complete and reach the session lock before we release the reply.
+	time.Sleep(50 * time.Millisecond)
+	close(n.proceed)
+	<-replyDone
+	<-getInboxDone
+
+	remainder, _, err := s.SessionUnread("/s", "$9")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if remainder != 0 {
+		t.Fatalf("test setup: expected solo fully drained by get_inbox, SessionUnread=%d", remainder)
+	}
+
+	cleared := n.snap(&n.cleared)
+	if len(cleared) == 0 || cleared[len(cleared)-1] != "$9" {
+		t.Fatalf("final $9 badge must be the get_inbox drain's Clear (post-drain remainder 0), notified=%v cleared=%v", n.snap(&n.notified), cleared)
+	}
+}
+
+// TestSessionAliasesRejectsEmptyTuple: session_aliases requires BOTH
+// socket_path and session_id non-empty (spec §3), and on success returns the
+// session's aliases sorted.
+func TestSessionAliasesRejectsEmptyTuple(t *testing.T) {
+	n := &fakeNotifier{}
+	sock := startWithNotifier(t, n)
+	call(t, sock, "register_agent", map[string]any{"alias": "solo", "role": "peer", "model_type": "claude", "socket_path": "/s", "session_id": "$9"})
+	call(t, sock, "register_agent", map[string]any{"alias": "twin", "role": "peer", "model_type": "claude", "socket_path": "/s", "session_id": "$9"})
+
+	if resp := call(t, sock, "session_aliases", map[string]any{"socket_path": "", "session_id": "$9"}); resp.OK {
+		t.Fatal("session_aliases must reject an empty socket_path")
+	}
+	if resp := call(t, sock, "session_aliases", map[string]any{"socket_path": "/s", "session_id": ""}); resp.OK {
+		t.Fatal("session_aliases must reject an empty session_id")
+	}
+
+	resp := call(t, sock, "session_aliases", map[string]any{"socket_path": "/s", "session_id": "$9"})
+	if !resp.OK {
+		t.Fatalf("session_aliases: %+v", resp)
+	}
+	var out struct {
+		Aliases []string `json:"aliases"`
+	}
+	decode(t, resp, &out)
+	want := []string{"solo", "twin"}
+	if !slices.Equal(out.Aliases, want) {
+		t.Fatalf("aliases = %v, want %v", out.Aliases, want)
+	}
+}
+
+// TestReRegisterReconcilesOldSessionBadge: re-registering an agent under a
+// NEW session tuple must rewrite the OLD tuple's badge too (spec §3), so a
+// stale lit flag doesn't survive the move.
+func TestReRegisterReconcilesOldSessionBadge(t *testing.T) {
+	n := &fakeNotifier{}
+	sock := startWithNotifier(t, n)
+	call(t, sock, "register_agent", map[string]any{"alias": "roamer", "role": "peer", "model_type": "claude", "socket_path": "/s", "session_id": "$1"})
+	call(t, sock, "register_agent", map[string]any{"alias": "author", "role": "other", "model_type": "codex", "socket_path": "/p", "session_id": "$2"})
+	call(t, sock, "send_message", map[string]any{"from": "author", "to_kind": "agent", "to_target": "roamer", "subject": "s", "body": "x"})
+
+	notified := n.snap(&n.notified)
+	if len(notified) == 0 || notified[len(notified)-1] != "$1" {
+		t.Fatalf("setup: expected roamer's session $1 lit, notified=%v", notified)
+	}
+
+	// Move roamer to a new session — its OLD session ($1) must be reconciled.
+	call(t, sock, "register_agent", map[string]any{"alias": "roamer", "role": "peer", "model_type": "claude", "socket_path": "/s", "session_id": "$9"})
+
+	cleared := n.snap(&n.cleared)
+	if !slices.Contains(cleared, "$1") {
+		t.Fatalf("re-register must reconcile the OLD session $1's badge (Clear, no agents left there), cleared=%v", cleared)
 	}
 }
