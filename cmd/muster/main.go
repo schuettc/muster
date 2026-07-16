@@ -32,14 +32,15 @@ func main() {
 		runDebug(os.Args[2:])
 	case "mcp":
 		runMCP()
-	case "agents", "inbox", "send", "tasks", "nudge", "register", "deregister", "gc", "hook", "label":
+	default:
+		// humancli.Dispatch owns the CLI subcommand list and errors on an
+		// unknown one — routing everything here keeps that list canonical
+		// (a second list in this switch once shipped a release whose usage
+		// advertised a subcommand main() refused to route).
 		if err := humancli.Dispatch(os.Args[1:], os.Stdout); err != nil {
 			fmt.Fprintln(os.Stderr, "muster:", err)
 			os.Exit(1)
 		}
-	default:
-		fmt.Fprintf(os.Stderr, "muster: unknown subcommand %q\n", os.Args[1])
-		os.Exit(2)
 	}
 }
 
