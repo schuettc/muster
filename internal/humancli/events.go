@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/schuettc/muster/internal/display"
 )
 
 // eventRow mirrors store.Event's wire JSON.
@@ -22,6 +24,11 @@ type eventRow struct {
 	Count    int    `json:"count"`
 	Detail   string `json:"detail"`
 	Subject  string `json:"subject"`
+	// Intent is the event's thread's EFFECTIVE intent (store's effectiveIntent),
+	// joined at query time exactly like Subject: "" (unspecified) | "fyi" |
+	// "reply-requested" | "action-requested". what() renders it as a tag on
+	// send/task rows.
+	Intent string `json:"intent"`
 }
 
 // eventsPage is the decoded {events, max_id} envelope list_events returns.
@@ -52,25 +59,16 @@ func fetchEvents(agent, kind string, threadID, afterID int64, limit int) (events
 	return page, nil
 }
 
-// oneLine collapses tabs/newlines/carriage-returns to spaces so a single
-// event never spans more than one output line.
-func oneLine(s string) string {
-	s = strings.NewReplacer("\t", " ", "\n", " ", "\r", " ").Replace(s)
-	return s
-}
-
-// truncate shortens s to at most n runes, appending an ellipsis if cut.
-func truncate(s string, n int) string {
-	r := []rune(s)
-	if len(r) <= n {
-		return s
-	}
-	return string(r[:n-1]) + "…"
-}
+// rawFieldWidth bounds display.Sanitize's width cap for row fields (subject,
+// detail, who) before their final column truncation in line() — large enough
+// that it never bites ahead of the real budget, while still running every
+// field through the one canonical sanitizer (control-char stripping +
+// whitespace-run collapsing) rather than a bespoke oneLine/truncate pair.
+const rawFieldWidth = 4096
 
 const (
-	whoMaxWidth      = 34  // WHO column cap (runes)
-	whoSenderWidth   = 15  // sender half of a 'from → to' pair
+	whoMaxWidth      = 34  // WHO column cap (display columns)
+	whoSenderWidth   = 15  // sender half of a 'from → to' pair (display columns)
 	defaultLineWidth = 120 // line budget when $COLUMNS is unset; --width overrides
 )
 
@@ -108,7 +106,7 @@ func newRenderer(rows []eventRow, labels map[string]string, aliases, fullTime bo
 // fit grows column widths to accommodate e; it never shrinks them, keeping
 // alignment stable across a streamed tail.
 func (r *renderer) fit(e eventRow) {
-	if n := len([]rune(r.who(e))); n > r.whoW {
+	if n := display.Width(r.who(e)); n > r.whoW {
 		r.whoW = min(n, whoMaxWidth)
 	}
 	if n := len(r.thread(e)); n > r.threadW {
@@ -149,7 +147,7 @@ func (r *renderer) dispTarget(target string) string {
 func (r *renderer) who(e eventRow) string {
 	switch e.Kind {
 	case "send", "task":
-		return truncate(r.disp(e.Agent), whoSenderWidth) + " → " + r.dispTarget(e.Target)
+		return display.Sanitize(r.disp(e.Agent), whoSenderWidth) + " → " + r.dispTarget(e.Target)
 	case "notify":
 		return "→ " + r.disp(e.Agent)
 	case "nudge":
@@ -167,15 +165,50 @@ func (r *renderer) thread(e eventRow) string {
 	return "#" + strconv.FormatInt(e.ThreadID, 10)
 }
 
+// intentTag maps a thread's effective intent to the journal suffix what()
+// appends on send/task rows — "" (unspecified) renders no tag. The three
+// non-empty values mirror internal/store's IntentFYI/IntentReply/IntentAction
+// vocabulary (see cmdSend's validIntents in humancli.go for why humancli
+// doesn't import internal/store for this — it's a peer client of the daemon,
+// not a store-internal package).
+func intentTag(intent string) string {
+	switch intent {
+	case "fyi":
+		return " [fyi]"
+	case "reply-requested":
+		return " [reply?]"
+	case "action-requested":
+		return " [action]"
+	default:
+		return ""
+	}
+}
+
 // what renders the payload column without repeating itself: a send/task
-// detail duplicates the subject by construction, so only the subject prints;
+// detail duplicates the subject by construction, so only the subject prints,
+// with an intent tag appended when the thread's effective intent is set;
 // notify folds its unread count into the outcome ('lit(2)') and appends the
-// subject for context.
+// subject for context; a reply with a non-empty body preview (Detail) shows
+// '↳ <preview>' instead of the thread subject — showing both makes an
+// announcement and its reply look like a duplicate send.
 func (r *renderer) what(e eventRow) string {
-	subject := oneLine(e.Subject)
-	detail := oneLine(e.Detail)
+	subject := display.Sanitize(e.Subject, rawFieldWidth)
+	detail := display.Sanitize(e.Detail, rawFieldWidth)
 	switch e.Kind {
-	case "send", "task", "reply", "claim":
+	case "send", "task":
+		if subject != "" {
+			return subject + intentTag(e.Intent)
+		}
+		return detail + intentTag(e.Intent)
+	case "reply":
+		if detail != "" {
+			return "↳ " + detail
+		}
+		if subject != "" {
+			return subject
+		}
+		return detail
+	case "claim":
 		if subject != "" {
 			return subject
 		}
@@ -224,7 +257,7 @@ func (r *renderer) line(w io.Writer, e eventRow) {
 		budget = 10
 	}
 	_, _ = fmt.Fprintf(w, "%-*s  %-6s  %-*s  %-*s  %s\n",
-		len(r.timeFormat()), ts, e.Kind, r.whoW, truncate(r.who(e), whoMaxWidth), r.threadW, r.thread(e), truncate(r.what(e), budget))
+		len(r.timeFormat()), ts, e.Kind, r.whoW, display.Sanitize(r.who(e), whoMaxWidth), r.threadW, r.thread(e), display.Sanitize(r.what(e), budget))
 }
 
 // loadLabels fetches the current alias→label map, best-effort: on any error

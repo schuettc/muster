@@ -81,6 +81,75 @@ func TestSendThenInboxShowsMessage(t *testing.T) {
 	}
 }
 
+// TestSendCommandAcceptsIntent proves --intent lands on the thread (visible
+// via list_threads) and renders as a journal tag in `muster events`.
+func TestSendCommandAcceptsIntent(t *testing.T) {
+	startTestDaemon(t)
+	if _, err := callData("register_agent", map[string]any{"alias": "consumer", "role": "consumer", "model_type": "codex"}); err != nil {
+		t.Fatal(err)
+	}
+	var sendBuf bytes.Buffer
+	if err := Dispatch([]string{"send", "consumer", "please take a look", "--from", "backend", "--subject", "spec review", "--intent", "reply-requested"}, &sendBuf); err != nil {
+		t.Fatalf("send --intent: %v", err)
+	}
+
+	raw, err := callData("list_threads", map[string]any{"limit": 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var res struct {
+		Threads []struct {
+			Subject string `json:"subject"`
+			Intent  string `json:"intent"`
+		} `json:"threads"`
+	}
+	if err := json.Unmarshal(raw, &res); err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Threads) != 1 || res.Threads[0].Intent != "reply-requested" {
+		t.Fatalf("expected thread with intent reply-requested, got %+v", res.Threads)
+	}
+
+	var eventsBuf bytes.Buffer
+	if err := Dispatch([]string{"events", "--kind", "send"}, &eventsBuf); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(eventsBuf.String(), "[reply?]") {
+		t.Fatalf("events output missing intent tag:\n%s", eventsBuf.String())
+	}
+}
+
+// TestSendCommandRejectsInvalidIntent proves an unrecognized --intent value
+// is rejected client-side (a clearer error than a daemon round-trip), and
+// that no thread is created.
+func TestSendCommandRejectsInvalidIntent(t *testing.T) {
+	startTestDaemon(t)
+	if _, err := callData("register_agent", map[string]any{"alias": "consumer", "role": "consumer", "model_type": "codex"}); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	err := Dispatch([]string{"send", "consumer", "body", "--from", "backend", "--intent", "urgent"}, &out)
+	if err == nil {
+		t.Fatalf("expected error for invalid --intent")
+	}
+	if !strings.Contains(err.Error(), "intent") {
+		t.Fatalf("error should mention intent, got: %v", err)
+	}
+	raw, lerr := callData("list_threads", map[string]any{"limit": 10})
+	if lerr != nil {
+		t.Fatal(lerr)
+	}
+	var res struct {
+		Threads []json.RawMessage `json:"threads"`
+	}
+	if uerr := json.Unmarshal(raw, &res); uerr != nil {
+		t.Fatal(uerr)
+	}
+	if len(res.Threads) != 0 {
+		t.Fatalf("invalid intent must not create a thread, got %d", len(res.Threads))
+	}
+}
+
 func TestTasksCommandShowsOnlyTasks(t *testing.T) {
 	startTestDaemon(t)
 	if _, err := callData("register_agent", map[string]any{"alias": "rev", "role": "reviewer", "model_type": "codex"}); err != nil {

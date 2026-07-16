@@ -15,6 +15,7 @@ type SendMessageIn struct {
 	Subject  string `json:"subject" jsonschema:"a short subject line"`
 	Ref      string `json:"ref,omitempty" jsonschema:"optional pointer to the work (repo/branch/endpoint/file)"`
 	Body     string `json:"body" jsonschema:"the message body"`
+	Intent   string `json:"intent,omitempty" jsonschema:"fyi | reply-requested | action-requested; mark FYIs so recipients' drains stay cheap — an FYI doesn't demand a reply. Leave empty when the message's urgency is unspecified."`
 }
 
 // ThreadIDOut is the output of send_message and task_create.
@@ -58,7 +59,7 @@ type GetThreadOut struct {
 func sendMessageHandler(_ context.Context, _ *mcp.CallToolRequest, in SendMessageIn) (*mcp.CallToolResult, ThreadIDOut, error) {
 	raw, err := callDaemon("send_message", map[string]any{
 		"from": in.From, "to_kind": in.ToKind, "to_target": in.ToTarget,
-		"subject": in.Subject, "ref": in.Ref, "body": in.Body,
+		"subject": in.Subject, "ref": in.Ref, "body": in.Body, "intent": in.Intent,
 	})
 	if err != nil {
 		return nil, ThreadIDOut{}, err
@@ -111,7 +112,7 @@ func getThreadHandler(_ context.Context, _ *mcp.CallToolRequest, in GetThreadIn)
 // registerMessageTools registers send_message, reply, get_inbox, and
 // get_thread on srv.
 func registerMessageTools(srv *mcp.Server) {
-	mcp.AddTool(srv, &mcp.Tool{Name: "send_message", Description: "Send a message to another agent (to_kind=agent), a role (to_kind=role), or everyone (to_kind=broadcast)."}, sendMessageHandler)
+	mcp.AddTool(srv, &mcp.Tool{Name: "send_message", Description: "Send a message to another agent (to_kind=agent), a role (to_kind=role), or everyone (to_kind=broadcast). Set intent to fyi/reply-requested/action-requested so the recipient's inbox and drain reflect what you actually need back."}, sendMessageHandler)
 	mcp.AddTool(srv, &mcp.Tool{Name: "reply", Description: "Append a reply to an existing thread (message or task)."}, replyHandler)
 	mcp.AddTool(srv, &mcp.Tool{Name: "get_inbox", Description: "Read the threads that concern an agent — addressed to it (directly, by role, or broadcast) or originated by it, so replies on threads it started show up here — newest first."}, getInboxHandler)
 	mcp.AddTool(srv, &mcp.Tool{Name: "get_thread", Description: "Fetch a single thread and all its entries in order."}, getThreadHandler)

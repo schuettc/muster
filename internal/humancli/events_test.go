@@ -129,6 +129,58 @@ func TestRendererKindShapes(t *testing.T) {
 	}
 }
 
+// TestRendererReplyShowsPreviewNotSubject extends the duplicate-look finding:
+// a reply row with a non-empty Detail (the journaled body preview) must show
+// '↳ <detail>' instead of the thread subject, so an announcement and its
+// reply no longer look like a double-send. A reply with no Detail (older
+// rows, or a preview that came back empty) still falls back to the subject.
+func TestRendererReplyShowsPreviewNotSubject(t *testing.T) {
+	rows := []eventRow{
+		{Kind: "reply", Agent: "bhw-3", ThreadID: 19, Subject: "spec review", Detail: "looks good, shipping"},
+		{Kind: "reply", Agent: "bhw-3", ThreadID: 20, Subject: "no detail case"},
+	}
+	r := newRenderer(rows, nil, false, false, 120)
+	var out bytes.Buffer
+	for _, e := range rows {
+		r.line(&out, e)
+	}
+	got := out.String()
+	if !strings.Contains(got, "↳ looks good, shipping") {
+		t.Fatalf("reply row must render '↳ <detail>':\n%s", got)
+	}
+	if strings.Contains(got, "spec review") {
+		t.Fatalf("reply row with a detail must not also show the subject (duplicate-look):\n%s", got)
+	}
+	if !strings.Contains(got, "no detail case") {
+		t.Fatalf("reply row with no detail must fall back to the subject:\n%s", got)
+	}
+}
+
+// TestRendererIntentTags: send/task rows append the [fyi]/[reply?]/[action]
+// tag when Intent is set; rows with no intent are untagged.
+func TestRendererIntentTags(t *testing.T) {
+	rows := []eventRow{
+		{Kind: "send", Agent: "a", Target: "agent:b", Subject: "ship it", Intent: "fyi"},
+		{Kind: "send", Agent: "a", Target: "agent:b", Subject: "please check", Intent: "reply-requested"},
+		{Kind: "task", Agent: "a", Target: "agent:b", Subject: "do the thing", Intent: "action-requested"},
+		{Kind: "send", Agent: "a", Target: "agent:b", Subject: "no tag here"},
+	}
+	r := newRenderer(rows, nil, false, false, 120)
+	var out bytes.Buffer
+	for _, e := range rows {
+		r.line(&out, e)
+	}
+	got := out.String()
+	for _, want := range []string{"ship it [fyi]", "please check [reply?]", "do the thing [action]"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("renderer output missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "no tag here [") {
+		t.Fatalf("row with unset intent must not be tagged:\n%s", got)
+	}
+}
+
 // TestEventsLinesFitWidth: with a tight --width, no rendered line exceeds
 // the budget (the WHAT column absorbs the squeeze).
 func TestEventsLinesFitWidth(t *testing.T) {

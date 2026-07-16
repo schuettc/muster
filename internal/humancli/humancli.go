@@ -151,6 +151,24 @@ func cmdAgents(out io.Writer) error {
 	return tw.Flush()
 }
 
+// validIntents is the client-side copy of the intent vocabulary store.CreateThread
+// enforces (internal/store/threads.go's validIntent) — "" (unspecified) plus
+// the three named intents. Duplicated here deliberately: humancli is a peer
+// client of the daemon over the wire, not a store-internal package, so it
+// checks against the same three literal strings rather than importing
+// internal/store. The store re-validates regardless; this only buys a
+// clearer client-side error than a daemon round-trip.
+var validIntents = map[string]bool{"": true, "fyi": true, "reply-requested": true, "action-requested": true}
+
+// validateIntent returns a clear error for an intent value the store would
+// otherwise reject after a round-trip.
+func validateIntent(intent string) error {
+	if !validIntents[intent] {
+		return fmt.Errorf("invalid --intent %q: must be fyi, reply-requested, or action-requested", intent)
+	}
+	return nil
+}
+
 // cmdSend sends a message to an agent, role, or broadcast target and prints
 // the resulting thread ID.
 func cmdSend(args []string, out io.Writer) error {
@@ -161,8 +179,12 @@ func cmdSend(args []string, out io.Writer) error {
 	ref := fs.String("ref", "", "pointer to the work")
 	role := fs.Bool("role", false, "treat target as a role")
 	broadcast := fs.Bool("broadcast", false, "send to everyone")
+	intent := fs.String("intent", "", "message intent: fyi, reply-requested, or action-requested")
 	flagArgs, rest := splitFlagsAndPositional(args)
 	if err := fs.Parse(flagArgs); err != nil {
+		return err
+	}
+	if err := validateIntent(*intent); err != nil {
 		return err
 	}
 	toKind, toTarget := "agent", ""
@@ -175,12 +197,12 @@ func cmdSend(args []string, out io.Writer) error {
 	var body string
 	if *broadcast {
 		if len(rest) < 1 {
-			return fmt.Errorf("usage: muster send --broadcast <body>")
+			return fmt.Errorf("usage: muster send --broadcast <body> [--intent fyi|reply-requested|action-requested]")
 		}
 		body = strings.Join(rest, " ")
 	} else {
 		if len(rest) < 2 {
-			return fmt.Errorf("usage: muster send <alias|label|proj:label> <body> [--from X --subject S --ref R --role --broadcast]")
+			return fmt.Errorf("usage: muster send <alias|label|proj:label> <body> [--from X --subject S --ref R --role --broadcast --intent fyi|reply-requested|action-requested]")
 		}
 		toTarget = rest[0]
 		if toKind == "agent" {
@@ -194,7 +216,7 @@ func cmdSend(args []string, out io.Writer) error {
 	}
 	raw, err := callData("send_message", map[string]any{
 		"from": *from, "to_kind": toKind, "to_target": toTarget,
-		"subject": *subject, "ref": *ref, "body": body,
+		"subject": *subject, "ref": *ref, "body": body, "intent": *intent,
 	})
 	if err != nil {
 		return err

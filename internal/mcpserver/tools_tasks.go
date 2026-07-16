@@ -15,6 +15,7 @@ type TaskCreateIn struct {
 	Subject  string `json:"subject" jsonschema:"a short task title"`
 	Ref      string `json:"ref,omitempty" jsonschema:"optional pointer to the work (repo/branch/endpoint/file)"`
 	Body     string `json:"body" jsonschema:"task details"`
+	Intent   string `json:"intent,omitempty" jsonschema:"fyi | reply-requested | action-requested; mark FYIs so recipients' drains stay cheap — an FYI doesn't demand a reply. Left empty, a task is still treated as action-requested (a task is inherently a request for action)."`
 }
 
 // TaskClaimIn is the input to task_claim.
@@ -34,7 +35,7 @@ type TaskTransitionIn struct {
 func taskCreateHandler(_ context.Context, _ *mcp.CallToolRequest, in TaskCreateIn) (*mcp.CallToolResult, ThreadIDOut, error) {
 	raw, err := callDaemon("task_create", map[string]any{
 		"from": in.From, "to_kind": in.ToKind, "to_target": in.ToTarget,
-		"subject": in.Subject, "ref": in.Ref, "body": in.Body,
+		"subject": in.Subject, "ref": in.Ref, "body": in.Body, "intent": in.Intent,
 	})
 	if err != nil {
 		return nil, ThreadIDOut{}, err
@@ -65,7 +66,7 @@ func taskTransitionHandler(_ context.Context, _ *mcp.CallToolRequest, in TaskTra
 // registerTaskTools registers task_create, task_claim, and task_transition
 // on srv.
 func registerTaskTools(srv *mcp.Server) {
-	mcp.AddTool(srv, &mcp.Tool{Name: "task_create", Description: "Create a task addressed to an agent or role. The assignee(s) can claim and work it."}, taskCreateHandler)
+	mcp.AddTool(srv, &mcp.Tool{Name: "task_create", Description: "Create a task addressed to an agent or role. The assignee(s) can claim and work it. Optional intent (fyi/reply-requested/action-requested) defaults to action-requested — a task is inherently a request for action."}, taskCreateHandler)
 	mcp.AddTool(srv, &mcp.Tool{Name: "task_claim", Description: "Claim an open task. Only the first claimer succeeds; a second claim fails."}, taskClaimHandler)
 	mcp.AddTool(srv, &mcp.Tool{Name: "task_transition", Description: "Move a task to a new status (claimed, needs_info, blocked, completed, declined, cancelled) with an optional note."}, taskTransitionHandler)
 }
