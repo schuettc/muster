@@ -34,3 +34,31 @@ func TestEventsCommandPrintsLog(t *testing.T) {
 		t.Fatalf("--agent nobody must filter out api's events:\n%s", out.String())
 	}
 }
+
+func TestEventsFiltersAndOneLineRendering(t *testing.T) {
+	startTestDaemon(t)
+	if _, err := callData("register_agent", map[string]any{"alias": "api", "model_type": "claude"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := callData("send_message", map[string]any{"from": "web", "to_kind": "agent", "to_target": "api", "subject": "line1\nline2\ttabbed", "body": "b"}); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := Dispatch([]string{"events", "--kind", "send"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "SUBJECT") || !strings.Contains(got, "line1 line2") {
+		t.Fatalf("send row with sanitized subject expected:\n%s", got)
+	}
+	if lines := strings.Count(got, "\n"); lines != 2 { // header + one row
+		t.Fatalf("multi-line subject leaked, %d lines:\n%s", lines, got)
+	}
+	out.Reset()
+	if err := Dispatch([]string{"events", "--kind", "read", "--thread", "1"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out.String(), "send") {
+		t.Fatalf("kind filter leaked send rows:\n%s", out.String())
+	}
+}
