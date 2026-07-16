@@ -74,7 +74,7 @@ func callData(op string, args map[string]any) (json.RawMessage, error) {
 // Dispatch routes an operator subcommand. args[0] is the subcommand name.
 func Dispatch(args []string, out io.Writer) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: muster <agents|inbox|send|tasks|nudge|register|deregister|gc|hook|label> [args]")
+		return fmt.Errorf("usage: muster <agents|inbox|send|tasks|events|watch|nudge|register|deregister|gc|hook|label> [args]")
 	}
 	switch args[0] {
 	case "agents":

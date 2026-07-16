@@ -47,7 +47,7 @@ type Entry struct {
 type Event struct {
 	ID       int64  `json:"id"`
 	TS       int64  `json:"ts"`
-	Kind     string `json:"kind"` // 'notify' | 'read'
+	Kind     string `json:"kind"` // 'send' | 'task' | 'reply' | 'claim' | 'transition' | 'nudge' | 'notify' | 'read'
 	Agent    string `json:"agent"`
 	Target   string `json:"target"`    // 'agent:x' / 'role:r' / 'broadcast' / bare alias (nudge)
 	ThreadID int64  `json:"thread_id"` // 0 = no thread
