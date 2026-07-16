@@ -52,6 +52,25 @@ func FuzzSanitize(f *testing.F) {
 		{"before\x9e8bit-pm\x07after", 80},    // 8-bit PM
 		{"before\x9f8bit-apc\x07after", 80},   // 8-bit APC
 
+		// UTF-8-ENCODED C1 introducers — the reachable shape through the
+		// daemon (json.Unmarshal decodes these to a rune; it never yields a
+		// raw 0x80-0x9F byte). These are the reviewer's reproductions: the
+		// pre-fix code decoded the introducer rune and dropped it as a
+		// plain control WITHOUT consuming its payload, leaking the payload
+		// as plain text.
+		{"before" + string(rune(0x9d)) + "0;evil-title\x07after", 200},               // UTF-8 OSC
+		{"a" + string(rune(0x9b)) + "31mred", 200},                                   // UTF-8 CSI
+		{"start" + string(rune(0x90)) + "dcs-payload\x07end", 200},                   // UTF-8 DCS
+		{"start" + string(rune(0x9e)) + "pm-payload\x07end", 200},                    // UTF-8 PM
+		{"start" + string(rune(0x9f)) + "apc-payload\x07end", 200},                   // UTF-8 APC
+		{"before" + string(rune(0x9d)) + "evil" + string(rune(0x9c)) + "after", 200}, // UTF-8 OSC terminated by UTF-8 C1 ST rune
+
+		// Overlong UTF-8 encodings — must be rejected as invalid, not
+		// decoded to the value they arithmetically produce.
+		{"a" + string([]byte{0xC0, 0x9B}) + "b", 200},             // overlong 2-byte encoding of ESC (0x1B)
+		{"a" + string([]byte{0xC0, 0x80}) + "b", 200},             // overlong 2-byte encoding of NUL
+		{"a" + string([]byte{0xE0, 0x80, 0x80}) + "b", 200},       // overlong 3-byte encoding of NUL
+		{"a" + string([]byte{0xF0, 0x80, 0x80, 0x80}) + "b", 200}, // overlong 4-byte encoding of NUL
 	}
 	for _, sd := range seeds {
 		f.Add(sd.s, sd.w)

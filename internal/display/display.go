@@ -34,14 +34,20 @@ func Sanitize(s string, maxWidth int) string {
 			continue
 		}
 
-		// Handle 8-bit C1 introducers (structured payloads, not plain controls)
+		// Raw (non-UTF-8-encoded) 8-bit C1 introducer bytes. 0x9B/0x9D/0x90/
+		// 0x9E/0x9F are themselves invalid UTF-8 start bytes (they match the
+		// continuation-byte pattern 10xxxxxx), so decodeUTF8Byte below would
+		// never surface them as a decoded rune when they appear raw — this
+		// is the "harmless, covers non-JSON callers" path from 5912665, kept
+		// for callers that hand Sanitize a raw byte stream rather than a
+		// JSON-decoded string.
 		if b == 0x9B { // 8-bit CSI
-			i = skip8BitCSIBytes(bytes, i)
+			i = consumeCSIPayload(bytes, i+1)
 			inWSRun = false
 			continue
 		}
 		if b == 0x9D || b == 0x90 || b == 0x9E || b == 0x9F { // 8-bit OSC/DCS/PM/APC
-			i = skip8BitPayloadBytes(bytes, i)
+			i = consumeStringPayload(bytes, i+1)
 			inWSRun = false
 			continue
 		}
@@ -52,30 +58,45 @@ func Sanitize(s string, maxWidth int) string {
 			continue
 		}
 
+		// Try to decode a UTF-8 rune (decodeUTF8Byte rejects overlong
+		// encodings, so an overlong-encoded ESC/C1 byte never reaches the
+		// checks below as a live control rune).
+		r, width := decodeUTF8Byte(bytes, i)
+		if width == 0 {
+			// Invalid start byte, truncated sequence, or overlong encoding —
+			// drop just this byte; the next iteration retries byte-by-byte.
+			continue
+		}
+
+		// A validly UTF-8-ENCODED C1 introducer (e.g. 0xC2 0x9B) is the
+		// reachable shape for JSON-carried strings — json.Unmarshal never
+		// yields a raw 0x80-0x9F byte, but it happily decodes a 2-byte C1
+		// rune. Consume its structured payload the same way as the raw-byte
+		// case above (same canonical consumers), rather than falling through
+		// to isUnicodeControl below, which would silently drop only the
+		// introducer rune and leak the payload as plain text.
+		if r == 0x9B { // CSI
+			i = consumeCSIPayload(bytes, i+width)
+			inWSRun = false
+			continue
+		}
+		if r == 0x9D || r == 0x90 || r == 0x9E || r == 0x9F { // OSC/DCS/PM/APC
+			i = consumeStringPayload(bytes, i+width)
+			inWSRun = false
+			continue
+		}
+
 		// Emit space if we were in a whitespace run
 		if inWSRun {
 			cleaned = append(cleaned, ' ')
 			inWSRun = false
 		}
 
-		// Handle C0/C1 control bytes directly
-		if b < 0x20 || b == 0x7F || (b >= 0x80 && b <= 0x9F) {
-			continue
+		// Check for bidi controls and other problematic runes
+		if !isBidiControl(r) && !isUnicodeControl(r) {
+			cleaned = append(cleaned, r)
 		}
-
-		// For valid UTF-8 starting bytes (0x00-0x7F handled above, 0x80-0xBF are continuation)
-		// Try to decode a UTF-8 rune
-		r, width := decodeUTF8Byte(bytes, i)
-		if width > 0 {
-			// Check for bidi controls and other problematic runes
-			if !isBidiControl(r) && !isUnicodeControl(r) {
-				cleaned = append(cleaned, r)
-			}
-			i += width - 1 // -1 because the loop will increment i
-			continue
-		}
-
-		// If we couldn't decode UTF-8, skip this byte (it's an invalid continuation byte)
+		i += width - 1 // -1 because the loop will increment i
 	}
 
 	if inWSRun {
@@ -84,8 +105,15 @@ func Sanitize(s string, maxWidth int) string {
 	return truncateToWidth(cleaned, maxWidth)
 }
 
-// decodeUTF8Byte decodes a UTF-8 rune starting at bytes[i]. Returns the rune and the width
-// in bytes (1-4), or 0, 0 if the byte is not a valid UTF-8 start byte.
+// decodeUTF8Byte decodes a UTF-8 rune starting at bytes[i]. Returns the rune
+// and the width in bytes (1-4), or 0, 0 if the byte is not a valid UTF-8
+// start byte, the sequence is truncated/malformed, or the sequence is an
+// overlong encoding (a multi-byte encoding of a value that fits in fewer
+// bytes — e.g. 0xC0 0x9B decodes arithmetically to 0x1B/ESC, but 2-byte
+// sequences must encode values >= 0x80). Overlong encodings are rejected
+// rather than accepted, so an overlong-encoded ESC/C1 byte can never reach
+// Sanitize's control-rune checks or the plain-text path by defeating this
+// decoder.
 func decodeUTF8Byte(bytes []byte, i int) (rune, int) {
 	b := bytes[i]
 
@@ -109,6 +137,9 @@ func decodeUTF8Byte(bytes []byte, i int) (rune, int) {
 			return 0, 0
 		}
 		r := rune(b&0x1F)<<6 | rune(b2&0x3F)
+		if r < 0x80 { // overlong
+			return 0, 0
+		}
 		return r, 2
 	}
 
@@ -123,6 +154,9 @@ func decodeUTF8Byte(bytes []byte, i int) (rune, int) {
 			return 0, 0
 		}
 		r := rune(b&0x0F)<<12 | rune(b2&0x3F)<<6 | rune(b3&0x3F)
+		if r < 0x800 { // overlong
+			return 0, 0
+		}
 		return r, 3
 	}
 
@@ -138,6 +172,9 @@ func decodeUTF8Byte(bytes []byte, i int) (rune, int) {
 			return 0, 0
 		}
 		r := rune(b&0x07)<<18 | rune(b2&0x3F)<<12 | rune(b3&0x3F)<<6 | rune(b4&0x3F)
+		if r < 0x10000 { // overlong
+			return 0, 0
+		}
 		return r, 4
 	}
 
@@ -152,10 +189,13 @@ func isUnicodeControl(r rune) bool {
 // skipEscapeBytes returns the index of the last byte consumed by the escape sequence
 // starting at bytes[i] (bytes[i] itself is ESC, 0x1B):
 // - CSI (ESC '[') consumes parameter/intermediate bytes then one final byte in 0x40-0x7E
-// - OSC/DCS/PM/APC (ESC ']'/P/^/_) consume until BEL (0x07) or ST (ESC \) or end
+// - OSC/DCS/PM/APC (ESC ']'/P/^/_) consume until a terminator or end
 // - Any other ESC is consumed along with the following byte
 // - A trailing ESC with nothing after it consumes just itself
-// An unterminated sequence consumes to the end of input.
+// An unterminated sequence consumes to the end of input. Delegates the actual
+// payload scan to consumeCSIPayload/consumeStringPayload, the same consumers
+// used by the raw-8-bit-byte and decoded-C1-rune introducer paths in
+// Sanitize, so there is exactly one payload-consumption implementation.
 func skipEscapeBytes(bytes []byte, i int) int {
 	if i+1 >= len(bytes) {
 		return i
@@ -165,40 +205,30 @@ func skipEscapeBytes(bytes []byte, i int) int {
 
 	// CSI
 	if c == '[' {
-		j := i + 2
-		for j < len(bytes) {
-			if bytes[j] >= 0x40 && bytes[j] <= 0x7E {
-				return j
-			}
-			j++
-		}
-		return len(bytes) - 1
+		return consumeCSIPayload(bytes, i+2)
 	}
 
-	// OSC / DCS / PM / APC: consume until BEL (0x07) or ST (ESC \) or end
+	// OSC / DCS / PM / APC
 	if c == ']' || c == 'P' || c == '^' || c == '_' {
-		j := i + 2
-		for j < len(bytes) {
-			if bytes[j] == 0x07 { // BEL
-				return j
-			}
-			// ST: ESC \
-			if bytes[j] == 0x1B && j+1 < len(bytes) && bytes[j+1] == '\\' {
-				return j + 1
-			}
-			j++
-		}
-		return len(bytes) - 1
+		return consumeStringPayload(bytes, i+2)
 	}
 
 	// Any other ESC is consumed along with the following byte
 	return i + 1
 }
 
-// skip8BitCSIBytes consumes a CSI sequence starting with the 8-bit introducer (0x9B).
-// Similar to ESC '[', it consumes parameter/intermediate bytes then one final byte in 0x40-0x7E
-func skip8BitCSIBytes(bytes []byte, i int) int {
-	j := i + 1
+// consumeCSIPayload consumes CSI parameter/intermediate bytes then one final
+// byte in 0x40-0x7E, starting at bytes[start] — the first byte after a CSI
+// introducer, whether that introducer was ESC '[', the raw 8-bit CSI byte
+// 0x9B, or a UTF-8-decoded CSI rune 0x9B. Returns the index of the final byte
+// consumed, or len(bytes)-1 if the sequence runs off the end unterminated.
+// This is the one canonical CSI-payload consumer for all three introducer
+// shapes.
+func consumeCSIPayload(bytes []byte, start int) int {
+	if len(bytes) == 0 {
+		return 0
+	}
+	j := start
 	for j < len(bytes) {
 		if bytes[j] >= 0x40 && bytes[j] <= 0x7E {
 			return j
@@ -208,17 +238,30 @@ func skip8BitCSIBytes(bytes []byte, i int) int {
 	return len(bytes) - 1
 }
 
-// skip8BitPayloadBytes consumes an OSC/DCS/PM/APC sequence starting with an 8-bit introducer
-// (0x9D, 0x90, 0x9E, 0x9F respectively).
-// Consumes until BEL (0x07) or ST (ESC \) or end of input
-func skip8BitPayloadBytes(bytes []byte, i int) int {
-	j := i + 1
+// consumeStringPayload consumes a string-type payload (OSC/DCS/PM/APC)
+// starting at bytes[start] — the first byte after the introducer, whether
+// that introducer was ESC ']'/P/^/_, a raw 8-bit byte (0x9D/0x90/0x9E/0x9F),
+// or the corresponding UTF-8-decoded C1 rune. Consumes until a terminator or
+// end of input; a terminator is BEL (0x07), ST as ESC '\' (0x1B 0x5C), or
+// the C1 ST rune 0x9C in either encoding (raw byte 0x9C, or UTF-8-encoded as
+// 0xC2 0x9C). This is the one canonical string-payload consumer for all
+// three introducer shapes and all three terminator shapes.
+func consumeStringPayload(bytes []byte, start int) int {
+	if len(bytes) == 0 {
+		return 0
+	}
+	j := start
 	for j < len(bytes) {
 		if bytes[j] == 0x07 { // BEL
 			return j
 		}
-		// ST: ESC \
-		if bytes[j] == 0x1B && j+1 < len(bytes) && bytes[j+1] == '\\' {
+		if bytes[j] == 0x1B && j+1 < len(bytes) && bytes[j+1] == '\\' { // ST: ESC \
+			return j + 1
+		}
+		if bytes[j] == 0x9C { // raw C1 ST byte
+			return j
+		}
+		if bytes[j] == 0xC2 && j+1 < len(bytes) && bytes[j+1] == 0x9C { // UTF-8-encoded C1 ST rune
 			return j + 1
 		}
 		j++
