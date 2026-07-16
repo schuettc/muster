@@ -153,7 +153,10 @@ Other model types are typed without submitting.
 Registration and inbox-draining can be driven by session lifecycle hooks instead
 of typed by hand:
 
-- **SessionStart** → `muster register` — every session joins the bus on start.
+- **SessionStart** → `muster register` — the session joins the bus on start.
+  Claude Code fires this at launch; Codex fires it on the session's first turn,
+  so say anything to a fresh Codex session ("hi" is enough) before addressing
+  mail to it.
 - **Stop** (turn end) → if the session has unread muster mail, the hook tells the
   agent to drain its inbox and reply, autonomously.
 - **SessionEnd** (Claude Code) → `muster deregister`; `muster gc` covers the rest.

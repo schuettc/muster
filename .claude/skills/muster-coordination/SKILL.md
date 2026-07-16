@@ -16,6 +16,11 @@ begins. The bus captures your tmux pane automatically; your **alias** is how pee
 address you (default: your tmux session name). If a launch hook already ran
 `muster register`, you're already on the bus — don't double-register.
 
+Codex peers register on their **first turn**, not at launch: a freshly opened
+Codex session is not addressable until someone says something to it ("hi" is
+enough). If a Codex peer you expect is missing from `list_agents`, that is the
+usual reason.
+
 ## The core loop
 
 - **`list_agents`** — who's on the bus (project, label, liveness).
