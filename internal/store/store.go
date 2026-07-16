@@ -44,6 +44,7 @@ func migrate(db *sql.DB) error {
 		`ALTER TABLE agents ADD COLUMN label TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE agents ADD COLUMN label_manual INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE agents ADD COLUMN last_read_at INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE events ADD COLUMN target TEXT NOT NULL DEFAULT ''`,
 	}
 	for _, ddl := range alters {
 		if _, err := db.Exec(ddl); err != nil && !strings.Contains(err.Error(), "duplicate column name") {

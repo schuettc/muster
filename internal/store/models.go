@@ -40,18 +40,22 @@ type Entry struct {
 	CreatedAt    int64  `json:"created_at"`
 }
 
-// Event is one bus observability record: a mailbox notify outcome or an
-// inbox read. The daemon appends these so "who was lit when, and when did it
-// clear" is answerable after the fact instead of reconstructed from thread
-// timestamps.
+// Event is one bus journal record: a bus action (send, task, reply, claim,
+// transition, nudge) or a wake-layer outcome (mailbox notify, inbox read).
+// The daemon appends these so "who did what, and who was lit when" is
+// answerable after the fact instead of reconstructed from thread timestamps.
 type Event struct {
 	ID       int64  `json:"id"`
 	TS       int64  `json:"ts"`
-	Kind     string `json:"kind"` // 'notify' | 'read'
+	Kind     string `json:"kind"` // 'send' | 'task' | 'reply' | 'claim' | 'transition' | 'nudge' | 'notify' | 'read'
 	Agent    string `json:"agent"`
+	Target   string `json:"target"`    // 'agent:x' / 'role:r' / 'broadcast' / bare alias (nudge)
 	ThreadID int64  `json:"thread_id"` // 0 = no thread
 	Count    int    `json:"count"`
 	Detail   string `json:"detail"` // 'lit' | 'cleared' | 'skipped: …' | 'error: …'
+	// Subject is joined from the event's thread at query time (empty for
+	// thread-less events). Never stored on the row.
+	Subject string `json:"subject"`
 }
 
 // KVPair is a shared blackboard fact.

@@ -4,8 +4,12 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
+	"time"
 
+	"github.com/schuettc/muster/internal/clock"
+	"github.com/schuettc/muster/internal/store"
 	"github.com/schuettc/muster/internal/tmuxenv"
 )
 
@@ -123,11 +127,58 @@ func TestGCReapsOnlyDeadAgents(t *testing.T) {
 	t.Cleanup(func() { tmuxenv.Run = prev })
 
 	var buf bytes.Buffer
-	if err := cmdGC(&buf); err != nil {
+	if err := cmdGC(nil, &buf); err != nil {
 		t.Fatal(err)
 	}
 	agents := listAgentsForTest(t, sock)
 	if len(agents) != 1 || agents[0].Alias != "alive" {
 		t.Fatalf("after gc=%+v (want only 'alive')", agents)
+	}
+}
+
+// TestGCPrunesEventsPastRetention drives `gc --events-keep 1h` against the
+// test daemon: one event stamped 2h in the past (older than the 1h cutoff,
+// must be pruned) and one stamped now (must survive). The clock is faked so
+// the old event's ts is directly comparable against a real 1h duration —
+// threads_test.go's fakeTick (tiny incrementing ints) can't do that, since a
+// 1h cutoff would dwarf any tick-based timestamp.
+func TestGCPrunesEventsPastRetention(t *testing.T) {
+	now := time.Now().Add(-2 * time.Hour).UnixMilli()
+	clock.SetForTesting(func() int64 { return now })
+	t.Cleanup(clock.ResetForTesting)
+
+	s := startTestDaemon(t)
+	if err := s.AppendEvent(store.Event{Kind: "read", Agent: "old"}); err != nil {
+		t.Fatal(err)
+	}
+	now = time.Now().UnixMilli() // advance the fake clock to "now"
+	if err := s.AppendEvent(store.Event{Kind: "read", Agent: "recent"}); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	if err := Dispatch([]string{"gc", "--events-keep", "1h"}, &buf); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(buf.String(), "pruned 1 event(s)") {
+		t.Fatalf("expected %q to report pruned 1 event(s)", buf.String())
+	}
+	left, err := s.Events(store.EventQuery{Backlog: true, Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(left) != 1 || left[0].Agent != "recent" {
+		t.Fatalf("expected only the recent event to survive, got %+v", left)
+	}
+}
+
+// TestGCRejectsNonPositiveEventsKeep ensures --events-keep <= 0 is rejected
+// before any daemon call is made.
+func TestGCRejectsNonPositiveEventsKeep(t *testing.T) {
+	startTestDaemon(t)
+	var buf bytes.Buffer
+	err := Dispatch([]string{"gc", "--events-keep", "0s"}, &buf)
+	if err == nil || !strings.Contains(err.Error(), "--events-keep must be > 0") {
+		t.Fatalf("expected --events-keep must be > 0 error, got %v", err)
 	}
 }

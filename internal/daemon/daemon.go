@@ -4,6 +4,7 @@ package daemon
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"net"
 	"os"
 	"strconv"
@@ -156,6 +157,15 @@ func (d *Daemon) notifyForThread(threadID int64, actor string) {
 // never fail or slow the bus operation it describes.
 func (d *Daemon) logEvent(e store.Event) { _ = d.s.AppendEvent(e) }
 
+// targetOf renders a thread address as a journal target: 'broadcast' or
+// '<to_kind>:<to_target>'.
+func targetOf(a map[string]any) string {
+	if str(a, "to_kind") == "broadcast" {
+		return "broadcast"
+	}
+	return str(a, "to_kind") + ":" + str(a, "to_target")
+}
+
 func (d *Daemon) dispatch(req proto.Request) proto.Response {
 	a := req.Args
 	switch req.Op {
@@ -184,6 +194,7 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 		if err != nil {
 			return fail(err)
 		}
+		d.logEvent(store.Event{Kind: "send", Agent: str(a, "from"), Target: targetOf(a), ThreadID: id, Detail: str(a, "subject")})
 		d.notifyForThread(id, str(a, "from"))
 		return ok(map[string]any{"thread_id": id})
 	case "task_create":
@@ -194,17 +205,21 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 		if err != nil {
 			return fail(err)
 		}
+		d.logEvent(store.Event{Kind: "task", Agent: str(a, "from"), Target: targetOf(a), ThreadID: id, Detail: str(a, "subject")})
 		d.notifyForThread(id, str(a, "from"))
 		return ok(map[string]any{"thread_id": id})
 	case "task_claim":
 		if err := d.s.ClaimTask(i64(a, "thread_id"), str(a, "by")); err != nil {
 			return fail(err)
 		}
+		d.logEvent(store.Event{Kind: "claim", Agent: str(a, "by"), ThreadID: i64(a, "thread_id")})
+		d.notifyForThread(i64(a, "thread_id"), str(a, "by"))
 		return ok(nil)
 	case "task_transition":
 		if err := d.s.TransitionTask(i64(a, "thread_id"), str(a, "by"), str(a, "status"), str(a, "note")); err != nil {
 			return fail(err)
 		}
+		d.logEvent(store.Event{Kind: "transition", Agent: str(a, "by"), ThreadID: i64(a, "thread_id"), Detail: str(a, "status")})
 		d.notifyForThread(i64(a, "thread_id"), str(a, "by"))
 		return ok(nil)
 	case "reply":
@@ -212,6 +227,7 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 		if err != nil {
 			return fail(err)
 		}
+		d.logEvent(store.Event{Kind: "reply", Agent: str(a, "from"), ThreadID: i64(a, "thread_id")})
 		d.notifyForThread(i64(a, "thread_id"), str(a, "from"))
 		return ok(map[string]any{"entry_id": id})
 	case "get_inbox":
@@ -245,12 +261,42 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 			return fail(err)
 		}
 		return ok(map[string]any{"found": found, "pair": p})
+	case "log_event":
+		target, detail := str(a, "target"), str(a, "detail")
+		if detail != "typed" && detail != "submitted" {
+			return fail(fmt.Errorf("log_event: detail must be typed|submitted"))
+		}
+		if _, found, err := d.s.GetAgent(target); err != nil || !found {
+			return fail(fmt.Errorf("log_event: unknown target %q", target))
+		}
+		// The daemon constructs the canonical event; client fields beyond
+		// target/detail are ignored so the journal can't be polluted.
+		d.logEvent(store.Event{Kind: "nudge", Target: target, Detail: detail})
+		return ok(nil)
 	case "list_events":
-		evs, err := d.s.RecentEvents(str(a, "agent"), int(i64(a, "limit")))
+		evs, err := d.s.Events(store.EventQuery{
+			Agent: str(a, "agent"), Kind: str(a, "kind"),
+			ThreadID: i64(a, "thread_id"), AfterID: i64(a, "after_id"),
+			Limit: int(i64(a, "limit")), Backlog: boolArg(a, "backlog"),
+		})
 		if err != nil {
 			return fail(err)
 		}
-		return ok(evs)
+		maxID, err := d.s.MaxEventID()
+		if err != nil {
+			return fail(err)
+		}
+		return ok(map[string]any{"events": evs, "max_id": maxID})
+	case "prune_events":
+		cutoff := i64(a, "older_than_ms")
+		if cutoff <= 0 {
+			return fail(fmt.Errorf("older_than_ms must be > 0"))
+		}
+		n, err := d.s.PruneEvents(cutoff)
+		if err != nil {
+			return fail(err)
+		}
+		return ok(map[string]any{"pruned": n})
 	case "get_agent":
 		ag, found, err := d.s.GetAgent(str(a, "alias"))
 		if err != nil {
