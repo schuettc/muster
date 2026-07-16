@@ -6,7 +6,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
+	"time"
 
+	"github.com/schuettc/muster/internal/clock"
 	"github.com/schuettc/muster/internal/tmuxenv"
 )
 
@@ -71,8 +74,21 @@ func cmdDeregister(args []string, out io.Writer) error {
 	return err
 }
 
-// cmdGC deregisters every agent whose tmux session is no longer alive.
-func cmdGC(out io.Writer) error {
+// cmdGC deregisters every agent whose tmux session is no longer alive, then
+// prunes journal events older than --events-keep (default 720h = 30 days).
+// The reap and prune phases are independent: a prune error is reported on the
+// same writer but never masks the reap summary already printed.
+func cmdGC(args []string, out io.Writer) error {
+	fs := flag.NewFlagSet("gc", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	eventsKeep := fs.Duration("events-keep", 720*time.Hour, "prune journal events older than this")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *eventsKeep <= 0 {
+		return fmt.Errorf("--events-keep must be > 0")
+	}
+
 	raw, err := callData("list_agents", nil)
 	if err != nil {
 		return err
@@ -94,6 +110,23 @@ func cmdGC(out io.Writer) error {
 		}
 		reaped++
 	}
-	_, err = fmt.Fprintf(out, "gc: reaped %d\n", reaped)
+	if _, err := fmt.Fprintf(out, "gc: reaped %d\n", reaped); err != nil {
+		return err
+	}
+
+	cutoff := strconv.FormatInt(clock.NowMillis()-eventsKeep.Milliseconds(), 10)
+	pruneRaw, pruneErr := callData("prune_events", map[string]any{"older_than_ms": cutoff})
+	if pruneErr != nil {
+		_, _ = fmt.Fprintf(out, "gc: prune_events failed: %v\n", pruneErr)
+		return fmt.Errorf("prune_events failed: %w", pruneErr)
+	}
+	var res struct {
+		Pruned int64 `json:"pruned"`
+	}
+	if err := json.Unmarshal(pruneRaw, &res); err != nil {
+		_, _ = fmt.Fprintf(out, "gc: prune_events failed: %v\n", err)
+		return fmt.Errorf("prune_events failed: %w", err)
+	}
+	_, err = fmt.Fprintf(out, "pruned %d event(s)\n", res.Pruned)
 	return err
 }

@@ -74,7 +74,7 @@ func callData(op string, args map[string]any) (json.RawMessage, error) {
 // Dispatch routes an operator subcommand. args[0] is the subcommand name.
 func Dispatch(args []string, out io.Writer) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: muster <agents|inbox|send|tasks|nudge|register|deregister|gc|hook|label> [args]")
+		return fmt.Errorf("usage: muster <agents|inbox|send|tasks|events|watch|nudge|register|deregister|gc|hook|label> [args]")
 	}
 	switch args[0] {
 	case "agents":
@@ -87,6 +87,8 @@ func Dispatch(args []string, out io.Writer) error {
 		return cmdTasks(args[1:], out)
 	case "events":
 		return cmdEvents(args[1:], out)
+	case "watch":
+		return cmdWatch(args[1:], out, watchOpts{})
 	case "nudge":
 		return cmdNudge(args[1:], out)
 	case "register":
@@ -94,7 +96,7 @@ func Dispatch(args []string, out io.Writer) error {
 	case "deregister":
 		return cmdDeregister(args[1:], out)
 	case "gc":
-		return cmdGC(out)
+		return cmdGC(args[1:], out)
 	case "hook":
 		return cmdHook(args[1:], os.Stdin, out)
 	case "label":
@@ -343,6 +345,11 @@ func cmdNudge(args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
+	detailWord := "typed"
+	if submitted {
+		detailWord = "submitted"
+	}
+	_, _ = callData("log_event", map[string]any{"target": alias, "detail": detailWord}) // best-effort journal
 	if submitted {
 		_, err = fmt.Fprintln(out, "delivered + submitted.")
 	} else {

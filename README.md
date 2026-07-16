@@ -85,6 +85,7 @@ muster agents                              # who's registered
 muster inbox <alias>                       # an agent's threads — addressed to it or started by it
 muster tasks <alias>                       # just the tasks for an agent
 muster events                              # the bus event log: every mailbox notify and inbox read
+muster watch                               # follow the bus live — every message, task, wake and read as it happens
 muster send <alias> "message"  --from me   # send a directed message
 muster send --role reviewer "please look"  --from me   # to a role
 muster send --broadcast "heads up"         --from me   # to everyone
@@ -99,6 +100,10 @@ muster register [alias] --role <r> --model <name>
 muster deregister [alias]
 muster gc                 # reap agents whose tmux session is gone
 ```
+
+`muster gc` also prunes the event log: rows older than `--events-keep` are
+deleted (default `720h`, i.e. 30 days), so the journal doesn't grow without
+bound on a long-running daemon.
 
 `register` captures the tmux pane automatically. Alias precedence: explicit
 arg → `$MUSTER_ALIAS` → tmux session name. `--model` is stored on the agent and
@@ -143,7 +148,10 @@ to see `📬<count>` on the tab title and status bar.
 Every notify outcome (lit, cleared, skipped, errored) and every inbox read is
 recorded in an event log — `muster events [--agent <alias>] [--limit <n>]` —
 so "whose mailbox was lit when, and when was it cleared" is answerable after
-the fact.
+the fact. Rows now carry the thread's subject alongside its target, so you can
+tell which conversation an event belongs to without a separate lookup.
+`muster watch` is the live view of the same journal: it prints new rows as
+they land instead of a fixed page, and Ctrl-C exits immediately.
 
 To actively poke an agent to act now:
 

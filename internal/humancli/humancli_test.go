@@ -2,6 +2,7 @@ package humancli
 
 import (
 	"bytes"
+	"encoding/json"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -13,8 +14,10 @@ import (
 	"github.com/schuettc/muster/internal/store"
 )
 
-// startTestDaemon boots a real in-process daemon on a temp socket.
-func startTestDaemon(t *testing.T) {
+// startTestDaemon boots a real in-process daemon on a temp socket, returning
+// the underlying store so tests can seed rows (e.g. events at a controlled
+// timestamp) directly, bypassing the wire protocol.
+func startTestDaemon(t *testing.T) *store.Store {
 	t.Helper()
 	dir, cleanup, err := mustertest.ShortHome()
 	if err != nil {
@@ -32,6 +35,7 @@ func startTestDaemon(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = d.Close() })
+	return s
 }
 
 func TestAgentsCommandListsRegistered(t *testing.T) {
@@ -127,6 +131,76 @@ func TestNudgeCommandResolvesAndNudges(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "rev") || len(recorded) == 0 {
 		t.Fatalf("expected resolved-target output + a send-keys call; out=%q calls=%v", buf.String(), recorded)
+	}
+}
+
+// TestNudgeSelfReportsJournalRow: after a successful nudge, a "nudge" event
+// row exists for the target alias (best-effort log_event call from cmdNudge).
+func TestNudgeSelfReportsJournalRow(t *testing.T) {
+	startTestDaemon(t)
+	if _, err := callData("register_agent", map[string]any{"alias": "rev", "role": "reviewer", "model_type": "codex", "socket_path": "/s", "pane_id": "%2", "session_id": "$1"}); err != nil {
+		t.Fatal(err)
+	}
+	origNudge := nudgeRun
+	nudgeRun = func(_ ...string) error { return nil }
+	t.Cleanup(func() { nudgeRun = origNudge })
+
+	var buf bytes.Buffer
+	if err := Dispatch([]string{"nudge", "rev"}, &buf); err != nil {
+		t.Fatalf("nudge: %v", err)
+	}
+
+	raw, err := callData("list_events", map[string]any{"kind": "nudge", "backlog": true, "limit": 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var res struct {
+		Events []struct {
+			Kind   string `json:"kind"`
+			Target string `json:"target"`
+			Detail string `json:"detail"`
+		} `json:"events"`
+	}
+	if err := json.Unmarshal(raw, &res); err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Events) != 1 || res.Events[0].Target != "rev" || res.Events[0].Detail != "submitted" {
+		t.Fatalf("expected 1 nudge event for rev/submitted, got %+v", res.Events)
+	}
+}
+
+// TestNudgeSelfReportsTypedWhenNoSubmit: when nudging with --no-submit flag,
+// the journal records detail="typed" (not submitted).
+func TestNudgeSelfReportsTypedWhenNoSubmit(t *testing.T) {
+	startTestDaemon(t)
+	if _, err := callData("register_agent", map[string]any{"alias": "rev", "role": "reviewer", "model_type": "codex", "socket_path": "/s", "pane_id": "%2", "session_id": "$1"}); err != nil {
+		t.Fatal(err)
+	}
+	origNudge := nudgeRun
+	nudgeRun = func(_ ...string) error { return nil }
+	t.Cleanup(func() { nudgeRun = origNudge })
+
+	var buf bytes.Buffer
+	if err := Dispatch([]string{"nudge", "--no-submit", "rev"}, &buf); err != nil {
+		t.Fatalf("nudge --no-submit: %v", err)
+	}
+
+	raw, err := callData("list_events", map[string]any{"kind": "nudge", "backlog": true, "limit": 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var res struct {
+		Events []struct {
+			Kind   string `json:"kind"`
+			Target string `json:"target"`
+			Detail string `json:"detail"`
+		} `json:"events"`
+	}
+	if err := json.Unmarshal(raw, &res); err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Events) != 1 || res.Events[0].Target != "rev" || res.Events[0].Detail != "typed" {
+		t.Fatalf("expected 1 nudge event for rev/typed, got %+v", res.Events)
 	}
 }
 
