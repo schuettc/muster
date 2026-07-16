@@ -27,6 +27,8 @@
     --signal-d: #eba63f;
     --signal-l: #b06f14;
     --wire:     #6cb3c2;
+    --sock-d:   #98a3ec;
+    --sock-l:   #5661b8;
     --mono: "SF Mono", ui-monospace, "JetBrains Mono", "Cascadia Code", Menlo, Consolas, monospace;
     --sans: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     --maxw: 60rem;
@@ -34,27 +36,27 @@
 
     --bg: var(--ink); --surface: var(--ink-2); --surface-2: var(--ink-3);
     --text: var(--fg-d); --muted: var(--muted-d); --line: var(--line-d);
-    --signal: var(--signal-d); --signal-soft: rgba(235,166,63,.12);
+    --signal: var(--signal-d); --signal-soft: rgba(235,166,63,.12); --sock: var(--sock-d);
     --shadow: 0 1px 0 rgba(255,255,255,.03), 0 18px 40px -24px rgba(0,0,0,.7);
   }
   @media (prefers-color-scheme: light) {
     :root {
       --bg: var(--paper); --surface: var(--paper-2); --surface-2: #eef0f4;
       --text: var(--fg-l); --muted: var(--muted-l); --line: var(--line-l);
-      --signal: var(--signal-l); --signal-soft: rgba(176,111,20,.10);
+      --signal: var(--signal-l); --signal-soft: rgba(176,111,20,.10); --sock: var(--sock-l);
       --shadow: 0 1px 0 rgba(0,0,0,.02), 0 18px 40px -28px rgba(20,22,29,.28);
     }
   }
   :root[data-theme="dark"] {
     --bg: var(--ink); --surface: var(--ink-2); --surface-2: var(--ink-3);
     --text: var(--fg-d); --muted: var(--muted-d); --line: var(--line-d);
-    --signal: var(--signal-d); --signal-soft: rgba(235,166,63,.12);
+    --signal: var(--signal-d); --signal-soft: rgba(235,166,63,.12); --sock: var(--sock-d);
     --shadow: 0 1px 0 rgba(255,255,255,.03), 0 18px 40px -24px rgba(0,0,0,.7);
   }
   :root[data-theme="light"] {
     --bg: var(--paper); --surface: var(--paper-2); --surface-2: #eef0f4;
     --text: var(--fg-l); --muted: var(--muted-l); --line: var(--line-l);
-    --signal: var(--signal-l); --signal-soft: rgba(176,111,20,.10);
+    --signal: var(--signal-l); --signal-soft: rgba(176,111,20,.10); --sock: var(--sock-l);
     --shadow: 0 1px 0 rgba(0,0,0,.02), 0 18px 40px -28px rgba(20,22,29,.28);
   }
 
@@ -159,6 +161,51 @@
   .foot a:hover { color: var(--signal); border-bottom-color: var(--signal); }
   .foot .mm { color: var(--text); font-weight: 600; }
 
+
+  /* message-flow diagram */
+  .flow-scroll { overflow-x: auto; }
+  .flow-scroll svg { display: block; width: 100%; min-width: 780px; height: auto; }
+  .flow-cap { font-family: var(--mono); font-size: .8rem; color: var(--muted); padding: .85rem 1.25rem; border-top: 1px solid var(--line); min-height: 2.6em; }
+  .flow-cap b { color: var(--signal); font-weight: 600; }
+  .fbox { fill: var(--bg); stroke: var(--line); }
+  .fsurf { fill: var(--surface-2); stroke: var(--line); }
+  .ftext { fill: var(--text); font-family: var(--mono); font-size: 13px; }
+  .fmut { fill: var(--muted); font-family: var(--mono); font-size: 11px; }
+  .fsig { fill: var(--signal); font-family: var(--mono); font-size: 12px; font-weight: 600; }
+  .fwire { stroke: var(--line); stroke-width: 1.5; fill: none; }
+  .fwire.dashed { stroke-dasharray: 4 5; }
+  .fdot { fill: var(--signal); opacity: 0; }
+  .fdot.cyan { fill: var(--wire); }
+  .fdot.on { opacity: 1; }
+  .fbadge { opacity: 0; transition: opacity .35s ease; }
+  .fbadge.on { opacity: 1; }
+  #fagentR rect, #fagentL rect { transition: stroke .3s ease; }
+  #fagentR.wake rect, #fagentL.wake rect { stroke: var(--signal); }
+  #fdb { transition: fill .3s ease; }
+  #fdb.on { fill: var(--signal); }
+  .flife { stroke: var(--line); stroke-width: 1.5; stroke-dasharray: 2 6; fill: none; }
+  .frow { opacity: .58; transition: opacity .35s ease; }
+  .frow.on, #flowsvg.static .frow { opacity: 1; }
+  .frow text { font-family: var(--mono); font-size: 11.5px; fill: var(--muted); }
+  .frow.on text { fill: var(--text); }
+  .fl-am { stroke: var(--signal); stroke-width: 1.6; }
+  .fl-vi { stroke: var(--sock); stroke-width: 1.6; }
+  .fh-vi { fill: var(--sock); }
+  .fdot.vio { fill: var(--sock); }
+  .flow-legend { display: flex; flex-wrap: wrap; gap: 1.4rem; padding: .7rem 1.25rem; border-bottom: 1px solid var(--line); font-family: var(--mono); font-size: .72rem; color: var(--muted); }
+  .flow-legend i { display: inline-block; width: 20px; height: 0; border-top: 2px solid; margin-right: .45rem; vertical-align: middle; }
+  .flow-legend .lg-am { border-color: var(--signal); }
+  .flow-legend .lg-vi { border-color: var(--sock); }
+  .flow-legend .lg-cy { border-color: var(--wire); border-top-style: dashed; }
+  .fquote { font-size: 10.5px !important; fill: var(--signal) !important; }
+  .fchip rect { fill: var(--surface-2); stroke: var(--wire); }
+  .fchip text { font-family: var(--mono); font-size: 11px; fill: var(--text); }
+  .fl-cy { stroke: var(--wire); stroke-width: 1.6; stroke-dasharray: 5 5; }
+  .fh-am { fill: var(--signal); } .fh-cy { fill: var(--wire); }
+  .fping { fill: var(--signal); }
+  .frow.on .fping { animation: fping 1.15s ease-in-out infinite; }
+  @keyframes fping { 0%,100% { opacity: 1; } 50% { opacity: .3; } }
+
   /* the product name, when it appears in prose — echoes the wordmark */
   .mstr { font-family: var(--mono); color: var(--signal); font-weight: 600; font-size: .94em; letter-spacing: -.01em; }
 
@@ -194,6 +241,7 @@
 
 <nav class="toc" aria-label="Sections">
   <a href="#top">muster</a>
+  <a href="#flow">the flow</a>
   <a href="#what">what it is</a>
   <a href="#tools">the tools</a>
   <a href="#mailbox">tmux &amp; mailbox</a>
@@ -235,11 +283,146 @@ api-2   reply  <span class="c-sig">"fixed — createdAt added"</span>
   </div>
 </header>
 
+<section id="flow">
+  <div class="wrap">
+    <p class="kicker">the flow</p>
+    <h2>From ask to answer.</h2>
+    <p class="lead">The diagram below follows one request between two agent sessions. Each column is a participant: the two coding agents, the <span class="mstr">muster</span> MCP server running inside each session, the <span class="mstr">muster</span> daemon, and the tmux server. The sessions themselves live inside tmux, which is why setting the <code>@muster_inbox</code> option on a session makes a <span class="mail">📬</span> appear on that session&#8217;s tab. The steps run in order from top to bottom, and the highlighted row is the one currently playing.</p>
+    <div class="term">
+      <div class="term-bar"><span class="lamp"></span><span class="lamp"></span><span class="lamp"></span><span class="title">~ message flow</span></div>
+      <div class="flow-legend">
+        <span><i class="lg-am"></i>agent ↔ mcp · stdio</span>
+        <span><i class="lg-vi"></i>mcp ↔ daemon · unix socket</span>
+        <span><i class="lg-cy"></i>daemon ↔ tmux</span>
+      </div>
+      <div class="flow-scroll">
+      <svg id="flowsvg" viewBox="0 0 990 626" role="img" aria-label="Sequence diagram with six lanes — claude agent, its muster MCP server, the muster daemon, the tmux server, the backend's MCP server, and the codex agent. You tell claude to let the backend know GET /users is missing createdAt; claude sends it over the bus, the daemon stores it and flags the backend session's mailbox in tmux; codex notices when it finishes its task, reads the thread, makes the fix, and replies; the sender's tab lights and claude reports back to you.">
+        <!-- session brackets -->
+        <text x="167" y="22" text-anchor="middle" class="fmut">tmux session · web (frontend)</text>
+        <g id="fbadgeL" class="fbadge"><text x="325" y="22" text-anchor="end" class="fsig">📬 1</text></g>
+        <line x1="10" y1="30" x2="325" y2="30" class="fwire"/>
+        <text x="827" y="22" text-anchor="middle" class="fmut">tmux session · api-2 (backend)</text>
+        <g id="fbadgeR" class="fbadge"><text x="985" y="22" text-anchor="end" class="fsig">📬 1</text></g>
+        <line x1="670" y1="30" x2="985" y2="30" class="fwire"/>
+
+        <!-- lane headers -->
+        <g><rect x="10" y="40" width="150" height="56" rx="9" class="fbox"/>
+          <text x="24" y="63" class="ftext" style="font-size:12.5px">claude</text>
+          <text x="24" y="81" class="fmut">coding agent</text></g>
+        <g><rect x="175" y="40" width="150" height="56" rx="9" class="fbox"/>
+          <text x="189" y="63" class="ftext" style="font-size:12.5px">muster mcp</text>
+          <text x="189" y="81" class="fmut">stdio server</text></g>
+        <g><rect x="340" y="40" width="150" height="56" rx="9" class="fbox"/>
+          <text x="354" y="63" class="ftext" style="font-size:12.5px">muster daemon</text>
+          <text x="354" y="81" class="fmut">socket · SQLite</text></g>
+        <g><rect x="505" y="40" width="150" height="56" rx="9" class="fbox"/>
+          <text x="519" y="63" class="ftext" style="font-size:12.5px">tmux server</text>
+          <text x="519" y="81" class="fmut">holds the sessions</text></g>
+        <g><rect x="670" y="40" width="150" height="56" rx="9" class="fbox"/>
+          <text x="684" y="63" class="ftext" style="font-size:12.5px">muster mcp</text>
+          <text x="684" y="81" class="fmut">stdio server</text></g>
+        <g><rect x="835" y="40" width="150" height="56" rx="9" class="fbox"/>
+          <text x="849" y="63" class="ftext" style="font-size:12.5px">codex</text>
+          <text x="849" y="81" class="fmut">coding agent</text></g>
+
+        <!-- lifelines -->
+        <line x1="85" y1="96" x2="85" y2="616" class="flife"/>
+        <line x1="250" y1="96" x2="250" y2="616" class="flife"/>
+        <line x1="415" y1="96" x2="415" y2="616" class="flife"/>
+        <line x1="580" y1="96" x2="580" y2="616" class="flife"/>
+        <line x1="745" y1="96" x2="745" y2="616" class="flife"/>
+        <line x1="910" y1="96" x2="910" y2="616" class="flife"/>
+
+        <!-- rows -->
+        <g id="fr1" class="frow">
+          <circle cx="85" cy="150" r="5" class="fping"/>
+          <text x="101" y="154">› you: <tspan class="fquote">"let backend know GET /users is missing createdAt"</tspan></text>
+        </g>
+        <g id="fr2" class="frow">
+          <text x="168" y="176" text-anchor="middle">send_message</text>
+          <line x1="85" y1="184" x2="240" y2="184" class="fl-am"/>
+          <polygon points="238,179 250,184 238,189" class="fh-am"/>
+          <circle id="fdR2" r="4.5" class="fdot "><animateMotion id="famR2" begin="indefinite" dur="1.3s" fill="remove" path="M85,184 L244,184"/></circle>
+        </g>
+        <g id="fr3" class="frow">
+          <line x1="250" y1="218" x2="405" y2="218" class="fl-vi"/>
+          <polygon points="403,213 415,218 403,223" class="fh-vi"/>
+          <circle id="fdR3" r="4.5" class="fdot vio"><animateMotion id="famR3" begin="indefinite" dur="1.3s" fill="remove" path="M250,218 L409,218"/></circle>
+        </g>
+        <g id="fr4" class="frow">
+          <circle cx="415" cy="252" r="5" class="fping"/>
+          <text x="431" y="256">thread written to SQLite</text>
+        </g>
+        <g id="fr5" class="frow">
+          <text x="498" y="278" text-anchor="middle">set @muster_inbox on api-2</text>
+          <line x1="415" y1="286" x2="570" y2="286" class="fl-cy"/>
+          <polygon points="568,281 580,286 568,291" class="fh-cy"/>
+          <circle id="fdR5" r="4.5" class="fdot cyan"><animateMotion id="famR5" begin="indefinite" dur="1.3s" fill="remove" path="M415,286 L574,286"/></circle>
+        </g>
+        <g id="fr6" class="frow">
+          <circle cx="910" cy="320" r="5" class="fping"/>
+          <text x="894" y="324" text-anchor="end">finishes its current task · notices the mailbox</text>
+        </g>
+        <g id="fr7" class="frow">
+          <text x="828" y="346" text-anchor="middle">get_inbox · get_thread</text>
+          <line x1="910" y1="354" x2="755" y2="354" class="fl-am"/>
+          <polygon points="757,349 745,354 757,359" class="fh-am"/>
+          <circle id="fdR7" r="4.5" class="fdot "><animateMotion id="famR7" begin="indefinite" dur="1.3s" fill="remove" path="M910,354 L751,354"/></circle>
+        </g>
+        <g id="fr8" class="frow">
+          <text x="580" y="380" text-anchor="middle">marked read</text>
+          <line x1="745" y1="388" x2="425" y2="388" class="fl-vi"/>
+          <polygon points="427,383 415,388 427,393" class="fh-vi"/>
+          <circle id="fdR8" r="4.5" class="fdot vio"><animateMotion id="famR8" begin="indefinite" dur="1.3s" fill="remove" path="M745,388 L421,388"/></circle>
+        </g>
+        <g id="fr9" class="frow">
+          <text x="498" y="414" text-anchor="middle">unset @muster_inbox on api-2</text>
+          <line x1="415" y1="422" x2="570" y2="422" class="fl-cy"/>
+          <polygon points="568,417 580,422 568,427" class="fh-cy"/>
+          <circle id="fdR9" r="4.5" class="fdot cyan"><animateMotion id="famR9" begin="indefinite" dur="1.3s" fill="remove" path="M415,422 L574,422"/></circle>
+        </g>
+        <g id="fr10" class="frow">
+          <circle cx="910" cy="456" r="5" class="fping"/>
+          <text x="894" y="460" text-anchor="end">makes the change — adds createdAt</text>
+        </g>
+        <g id="fr11" class="frow">
+          <text x="828" y="482" text-anchor="middle">reply</text>
+          <text x="828" y="506" text-anchor="middle" class="fquote">"fixed — createdAt added"</text>
+          <line x1="910" y1="490" x2="755" y2="490" class="fl-am"/>
+          <polygon points="757,485 745,490 757,495" class="fh-am"/>
+          <circle id="fdR11" r="4.5" class="fdot "><animateMotion id="famR11" begin="indefinite" dur="1.3s" fill="remove" path="M910,490 L751,490"/></circle>
+        </g>
+        <g id="fr12" class="frow">
+          <line x1="745" y1="524" x2="425" y2="524" class="fl-vi"/>
+          <polygon points="427,519 415,524 427,529" class="fh-vi"/>
+          <circle id="fdR12" r="4.5" class="fdot vio"><animateMotion id="famR12" begin="indefinite" dur="1.3s" fill="remove" path="M745,524 L421,524"/></circle>
+        </g>
+        <g id="fr13" class="frow">
+          <text x="498" y="550" text-anchor="middle">set @muster_inbox on web</text>
+          <line x1="415" y1="558" x2="570" y2="558" class="fl-cy"/>
+          <polygon points="568,553 580,558 568,563" class="fh-cy"/>
+          <circle id="fdR13" r="4.5" class="fdot cyan"><animateMotion id="famR13" begin="indefinite" dur="1.3s" fill="remove" path="M415,558 L574,558"/></circle>
+        </g>
+        <g id="fr14" class="frow">
+          <circle cx="85" cy="592" r="5" class="fping"/>
+          <text x="101" y="596">reads the reply · tells you · loop closed</text>
+        </g>
+
+        <!-- tmux-held session state -->
+        <g id="fchipR" class="fbadge fchip"><rect x="596" y="275" width="118" height="22" rx="6"/><text x="606" y="290">api-2 · 📬 1</text></g>
+        <g id="fchipL" class="fbadge fchip"><rect x="596" y="547" width="108" height="22" rx="6"/><text x="606" y="562">web · 📬 1</text></g>
+      </svg>
+      </div>
+      <div class="flow-cap" id="flowcap">1 · <b>ask</b> — you tell claude: &#8220;let backend know GET /users is missing createdAt&#8221;</div>
+    </div>
+  </div>
+</section>
+
 <section id="what">
   <div class="wrap">
     <p class="kicker">what it is</p>
     <h2>One binary, three modes.</h2>
-    <p class="lead"><span class="mstr">muster</span> is a single static Go binary that runs in three modes. The bus routes between your agents without ever calling a model itself.</p>
+    <p class="lead"><span class="mstr">muster</span> is a single static Go binary that runs in three modes:</p>
     <div class="modes">
       <div class="mode"><p class="t">daemon</p><p>A background process that holds the agents, messages, and tasks, listening on a <b>unix socket</b>. It starts automatically the first time anything uses the bus.</p></div>
       <div class="mode"><p class="t">MCP server</p><p><code style="font-family:var(--mono)">muster mcp</code> serves the bus over stdio. Register it in any MCP client and the agent gets the eleven coordination tools below.</p></div>
@@ -366,15 +549,15 @@ set -ga status-left <span class="c-sig">'#{?@muster_inbox,#[fg=colour0#,bg=colou
     <div class="rows">
       <div class="row">
         <span class="k">mailbox</span>
-        <span class="d">The <span class="mail">📬</span> count on the tab (previous section) is the passive signal: you see it, and the agent acts on it the next time it checks its inbox — or when you ask it to.</span>
+        <span class="d">The <span class="mail">📬</span> count on the tab — the <b>notify</b> steps of <a href="#flow">the flow</a>. You see it, and the agent acts on it the next time it checks its inbox, or when you ask it to.</span>
       </div>
       <div class="row">
         <span class="k">nudge</span>
-        <span class="d"><code>muster nudge api-2</code> is the manual poke for waking an idle agent right now: it types "check your inbox" into that agent's pane and submits it — immediately for Claude Code, with a short delayed Enter for Codex. <span class="m">This is the only muster mechanism that types into a pane.</span></span>
+        <span class="d"><code>muster nudge api-2</code> is the manual poke for waking an idle agent right now: it types "check your inbox" into that agent's pane and submits it.</span>
       </div>
       <div class="row">
         <span class="k">stop hook</span>
-        <span class="d">The Stop hook is the automatic path: with the <code>muster hook Stop</code> entry from the previous section installed, an agent that finishes a turn with unread mail reads its inbox and replies on its own. <span class="m">Mail that arrives while an agent is working gets handled when the turn ends.</span></span>
+        <span class="d">The automatic path — the <b>wake</b> through <b>reply</b> steps of <a href="#flow">the flow</a>. With the <code>muster hook Stop</code> entry from the <a href="#hooks">hooks section</a> installed, an agent that finishes a turn with unread mail reads its inbox and replies on its own.</span>
       </div>
     </div>
   </div>
@@ -388,15 +571,11 @@ set -ga status-left <span class="c-sig">'#{?@muster_inbox,#[fg=colour0#,bg=colou
     <div class="rows">
       <div class="row">
         <span class="k">tmux</span>
-        <span class="d">Agents run inside tmux sessions — <span class="mstr">muster</span> uses tmux for agent identity, liveness, the mailbox, and nudging. <span class="m">Any tmux setup works; no particular configuration is required.</span></span>
+        <span class="d">Agents run inside <a href="https://github.com/tmux/tmux/wiki">tmux</a> sessions — <span class="mstr">muster</span> uses tmux for agent identity, liveness, the mailbox, and nudging. <span class="m">Any tmux setup on macOS or Linux works; on Windows, run inside WSL2.</span></span>
       </div>
       <div class="row">
-        <span class="k">the binary</span>
+        <span class="k">muster</span>
         <span class="d">Download a prebuilt binary from the <a href="https://github.com/schuettc/muster/releases">releases page</a> — one static file with no dependencies, signed and notarized on macOS. <span class="m">Building from source with Go 1.22+ works too.</span></span>
-      </div>
-      <div class="row">
-        <span class="k">os</span>
-        <span class="d">macOS or Linux. <span class="m">On Windows, install inside WSL2, where tmux and unix sockets are standard.</span></span>
       </div>
       <div class="row">
         <span class="k">an agent</span>
@@ -448,6 +627,58 @@ set -ga status-left <span class="c-sig">'#{?@muster_inbox,#[fg=colour0#,bg=colou
 
 <script>
   (function () {
+    var svg = document.getElementById('flowsvg');
+    var cap = document.getElementById('flowcap');
+    if (!svg || !cap) { return; }
+    function el(id) { return document.getElementById(id); }
+    function badge(id, on) { el(id).classList.toggle('on', on); }
+    var N = 14;
+    var steps = [
+      { r: 1, cap: '1 · <b>ask</b> — you tell claude: &#8220;let backend know GET /users is missing createdAt&#8221;' },
+      { r: 2, dot: true, cap: '2 · <b>send</b> — claude calls its send_message tool' },
+      { r: 3, dot: true, cap: '3 · <b>send</b> — its MCP server forwards the message to the daemon' },
+      { r: 4, cap: '4 · <b>store</b> — the daemon writes the thread to SQLite' },
+      { r: 5, dot: true, cap: '5 · <b>notify</b> — the daemon flags session api-2&#8217;s mailbox; tmux shows 📬 on that tab',
+        after: function () { badge('fbadgeR', true); badge('fchipR', true); } },
+      { r: 6, cap: '6 · <b>wake</b> — codex finishes what it&#8217;s working on and notices the mailbox' },
+      { r: 7, dot: true, cap: '7 · <b>read</b> — codex fetches the new thread' },
+      { r: 8, dot: true, cap: '8 · <b>read</b> — the daemon returns it and marks it read' },
+      { r: 9, dot: true, cap: '9 · <b>clear</b> — the mailbox flag is removed; the 📬 disappears',
+        after: function () { badge('fbadgeR', false); badge('fchipR', false); } },
+      { r: 10, cap: '10 · <b>work</b> — codex makes the fix: adds createdAt to the endpoint' },
+      { r: 11, dot: true, cap: '11 · <b>reply</b> — codex answers on the thread: &#8220;fixed — createdAt added&#8221;' },
+      { r: 12, dot: true, cap: '12 · <b>reply</b> — the answer reaches the daemon' },
+      { r: 13, dot: true, cap: '13 · <b>notify</b> — the daemon flags the sender&#8217;s mailbox in turn',
+        after: function () { badge('fbadgeL', true); badge('fchipL', true); } },
+      { r: 14, cap: '14 · <b>done</b> — claude reads the reply and tells you; the loop is closed',
+        after: function () { badge('fbadgeL', false); badge('fchipL', false); } }
+    ];
+    if (matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      svg.classList.add('static');
+      badge('fbadgeR', true); badge('fchipR', true);
+      cap.innerHTML = 'Read top to bottom: you ask claude to pass something to the backend; the message is <b>sent</b> over stdio and the unix socket, <b>stored</b> by the daemon, and <b>flagged</b> as 📬 on the recipient&#8217;s tmux tab; codex notices when it finishes its task, <b>reads</b> the thread, <b>makes the fix</b>, and <b>replies</b> — and claude reports back to you.';
+      return;
+    }
+    function dot(n) {
+      var d = el('fdR' + n); if (!d) { return; }
+      d.classList.add('on');
+      el('famR' + n).beginElement();
+      setTimeout(function () { d.classList.remove('on'); }, 1350);
+    }
+    var i = 0;
+    function tick() {
+      var st = steps[i % steps.length];
+      for (var n = 1; n <= N; n++) { el('fr' + n).classList.remove('on'); }
+      el('fr' + st.r).classList.add('on');
+      cap.innerHTML = st.cap;
+      if (st.dot) { dot(st.r); }
+      if (st.after) { setTimeout(st.after, st.dot ? 1250 : 650); }
+      i++;
+    }
+    tick();
+    setInterval(tick, 1950);
+  })();
+  (function () {
     var links = document.querySelectorAll('.toc a');
     var map = {};
     links.forEach(function (a) { map[a.getAttribute('href').slice(1)] = a; });
@@ -460,7 +691,7 @@ set -ga status-left <span class="c-sig">'#{?@muster_inbox,#[fg=colour0#,bg=colou
         }
       });
     }, { rootMargin: '-40% 0px -55% 0px' });
-    ['top', 'what', 'tools', 'mailbox', 'hooks', 'wake', 'setup'].forEach(function (id) {
+    ['top', 'what', 'flow', 'tools', 'mailbox', 'hooks', 'wake', 'setup'].forEach(function (id) {
       var el = document.getElementById(id);
       if (el) { obs.observe(el); }
     });
