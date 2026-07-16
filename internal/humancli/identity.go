@@ -118,14 +118,14 @@ func cmdGC(args []string, out io.Writer) error {
 	pruneRaw, pruneErr := callData("prune_events", map[string]any{"older_than_ms": cutoff})
 	if pruneErr != nil {
 		_, _ = fmt.Fprintf(out, "gc: prune_events failed: %v\n", pruneErr)
-		return nil
+		return fmt.Errorf("prune_events failed: %w", pruneErr)
 	}
 	var res struct {
 		Pruned int64 `json:"pruned"`
 	}
 	if err := json.Unmarshal(pruneRaw, &res); err != nil {
 		_, _ = fmt.Fprintf(out, "gc: prune_events failed: %v\n", err)
-		return nil
+		return fmt.Errorf("prune_events failed: %w", err)
 	}
 	_, err = fmt.Fprintf(out, "pruned %d event(s)\n", res.Pruned)
 	return err
