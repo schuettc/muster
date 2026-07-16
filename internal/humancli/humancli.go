@@ -343,9 +343,9 @@ func cmdNudge(args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	detailWord := "submitted"
-	if *noSubmit {
-		detailWord = "typed"
+	detailWord := "typed"
+	if submitted {
+		detailWord = "submitted"
 	}
 	_, _ = callData("log_event", map[string]any{"target": alias, "detail": detailWord}) // best-effort journal
 	if submitted {

@@ -169,6 +169,41 @@ func TestNudgeSelfReportsJournalRow(t *testing.T) {
 	}
 }
 
+// TestNudgeSelfReportsTypedWhenNoSubmit: when nudging with --no-submit flag,
+// the journal records detail="typed" (not submitted).
+func TestNudgeSelfReportsTypedWhenNoSubmit(t *testing.T) {
+	startTestDaemon(t)
+	if _, err := callData("register_agent", map[string]any{"alias": "rev", "role": "reviewer", "model_type": "codex", "socket_path": "/s", "pane_id": "%2", "session_id": "$1"}); err != nil {
+		t.Fatal(err)
+	}
+	origNudge := nudgeRun
+	nudgeRun = func(_ ...string) error { return nil }
+	t.Cleanup(func() { nudgeRun = origNudge })
+
+	var buf bytes.Buffer
+	if err := Dispatch([]string{"nudge", "--no-submit", "rev"}, &buf); err != nil {
+		t.Fatalf("nudge --no-submit: %v", err)
+	}
+
+	raw, err := callData("list_events", map[string]any{"kind": "nudge", "backlog": true, "limit": 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var res struct {
+		Events []struct {
+			Kind   string `json:"kind"`
+			Target string `json:"target"`
+			Detail string `json:"detail"`
+		} `json:"events"`
+	}
+	if err := json.Unmarshal(raw, &res); err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Events) != 1 || res.Events[0].Target != "rev" || res.Events[0].Detail != "typed" {
+		t.Fatalf("expected 1 nudge event for rev/typed, got %+v", res.Events)
+	}
+}
+
 func TestSplitFlagsAndPositional(t *testing.T) {
 	cases := []struct {
 		name           string
