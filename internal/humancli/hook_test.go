@@ -315,6 +315,38 @@ func TestHookSessionStartAndEnd(t *testing.T) {
 	}
 }
 
+func TestHookStaleBadgeSuppressedByAuthoritativeZero(t *testing.T) {
+	// Regression test for stale mailbox badges from isolated test daemons.
+	// The @muster_inbox tmux option reports 2 (stale from a previous mail),
+	// but the daemon's authoritative session_unread query returns total=0
+	// (no actual threads). The hook must suppress the block decision because
+	// the authoritative count is 0, not emit a false positive.
+	startTestDaemon(t)
+	if _, err := callData("register_agent", map[string]any{
+		"alias": "worker", "role": "peer", "model_type": "claude",
+		"socket_path": "/tmp/sock_stale", "session_id": "$99",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Deliberately send NO messages, so session_unread returns total=0.
+
+	t.Setenv("TMUX", "/tmp/sock_stale,1,0")
+	prev := tmuxenv.Run
+	// Stub tmux to report stale @muster_inbox=2 but matching session_id.
+	tmuxenv.Run = hookRun(map[string]string{"@muster_inbox": "2", "#{session_id}": "$99"})
+	t.Cleanup(func() { tmuxenv.Run = prev })
+
+	var buf bytes.Buffer
+	if err := cmdHook([]string{"Stop"}, strings.NewReader(`{}`), &buf); err != nil {
+		t.Fatal(err)
+	}
+	// The authoritative total=0 from session_unread must suppress output
+	// despite the stale @muster_inbox=2 option.
+	if buf.Len() != 0 {
+		t.Fatalf("expected no output (authoritative zero suppresses stale badge), got %q", buf.String())
+	}
+}
+
 func TestHookSessionStartBestEffortWhenDaemonUnreachable(t *testing.T) {
 	// No test daemon started, and no tmux identity to fall back on: cmdRegister
 	// will fail (can't determine alias / can't reach daemon), but the hook must
