@@ -82,8 +82,9 @@ want to (they auto-start the daemon):
 
 ```bash
 muster agents                              # who's registered
-muster inbox <alias>                       # threads addressed to an agent
+muster inbox <alias>                       # an agent's threads — addressed to it or started by it
 muster tasks <alias>                       # just the tasks for an agent
+muster events                              # the bus event log: every mailbox notify and inbox read
 muster send <alias> "message"  --from me   # send a directed message
 muster send --role reviewer "please look"  --from me   # to a role
 muster send --broadcast "heads up"         --from me   # to everyone
@@ -130,12 +131,19 @@ elsewhere, muster errors and lists the `proj:label` candidates.
 
 ### Notifications & nudging
 
-When bus activity is addressed to an agent, muster sets `@muster_inbox` on its
-tmux session to that agent's unread count. It never types into a pane, and unlike
+When a thread that concerns an agent gets new activity — a message addressed to
+it, or a reply on a thread it started — muster sets `@muster_inbox` on its tmux
+session to that agent's unread count. It never types into a pane, and unlike
 a transient bell the flag **persists until the agent reads its inbox**
-(`get_inbox`), which clears it. tmux doesn't display the option by default — add
+(`get_inbox`), which clears it. An agent's own writes never flag its own
+mailbox. tmux doesn't display the option by default — add
 the two render lines from [`contrib/tmux-mailbox.conf`](contrib/tmux-mailbox.conf)
 to see `📬<count>` on the tab title and status bar.
+
+Every notify outcome (lit, cleared, skipped, errored) and every inbox read is
+recorded in an event log — `muster events [--agent <alias>] [--limit <n>]` —
+so "whose mailbox was lit when, and when was it cleared" is answerable after
+the fact.
 
 To actively poke an agent to act now:
 

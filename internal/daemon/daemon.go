@@ -133,15 +133,28 @@ func (d *Daemon) notifyForThread(threadID int64, actor string) {
 	for alias := range recipients {
 		a, ok := byAlias[alias]
 		if !ok || a.SocketPath == "" || a.SessionID == "" {
+			d.logEvent(store.Event{Kind: "notify", Agent: alias, ThreadID: threadID, Detail: "skipped: no tmux identity"})
 			continue
 		}
 		count, err := d.s.UnreadCount(alias)
 		if err != nil {
+			d.logEvent(store.Event{Kind: "notify", Agent: alias, ThreadID: threadID, Detail: "error: " + err.Error()})
 			continue
 		}
-		_ = d.n.Notify(a.SocketPath, a.SessionID, count)
+		detail := "lit"
+		if count <= 0 {
+			detail = "cleared"
+		}
+		if err := d.n.Notify(a.SocketPath, a.SessionID, count); err != nil {
+			detail = "error: " + err.Error()
+		}
+		d.logEvent(store.Event{Kind: "notify", Agent: alias, ThreadID: threadID, Count: count, Detail: detail})
 	}
 }
+
+// logEvent appends to the observability event log, best-effort: logging must
+// never fail or slow the bus operation it describes.
+func (d *Daemon) logEvent(e store.Event) { _ = d.s.AppendEvent(e) }
 
 func (d *Daemon) dispatch(req proto.Request) proto.Response {
 	a := req.Args
@@ -208,6 +221,7 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 			return fail(err)
 		}
 		_ = d.s.MarkRead(alias)
+		d.logEvent(store.Event{Kind: "read", Agent: alias})
 		if d.n != nil {
 			if ag, ok, _ := d.s.GetAgent(alias); ok && ag.SocketPath != "" && ag.SessionID != "" {
 				_ = d.n.Clear(ag.SocketPath, ag.SessionID)
@@ -231,6 +245,12 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 			return fail(err)
 		}
 		return ok(map[string]any{"found": found, "pair": p})
+	case "list_events":
+		evs, err := d.s.RecentEvents(str(a, "agent"), int(i64(a, "limit")))
+		if err != nil {
+			return fail(err)
+		}
+		return ok(evs)
 	case "get_agent":
 		ag, found, err := d.s.GetAgent(str(a, "alias"))
 		if err != nil {

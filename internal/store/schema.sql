@@ -44,3 +44,14 @@ CREATE TABLE IF NOT EXISTS kv (
     updated_by TEXT NOT NULL DEFAULT '',
     updated_at INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS events (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts        INTEGER NOT NULL,
+    kind      TEXT NOT NULL,                 -- 'notify' | 'read'
+    agent     TEXT NOT NULL DEFAULT '',
+    thread_id INTEGER NOT NULL DEFAULT 0,    -- 0 = no thread (e.g. a read)
+    count     INTEGER NOT NULL DEFAULT 0,    -- unread count carried by a notify
+    detail    TEXT NOT NULL DEFAULT ''       -- 'lit' | 'cleared' | 'skipped: …' | 'error: …'
+);
+CREATE INDEX IF NOT EXISTS idx_events_agent ON events(agent, id);
