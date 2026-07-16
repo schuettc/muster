@@ -28,7 +28,9 @@ Setup:
   into `~/.claude/settings.json`.
 - **Codex:** copy [`codex-hooks.json`](codex-hooks.json) to `~/.codex/hooks.json`.
   On the next `codex` launch you'll get a one-time "Hooks need review" prompt —
-  choose Trust. Codex fires `SessionStart` lazily, on the session's first turn.
+  choose Trust. Codex fires `SessionStart` lazily, on the session's first turn —
+  a freshly opened Codex session is not on the bus until you say something to
+  it, so give it any first message ("hi" is enough) before addressing mail to it.
 
 If `muster` isn't on the PATH your harness gives hook commands (e.g. it lives in
 `~/go/bin`), use the absolute binary path in the `command` strings — Codex in
