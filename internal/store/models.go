@@ -40,10 +40,10 @@ type Entry struct {
 	CreatedAt    int64  `json:"created_at"`
 }
 
-// Event is one bus observability record: a mailbox notify outcome or an
-// inbox read. The daemon appends these so "who was lit when, and when did it
-// clear" is answerable after the fact instead of reconstructed from thread
-// timestamps.
+// Event is one bus journal record: a bus action (send, task, reply, claim,
+// transition, nudge) or a wake-layer outcome (mailbox notify, inbox read).
+// The daemon appends these so "who did what, and who was lit when" is
+// answerable after the fact instead of reconstructed from thread timestamps.
 type Event struct {
 	ID       int64  `json:"id"`
 	TS       int64  `json:"ts"`
