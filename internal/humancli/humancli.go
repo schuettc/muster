@@ -94,7 +94,7 @@ func Dispatch(args []string, out io.Writer) error {
 	case "deregister":
 		return cmdDeregister(args[1:], out)
 	case "gc":
-		return cmdGC(out)
+		return cmdGC(args[1:], out)
 	case "hook":
 		return cmdHook(args[1:], os.Stdin, out)
 	case "label":

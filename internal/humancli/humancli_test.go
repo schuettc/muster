@@ -13,8 +13,10 @@ import (
 	"github.com/schuettc/muster/internal/store"
 )
 
-// startTestDaemon boots a real in-process daemon on a temp socket.
-func startTestDaemon(t *testing.T) {
+// startTestDaemon boots a real in-process daemon on a temp socket, returning
+// the underlying store so tests can seed rows (e.g. events at a controlled
+// timestamp) directly, bypassing the wire protocol.
+func startTestDaemon(t *testing.T) *store.Store {
 	t.Helper()
 	dir, cleanup, err := mustertest.ShortHome()
 	if err != nil {
@@ -32,6 +34,7 @@ func startTestDaemon(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = d.Close() })
+	return s
 }
 
 func TestAgentsCommandListsRegistered(t *testing.T) {

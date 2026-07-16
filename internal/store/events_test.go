@@ -82,6 +82,24 @@ func TestEventsAgentFilterMatchesThreadConcern(t *testing.T) {
 	}
 }
 
+func TestPruneEventsExactBoundarySurvives(t *testing.T) {
+	fakeTick(t) // from threads_test.go — strictly increasing clock
+	s := newTestStore(t)
+	for i := 0; i < 3; i++ { // rows at ts 1, 2, 3
+		if err := s.AppendEvent(Event{Kind: "read", Agent: "a"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	n, err := s.PruneEvents(2) // DELETE WHERE ts < 2: only ts=1 goes
+	if err != nil || n != 1 {
+		t.Fatalf("pruned %d (%v), want 1", n, err)
+	}
+	left, _ := s.Events(EventQuery{Backlog: true, Limit: 10})
+	if len(left) != 2 { // ts=2 (exactly at cutoff) must survive
+		t.Fatalf("rows after prune = %d, want 2", len(left))
+	}
+}
+
 func TestEventsJoinsThreadSubject(t *testing.T) {
 	s := newTestStore(t)
 	id, err := s.CreateThread(Thread{Kind: "message", FromAgent: "web", ToKind: "agent", ToTarget: "api", Subject: "hello subj"}, "b")

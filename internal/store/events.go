@@ -96,6 +96,16 @@ ORDER BY `+order+` LIMIT ?`, args...)
 	return out, rows.Err()
 }
 
+// PruneEvents deletes journal rows with ts < olderThanMillis (a row exactly
+// at the cutoff survives), returning the count deleted.
+func (s *Store) PruneEvents(olderThanMillis int64) (int64, error) {
+	res, err := s.db.Exec(`DELETE FROM events WHERE ts < ?`, olderThanMillis)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
 // MaxEventID returns the journal high-water mark (0 on an empty journal).
 func (s *Store) MaxEventID() (int64, error) {
 	var n int64

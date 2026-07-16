@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/schuettc/muster/internal/client"
+	"github.com/schuettc/muster/internal/clock"
 	"github.com/schuettc/muster/internal/mustertest"
 	"github.com/schuettc/muster/internal/paths"
 	"github.com/schuettc/muster/internal/proto"
@@ -177,5 +178,51 @@ func TestRegisterCapturesLabelAndDeregister(t *testing.T) {
 	}
 	if _, found := decodeGetAgent(t, resp); found {
 		t.Fatal("expected agent to be gone after deregister_agent")
+	}
+}
+
+// TestPruneEventsOpRejectsNonPositiveCutoff exercises the prune_events daemon
+// op: two events at fake ts 1 and 2, pruning with older_than_ms=2 deletes only
+// the ts=1 row (exact-boundary survives, per store.PruneEvents), and
+// older_than_ms<=0 is rejected.
+func TestPruneEventsOpRejectsNonPositiveCutoff(t *testing.T) {
+	var tick int64
+	clock.SetForTesting(func() int64 {
+		tick++
+		return tick
+	})
+	t.Cleanup(clock.ResetForTesting)
+
+	sock, s := startWithNotifierAndStore(t, &fakeNotifier{})
+	for i := 0; i < 2; i++ { // rows at ts 1, 2
+		if err := s.AppendEvent(store.Event{Kind: "read", Agent: "a"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	resp, err := client.Call(sock, proto.Request{Op: "prune_events", Args: map[string]any{"older_than_ms": 2}})
+	if err != nil || !resp.OK {
+		t.Fatalf("prune_events: %v %+v", err, resp)
+	}
+	raw, err := json.Marshal(resp.Data)
+	if err != nil {
+		t.Fatalf("marshal resp.Data: %v", err)
+	}
+	var res struct {
+		Pruned int64 `json:"pruned"`
+	}
+	if err := json.Unmarshal(raw, &res); err != nil {
+		t.Fatalf("unmarshal prune_events response: %v", err)
+	}
+	if res.Pruned != 1 {
+		t.Fatalf("pruned = %d, want 1", res.Pruned)
+	}
+
+	resp, err = client.Call(sock, proto.Request{Op: "prune_events", Args: map[string]any{"older_than_ms": 0}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.OK {
+		t.Fatalf("older_than_ms=0 should be rejected, got %+v", resp)
 	}
 }

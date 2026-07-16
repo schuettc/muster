@@ -4,6 +4,7 @@ package daemon
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"net"
 	"os"
 	"strconv"
@@ -251,6 +252,16 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 			return fail(err)
 		}
 		return ok(evs)
+	case "prune_events":
+		cutoff := i64(a, "older_than_ms")
+		if cutoff <= 0 {
+			return fail(fmt.Errorf("older_than_ms must be > 0"))
+		}
+		n, err := d.s.PruneEvents(cutoff)
+		if err != nil {
+			return fail(err)
+		}
+		return ok(map[string]any{"pruned": n})
 	case "get_agent":
 		ag, found, err := d.s.GetAgent(str(a, "alias"))
 		if err != nil {
