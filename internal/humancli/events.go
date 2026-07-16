@@ -239,15 +239,35 @@ func (r *renderer) timeFormat() string {
 	return "15:04:05"
 }
 
+// padDisplay right-pads s with spaces to w DISPLAY COLUMNS (not rune count),
+// matching the units display.Width and display.Sanitize already use. fmt's
+// "%-*s" pads by rune count, which misaligns columns and blows the line
+// budget once a field holds wide (CJK/fullwidth) runes — a rune-counted pad
+// adds more spaces than the display actually needs, since each wide rune
+// already occupies 2 columns worth of the target width. Every column whose
+// content can legitimately hold non-ASCII (WHO, and — for symmetry — TIME/
+// THREAD, which are ASCII in practice but should never silently rely on
+// that) goes through this helper instead.
+func padDisplay(s string, w int) string {
+	if n := w - display.Width(s); n > 0 {
+		return s + strings.Repeat(" ", n)
+	}
+	return s
+}
+
 // header writes the column header line shared by events and watch.
 func (r *renderer) header(w io.Writer) {
-	_, _ = fmt.Fprintf(w, "%-*s  %-6s  %-*s  %-*s  %s\n",
-		len(r.timeFormat()), "TIME", "KIND", r.whoW, "WHO", r.threadW, "THREAD", "WHAT")
+	_, _ = fmt.Fprintf(w, "%s  %-6s  %s  %s  %s\n",
+		padDisplay("TIME", len(r.timeFormat())), "KIND", padDisplay("WHO", r.whoW), padDisplay("THREAD", r.threadW), "WHAT")
 }
 
 // line writes exactly one line for e — safe for line-by-line streaming (no
 // long-lived tabwriter that only aligns at Flush). The WHAT column is capped
-// to the remaining terminal width so a row can never wrap.
+// to the remaining terminal width so a row can never wrap. Column padding is
+// display-width based throughout (padDisplay), matching the `used` budget
+// math below, which sums display-width column widths — the two must stay in
+// the same unit or the WHAT truncation cap drifts from the line's real
+// rendered width.
 func (r *renderer) line(w io.Writer, e eventRow) {
 	r.fit(e)
 	ts := time.UnixMilli(e.TS).Format(r.timeFormat())
@@ -256,8 +276,8 @@ func (r *renderer) line(w io.Writer, e eventRow) {
 	if budget < 10 {
 		budget = 10
 	}
-	_, _ = fmt.Fprintf(w, "%-*s  %-6s  %-*s  %-*s  %s\n",
-		len(r.timeFormat()), ts, e.Kind, r.whoW, display.Sanitize(r.who(e), whoMaxWidth), r.threadW, r.thread(e), display.Sanitize(r.what(e), budget))
+	_, _ = fmt.Fprintf(w, "%s  %-6s  %s  %s  %s\n",
+		padDisplay(ts, len(r.timeFormat())), e.Kind, padDisplay(display.Sanitize(r.who(e), whoMaxWidth), r.whoW), padDisplay(r.thread(e), r.threadW), display.Sanitize(r.what(e), budget))
 }
 
 // loadLabels fetches the current alias→label map, best-effort: on any error

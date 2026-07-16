@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+
+	"github.com/schuettc/muster/internal/display"
 )
 
 func TestEventsCommandPrintsLog(t *testing.T) {
@@ -200,5 +202,83 @@ func TestEventsLinesFitWidth(t *testing.T) {
 		if n := len([]rune(line)); n > 80 {
 			t.Fatalf("line exceeds width budget (%d > 80): %q", n, line)
 		}
+	}
+}
+
+// TestEventsWideRuneWhoFitsWidthAndAligns reproduces the reviewer's finding:
+// renderer.fit() measures WHO with display.Width (wide CJK/fullwidth runes
+// count as 2), but header()/line() used to pad with fmt's "%-*s", which pads
+// by RUNE COUNT. A wide-rune WHO therefore (a) pushed the true rendered
+// width of a line past the --width budget, and (b) misaligned the WHAT
+// column across rows. Both rows below share a subject marker; the label
+// "中文中文中文中文" (8 wide runes, 16 display columns but only 8 runes) is
+// what used to trigger the over-pad.
+func TestEventsWideRuneWhoFitsWidthAndAligns(t *testing.T) {
+	startTestDaemon(t)
+	if _, err := callData("register_agent", map[string]any{"alias": "cjk-agent", "model_type": "claude", "label": "中文中文中文中文"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := callData("register_agent", map[string]any{"alias": "ascii-agent", "model_type": "claude"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := callData("send_message", map[string]any{"from": "web", "to_kind": "agent", "to_target": "cjk-agent", "subject": "MARK", "body": "b"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := callData("send_message", map[string]any{"from": "web", "to_kind": "agent", "to_target": "ascii-agent", "subject": "MARK", "body": "b"}); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := Dispatch([]string{"events", "--width", "60"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimRight(out.String(), "\n"), "\n")
+
+	// (a) every rendered line must fit the display-width budget, not just
+	// the rune-count budget.
+	for _, line := range lines {
+		if w := display.Width(line); w > 60 {
+			t.Fatalf("line exceeds display-width budget (%d > 60): %q", w, line)
+		}
+	}
+
+	// (b) the WHAT column (located by the shared MARK subject)
+	// must start at the same display column in both rows — the ASCII WHO
+	// row and the wide-rune WHO row.
+	var starts []int
+	for _, line := range lines {
+		idx := strings.Index(line, "MARK")
+		if idx < 0 {
+			continue
+		}
+		starts = append(starts, display.Width(line[:idx]))
+	}
+	if len(starts) != 2 {
+		t.Fatalf("expected 2 rows carrying MARK, got %d:\n%s", len(starts), out.String())
+	}
+	if starts[0] != starts[1] {
+		t.Fatalf("WHAT column misaligned across ASCII vs wide-rune WHO rows: %v\n%s", starts, out.String())
+	}
+}
+
+// TestEventsTaskCreateNoIntentShowsActionTag: a task_create with no explicit
+// --intent still carries the thread's EFFECTIVE intent (store's
+// effectiveIntent treats an unset task intent as action-requested), and that
+// effective value — not the raw stored "" — is what the journal surface
+// (muster events) renders as the "[action]" tag.
+func TestEventsTaskCreateNoIntentShowsActionTag(t *testing.T) {
+	startTestDaemon(t)
+	if _, err := callData("register_agent", map[string]any{"alias": "rev", "role": "reviewer", "model_type": "codex"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := callData("task_create", map[string]any{"from": "backend", "to_kind": "role", "to_target": "reviewer", "subject": "please review", "body": "y"}); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := Dispatch([]string{"events", "--kind", "task"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "please review [action]") {
+		t.Fatalf("task_create with no explicit intent must render the effective-intent [action] tag:\n%s", got)
 	}
 }
