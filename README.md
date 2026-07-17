@@ -86,7 +86,9 @@ muster inbox <alias>                       # an agent's threads — addressed to
 muster tasks <alias>                       # just the tasks for an agent
 muster events                              # the bus event log: every mailbox notify and inbox read
 muster watch                               # follow the bus live — every message, task, wake and read as it happens
+muster station                             # the full-screen operator TUI — roster, live feed, threads, compose
 muster send <alias> "message"  --from me   # send a directed message
+muster send <alias> "message"  --from me --intent action-requested  # mark it as needing a reply
 muster send --role reviewer "please look"  --from me   # to a role
 muster send --broadcast "heads up"         --from me   # to everyone
 ```
@@ -134,6 +136,28 @@ accepts a target of the form `<alias|label|proj:label>`:
 A bare label never silently crosses projects; if it's ambiguous or only exists
 elsewhere, muster errors and lists the `proj:label` candidates.
 
+### `muster station`
+
+`muster station` is the operator's station — the full-screen TUI where
+everyone reports in. It shows the roster (projects, live dots, labels, and
+each session's unread count), the live journal feed, and threads grouped by
+intent (`action-requested` pinned on top) in one view, and lets you act
+without leaving it: open a thread to read it, compose a send or reply, and
+nudge an agent, all from the keyboard.
+
+Keys: `Tab` cycles focus between panes · `j`/`k` or the arrow keys move ·
+`Enter` opens the selected agent's thread or roster entry · `Esc` backs out
+· `s` opens the composer to send (with a target picker and an intent
+cycle) · `r` replies on the open thread · `n` nudges the selected agent
+(with a confirmation prompt) · `/` filters the focused pane · `a` toggles
+aliases vs. labels · `q` quits.
+
+Station registers on the bus itself, as agent `station` — `muster send
+station "…"` and `muster nudge station` reach it like any other agent. If
+an alias `station` is already live (a second station on the same machine),
+it fails over to `station-2`, `station-3`, and so on. It deregisters on
+quit, provided nothing else has since taken over its alias.
+
 ### Notifications & nudging
 
 When a thread that concerns an agent gets new activity — a message addressed to
@@ -144,6 +168,22 @@ a transient bell the flag **persists until the agent reads its inbox**
 mailbox. tmux doesn't display the option by default — add
 the two render lines from [`contrib/tmux-mailbox.conf`](contrib/tmux-mailbox.conf)
 to see `📬<count>` on the tab title and status bar.
+
+The badge is a **session-level** count, not a per-alias one: if a session
+registers under more than one alias (a session name plus a chosen label,
+say), the count is that session's distinct unread threads, deduplicated
+across its aliases — a thread addressed to both aliases is counted once,
+and draining one alias's inbox brings the badge down to whatever the
+session's other aliases still have unread, never to zero prematurely and
+never double-counted.
+
+A message or task carries an optional **intent** — `fyi`, `reply-requested`,
+or `action-requested` (set with `muster send --intent`, or by the MCP
+tools; a task defaults to `action-requested` since it's inherently a
+request). `muster events` and `muster watch` tag rows with it (`[fyi]`,
+`[reply?]`, `[action]`), and the Stop hook's drain instruction (below)
+splits its count accordingly: "You have N unread muster thread(s), M
+needing action."
 
 Every notify outcome (lit, cleared, skipped, errored) and every inbox read is
 recorded in an event log — `muster events [--agent <alias>] [--limit <n>]` —
@@ -156,7 +196,7 @@ they land instead of a fixed page, and Ctrl-C exits immediately.
 To actively poke an agent to act now:
 
 ```bash
-muster nudge <alias>              # types "check your inbox" into the agent's pane and submits
+muster nudge <alias>              # types the full drain-and-act instruction into the agent's pane and submits
 muster nudge <alias> --no-submit  # type only; don't press Enter
 ```
 
