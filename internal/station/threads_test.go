@@ -2,6 +2,8 @@ package station
 
 import (
 	"encoding/json"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/schuettc/muster/internal/render"
@@ -300,6 +302,203 @@ func TestFeedScrollLockHoldsAgainstNewEventsAndGResumesFollowing(t *testing.T) {
 	}
 	if got := m.feedWindowStart(); got != wantTail {
 		t.Fatalf("feedWindowStart after G = %d, want %d (the live tail)", got, wantTail)
+	}
+}
+
+// TestThreadViewWindowingBoundsLineCountAndCursorAtBottomShowsNewest is the
+// render-windowing carried-over fix (Task 8 review, spec §5): a 200-entry
+// thread's View() must stay bounded by the pane height rather than dumping
+// every wrapped entry, and moving the cursor to the bottom must bring the
+// newest entry into view.
+func TestThreadViewWindowingBoundsLineCountAndCursorAtBottomShowsNewest(t *testing.T) {
+	const n = 200
+	entries := make([]threadEntryRow, n)
+	for i := 0; i < n; i++ {
+		entries[i] = threadEntryRow{ID: int64(i), ThreadID: 1, FromAgent: "a", Body: fmt.Sprintf("entry-%d", i), CreatedAt: int64(i)}
+	}
+	fake := fakeCaller{fn: func(op string, _ map[string]any) (json.RawMessage, error) {
+		if op != "get_thread" {
+			return json.RawMessage(`{}`), nil
+		}
+		b, _ := json.Marshal(map[string]any{"thread": map[string]any{}, "entries": entries, "total": n})
+		return b, nil
+	}}
+
+	m := NewModel(fake, Options{})
+	next, _ := m.Update(threadsMsg{threads: []listThreadRow{{ID: 1, EntryCount: n}}})
+	m = mustModel(t, next)
+	m = focusThreads(t, m)
+
+	next, cmd := m.Update(keyMsg("enter"))
+	m = mustModel(t, next)
+	for _, msg := range flattenCmds(cmd) {
+		next, _ = m.Update(msg)
+		m = mustModel(t, next)
+	}
+	if len(m.viewEntries) != n {
+		t.Fatalf("loaded %d entries, want %d", len(m.viewEntries), n)
+	}
+
+	// Move the cursor to the very bottom (the newest loaded entry) and check
+	// the rendered view is both bounded and actually shows it.
+	m.viewCursor = n - 1
+	view := m.View()
+	if lineCount := strings.Count(view, "\n") + 1; lineCount > threadViewRows+10 {
+		t.Fatalf("View() produced %d lines, want it bounded by threadViewRows (%d) plus a small fixed overhead:\n%s", lineCount, threadViewRows, view)
+	}
+	if !strings.Contains(view, fmt.Sprintf("entry-%d", n-1)) {
+		t.Fatalf("cursor at the bottom must show the newest entry:\n%s", view)
+	}
+	if strings.Contains(view, "entry-0") {
+		t.Fatalf("windowing must not show entries far from the cursor:\n%s", view)
+	}
+}
+
+// TestThreadPageMsgStaleGenerationDiscarded is the threadPageMsg-staleness
+// carried-over fix (Task 8 review, spec §5): a page left over from a
+// PREVIOUS opening of the SAME thread ID (an older viewGen) must be dropped
+// even though msg.threadID still matches what's on screen.
+func TestThreadPageMsgStaleGenerationDiscarded(t *testing.T) {
+	m := NewModel(fakeCaller{}, Options{})
+	m.viewOpen = true
+	m.viewThreadID = 1
+	m.viewGen = 2 // this thread has been (re)opened once already
+	m.viewEntries = []threadEntryRow{{ID: 99, Body: "current"}}
+
+	next, cmd := m.Update(threadPageMsg{threadID: 1, gen: 1, entries: []threadEntryRow{{ID: 1, Body: "stale"}}, total: 1})
+	m2 := mustModel(t, next)
+	if cmd != nil {
+		t.Fatalf("discarding a stale-generation page must not issue a Cmd")
+	}
+	if len(m2.viewEntries) != 1 || m2.viewEntries[0].Body != "current" {
+		t.Fatalf("a stale gen-1 page must not apply, got %+v", m2.viewEntries)
+	}
+}
+
+// TestGetThreadLiveTotalSelfCorrectsStaleCachedEntryCount is the
+// newest-entries-gap carried-over fix (Task 8 review, spec §5): a stale
+// cached entry_count (from list_threads) makes the initial offset guess too
+// low; get_thread's live `total` on the response exposes the gap, and
+// station issues exactly ONE corrective re-fetch to land on the true tail.
+func TestGetThreadLiveTotalSelfCorrectsStaleCachedEntryCount(t *testing.T) {
+	const liveTotal = 300 // the list_threads snapshot's cached entry_count (100) is stale
+	var calls []map[string]any
+	fake := fakeCaller{fn: func(op string, args map[string]any) (json.RawMessage, error) {
+		if op != "get_thread" {
+			return json.RawMessage(`{}`), nil
+		}
+		calls = append(calls, args)
+		offset, _ := args["offset"].(int64)
+		limit, _ := args["limit"].(int64)
+		var entries []threadEntryRow
+		for i := int64(0); i < limit && offset+i < liveTotal; i++ {
+			entries = append(entries, threadEntryRow{ID: offset + i, ThreadID: 1, Body: "e"})
+		}
+		b, _ := json.Marshal(map[string]any{"thread": map[string]any{}, "entries": entries, "total": liveTotal})
+		return b, nil
+	}}
+
+	m := NewModel(fake, Options{})
+	next, _ := m.Update(threadsMsg{threads: []listThreadRow{{ID: 1, EntryCount: 100}}}) // stale cached entry_count
+	m = mustModel(t, next)
+	m = focusThreads(t, m)
+
+	next, cmd := m.Update(keyMsg("enter"))
+	m = mustModel(t, next)
+	m = drainCmd(t, m, cmd)
+
+	if len(calls) != 2 {
+		t.Fatalf("expected an initial fetch + one self-correction fetch, got %d: %+v", len(calls), calls)
+	}
+	if calls[0]["offset"] != int64(0) {
+		t.Fatalf("initial (stale-guess) offset = %v, want 0 (100 - 200 clamped)", calls[0]["offset"])
+	}
+	if calls[1]["offset"] != int64(100) {
+		t.Fatalf("corrected offset = %v, want 100 (the live total 300 - limit 200)", calls[1]["offset"])
+	}
+	if m.viewTotal != liveTotal {
+		t.Fatalf("viewTotal = %d, want %d (the live total)", m.viewTotal, liveTotal)
+	}
+	if len(m.viewEntries) != 200 {
+		t.Fatalf("after self-correction, loaded %d entries, want 200 (the true tail)", len(m.viewEntries))
+	}
+	if got := m.viewEntries[len(m.viewEntries)-1].ID; got != liveTotal-1 {
+		t.Fatalf("last loaded entry ID = %d, want %d (the true newest)", got, liveTotal-1)
+	}
+}
+
+// TestViewNewerCountIndicatorAndGFetchesTail is the newest-entries-gap
+// carried-over fix's ONGOING case (spec §5): once the view is open and
+// showing what was, at load time, genuinely the tail, NEW entries arriving
+// afterward (surfaced by the ordinary list_threads poll bumping this
+// thread's entry_count) must show a "N newer — press G" indicator, and G
+// fetches the tail.
+func TestViewNewerCountIndicatorAndGFetchesTail(t *testing.T) {
+	liveTotal := int64(100)
+	var calls []map[string]any
+	fake := fakeCaller{fn: func(op string, args map[string]any) (json.RawMessage, error) {
+		if op != "get_thread" {
+			return json.RawMessage(`{}`), nil
+		}
+		calls = append(calls, args)
+		offset, _ := args["offset"].(int64)
+		limit, _ := args["limit"].(int64)
+		var entries []threadEntryRow
+		for i := int64(0); i < limit && offset+i < liveTotal; i++ {
+			entries = append(entries, threadEntryRow{ID: offset + i, ThreadID: 1, Body: "e"})
+		}
+		b, _ := json.Marshal(map[string]any{"thread": map[string]any{}, "entries": entries, "total": liveTotal})
+		return b, nil
+	}}
+
+	m := NewModel(fake, Options{})
+	next, _ := m.Update(threadsMsg{threads: []listThreadRow{{ID: 1, EntryCount: 100}}})
+	m = mustModel(t, next)
+	m = focusThreads(t, m)
+	next, cmd := m.Update(keyMsg("enter"))
+	m = mustModel(t, next)
+	for _, msg := range flattenCmds(cmd) {
+		next, _ = m.Update(msg)
+		m = mustModel(t, next)
+	}
+	if len(calls) != 1 {
+		t.Fatalf("expected exactly 1 get_thread call on open (guess matched live total), got %d: %+v", len(calls), calls)
+	}
+	if m.viewTotal != 100 || m.viewNewerCount() != 0 {
+		t.Fatalf("viewTotal=%d viewNewerCount=%d, want 100/0 before anything new arrives", m.viewTotal, m.viewNewerCount())
+	}
+
+	// New replies arrive; the ordinary list_threads poll refreshes the
+	// thread's entry_count while the view stays open — no get_thread fetch
+	// happens on its own.
+	liveTotal = 105
+	next, _ = m.Update(threadsMsg{threads: []listThreadRow{{ID: 1, EntryCount: 105}}})
+	m = mustModel(t, next)
+	if n := m.viewNewerCount(); n != 5 {
+		t.Fatalf("viewNewerCount = %d, want 5 (105 - the loaded total of 100)", n)
+	}
+	if got := m.renderThreadView(); !strings.Contains(got, "5 newer") {
+		t.Fatalf("thread view must show the newer-entries indicator:\n%s", got)
+	}
+
+	calls = nil
+	next, cmd = m.Update(keyMsg("end"))
+	m = mustModel(t, next)
+	if cmd == nil {
+		t.Fatalf("G/End with newer entries pending must issue a tail-fetch Cmd")
+	}
+	for _, msg := range flattenCmds(cmd) {
+		next, _ = m.Update(msg)
+		m = mustModel(t, next)
+	}
+	if len(calls) != 1 {
+		t.Fatalf("expected exactly 1 tail-fetch get_thread call, got %d: %+v", len(calls), calls)
+	}
+	if m.viewTotal != 105 || m.viewNewerCount() != 0 {
+		t.Fatalf("after the tail fetch, viewTotal=%d viewNewerCount=%d, want 105/0", m.viewTotal, m.viewNewerCount())
+	}
+	if len(m.viewEntries) != 105 {
+		t.Fatalf("after the tail fetch, loaded %d entries, want 105 (all of them)", len(m.viewEntries))
 	}
 }
 

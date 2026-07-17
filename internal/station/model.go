@@ -17,20 +17,24 @@ import (
 	"time"
 
 	"github.com/charmbracelet/bubbles/key"
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/schuettc/muster/internal/display"
+	"github.com/schuettc/muster/internal/nudge"
 	"github.com/schuettc/muster/internal/render"
 )
 
-// keyMap is station's canonical key vocabulary (spec §5 keys, the subset
-// this task wires: Tab focus · j/k move · q quit — send/reply/nudge/filter/
-// aliases-toggle land in task 9). bubbles/key gives every binding a single
-// named definition instead of a scattered string switch, and is ready to
-// feed a bubbles/help view once the composer/nudge keys land.
+// keyMap is station's canonical key vocabulary (spec §5 keys): Tab focus ·
+// j/k move · Enter open · Esc back/cancel · End/G live (feed) or load-tail
+// (thread view) · s send · r reply (thread view/composer) · n nudge ·
+// CycleIntent (composer, F/R/A) · / filter · a aliases toggle · q quit.
+// bubbles/key gives every binding a single named definition instead of a
+// scattered string switch.
 type keyMap struct {
-	Tab, Down, Up, Quit, Enter, Esc, End key.Binding
+	Tab, Down, Up, Quit, Enter, Esc, End             key.Binding
+	Send, Reply, Nudge, Filter, Aliases, CycleIntent key.Binding
 }
 
 var keys = keyMap{
@@ -42,8 +46,16 @@ var keys = keyMap{
 	Esc:   key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "back")),
 	// End snaps the feed back to live-follow (spec §5's "End/G snaps back to
 	// live") — "G" (shift+g) is the vim-ish alternative, matched as a plain
-	// rune keypress like j/k.
-	End: key.NewBinding(key.WithKeys("end", "G"), key.WithHelp("end/G", "live")),
+	// rune keypress like j/k. Inside the thread view overlay, the SAME
+	// binding instead fetches the tail when newer entries exist (see
+	// viewNewerCount/handleThreadViewKey).
+	End:         key.NewBinding(key.WithKeys("end", "G"), key.WithHelp("end/G", "live")),
+	Send:        key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "send")),
+	Reply:       key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "reply")),
+	Nudge:       key.NewBinding(key.WithKeys("n"), key.WithHelp("n", "nudge")),
+	Filter:      key.NewBinding(key.WithKeys("/"), key.WithHelp("/", "filter")),
+	Aliases:     key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "aliases")),
+	CycleIntent: key.NewBinding(key.WithKeys("tab"), key.WithHelp("tab", "intent")),
 }
 
 // pane identifies which of the three panes currently has focus, for Tab
@@ -86,6 +98,13 @@ const threadViewDefaultWidth = 100
 // real wrap (mirrors render.rawFieldWidth's role for the feed).
 const threadViewBodySanitizeWidth = 4096
 
+// threadViewRows bounds the thread view overlay's visible WRAPPED-line
+// budget (spec §5 carried-over fix: render windowing) — mirrors defaultRows'
+// role for the feed pane: a fixed knob-style constant rather than a flag,
+// since the overlay has no more dynamic terminal-size wiring than the feed
+// pane does today.
+const threadViewRows = defaultRows
+
 // agentEnriched is one roster row: the wire agent row plus tmux-live state
 // and its session's unread count (spec §5: "per-tuple unread via
 // session_unread").
@@ -126,6 +145,7 @@ type Options struct {
 	Aliases  bool          // show raw aliases instead of labels (--aliases)
 	Width    int           // total line budget (--width; 0 = default)
 	Alias    string        // this station's own registered alias
+	Nudger   nudger        // test seam for the 'n' nudge action; nil (default) uses nudge.TmuxNudger{} (real tmux)
 }
 
 // Model is the station Bubble Tea model. It owns the event journal cursor —
@@ -163,17 +183,129 @@ type Model struct {
 	// FULL entry list, so "load older" (pressing k/up at the top of the
 	// loaded window) knows exactly what's still missing (spec §5: get_thread
 	// {offset,limit} pagination, lazy load older). viewCursor is the index
-	// of the topmost highlighted entry within viewEntries.
+	// of the topmost highlighted entry within viewEntries. viewTotal is the
+	// live entry count the last get_thread page carried (spec §5
+	// carried-over fix: the newest-entries gap) — used both to self-correct
+	// a stale-entry_count offset guess on open and to detect newer entries
+	// that arrived after the window was loaded (viewNewerCount). viewGen is
+	// bumped each time a thread is (re)opened (openSelectedThread) so a
+	// threadPageMsg left over from a PREVIOUS opening of the SAME thread ID
+	// is discarded rather than applied (spec §5 carried-over fix:
+	// threadPageMsg staleness — mirrors pollGen's role).
 	viewOpen     bool
 	viewThreadID int64
 	viewEntries  []threadEntryRow
 	viewOffset   int64
+	viewTotal    int64
 	viewCursor   int
 	viewLoading  bool
+	viewGen      int64
+
+	// composer implements the bottom-line composer (spec §5: 's' send via a
+	// roster-filtered target picker, 'r' reply to the open thread view,
+	// intent cycled F/R/A, Enter submits, Esc cancels).
+	composer composerState
+
+	// nudgeConfirmAlias is "" (no pending confirmation) or the alias 'n' is
+	// asking "nudge <label>? y/n" about (spec §5) — handleNudgeConfirmKey
+	// owns every key while it's set. nudger is the send-keys seam (DI'd via
+	// Options.Nudger; tests inject a fake so nudgeCmd never shells to tmux).
+	nudgeConfirmAlias string
+	nudger            nudger
+
+	// filter implements '/' (spec §5): a substring filter over one pane's
+	// RENDERED row text — purely a display-time skip, it never touches
+	// selection/cursor movement (see filterActiveFor).
+	filter filterState
 
 	focus    pane
 	status   string
 	quitting bool
+}
+
+// composerPhase is the composer's own little state machine: closed (no
+// composer on screen), picking a target (the 's' roster-filtered picker,
+// before the body input), or editing the body (both 's' after a target is
+// picked, and 'r' — which skips straight here, its target is the open
+// thread).
+type composerPhase int
+
+const (
+	composerClosed composerPhase = iota
+	composerPickingTarget
+	composerEditingBody
+)
+
+// composerKind distinguishes the composer's two submit ops: send_message
+// ('s') vs reply ('r') — see submitComposer/actions.go's sendMessageCmd and
+// replyCmd.
+type composerKind int
+
+const (
+	composerKindSend composerKind = iota
+	composerKindReply
+)
+
+// composerState is the Model's composer sub-state (see Model.composer).
+type composerState struct {
+	phase     composerPhase
+	kind      composerKind
+	intent    intentState
+	target    string          // resolved send target alias (composerKindSend)
+	threadID  int64           // reply target thread (composerKindReply)
+	filter    textinput.Model // target-picker's filter field (composerKindSend only)
+	pickerIdx int
+	input     textinput.Model // body input
+	err       string          // op error, shown alongside the composer rather than crashing (spec §5)
+}
+
+// intentState is the composer's F/R/A cycle (spec §5: "--intent cycled with
+// a keystroke (F/R/A indicator)").
+type intentState int
+
+const (
+	intentFYI intentState = iota
+	intentReplyRequested
+	intentActionRequested
+)
+
+// next cycles F → R → A → F.
+func (i intentState) next() intentState { return (i + 1) % 3 }
+
+// tag renders the composer's F/R/A indicator letter.
+func (i intentState) tag() string {
+	switch i {
+	case intentReplyRequested:
+		return "R"
+	case intentActionRequested:
+		return "A"
+	default:
+		return "F"
+	}
+}
+
+// wire renders the intent's send_message wire value.
+func (i intentState) wire() string {
+	switch i {
+	case intentReplyRequested:
+		return "reply-requested"
+	case intentActionRequested:
+		return "action-requested"
+	default:
+		return "fyi"
+	}
+}
+
+// filterState is the Model's '/' filter sub-state (see Model.filter):
+// pane names which pane query applies to (set when '/' is pressed); query is
+// live-updated as the operator types; editing gates whether handleFilterKey
+// currently owns the keys (Enter stops editing but leaves query applied;
+// Esc clears the filter entirely).
+type filterState struct {
+	pane    pane
+	query   string
+	editing bool
+	input   textinput.Model
 }
 
 // NewModel constructs a station Model against caller (the daemon-transport
@@ -183,9 +315,14 @@ func NewModel(caller render.Caller, opts Options) Model {
 	if opts.Interval <= 0 {
 		opts.Interval = time.Second
 	}
+	n := opts.Nudger
+	if n == nil {
+		n = nudge.TmuxNudger{} // production default: real tmux send-keys
+	}
 	return Model{
 		caller:     caller,
 		opts:       opts,
+		nudger:     n,
 		feed:       render.NewRenderer(nil, nil, opts.Aliases, false, opts.Width),
 		feedFollow: true,
 		status:     "connecting…",
@@ -244,18 +381,32 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case threadsMsg:
 		return m.applyThreads(msg), nil
 	case threadPageMsg:
-		return m.applyThreadPage(msg), nil
+		return m.applyThreadPage(msg)
 	case inboxAckMsg:
 		return m.applyInboxAck(msg), nil
+	case composerSentMsg:
+		return m.applyComposerSent(msg), nil
+	case nudgeResultMsg:
+		return m.applyNudgeResult(msg), nil
 	}
 	return m, nil
 }
 
+// handleKey routes a keypress to whichever modal owns the keyboard right
+// now, innermost first: the composer (spec §5's bottom-line send/reply),
+// then the nudge y/n confirmation, then the '/' filter's own edit box, then
+// the thread view overlay — each of these owns EVERY key while active, none
+// leaking through to the panes underneath. Only once none of them are active
+// does a keypress reach the base pane vocabulary.
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	// The thread view is a modal overlay: while open, it owns every key
-	// (Esc closes it, j/k scroll/lazy-load) — Tab/roster/threads movement
-	// never leaks through underneath it.
-	if m.viewOpen {
+	switch {
+	case m.composer.phase != composerClosed:
+		return m.handleComposerKey(msg)
+	case m.nudgeConfirmAlias != "":
+		return m.handleNudgeConfirmKey(msg)
+	case m.filter.editing:
+		return m.handleFilterKey(msg)
+	case m.viewOpen:
 		return m.handleThreadViewKey(msg)
 	}
 	switch {
@@ -279,8 +430,271 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m.openSelectedThread()
 		}
 		return m, nil
+	case key.Matches(msg, keys.Send):
+		return m.openComposerSend(), nil
+	case key.Matches(msg, keys.Nudge):
+		if m.focus == paneRoster {
+			if a := m.selectedAgent(); a != nil {
+				m.nudgeConfirmAlias = a.Alias
+			}
+		}
+		return m, nil
+	case key.Matches(msg, keys.Filter):
+		return m.openFilter(), nil
+	case key.Matches(msg, keys.Aliases):
+		m.opts.Aliases = !m.opts.Aliases
+		m.feed.SetAliases(m.opts.Aliases)
+		return m, nil
 	}
 	return m, nil
+}
+
+// selectedAgent returns the roster row the cursor is currently drawn on
+// (rosterOrder — the SAME grouped/sorted order renderRoster walks, so 'n'
+// nudge always targets what's actually highlighted on screen), or nil when
+// the roster is empty.
+func (m Model) selectedAgent() *agentEnriched {
+	rows := m.rosterOrder()
+	if m.rosterIdx < 0 || m.rosterIdx >= len(rows) {
+		return nil
+	}
+	a := rows[m.rosterIdx]
+	return &a
+}
+
+// handleNudgeConfirmKey owns every key while nudgeConfirmAlias is pending
+// (spec §5: "nudge <label>? y/n"): 'y' confirms and issues the nudge;
+// anything else (including 'n' itself, and Esc) cancels without nudging.
+func (m Model) handleNudgeConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	alias := m.nudgeConfirmAlias
+	m.nudgeConfirmAlias = ""
+	if msg.String() != "y" {
+		return m, nil
+	}
+	m.status = fmt.Sprintf("nudging %s…", m.dispLabel(alias))
+	return m, nudgeCmd(m.caller, m.nudger, alias)
+}
+
+// applyNudgeResult applies one nudgeCmd outcome to the status line — success
+// and failure both land there (spec §5: nudge errors never crash).
+func (m Model) applyNudgeResult(msg nudgeResultMsg) Model {
+	label := m.dispLabel(msg.alias)
+	if msg.err != nil {
+		m.status = fmt.Sprintf("nudge %s failed: %v", label, msg.err)
+		return m
+	}
+	word := "typed"
+	if msg.submitted {
+		word = "submitted"
+	}
+	m.status = fmt.Sprintf("nudged %s (%s)", label, word)
+	return m
+}
+
+// openFilter opens '/' editing for the currently focused pane (spec §5):
+// re-opening the SAME pane's filter preserves its existing query for
+// editing; switching to a different pane starts blank (that pane had no
+// filter of its own before now).
+func (m Model) openFilter() Model {
+	ti := textinput.New()
+	ti.Placeholder = "filter…"
+	ti.Focus()
+	if m.filter.pane == m.focus {
+		ti.SetValue(m.filter.query)
+	}
+	m.filter = filterState{pane: m.focus, query: ti.Value(), editing: true, input: ti}
+	return m
+}
+
+// handleFilterKey owns every key while the '/' filter box is being edited:
+// Esc clears the filter entirely (back to showing everything); Enter stops
+// editing but leaves the last-typed query applied; anything else is handed
+// to the textinput, and the live query is synced from it on every keystroke
+// so filtering updates as the operator types.
+func (m Model) handleFilterKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyEsc:
+		m.filter = filterState{}
+		return m, nil
+	case tea.KeyEnter:
+		m.filter.editing = false
+		return m, nil
+	}
+	var cmd tea.Cmd
+	m.filter.input, cmd = m.filter.input.Update(msg)
+	m.filter.query = m.filter.input.Value()
+	return m, cmd
+}
+
+// filterActiveFor reports p's active filter query, if any (spec §5's '/':
+// "substring over rendered row text"). Purely a rendering-time skip — it
+// never touches selection/cursor state, so a filtered-out selected row just
+// shows no cursor mark rather than the cursor silently jumping elsewhere.
+func (m Model) filterActiveFor(p pane) (string, bool) {
+	if m.filter.pane != p || m.filter.query == "" {
+		return "", false
+	}
+	return m.filter.query, true
+}
+
+// containsFold reports whether s contains substr, case-insensitively.
+func containsFold(s, substr string) bool {
+	return strings.Contains(strings.ToLower(s), strings.ToLower(substr))
+}
+
+// openComposerSend opens the 's' composer: the roster-filtered target picker
+// phase (spec §5), before the body input.
+func (m Model) openComposerSend() Model {
+	ti := textinput.New()
+	ti.Placeholder = "filter roster (label or alias)…"
+	ti.Focus()
+	m.composer = composerState{phase: composerPickingTarget, kind: composerKindSend, filter: ti}
+	return m
+}
+
+// openComposerReply opens the 'r' composer straight into body-editing (spec
+// §5: "r in thread view replies to that thread") — no target picker, the
+// target is the thread already open.
+func (m Model) openComposerReply(threadID int64) Model {
+	ti := textinput.New()
+	ti.Placeholder = "reply…"
+	ti.Focus()
+	m.composer = composerState{phase: composerEditingBody, kind: composerKindReply, threadID: threadID, input: ti}
+	return m
+}
+
+// composerCandidates returns the roster rows matching the target picker's
+// current filter text (label or alias substring, spec §5), excluding
+// station's own alias (it can't message itself).
+func (m Model) composerCandidates() []agentEnriched {
+	q := strings.ToLower(strings.TrimSpace(m.composer.filter.Value()))
+	var out []agentEnriched
+	for _, a := range m.agents {
+		if a.Alias == m.opts.Alias {
+			continue
+		}
+		if q == "" || strings.Contains(strings.ToLower(a.Alias), q) || strings.Contains(strings.ToLower(m.dispLabel(a.Alias)), q) {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+// handleComposerKey routes to whichever composer phase is active.
+func (m Model) handleComposerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch m.composer.phase {
+	case composerPickingTarget:
+		return m.handleComposerPickerKey(msg)
+	case composerEditingBody:
+		return m.handleComposerBodyKey(msg)
+	}
+	return m, nil
+}
+
+// handleComposerPickerKey owns the keys during the 's' target-picker phase:
+// Esc cancels the whole composer; Up/Down move the highlighted candidate;
+// Enter selects it and advances to body-editing; every other key is handed
+// to the filter textinput, narrowing the candidate list live.
+func (m Model) handleComposerPickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyEsc:
+		m.composer = composerState{}
+		return m, nil
+	case tea.KeyEnter:
+		cands := m.composerCandidates()
+		if len(cands) == 0 {
+			return m, nil
+		}
+		idx := m.composer.pickerIdx
+		if idx < 0 || idx >= len(cands) {
+			idx = 0
+		}
+		m.composer.target = cands[idx].Alias
+		m.composer.phase = composerEditingBody
+		ti := textinput.New()
+		ti.Placeholder = "message…"
+		ti.Focus()
+		m.composer.input = ti
+		return m, nil
+	case tea.KeyUp:
+		if m.composer.pickerIdx > 0 {
+			m.composer.pickerIdx--
+		}
+		return m, nil
+	case tea.KeyDown:
+		if n := len(m.composerCandidates()); m.composer.pickerIdx < n-1 {
+			m.composer.pickerIdx++
+		}
+		return m, nil
+	}
+	var cmd tea.Cmd
+	m.composer.filter, cmd = m.composer.filter.Update(msg)
+	if n := len(m.composerCandidates()); m.composer.pickerIdx >= n {
+		m.composer.pickerIdx = max(n-1, 0)
+	}
+	return m, cmd
+}
+
+// handleComposerBodyKey owns the keys during body-editing (both composer
+// kinds): Esc cancels; Enter submits (submitComposer); CycleIntent (tab)
+// advances the F/R/A indicator; everything else is handed to the body
+// textinput.
+func (m Model) handleComposerBodyKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case msg.Type == tea.KeyEsc:
+		m.composer = composerState{}
+		return m, nil
+	case msg.Type == tea.KeyEnter:
+		return m.submitComposer()
+	case key.Matches(msg, keys.CycleIntent):
+		m.composer.intent = m.composer.intent.next()
+		return m, nil
+	}
+	var cmd tea.Cmd
+	m.composer.input, cmd = m.composer.input.Update(msg)
+	return m, cmd
+}
+
+// submitComposer sends the composer's body via the same send_message/reply
+// ops the CLI uses (spec §5), closing the composer immediately (op errors —
+// applyComposerSent — land on the status line, never leaving the operator
+// stuck re-typing into a composer whose op already fired).
+func (m Model) submitComposer() (Model, tea.Cmd) {
+	body := strings.TrimSpace(m.composer.input.Value())
+	if body == "" {
+		m.composer.err = "cannot send an empty message"
+		return m, nil
+	}
+	from := m.opts.Alias
+	kind := m.composer.kind
+	target := m.composer.target
+	threadID := m.composer.threadID
+	intentWire := m.composer.intent.wire()
+	label := m.dispLabel(target)
+	m.composer = composerState{}
+	switch kind {
+	case composerKindReply:
+		m.status = fmt.Sprintf("replying on #%d…", threadID)
+		return m, replyCmd(m.caller, from, threadID, body)
+	default: // composerKindSend
+		m.status = fmt.Sprintf("sending to %s…", label)
+		return m, sendMessageCmd(m.caller, from, target, body, intentWire)
+	}
+}
+
+// applyComposerSent applies one composer submit's outcome to the status
+// line (spec §5: "errors land in the status line, never crash").
+func (m Model) applyComposerSent(msg composerSentMsg) Model {
+	verb := "sent"
+	if msg.kind == composerKindReply {
+		verb = "reply sent"
+	}
+	if msg.err != nil {
+		m.status = fmt.Sprintf("%s failed: %v", verb, msg.err)
+		return m
+	}
+	m.status = verb
+	return m
 }
 
 // moveFocused applies a j/k (delta=+1/-1) move to whichever pane currently
@@ -307,13 +721,28 @@ func (m Model) moveFocused(delta int) Model {
 // handleThreadViewKey is the thread view overlay's own key vocabulary: Esc
 // closes it; k/up scrolls toward older entries, lazily fetching the next
 // older get_thread page when the loaded window's top is reached (spec §5);
-// j/down scrolls toward newer entries within what's already loaded. `r`
-// (reply) is Task 9 — every other key is a no-op rather than falling through
-// to the panes underneath.
+// j/down scrolls toward newer entries within what's already loaded; `r`
+// opens the composer as a reply to this thread; End/G fetches the tail when
+// newer entries have arrived since this window loaded (viewNewerCount, spec
+// §5 carried-over fix: the newest-entries gap) — every other key is a no-op
+// rather than falling through to the panes underneath.
 func (m Model) handleThreadViewKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case key.Matches(msg, keys.Esc):
 		m.viewOpen = false
+		return m, nil
+	case key.Matches(msg, keys.Reply):
+		return m.openComposerReply(m.viewThreadID), nil
+	case key.Matches(msg, keys.End):
+		if n := m.viewNewerCount(); n > 0 && !m.viewLoading {
+			limit := int64(threadViewPageSize)
+			offset := m.viewTotal + n - limit
+			if offset < 0 {
+				offset = 0
+			}
+			m.viewLoading = true
+			return m, fetchThreadPageCmd(m.caller, m.viewThreadID, offset, limit, false, false, m.viewGen)
+		}
 		return m, nil
 	case key.Matches(msg, keys.Up):
 		if m.viewCursor > 0 {
@@ -322,7 +751,7 @@ func (m Model) handleThreadViewKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		if m.viewOffset > 0 && !m.viewLoading {
 			m.viewLoading = true
-			return m, fetchThreadPageCmd(m.caller, m.viewThreadID, 0, m.viewOffset, true)
+			return m, fetchThreadPageCmd(m.caller, m.viewThreadID, 0, m.viewOffset, true, false, m.viewGen)
 		}
 		return m, nil
 	case key.Matches(msg, keys.Down):
@@ -332,6 +761,25 @@ func (m Model) handleThreadViewKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	return m, nil
+}
+
+// viewNewerCount returns how many entries exist beyond the currently loaded
+// tail, per the freshest list_threads poll's entry_count for this thread
+// (spec §5 carried-over fix: the newest-entries gap) — 0 while the initial
+// page hasn't landed yet, or once nothing is known to be missing.
+func (m Model) viewNewerCount() int64 {
+	if m.viewLoading || len(m.viewEntries) == 0 {
+		return 0
+	}
+	idx := indexOfThread(m.threads, m.viewThreadID)
+	if idx < 0 {
+		return 0
+	}
+	n := int64(m.threads[idx].EntryCount) - m.viewTotal
+	if n < 0 {
+		return 0
+	}
+	return n
 }
 
 // applyEvents is the ONLY place the cursor advances, and only once a page is
@@ -510,12 +958,16 @@ func (m Model) moveThreadSelection(delta int) Model {
 
 // openSelectedThread opens the thread view overlay on the currently selected
 // thread (spec §5's Enter-to-open): the initial get_thread fetch requests
-// the newest threadViewPageSize entries (offset computed from the thread's
-// cached entry_count, since GetThread's own response carries no running
-// total — see threadViewPageSize's doc). Open-to-acknowledge (spec §5, the
-// ONE side-effecting read anywhere in station): if the opened thread's
-// to_target is station's OWN registered alias, this also issues exactly one
-// get_inbox for that alias — never on selection, focus, or a later poll.
+// the newest threadViewPageSize entries, offset computed from the thread's
+// cached entry_count — a best-effort guess that applyThreadPage self-corrects
+// once the response's own LIVE total lands, if entry_count was stale (spec
+// §5 carried-over fix: the newest-entries gap). viewGen is bumped so a page
+// left over from a previous opening of this SAME thread ID never applies
+// (spec §5 carried-over fix: threadPageMsg staleness). Open-to-acknowledge
+// (spec §5, the ONE side-effecting read anywhere in station): if the opened
+// thread's to_target is station's OWN registered alias, this also issues
+// exactly one get_inbox for that alias — never on selection, focus, or a
+// later poll.
 func (m Model) openSelectedThread() (Model, tea.Cmd) {
 	idx := indexOfThread(m.threads, m.threadSelected)
 	if idx < 0 {
@@ -533,10 +985,12 @@ func (m Model) openSelectedThread() (Model, tea.Cmd) {
 	m.viewThreadID = row.ID
 	m.viewEntries = nil
 	m.viewOffset = offset
+	m.viewTotal = 0
 	m.viewCursor = 0
 	m.viewLoading = true
+	m.viewGen++
 
-	cmds := []tea.Cmd{fetchThreadPageCmd(m.caller, row.ID, offset, limit, false)}
+	cmds := []tea.Cmd{fetchThreadPageCmd(m.caller, row.ID, offset, limit, false, false, m.viewGen)}
 	if row.ToTarget == m.opts.Alias {
 		cmds = append(cmds, fetchInboxAckCmd(m.caller, m.opts.Alias))
 	}
@@ -544,20 +998,29 @@ func (m Model) openSelectedThread() (Model, tea.Cmd) {
 }
 
 // applyThreadPage applies one get_thread page. A page that resolves after
-// the view moved on to a different thread (or closed) is discarded — msg's
-// threadID no longer matches what's on screen. older pages are PREPENDED
-// (the lazy "load older" fetch) rather than replacing the loaded window;
-// viewCursor advances by the number of newly-prepended entries so the
-// previously-topmost (still-visible) entry keeps its highlighted position
-// instead of the view jumping.
-func (m Model) applyThreadPage(msg threadPageMsg) Model {
-	if !m.viewOpen || msg.threadID != m.viewThreadID {
-		return m
+// the view moved on to a different thread (or closed), OR that belongs to a
+// PREVIOUS opening of the very same thread ID (msg.gen != m.viewGen — spec §5
+// carried-over fix: threadPageMsg staleness, mirrors pollGen), is discarded.
+// older pages are PREPENDED (the lazy "load older" fetch) rather than
+// replacing the loaded window; viewCursor advances by the number of
+// newly-prepended entries so the previously-topmost (still-visible) entry
+// keeps its highlighted position instead of the view jumping.
+//
+// The newest-entries gap (spec §5 carried-over fix): a non-older page's live
+// total can reveal that this fetch's offset guess (from a stale cached
+// entry_count) undershot the true tail — total > offset+len(entries) means
+// there are more entries beyond this window that should have been included.
+// When that happens, issue exactly ONE corrective re-fetch at the corrected
+// offset (msg.corrected on the correction's own response prevents this from
+// ever chaining into a second correction).
+func (m Model) applyThreadPage(msg threadPageMsg) (Model, tea.Cmd) {
+	if !m.viewOpen || msg.threadID != m.viewThreadID || msg.gen != m.viewGen {
+		return m, nil
 	}
 	if msg.err != nil {
 		m.status = fmt.Sprintf("thread: poll failed, retrying: %v", msg.err)
 		m.viewLoading = false
-		return m
+		return m, nil
 	}
 	if msg.older {
 		m.viewEntries = append(msg.entries, m.viewEntries...)
@@ -567,9 +1030,22 @@ func (m Model) applyThreadPage(msg threadPageMsg) Model {
 		m.viewCursor = 0
 	}
 	m.viewOffset = msg.offset
+	m.viewTotal = msg.total
 	m.viewLoading = false
 	m.status = ""
-	return m
+
+	if !msg.older && !msg.corrected {
+		limit := int64(len(msg.entries))
+		if limit > 0 && msg.total > msg.offset+limit {
+			wantOffset := msg.total - limit
+			if wantOffset < 0 {
+				wantOffset = 0
+			}
+			m.viewLoading = true
+			return m, fetchThreadPageCmd(m.caller, m.viewThreadID, wantOffset, limit, false, true, m.viewGen)
+		}
+	}
+	return m, nil
 }
 
 // applyInboxAck applies the open-to-acknowledge get_inbox result: success is
@@ -698,22 +1174,20 @@ func relativeAge(now time.Time, atMillis int64) string {
 // View implements tea.Model.
 func (m Model) View() string {
 	if m.viewOpen {
-		return m.renderThreadView() + "\n" + m.renderStatus()
+		return m.renderThreadView() + "\n" + m.renderBottomLine()
 	}
 	body := lipgloss.JoinHorizontal(lipgloss.Top,
 		m.renderRoster(),
 		lipgloss.JoinVertical(lipgloss.Left, m.renderFeed(), m.renderThreads()),
 	)
-	return body + "\n" + m.renderStatus()
+	return body + "\n" + m.renderBottomLine()
 }
 
-// renderRoster renders the project-grouped agent list: live dot, label
-// (alias fallback), and per-session unread count — "!" marks a session whose
-// unread includes an action-requested thread.
-func (m Model) renderRoster() string {
-	var b strings.Builder
-	b.WriteString(paneTitle("ROSTER", m.focus == paneRoster) + "\n")
-
+// rosterOrder returns the roster's rows in the exact order renderRoster walks
+// them — grouped by project alphabetically, then by alias within a project —
+// so rosterIdx (and selectedAgent) index into the SAME order the roster
+// actually draws, regardless of any '/' filter applied on top of it.
+func (m Model) rosterOrder() []agentEnriched {
 	byProject := map[string][]agentEnriched{}
 	for _, a := range m.agents {
 		p := a.Project
@@ -728,42 +1202,74 @@ func (m Model) renderRoster() string {
 	}
 	sort.Strings(projects)
 
-	idx := 0
+	out := make([]agentEnriched, 0, len(m.agents))
 	for _, p := range projects {
 		rows := byProject[p]
 		sort.Slice(rows, func(i, j int) bool { return rows[i].Alias < rows[j].Alias })
-		b.WriteString(p + "\n")
-		for _, a := range rows {
-			dot := "✗"
-			if a.Live {
-				dot = "●"
-			}
-			label := a.Label
-			if label == "" {
-				label = a.Alias
-			}
-			line := fmt.Sprintf("%s %s", dot, label)
-			if a.Unread > 0 {
-				marker := ""
-				if a.Action {
-					marker = "!"
-				}
-				line += fmt.Sprintf(" (%d%s)", a.Unread, marker)
-			}
-			cursorMark := "  "
-			if m.focus == paneRoster && idx == m.rosterIdx {
-				cursorMark = "> "
-			}
-			b.WriteString(cursorMark + line + "\n")
-			idx++
+		out = append(out, rows...)
+	}
+	return out
+}
+
+// renderRosterRow renders one roster row's text: live dot, label (resolved
+// via dispLabel, so the 'a' aliases toggle affects the roster exactly like
+// the feed and threads panes), and per-session unread count — "!" marks a
+// session whose unread includes an action-requested thread.
+func (m Model) renderRosterRow(a agentEnriched) string {
+	dot := "✗"
+	if a.Live {
+		dot = "●"
+	}
+	line := fmt.Sprintf("%s %s", dot, m.dispLabel(a.Alias))
+	if a.Unread > 0 {
+		marker := ""
+		if a.Action {
+			marker = "!"
 		}
+		line += fmt.Sprintf(" (%d%s)", a.Unread, marker)
+	}
+	return line
+}
+
+// renderRoster renders the project-grouped agent list (rosterOrder), applying
+// the '/' filter (spec §5) as a pure display-time skip — filtered-out rows
+// still count toward idx, so rosterIdx keeps meaning "position in the FULL
+// unfiltered order" even while a filter is narrowing what's drawn.
+func (m Model) renderRoster() string {
+	var b strings.Builder
+	b.WriteString(paneTitle("ROSTER", m.focus == paneRoster) + "\n")
+
+	q, filtering := m.filterActiveFor(paneRoster)
+	lastProject := "\x00" // sentinel unequal to any real project name/"(none)"
+	idx := 0
+	for _, a := range m.rosterOrder() {
+		p := a.Project
+		if p == "" {
+			p = "(none)"
+		}
+		line := m.renderRosterRow(a)
+		if filtering && !containsFold(line, q) {
+			idx++
+			continue
+		}
+		if p != lastProject {
+			b.WriteString(p + "\n")
+			lastProject = p
+		}
+		cursorMark := "  "
+		if m.focus == paneRoster && idx == m.rosterIdx {
+			cursorMark = "> "
+		}
+		b.WriteString(cursorMark + line + "\n")
+		idx++
 	}
 	return lipgloss.NewStyle().Width(rosterWidth).Render(strings.TrimRight(b.String(), "\n"))
 }
 
 // renderFeed renders the journal tail with render.Renderer verbatim — the
 // same WHO arrows, labels, and width-capped WHAT the CLI's events/watch
-// commands print.
+// commands print — applying the '/' filter (spec §5) over each rendered
+// line's own text.
 func (m Model) renderFeed() string {
 	var b bytes.Buffer
 	b.WriteString(paneTitle("FEED", m.focus == paneFeed) + "\n")
@@ -773,8 +1279,15 @@ func (m Model) renderFeed() string {
 	if end > len(m.events) {
 		end = len(m.events)
 	}
+	q, filtering := m.filterActiveFor(paneFeed)
 	for _, e := range m.events[start:end] {
-		m.feed.Line(&b, e)
+		var lb bytes.Buffer
+		m.feed.Line(&lb, e)
+		line := lb.String()
+		if filtering && !containsFold(line, q) {
+			continue
+		}
+		b.WriteString(line)
 	}
 	return strings.TrimRight(b.String(), "\n")
 }
@@ -783,12 +1296,18 @@ func (m Model) renderFeed() string {
 // first, then reply-requested, then the rest — see groupThreads — each row
 // showing its id, intent tag, participants, last speaker + relative age, and
 // sanitized subject. The selection marker follows threadSelected by ID, so
-// it always lands on the right row regardless of this poll's grouping.
+// it always lands on the right row regardless of this poll's grouping. The
+// '/' filter (spec §5) applies over each row's own rendered text.
 func (m Model) renderThreads() string {
 	var b strings.Builder
 	b.WriteString(paneTitle("THREADS", m.focus == paneThreads) + "\n")
+	q, filtering := m.filterActiveFor(paneThreads)
 	for _, row := range groupThreads(m.threads) {
-		b.WriteString(m.renderThreadRow(row) + "\n")
+		line := m.renderThreadRow(row)
+		if filtering && !containsFold(line, q) {
+			continue
+		}
+		b.WriteString(line + "\n")
 	}
 	return strings.TrimRight(b.String(), "\n")
 }
@@ -810,31 +1329,168 @@ func (m Model) renderThreadRow(row listThreadRow) string {
 	return fmt.Sprintf("%s#%d%s %s | %s %s | %s", marker, row.ID, tag, participants, last, age, subject)
 }
 
+// threadViewLines renders every loaded entry into flat, already-wrapped
+// display lines (header + wrapped body + a blank separator), and returns
+// entryStart[i]..entryStart[i+1] as entry i's line range within lines —
+// entryStart has len(viewEntries)+1 elements, the last one the total line
+// count. Pure: both renderThreadView and threadViewWindowTop call this so
+// windowing and rendering never compute two different notions of "where is
+// entry i on screen."
+func (m Model) threadViewLines() (lines []string, entryStart []int) {
+	width := m.opts.Width
+	if width <= 0 {
+		width = threadViewDefaultWidth
+	}
+	entryStart = make([]int, len(m.viewEntries)+1)
+	for i, e := range m.viewEntries {
+		entryStart[i] = len(lines)
+		marker := "  "
+		if i == m.viewCursor {
+			marker = "> "
+		}
+		ts := time.UnixMilli(e.CreatedAt).Format("15:04:05")
+		lines = append(lines, fmt.Sprintf("%s%s %s", marker, ts, m.dispLabel(e.FromAgent)))
+		body := lipgloss.NewStyle().Width(width).Render(display.Sanitize(e.Body, threadViewBodySanitizeWidth))
+		lines = append(lines, strings.Split(body, "\n")...)
+		lines = append(lines, "")
+	}
+	entryStart[len(m.viewEntries)] = len(lines)
+	return lines, entryStart
+}
+
+// threadViewWindowTop picks which line to start rendering from (spec §5
+// carried-over fix: render windowing, mirroring the feed's feedWindowStart
+// pattern but over variable-height wrapped entries): the window always ends
+// right at the cursor entry's own lines — i.e. the cursor's entry is the
+// last one fully visible — clamped so it never scrolls past either end.
+// Stateless by design: no persisted scroll position is needed, since the
+// cursor's own index is enough to re-derive the correct window on every
+// render (j/k "scrolls" simply by moving the cursor and letting this
+// recompute).
+func (m Model) threadViewWindowTop(lines []string, entryStart []int) int {
+	height := threadViewRows
+	if height <= 0 || len(lines) <= height || len(entryStart) <= 1 {
+		return 0
+	}
+	cursor := m.viewCursor
+	if cursor < 0 {
+		cursor = 0
+	}
+	if cursor > len(entryStart)-2 {
+		cursor = len(entryStart) - 2
+	}
+	top := entryStart[cursor+1] - height
+	if top < 0 {
+		top = 0
+	}
+	if maxTop := len(lines) - height; top > maxTop {
+		top = maxTop
+	}
+	return top
+}
+
 // renderThreadView renders the thread view overlay (spec §5): entries
-// oldest-first, body text sanitized and wrapped to the pane width. A
-// "load older" hint shows while more entries remain above the loaded window
-// (viewOffset > 0).
+// oldest-first, body text sanitized and wrapped to the pane width, WINDOWED
+// to threadViewRows lines (spec §5 carried-over fix — an unbounded render of
+// a long thread would blow well past any real pane height). A "load older"
+// hint shows while more entries remain above the loaded window (viewOffset >
+// 0); a "N newer — press G" hint shows when viewNewerCount reports entries
+// that arrived after this window loaded (spec §5 carried-over fix: the
+// newest-entries gap).
 func (m Model) renderThreadView() string {
 	var b strings.Builder
 	b.WriteString(paneTitle("THREAD #"+strconv.FormatInt(m.viewThreadID, 10), true) + "\n")
 	if m.viewOffset > 0 {
 		b.WriteString("↑ more above — k/↑ to load older\n")
 	}
-	width := m.opts.Width
-	if width <= 0 {
-		width = threadViewDefaultWidth
+
+	lines, entryStart := m.threadViewLines()
+	top := m.threadViewWindowTop(lines, entryStart)
+	end := top + threadViewRows
+	if end > len(lines) || threadViewRows <= 0 {
+		end = len(lines)
 	}
-	for i, e := range m.viewEntries {
-		marker := "  "
-		if i == m.viewCursor {
-			marker = "> "
-		}
-		ts := time.UnixMilli(e.CreatedAt).Format("15:04:05")
-		header := fmt.Sprintf("%s%s %s", marker, ts, m.dispLabel(e.FromAgent))
-		body := lipgloss.NewStyle().Width(width).Render(display.Sanitize(e.Body, threadViewBodySanitizeWidth))
-		b.WriteString(header + "\n" + body + "\n\n")
+	for _, l := range lines[top:end] {
+		b.WriteString(l + "\n")
+	}
+
+	if n := m.viewNewerCount(); n > 0 {
+		_, _ = fmt.Fprintf(&b, "↓ %d newer — press G to load\n", n)
 	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+// paneName renders a pane value for display (the '/' filter's "filter
+// (roster): …" prompt).
+func paneName(p pane) string {
+	switch p {
+	case paneRoster:
+		return "roster"
+	case paneFeed:
+		return "feed"
+	case paneThreads:
+		return "threads"
+	default:
+		return ""
+	}
+}
+
+// renderBottomLine renders whichever of the composer, the nudge y/n
+// confirmation, the '/' filter edit box, or the plain status line currently
+// owns the bottom of the screen — mirroring handleKey's same modal-priority
+// order (composer > nudge confirm > filter > plain status).
+func (m Model) renderBottomLine() string {
+	switch {
+	case m.composer.phase == composerPickingTarget:
+		return m.renderComposerPicker()
+	case m.composer.phase == composerEditingBody:
+		return m.renderComposerBody()
+	case m.nudgeConfirmAlias != "":
+		return fmt.Sprintf("nudge %s? y/n", m.dispLabel(m.nudgeConfirmAlias))
+	case m.filter.editing:
+		return fmt.Sprintf("filter (%s): %s", paneName(m.filter.pane), m.filter.input.View())
+	default:
+		return m.renderStatus()
+	}
+}
+
+// renderComposerPicker renders the 's' target-picker line: the filter input
+// plus the (label-resolved) candidates it currently matches, the highlighted
+// one marked.
+func (m Model) renderComposerPicker() string {
+	cands := m.composerCandidates()
+	names := make([]string, 0, len(cands))
+	for i, a := range cands {
+		marker := ""
+		if i == m.composer.pickerIdx {
+			marker = ">"
+		}
+		names = append(names, marker+m.dispLabel(a.Alias))
+	}
+	line := "to: " + m.composer.filter.View()
+	if len(names) == 0 {
+		return line + "  (no match)"
+	}
+	return line + "  [" + strings.Join(names, " ") + "]"
+}
+
+// renderComposerBody renders the body-editing line: the F/R/A intent
+// indicator, the resolved target (send) or thread (reply), the input, and
+// any op error from a previous submit attempt (spec §5: errors never crash,
+// they land right here).
+func (m Model) renderComposerBody() string {
+	var target string
+	switch m.composer.kind {
+	case composerKindReply:
+		target = fmt.Sprintf("reply #%d", m.composer.threadID)
+	default:
+		target = "to " + m.dispLabel(m.composer.target)
+	}
+	line := fmt.Sprintf("[%s] %s: %s", m.composer.intent.tag(), target, m.composer.input.View())
+	if m.composer.err != "" {
+		line += "  (" + m.composer.err + ")"
+	}
+	return line
 }
 
 func (m Model) renderStatus() string {
@@ -842,11 +1498,12 @@ func (m Model) renderStatus() string {
 		return m.status
 	}
 	if m.viewOpen {
-		return fmt.Sprintf("%s scroll · %s close", keys.Down.Help().Key, keys.Esc.Help().Key)
+		return fmt.Sprintf("%s scroll · %s reply · %s close", keys.Down.Help().Key, keys.Reply.Help().Key, keys.Esc.Help().Key)
 	}
-	return fmt.Sprintf("%s focus · %s/%s move · %s open · %s live · %s quit",
+	return fmt.Sprintf("%s focus · %s/%s move · %s open · %s live · %s send · %s nudge · %s filter · %s aliases · %s quit",
 		keys.Tab.Help().Key, keys.Down.Help().Key, keys.Up.Help().Key,
-		keys.Enter.Help().Key, keys.End.Help().Key, keys.Quit.Help().Key)
+		keys.Enter.Help().Key, keys.End.Help().Key, keys.Send.Help().Key,
+		keys.Nudge.Help().Key, keys.Filter.Help().Key, keys.Aliases.Help().Key, keys.Quit.Help().Key)
 }
 
 func paneTitle(name string, focused bool) string {

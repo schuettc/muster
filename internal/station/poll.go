@@ -201,33 +201,54 @@ type threadEntryRow struct {
 // "load older" fetch (Update prepends its entries instead of replacing the
 // loaded window); threadID lets Update discard a page that resolves after
 // the thread view moved on to a different thread (or closed).
+//
+// gen mirrors pollGen's role but for one thread-view "opening": stamped from
+// Model.viewGen at dispatch time (bumped only when a thread is (re)opened, in
+// openSelectedThread), so a page left over from a PREVIOUS opening of the
+// very same thread ID — which the threadID check alone can't catch, since
+// it's unchanged across a close/reopen of the same thread — is discarded
+// rather than applied once a fresher opening has already landed (spec §5
+// carried-over fix: threadPageMsg staleness).
+//
+// total is the live entry count get_thread now reports (spec §5
+// carried-over fix: the newest-entries gap) — corrected marks a page that IS
+// itself the result of applyThreadPage's one-shot self-correction, so that
+// correction can never chain into a second one.
 type threadPageMsg struct {
-	threadID int64
-	offset   int64
-	older    bool
-	entries  []threadEntryRow
-	err      error
+	threadID  int64
+	offset    int64
+	older     bool
+	corrected bool
+	gen       int64
+	total     int64
+	entries   []threadEntryRow
+	err       error
 }
 
 // fetchThreadPageCmd issues one get_thread call for threadID's
 // [offset, offset+limit) window (entries ordered oldest-first; see
 // paginateEntries in internal/daemon). older tags the response so Update
-// knows to prepend rather than replace.
-func fetchThreadPageCmd(caller render.Caller, threadID, offset, limit int64, older bool) tea.Cmd {
+// knows to prepend rather than replace; corrected and gen are carried
+// straight through to the resulting threadPageMsg (see its doc).
+func fetchThreadPageCmd(caller render.Caller, threadID, offset, limit int64, older, corrected bool, gen int64) tea.Cmd {
 	return func() tea.Msg {
 		raw, err := caller.Call("get_thread", map[string]any{
 			"thread_id": threadID, "offset": offset, "limit": limit,
 		})
 		if err != nil {
-			return threadPageMsg{threadID: threadID, offset: offset, older: older, err: err}
+			return threadPageMsg{threadID: threadID, offset: offset, older: older, corrected: corrected, gen: gen, err: err}
 		}
 		var res struct {
 			Entries []threadEntryRow `json:"entries"`
+			Total   int64            `json:"total"`
 		}
 		if err := json.Unmarshal(raw, &res); err != nil {
-			return threadPageMsg{threadID: threadID, offset: offset, older: older, err: err}
+			return threadPageMsg{threadID: threadID, offset: offset, older: older, corrected: corrected, gen: gen, err: err}
 		}
-		return threadPageMsg{threadID: threadID, offset: offset, older: older, entries: res.Entries}
+		return threadPageMsg{
+			threadID: threadID, offset: offset, older: older, corrected: corrected, gen: gen,
+			total: res.Total, entries: res.Entries,
+		}
 	}
 }
 

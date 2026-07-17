@@ -3,6 +3,7 @@ package station
 import (
 	"encoding/json"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/schuettc/muster/internal/daemon"
@@ -189,5 +190,64 @@ func TestDeregisterIfStillOursIsConditional(t *testing.T) {
 	res := getAgentTupleForTest(t, caller, "station")
 	if !res.Found || res.Agent.SocketPath != "/other" || res.Agent.SessionID != "$OTHER" {
 		t.Fatalf("a re-registered alias with a different tuple must survive the stale station's exit, got %+v", res)
+	}
+}
+
+// TestDeregisterOnceFiresExactlyOnce covers Run's lifecycle hardening: the
+// sync.Once-wrapped deregister a clean quit, a signal, and a recovered panic
+// might all race to call must only ever touch the record ONCE — a second
+// call (however it's triggered) must never delete a DIFFERENT station's
+// meanwhile-registered record just because it happens to fire again.
+func TestDeregisterOnceFiresExactlyOnce(t *testing.T) {
+	startStationTestDaemon(t)
+	caller := daemonCaller{}
+	c := tmuxenv.Capture{SocketPath: "/s", SessionID: "$1"}
+	registerDirect(t, caller, "station", c.SocketPath, c.SessionID)
+
+	dereg := deregisterOnce(caller, "station", c)
+	dereg()
+	if res := getAgentTupleForTest(t, caller, "station"); res.Found {
+		t.Fatalf("first call must remove the record, got %+v", res)
+	}
+
+	other := tmuxenv.Capture{SocketPath: "/other", SessionID: "$OTHER"}
+	registerDirect(t, caller, "station", other.SocketPath, other.SessionID)
+	dereg() // e.g. a signal arriving right after `q` already fired the same func
+	res := getAgentTupleForTest(t, caller, "station")
+	if !res.Found || res.Agent.SocketPath != "/other" || res.Agent.SessionID != "$OTHER" {
+		t.Fatalf("a second call (post sync.Once) must not touch a new owner, got %+v", res)
+	}
+}
+
+// TestRegisterStationIfAbsentRaceFailsOverToNextSuffix covers the T7-deferred
+// CAS race directly: two registerStation calls racing onto the SAME fresh
+// alias concurrently must never both believe they won — the loser must fail
+// over to "station-2" via the if_absent conflict path rather than either
+// silently overwriting the other or erroring out.
+func TestRegisterStationIfAbsentRaceFailsOverToNextSuffix(t *testing.T) {
+	startStationTestDaemon(t)
+	stubTmuxAlive(t, "", "") // nothing is alive; irrelevant (both starts see "not found")
+	caller := daemonCaller{}
+
+	c1 := tmuxenv.Capture{SocketPath: "/s1", SessionID: "$1", SessionName: "sess1", PaneID: "%1"}
+	c2 := tmuxenv.Capture{SocketPath: "/s2", SessionID: "$2", SessionName: "sess2", PaneID: "%2"}
+
+	var wg sync.WaitGroup
+	results := make([]string, 2)
+	errs := make([]error, 2)
+	wg.Add(2)
+	go func() { defer wg.Done(); results[0], errs[0] = registerStation(caller, "station", c1) }()
+	go func() { defer wg.Done(); results[1], errs[1] = registerStation(caller, "station", c2) }()
+	wg.Wait()
+
+	if errs[0] != nil || errs[1] != nil {
+		t.Fatalf("registerStation errors: %v, %v", errs[0], errs[1])
+	}
+	if results[0] == results[1] {
+		t.Fatalf("both racers landed on the same alias %q — the race was not resolved", results[0])
+	}
+	got := map[string]bool{results[0]: true, results[1]: true}
+	if !got["station"] || !got["station-2"] {
+		t.Fatalf("expected exactly {station, station-2}, got %v", results)
 	}
 }

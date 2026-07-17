@@ -85,6 +85,27 @@ func (f fakeCaller) Call(op string, args map[string]any) (json.RawMessage, error
 	return json.RawMessage(`{}`), nil
 }
 
+// drainCmd runs cmd (and, recursively, any Cmd its resulting msg's Update
+// call itself returns) to completion — needed wherever applying one msg can
+// issue a FURTHER Cmd (e.g. applyThreadPage's one-shot self-correction
+// re-fetch), unlike the single-level flattenCmds loops used elsewhere. Never
+// used on a Cmd chain that includes tickCmd's timer (see flattenCmds' own
+// caveat).
+func drainCmd(t *testing.T, m Model, cmd tea.Cmd) Model {
+	t.Helper()
+	pending := flattenCmds(cmd)
+	for len(pending) > 0 {
+		msg := pending[0]
+		pending = pending[1:]
+		next, nextCmd := m.Update(msg)
+		m = mustModel(t, next)
+		if nextCmd != nil {
+			pending = append(pending, flattenCmds(nextCmd)...)
+		}
+	}
+	return m
+}
+
 // mustModel type-asserts the tea.Model Update returns back to a station
 // Model, failing the test if the framework interface ever holds something
 // else.

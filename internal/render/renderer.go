@@ -68,6 +68,13 @@ func (r *Renderer) SetLabels(labels map[string]string) {
 	r.labels = labels
 }
 
+// SetAliases toggles raw-alias mode (true = ignore labels, show aliases
+// as-is) — station's `a` key flips this at runtime; every other caller sets
+// it once at construction via NewRenderer.
+func (r *Renderer) SetAliases(aliases bool) {
+	r.aliases = aliases
+}
+
 // fit grows column widths to accommodate e; it never shrinks them, keeping
 // alignment stable across a streamed tail.
 func (r *Renderer) fit(e EventRow) {

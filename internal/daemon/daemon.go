@@ -147,7 +147,25 @@ func sessionKey(socketPath, sessionID string) string { return socketPath + "\x00
 // sessionLock returns the mutex guarding {SessionUnread recompute, notifier
 // write, journal} for one session tuple, creating it lazily.
 func (d *Daemon) sessionLock(socketPath, sessionID string) *sync.Mutex {
-	key := sessionKey(socketPath, sessionID)
+	return d.namedLock(sessionKey(socketPath, sessionID))
+}
+
+// aliasKeyPrefix distinguishes aliasLock's keys from sessionLock's in the
+// same underlying map — sessionKey values are socket_path\x00session_id, and
+// socket paths are always absolute (start with "/"), so a key starting with
+// this prefix can never collide with one sessionLock produces.
+const aliasKeyPrefix = "\x01alias\x00"
+
+// aliasLock returns the mutex guarding one alias's register_agent CAS check
+// (see handleRegisterAgent's if_absent path), creating it lazily. Distinct
+// namespace from sessionLock's tuple-keyed locks (see aliasKeyPrefix).
+func (d *Daemon) aliasLock(alias string) *sync.Mutex {
+	return d.namedLock(aliasKeyPrefix + alias)
+}
+
+// namedLock is the shared lazy-mutex-map machinery behind sessionLock and
+// aliasLock — same map, disjoint key namespaces.
+func (d *Daemon) namedLock(key string) *sync.Mutex {
 	d.sessMu.Lock()
 	defer d.sessMu.Unlock()
 	if d.sessLocks == nil {
@@ -159,6 +177,62 @@ func (d *Daemon) sessionLock(socketPath, sessionID string) *sync.Mutex {
 		d.sessLocks[key] = mu
 	}
 	return mu
+}
+
+// handleRegisterAgent implements register_agent. Plain calls (if_absent
+// absent/false) upsert exactly as before — every existing caller is
+// unaffected. if_absent=true additionally guards the read-then-write gap a
+// caller like station's collision-safe probe loop would otherwise have
+// between its own get_agent check and this write: under the alias's lock, if
+// a record for alias already exists with a DIFFERENT (socket_path,
+// session_id) tuple than the one being registered, the op fails instead of
+// upserting, rather than silently overwriting whatever raced onto the alias
+// in between. A dead-collision "take over" (the caller's own tmux liveness
+// check already decided the existing record is stale) intentionally does
+// NOT set if_absent — the daemon has no tmux liveness of its own (it stays
+// tmux-agnostic per the package boundary), so it cannot distinguish "safe to
+// steal, the old tuple is dead" from "a live collision just raced in" on its
+// own; that distinction is made client-side before calling in, exactly as it
+// is today. The residual TOCTOU — the caller's liveness check and this write
+// are not atomic with each other — is accepted for same-machine use: at
+// worst the caller's write fails on if_absent and it fails over to the next
+// candidate alias, but it can never clobber a tuple it didn't already decide
+// (via that liveness check) to overwrite.
+func (d *Daemon) handleRegisterAgent(a map[string]any) proto.Response {
+	alias := str(a, "alias")
+	ifAbsent := boolArg(a, "if_absent")
+	newAgent := store.Agent{
+		Alias: alias, Role: str(a, "role"), ModelType: str(a, "model_type"),
+		SocketPath: str(a, "socket_path"), PaneID: str(a, "pane_id"), SessionName: str(a, "session_name"),
+		SessionID: str(a, "session_id"),
+		Project:   str(a, "project"), Label: str(a, "label"), LabelManual: boolArg(a, "label_manual"),
+	}
+
+	var mu *sync.Mutex
+	if ifAbsent {
+		mu = d.aliasLock(alias)
+		mu.Lock()
+		defer mu.Unlock()
+	}
+
+	old, hadOld, err := d.s.GetAgent(alias) // pre-mutation tuple, for reconciliation AND the if_absent CAS check
+	if err != nil {
+		return fail(err)
+	}
+	if ifAbsent && hadOld && (old.SocketPath != newAgent.SocketPath || old.SessionID != newAgent.SessionID) {
+		return fail(fmt.Errorf("register_agent: if_absent conflict: alias %q is already registered to a different session", alias))
+	}
+	if err := d.s.RegisterAgent(newAgent); err != nil {
+		return fail(err)
+	}
+	// Reconciliation (spec §3): rewrite the badge for both the OLD tuple
+	// (a re-register that moves an agent to a new session must not leave
+	// its previous session's flag stale) and the NEW one.
+	if hadOld {
+		d.reconcileBadge(old.SocketPath, old.SessionID)
+	}
+	d.reconcileBadge(newAgent.SocketPath, newAgent.SessionID)
+	return ok(nil)
 }
 
 // setSessionBadge is the ONE canonical {recompute, push} sequence for a
@@ -304,25 +378,7 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 	a := req.Args
 	switch req.Op {
 	case "register_agent":
-		alias := str(a, "alias")
-		old, hadOld, _ := d.s.GetAgent(alias) // best-effort: capture the pre-mutation tuple for reconciliation
-		newAgent := store.Agent{
-			Alias: alias, Role: str(a, "role"), ModelType: str(a, "model_type"),
-			SocketPath: str(a, "socket_path"), PaneID: str(a, "pane_id"), SessionName: str(a, "session_name"),
-			SessionID: str(a, "session_id"),
-			Project:   str(a, "project"), Label: str(a, "label"), LabelManual: boolArg(a, "label_manual"),
-		}
-		if err := d.s.RegisterAgent(newAgent); err != nil {
-			return fail(err)
-		}
-		// Reconciliation (spec §3): rewrite the badge for both the OLD tuple
-		// (a re-register that moves an agent to a new session must not leave
-		// its previous session's flag stale) and the NEW one.
-		if hadOld {
-			d.reconcileBadge(old.SocketPath, old.SessionID)
-		}
-		d.reconcileBadge(newAgent.SocketPath, newAgent.SessionID)
-		return ok(nil)
+		return d.handleRegisterAgent(a)
 	case "list_agents":
 		agents, err := d.s.ListAgents()
 		if err != nil {
@@ -434,8 +490,9 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 		if err != nil {
 			return fail(err)
 		}
+		total := len(entries) // live count BEFORE pagination — additive, back-compat (spec §5 carried-over fix: the newest-entries gap)
 		entries = paginateEntries(entries, i64(a, "offset"), i64(a, "limit"))
-		return ok(map[string]any{"thread": th, "entries": entries})
+		return ok(map[string]any{"thread": th, "entries": entries, "total": total})
 	case "list_threads":
 		threads, err := d.s.Threads(int(i64(a, "limit")))
 		if err != nil {
