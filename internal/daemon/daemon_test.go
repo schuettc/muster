@@ -287,6 +287,11 @@ func TestSendMessageAndTaskCreateStampOriginProject(t *testing.T) {
 	}}); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := client.Call(sock, proto.Request{Op: "register_agent", Args: map[string]any{
+		"alias": "someone", "role": "consumer", "model_type": "claude",
+	}}); err != nil {
+		t.Fatal(err)
+	}
 
 	send, err := client.Call(sock, proto.Request{Op: "send_message", Args: map[string]any{
 		"from": "sender-1", "to_kind": "agent", "to_target": "someone", "body": "hi",

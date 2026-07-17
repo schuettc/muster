@@ -392,12 +392,15 @@ func (d *Daemon) senderProject(alias string) string {
 }
 
 // targetOf renders a thread address as a journal target: 'broadcast' or
-// '<to_kind>:<to_target>'.
-func targetOf(a map[string]any) string {
-	if str(a, "to_kind") == "broadcast" {
+// '<to_kind>:<to_target>'. toTarget is the (possibly daemon-resolved) target
+// actually stored on the thread, not necessarily the raw request arg — so a
+// send_message/task_create addressed to a label journals the ALIAS it
+// resolved to, not the label a caller typed.
+func targetOf(toKind, toTarget string) string {
+	if toKind == "broadcast" {
 		return "broadcast"
 	}
-	return str(a, "to_kind") + ":" + str(a, "to_target")
+	return toKind + ":" + toTarget
 }
 
 func (d *Daemon) dispatch(req proto.Request) proto.Response {
@@ -413,28 +416,44 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 		return ok(agents)
 	case "send_message":
 		from := str(a, "from")
+		toKind, toTarget := str(a, "to_kind"), str(a, "to_target")
+		if toKind == "agent" {
+			resolved, err := d.resolveAgentTarget(from, toTarget)
+			if err != nil {
+				return fail(err)
+			}
+			toTarget = resolved
+		}
 		id, err := d.s.CreateThread(store.Thread{
-			Kind: "message", FromAgent: from, ToKind: str(a, "to_kind"),
-			ToTarget: str(a, "to_target"), Subject: str(a, "subject"), Ref: str(a, "ref"),
+			Kind: "message", FromAgent: from, ToKind: toKind,
+			ToTarget: toTarget, Subject: str(a, "subject"), Ref: str(a, "ref"),
 			Intent: str(a, "intent"), OriginProject: d.senderProject(from),
 		}, str(a, "body"))
 		if err != nil {
 			return fail(err)
 		}
-		d.logEvent(store.Event{Kind: "send", Agent: from, Target: targetOf(a), ThreadID: id, Detail: str(a, "subject")})
+		d.logEvent(store.Event{Kind: "send", Agent: from, Target: targetOf(toKind, toTarget), ThreadID: id, Detail: str(a, "subject")})
 		d.notifyForThread(id, from)
 		return ok(map[string]any{"thread_id": id})
 	case "task_create":
 		from := str(a, "from")
+		toKind, toTarget := str(a, "to_kind"), str(a, "to_target")
+		if toKind == "agent" {
+			resolved, err := d.resolveAgentTarget(from, toTarget)
+			if err != nil {
+				return fail(err)
+			}
+			toTarget = resolved
+		}
 		id, err := d.s.CreateThread(store.Thread{
-			Kind: "task", FromAgent: from, ToKind: str(a, "to_kind"),
-			ToTarget: str(a, "to_target"), Subject: str(a, "subject"), Ref: str(a, "ref"), Status: "open",
+			Kind: "task", FromAgent: from, ToKind: toKind,
+			ToTarget: toTarget, Subject: str(a, "subject"), Ref: str(a, "ref"), Status: "open",
 			Intent: str(a, "intent"), OriginProject: d.senderProject(from),
 		}, str(a, "body"))
 		if err != nil {
 			return fail(err)
 		}
-		d.logEvent(store.Event{Kind: "task", Agent: from, Target: targetOf(a), ThreadID: id, Detail: str(a, "subject")})
+		d.logEvent(store.Event{Kind: "task", Agent: from, Target: targetOf(toKind, toTarget), ThreadID: id, Detail: str(a, "subject")})
 		d.notifyForThread(id, from)
 		return ok(map[string]any{"thread_id": id})
 	case "task_claim":

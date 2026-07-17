@@ -376,6 +376,7 @@ func TestDepartedAgentSurvivesUnderTheBar(t *testing.T) {
 	startStationTestDaemon(t)
 	caller := daemonCaller{}
 	registerDirect(t, caller, "alpha-1", "/a", "$A")
+	registerDirect(t, caller, "someone", "/x", "$X")
 	if _, err := caller.Call("send_message", map[string]any{
 		"from": "alpha-1", "to_kind": "agent", "to_target": "someone", "body": "hi",
 	}); err != nil {
