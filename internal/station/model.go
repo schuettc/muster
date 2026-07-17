@@ -32,6 +32,7 @@ import (
 type keyMap struct {
 	Tab, ShiftTab, Down, Up, Quit, Enter, Esc, End         key.Binding
 	Send, Reply, Nudge, Filter, Aliases, CycleIntent, Help key.Binding
+	MailJump                                               key.Binding
 }
 
 var keys = keyMap{
@@ -55,6 +56,9 @@ var keys = keyMap{
 	Aliases:     key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "aliases")),
 	CycleIntent: key.NewBinding(key.WithKeys("tab"), key.WithHelp("tab", "intent")),
 	Help:        key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help")),
+	// MailJump implements 'm' (spec iteration-5: "m from ANY level jumps to
+	// the FOR YOU section") — see handleMailJumpKey.
+	MailJump: key.NewBinding(key.WithKeys("m"), key.WithHelp("m", "your mail")),
 }
 
 // Layout knobs. defaultRows/eventBacklog bound how much of the global events
@@ -92,6 +96,12 @@ type agentEnriched struct {
 	Unread      int
 	Action      bool // true when the session's unread includes an action-requested thread
 	ActionCount int  // the session's action-requested unread count (spec §5-REVISED project rollup: "(+action)")
+	// Attached is true when a human tmux client is currently attached to
+	// this agent's session (spec iteration-5 Tier 1: the attach marker) —
+	// checked only for a LIVE session, batched into the same per-agent tmux
+	// query loop as Live/Label (see fetchAgents in poll.go), never in
+	// View().
+	Attached bool
 }
 
 // listThreadRow mirrors store.Thread's wire JSON for the conversation lists.
@@ -161,8 +171,21 @@ type Model struct {
 	project       string
 	agent         string
 	conversation  int64
+	// forYou is the currently-selected FOR YOU row's thread ID (spec
+	// iteration-5: the pinned L0 section listing station's own unread
+	// threads) — its own identity-keyed selection, distinct from
+	// m.conversation (a different underlying list).
+	forYou int64
 
 	ackedThreads map[int64]bool // thread IDs already open-to-acknowledged THIS run — focusing the same thread twice must not re-fire get_inbox
+
+	// lastActive is alias -> the newest journal event's TS (ms epoch) where
+	// that alias was the ACTOR (spec iteration-5 Tier 0a: "last active:
+	// <relative>") — populated lazily by fetchLastActiveCmd, scoped each
+	// poll tick to the current project's agent-strip membership (see
+	// pollCmd), never fetched from View(). A missing entry (nil map, or no
+	// key yet) simply renders no last-active text rather than "unknown".
+	lastActive map[string]int64
 
 	// Conversation reader (right pane): the currently loaded conversation's
 	// page. Which MODE is active — L1's passive last-messages preview or L2's
@@ -338,11 +361,20 @@ func (m Model) pollCmd() tea.Cmd {
 	if !m.bootstrapped {
 		eventsCmd = fetchBacklogEventsCmd(m.caller, initialEventBacklog, m.pollGen)
 	}
-	return tea.Batch(
+	cmds := []tea.Cmd{
 		eventsCmd,
 		fetchAgentsCmd(m.caller),
 		fetchThreadsCmd(m.caller),
-	)
+	}
+	// Tier 0a last-active enrichment (spec iteration-5): one small
+	// list_events(agent=alias) lookup per CURRENT project's agent-strip
+	// member, tagged with this tick's pollGen so a slow in-flight fetch from
+	// an older tick is discarded exactly like eventsMsg (see applyLastActive)
+	// — issued from the poll Cmd only, never from a keypress or View().
+	for _, a := range m.agentStripRows() {
+		cmds = append(cmds, fetchLastActiveCmd(m.caller, a.Alias, m.pollGen))
+	}
+	return tea.Batch(cmds...)
 }
 
 // Update implements tea.Model. See eventsMsg/agentsMsg/threadsMsg handling
@@ -376,6 +408,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.applyComposerSent(msg), nil
 	case nudgeResultMsg:
 		return m.applyNudgeResult(msg), nil
+	case lastActiveMsg:
+		return m.applyLastActive(msg), nil
 	}
 	return m, nil
 }
@@ -430,6 +464,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case key.Matches(msg, keys.Nudge):
 		return m.handleNudgeKey(), nil
+	case key.Matches(msg, keys.MailJump):
+		return m.handleMailJumpKey()
 	case key.Matches(msg, keys.Filter):
 		return m.openFilter(), nil
 	case key.Matches(msg, keys.Aliases):
@@ -457,6 +493,9 @@ func (m Model) currentLeftList() llList {
 		}
 		return llConvList
 	default:
+		if m.focus == focusForYou {
+			return llForYou
+		}
 		return llProjects
 	}
 }
@@ -518,6 +557,18 @@ func (m Model) plainConvRow(c conversationRow) string {
 // screen's sub-targets. screenProjects has only one target (a no-op).
 func (m Model) cycleFocus() Model {
 	switch m.screen {
+	case screenProjects:
+		// Toggle onto/off the FOR YOU section (spec iteration-5) — only a
+		// live target while the section is actually showing (station has
+		// unread mail); otherwise the project list is the only target, same
+		// no-op as before this feature.
+		if total, _ := m.stationUnread(); total > 0 {
+			if m.focus == focusForYou {
+				m.focus = focusProjectList
+			} else {
+				m.focus = focusForYou
+			}
+		}
 	case screenProject:
 		switch m.focus {
 		case focusAgentStrip:
@@ -544,6 +595,16 @@ func (m Model) cycleFocus() Model {
 // screenProjects has only one target (a no-op).
 func (m Model) cycleFocusBack() Model {
 	switch m.screen {
+	case screenProjects:
+		// A two-way toggle is its own reverse (same as screenAgent below) —
+		// see cycleFocus's identical case.
+		if total, _ := m.stationUnread(); total > 0 {
+			if m.focus == focusForYou {
+				m.focus = focusProjectList
+			} else {
+				m.focus = focusForYou
+			}
+		}
 	case screenProject:
 		switch m.focus {
 		case focusAgentStrip:
@@ -571,6 +632,11 @@ func (m Model) moveFocused(delta int) (tea.Model, tea.Cmd) {
 		rows := m.projectRows()
 		q, f := m.filterQueryFor(llProjects)
 		m.project = moveSelection(rows, projKey, m.project, delta, m.plainProjectRow, q, f, "")
+		return m, nil
+	case focusForYou:
+		rows := m.forYouRows()
+		q, f := m.filterQueryFor(llForYou)
+		m.forYou = moveSelection(rows, forYouKey, m.forYou, delta, m.plainForYouRow, q, f, 0)
 		return m, nil
 	case focusAgentStrip:
 		rows := m.agentStripRows()
@@ -663,6 +729,18 @@ func (m Model) viewNewerCount() int64 {
 // Enter (now landing on a visible row) drills normally.
 func (m Model) handleEnterKey() (tea.Model, tea.Cmd) {
 	switch {
+	case m.screen == screenProjects && m.focus == focusForYou:
+		rows := m.forYouRows()
+		q, f := m.filterQueryFor(llForYou)
+		if !anyRowVisible(rows, m.plainForYouRow, q, f) {
+			return m, nil
+		}
+		if !selectionVisible(rows, forYouKey, m.forYou, m.plainForYouRow, q, f) {
+			m.forYou = snapSelection(rows, forYouKey, m.forYou, m.plainForYouRow, q, f, 0)
+			return m, nil
+		}
+		return m.openForYouThread(m.forYou)
+
 	case m.screen == screenProjects:
 		rows := m.projectRows()
 		q, f := m.filterQueryFor(llProjects)
@@ -792,6 +870,139 @@ func (m Model) focusConversation() (Model, tea.Cmd) {
 	}
 	m.ackedThreads[row.ID] = true
 	return m, fetchInboxAckCmd(m.caller, m.opts.Alias)
+}
+
+// stationUnread returns station's OWN session tuple's unread total/action
+// flag (spec iteration-5: the 📬 header badge and the FOR YOU section's
+// visibility gate) — reusing the SAME session_unread result fetchAgents
+// already computes for every distinct (socket_path, session_id) tuple in the
+// roster (station registers itself like any other agent, so its own row
+// carries it), never get_inbox: side-effect-free, exactly the count the
+// operator would see without disturbing it.
+func (m Model) stationUnread() (total int, action bool) {
+	idx := keyIndex(m.agents, agentKey, m.opts.Alias)
+	if idx < 0 {
+		return 0, false
+	}
+	return m.agents[idx].Unread, m.agents[idx].Action
+}
+
+// forYouKey is the FOR YOU list's identity-key extractor (a thread ID),
+// matching projKey/agentKey/convKey's role for the other three keyed lists.
+func forYouKey(r listThreadRow) int64 { return r.ID }
+
+// forYouRows returns station's own pinned-section rows: threads addressed
+// DIRECTLY to station's alias (mirroring focusConversation's own
+// open-to-acknowledge eligibility check) whose last entry wasn't written by
+// station itself (spec iteration-5 Tier 0b's same display-only "waiting on
+// me" proxy — see unreadThreadsFor in nav.go), excluding anything already
+// acknowledged this run. This is a best-effort RECONSTRUCTION of which
+// threads make up stationUnread's exact count (per-thread read watermarks
+// aren't obtainable without get_inbox, which this feature must never call
+// outside the acknowledge path) — the header badge's count is authoritative;
+// this is display content for the section that count gates.
+func (m Model) forYouRows() []listThreadRow {
+	var out []listThreadRow
+	for _, row := range m.threads {
+		if row.ToKind != "agent" || row.ToTarget != m.opts.Alias {
+			continue
+		}
+		if row.LastFrom == "" || row.LastFrom == m.opts.Alias {
+			continue
+		}
+		if m.ackedThreads[row.ID] {
+			continue
+		}
+		out = append(out, row)
+	}
+	return out
+}
+
+// plainForYouRow is the FOR YOU list's filter/selection predicate text (spec
+// §5 carried-over discipline: the SAME text every list's
+// filter/move/selection helpers resolve through).
+func (m Model) plainForYouRow(row listThreadRow) string {
+	return fmt.Sprintf("%s %s %s", row.Subject, m.dispLabel(row.FromAgent), relativeAge(time.Now(), row.LastAt))
+}
+
+// openForYouThread jumps directly into threadID's conversation (spec
+// iteration-5: "Selecting + Enter opens the thread directly (this IS the
+// acknowledge, existing rules)", and 'm's single-unread-thread shortcut) —
+// resolves the thread's project, lands on screenProject with the
+// conversation FOCUSED (L2), and reuses focusConversation's existing
+// open-to-acknowledge check verbatim (a FOR YOU row is, by construction,
+// always addressed directly to station, so the ack fires exactly like any
+// other station-addressed thread).
+func (m Model) openForYouThread(threadID int64) (Model, tea.Cmd) {
+	idx := indexOfThread(m.threads, threadID)
+	if idx < 0 {
+		return m, nil
+	}
+	row := m.threads[idx]
+	projs := threadProjectsOrUnassigned(row, aliasProjectMap(m.agents))
+	m.project = projs[0]
+	m.screen = screenProject
+	m.everNavigated = true
+	m = m.refreshAgentStripSelection()
+	m.conversation = threadID
+	var previewCmd, ackCmd tea.Cmd
+	m, previewCmd = m.conversationPreviewCmd(threadID, false)
+	m, ackCmd = m.focusConversation()
+	return m, tea.Batch(previewCmd, ackCmd)
+}
+
+// handleMailJumpKey implements 'm' (spec iteration-5: "m from ANY level
+// jumps to the FOR YOU section (or straight into the single unread thread
+// when there is exactly one)"). Gated on stationUnread's count (the same
+// side-effect-free source the header badge uses) rather than len(forYouRows())
+// alone, so a real mismatch between the exact count and the best-effort row
+// reconstruction still lets the operator jump to look, rather than silently
+// doing nothing.
+func (m Model) handleMailJumpKey() (tea.Model, tea.Cmd) {
+	total, _ := m.stationUnread()
+	if total <= 0 {
+		m.status = "no mail for you"
+		return m, nil
+	}
+	rows := m.forYouRows()
+	if len(rows) == 1 {
+		return m.openForYouThread(rows[0].ID)
+	}
+	m.screen = screenProjects
+	m.focus = focusForYou
+	if len(rows) > 0 && keyIndex(rows, forYouKey, m.forYou) < 0 {
+		m.forYou = rows[0].ID
+	}
+	return m, nil
+}
+
+// agentAttached reports whether alias's tmux session currently has a human
+// client attached (spec iteration-5 Tier 1b: the attach marker) — "" /
+// unknown alias reads as not attached.
+func (m Model) agentAttached(alias string) bool {
+	idx := keyIndex(m.agents, agentKey, alias)
+	if idx < 0 {
+		return false
+	}
+	return m.agents[idx].Attached
+}
+
+// applyLastActive applies one fetchLastActiveCmd result (spec iteration-5
+// Tier 0a). A stale generation (an in-flight fetch from an older tick,
+// superseded by a newer one — same discipline as eventsMsg/pollGen) or a
+// fetch error is discarded without touching the cache; ts==0 (no actor event
+// found within the fetch's small window) also leaves any previously-cached
+// value alone rather than blanking it, since "not found in this window"
+// isn't the same claim as "never active".
+func (m Model) applyLastActive(msg lastActiveMsg) Model {
+	if msg.gen != m.pollGen || msg.err != nil || msg.ts <= 0 {
+		return m
+	}
+	if m.lastActive == nil {
+		m.lastActive = map[string]int64{}
+	}
+	m.lastActive[msg.alias] = msg.ts
+	return m
 }
 
 // conversationPreviewCmd loads threadID's most recent page into the right
@@ -1198,6 +1409,16 @@ func (m Model) applyThreads(msg threadsMsg) (Model, tea.Cmd) {
 		m.conversation = 0
 	case keyIndex(rows, convKey, m.conversation) < 0:
 		m.conversation = rows[0].ID
+	}
+	// FOR YOU selection default (spec iteration-5): the SAME courtesy as the
+	// conversation list's own default above — an operator who Tabs onto the
+	// section lands on a valid row instead of needing an extra keypress just
+	// to snap the cursor onto one.
+	switch fyRows := m.forYouRows(); {
+	case len(fyRows) == 0:
+		m.forYou = 0
+	case keyIndex(fyRows, forYouKey, m.forYou) < 0:
+		m.forYou = fyRows[0].ID
 	}
 	if m.conversation != 0 && m.focus != focusConvRight && !m.viewLoading {
 		return m.conversationPreviewCmd(m.conversation, true)

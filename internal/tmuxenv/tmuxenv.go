@@ -83,6 +83,19 @@ func IsSessionAlive(socket, sessionID string) bool {
 	return err == nil
 }
 
+// SessionAttached reports whether at least one human tmux client is
+// currently attached to the session (station spec iteration-5 Tier 1: the
+// attach marker) — via the same query seam as IsSessionAlive/SessionLabel
+// (display-message -p -t <session> '#{session_attached}'), which reports the
+// session's attached-client count as a decimal string. Any non-empty,
+// non-"0" result counts as attached; an empty socket/session or a query
+// failure (dead session, no such socket) reads as not attached, exactly like
+// query's other callers.
+func SessionAttached(socket, sessionID string) bool {
+	out := query(socket, sessionID, "#{session_attached}")
+	return out != "" && out != "0"
+}
+
 // SessionLabel reads the label option and its manual flag for target (a pane or
 // session) on socket. manual is true only when <option>_manual == "1".
 func SessionLabel(socket, target string) (string, bool) {

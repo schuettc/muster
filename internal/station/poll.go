@@ -121,6 +121,11 @@ func fetchAgents(caller render.Caller) ([]agentEnriched, error) {
 		e.Live = tmuxenv.IsSessionAlive(a.SocketPath, a.SessionID)
 		if e.Live {
 			e.Label, e.LabelManual = tmuxenv.SessionLabel(a.SocketPath, a.SessionID)
+			// Tier 1 attach marker (spec iteration-5): batched into this SAME
+			// per-agent tmux query loop as the liveness/label checks above,
+			// rather than a separate pass — only worth asking for a session
+			// that's actually alive.
+			e.Attached = tmuxenv.SessionAttached(a.SocketPath, a.SessionID)
 		}
 		if a.SocketPath != "" && a.SessionID != "" {
 			key := [2]string{a.SocketPath, a.SessionID}
@@ -262,5 +267,47 @@ func fetchInboxAckCmd(caller render.Caller, alias string) tea.Cmd {
 	return func() tea.Msg {
 		_, err := caller.Call("get_inbox", map[string]any{"alias": alias})
 		return inboxAckMsg{err: err}
+	}
+}
+
+// lastActiveMsg carries one alias's newest ACTOR-event timestamp (spec
+// iteration-5 Tier 0a) — gen is the poll generation that issued the fetch
+// (mirrors eventsMsg's gen/pollGen discipline exactly): Update discards any
+// lastActiveMsg whose gen no longer matches the model's current pollGen (see
+// applyLastActive), so a slow in-flight fetch from an older tick never
+// clobbers a fresher one. ts is 0 when no actor row turned up within the
+// fetch's small window — NOT the same claim as "never active" (see
+// applyLastActive's doc).
+type lastActiveMsg struct {
+	alias string
+	ts    int64
+	gen   int64
+	err   error
+}
+
+// lastActiveFetchLimit bounds each per-agent list_events lookup — small,
+// since only the newest row where the agent filter's alias is the ACTOR
+// (Event.Agent == alias, not merely a thread/target CONCERNING alias — the
+// broader match list_events' agent filter itself applies) is needed, and
+// backlog mode returns newest-first.
+const lastActiveFetchLimit = 20
+
+// fetchLastActiveCmd issues one list_events(agent=alias, backlog) lookup and
+// picks the first (newest) row where alias is the actual actor — "read",
+// "reply", "send", etc. — discarding rows the agent filter matched only
+// because they CONCERN alias (e.g. a message addressed to alias, sent by
+// someone else).
+func fetchLastActiveCmd(caller render.Caller, alias string, gen int64) tea.Cmd {
+	return func() tea.Msg {
+		page, err := render.FetchEvents(caller, alias, "", 0, -1, lastActiveFetchLimit)
+		if err != nil {
+			return lastActiveMsg{alias: alias, gen: gen, err: err}
+		}
+		for _, e := range page.Events {
+			if e.Agent == alias {
+				return lastActiveMsg{alias: alias, ts: e.TS, gen: gen}
+			}
+		}
+		return lastActiveMsg{alias: alias, gen: gen}
 	}
 }

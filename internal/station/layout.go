@@ -33,6 +33,7 @@ const (
 	minPaneOuter   = 5 // smallest sane box (border rows/cols + >=1-3 interior) — a floor, not a target, for a degenerate terminal size
 
 	minAgentStripRows = 5 // screenProject's agent-strip box floor before it eats into the conversation list's share
+	minForYouRows     = 4 // screenProjects' pinned FOR YOU box floor (spec iteration-5) before it eats into the project list's share
 
 	fallbackTermWidth  = 120 // >= narrowWidthThreshold, so an unsized caller (incl. every test that never sends a WindowSizeMsg) sees the WIDE two-column layout
 	fallbackTermHeight = breadcrumbRows + statusLineRows + 2*boxBorderRows + 2*defaultRows
@@ -50,6 +51,11 @@ type layoutDims struct {
 	bodyH         int
 	agentStripH   int // screenProject only: the top sub-box's height (0 elsewhere)
 	convListH     int // screenProject: the bottom sub-box's height; screenAgent: the single list box's height
+	// forYouH is screenProjects' pinned FOR YOU sub-box's height (spec
+	// iteration-5) — 0 whenever it isn't showing (station has no unread
+	// mail), in which case renderLeftColumn renders the project list at the
+	// full bodyH exactly as before this feature.
+	forYouH int
 }
 
 // layout computes this render's box dimensions from the model's last-known
@@ -105,6 +111,21 @@ func (m Model) layout() layoutDims {
 	} else {
 		dims.convListH = bodyH
 	}
+	if m.screen == screenProjects {
+		if total, _ := m.stationUnread(); total > 0 {
+			forYouH := bodyH / 4
+			if forYouH < minForYouRows {
+				forYouH = minForYouRows
+			}
+			if forYouH > bodyH-minPaneOuter {
+				forYouH = bodyH - minPaneOuter
+			}
+			if forYouH < 0 {
+				forYouH = 0
+			}
+			dims.forYouH = forYouH
+		}
+	}
 	return dims
 }
 
@@ -122,6 +143,12 @@ var (
 	statusErrStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Bold(true)
 
 	breadcrumbStyle = lipgloss.NewStyle().Bold(true)
+
+	// mailBadgeStyle renders the header's 📬 badge (spec iteration-5:
+	// "styled prominently") — bold and in the same accent color as a
+	// focused pane's border, so it reads as a distinct, attention-grabbing
+	// element rather than blending into the plain breadcrumb text.
+	mailBadgeStyle = lipgloss.NewStyle().Bold(true).Foreground(paneBorderFocusedColor)
 )
 
 // renderBox draws a rounded, bordered box titled in its own top border
@@ -275,7 +302,7 @@ func colorIntentTag(intent, padded string) string {
 
 // keysHintBase is the bottom line's key hint (spec §5-REVISED keys),
 // right-aligned by joinStatusLine against the status/error text.
-const keysHintBase = "enter drill · esc back · tab cycle · s send · r reply · n nudge · / filter · a aliases · ? help · q quit"
+const keysHintBase = "enter drill · esc back · tab cycle · s send · r reply · n nudge · m mail · / filter · a aliases · ? help · q quit"
 
 // statusIsError classifies m.status text for the bottom line's distinct
 // error prefix — a pure text heuristic over already-assigned status strings

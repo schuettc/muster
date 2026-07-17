@@ -31,6 +31,7 @@ type focusTarget int
 
 const (
 	focusProjectList  focusTarget = iota // screenProjects' only list
+	focusForYou                          // screenProjects' pinned FOR YOU section (spec iteration-5), only a live target while it's showing
 	focusAgentStrip                      // screenProject's top strip
 	focusConvList                        // screenProject's conversation list
 	focusAgentThreads                    // screenAgent's thread list
@@ -45,6 +46,7 @@ type llList int
 
 const (
 	llProjects llList = iota
+	llForYou
 	llAgentStrip
 	llConvList
 	llAgentThreads
@@ -282,6 +284,58 @@ func conversationsForAgent(threads []listThreadRow, alias string) []listThreadRo
 		}
 	}
 	return out
+}
+
+// unreadThreadsFor returns the threads alias participates in (spec iteration-5
+// Tier 0b: unread AGE) where the last entry was NOT written by alias — the
+// display-only proxy for "waiting on alias" this feature uses everywhere a
+// per-alias unread age is needed, since a real per-thread read watermark
+// isn't obtainable without get_inbox (which nothing outside the
+// acknowledge path may call). A thread alias itself spoke last is excluded:
+// it's the OTHER party's turn, not alias's.
+func unreadThreadsFor(threads []listThreadRow, alias string) []listThreadRow {
+	var out []listThreadRow
+	for _, row := range conversationsForAgent(threads, alias) {
+		if row.LastFrom != "" && row.LastFrom != alias {
+			out = append(out, row)
+		}
+	}
+	return out
+}
+
+// unreadThreadsForProject is unreadThreadsFor's project-rollup counterpart
+// (spec iteration-5 Tier 0b, project rollups): a project's conversations
+// whose last speaker is NOT a currently-registered member of that SAME
+// project — i.e. the last word came from outside the project (or from an
+// alias the roster no longer knows), so the project itself is "waiting".
+func unreadThreadsForProject(threads []listThreadRow, aliasProject map[string]string, project string) []listThreadRow {
+	var out []listThreadRow
+	for _, row := range conversationsForProject(threads, aliasProject, project) {
+		if row.LastFrom == "" {
+			continue
+		}
+		if proj, ok := aliasProject[row.LastFrom]; ok && proj == project {
+			continue
+		}
+		out = append(out, row.listThreadRow)
+	}
+	return out
+}
+
+// oldestUnreadAt returns the smallest (oldest) LastAt among rows, or 0 when
+// rows is empty or every row's LastAt is unset — the raw ms-epoch value;
+// views.go's relativeAge renders it for display.
+func oldestUnreadAt(rows []listThreadRow) int64 {
+	var oldest int64
+	for _, r := range rows {
+		if r.LastAt <= 0 {
+			continue
+		}
+		if oldest == 0 || r.LastAt < oldest {
+			oldest = r.LastAt
+		}
+	}
+	return oldest
 }
 
 // agentsForProject returns the roster rows belonging to project, sorted by
