@@ -3,6 +3,7 @@ package humancli
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"github.com/schuettc/muster/internal/mustertest"
 	"github.com/schuettc/muster/internal/paths"
 	"github.com/schuettc/muster/internal/store"
+	"github.com/schuettc/muster/internal/tmuxenv"
 )
 
 // startTestDaemon boots a real in-process daemon on a temp socket, returning
@@ -325,6 +327,72 @@ func TestNudgeCommandResolvesAndNudges(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "rev") || len(recorded) == 0 {
 		t.Fatalf("expected resolved-target output + a send-keys call; out=%q calls=%v", buf.String(), recorded)
+	}
+}
+
+// TestNudgePrintsLiveSessionName proves nudge reports the session's CURRENT
+// tmux name, not the stale registration-time snapshot: session names are
+// mutable (a human can `tmux rename-session` any time), so a stored
+// session_name goes stale the moment that happens — the production report
+// was 'bettor-help-workspace' printed for what tmux itself now calls
+// 'bettor-help-workspace-4'.
+func TestNudgePrintsLiveSessionName(t *testing.T) {
+	startTestDaemon(t)
+	if _, err := callData("register_agent", map[string]any{
+		"alias": "rev", "role": "reviewer", "model_type": "codex",
+		"socket_path": "/s", "pane_id": "%2", "session_id": "$1",
+		"session_name": "stale-name",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	origNudge := nudgeRun
+	nudgeRun = func(_ ...string) error { return nil }
+	t.Cleanup(func() { nudgeRun = origNudge })
+
+	origRun := tmuxenv.Run
+	tmuxenv.Run = hookRun(map[string]string{"#{session_name}": "renamed-live"})
+	t.Cleanup(func() { tmuxenv.Run = origRun })
+
+	var buf bytes.Buffer
+	if err := Dispatch([]string{"nudge", "rev"}, &buf); err != nil {
+		t.Fatalf("nudge: %v", err)
+	}
+	if !strings.Contains(buf.String(), "renamed-live") {
+		t.Fatalf("expected nudge output to report the LIVE session name, got %q", buf.String())
+	}
+	if strings.Contains(buf.String(), "stale-name") {
+		t.Fatalf("nudge output must not show the stale stored session name once the live query succeeds, got %q", buf.String())
+	}
+}
+
+// TestNudgeFallsBackToStoredSessionNameWhenLiveQueryFails: when the live
+// tmux query can't answer (session gone, tmux unreachable), nudge must fall
+// back to the stored session_name rather than printing a blank field.
+func TestNudgeFallsBackToStoredSessionNameWhenLiveQueryFails(t *testing.T) {
+	startTestDaemon(t)
+	if _, err := callData("register_agent", map[string]any{
+		"alias": "rev", "role": "reviewer", "model_type": "codex",
+		"socket_path": "/s", "pane_id": "%2", "session_id": "$1",
+		"session_name": "stored-name",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	origNudge := nudgeRun
+	nudgeRun = func(_ ...string) error { return nil }
+	t.Cleanup(func() { nudgeRun = origNudge })
+
+	origRun := tmuxenv.Run
+	tmuxenv.Run = func(_ ...string) (string, error) { return "", fmt.Errorf("no tmux") }
+	t.Cleanup(func() { tmuxenv.Run = origRun })
+
+	var buf bytes.Buffer
+	if err := Dispatch([]string{"nudge", "rev"}, &buf); err != nil {
+		t.Fatalf("nudge: %v", err)
+	}
+	if !strings.Contains(buf.String(), "stored-name") {
+		t.Fatalf("expected fallback to the stored session name when the live query fails, got %q", buf.String())
 	}
 }
 

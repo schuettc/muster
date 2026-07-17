@@ -17,6 +17,7 @@ import (
 	"github.com/schuettc/muster/internal/paths"
 	"github.com/schuettc/muster/internal/proto"
 	"github.com/schuettc/muster/internal/station"
+	"github.com/schuettc/muster/internal/tmuxenv"
 )
 
 // nudgeRun lets tests intercept the tmux command executor for nudges.
@@ -28,6 +29,7 @@ type agentFull struct {
 	ModelType   string `json:"model_type"`
 	SocketPath  string `json:"socket_path"`
 	PaneID      string `json:"pane_id"`
+	SessionID   string `json:"session_id"`
 	SessionName string `json:"session_name"`
 }
 
@@ -413,7 +415,19 @@ func cmdNudge(args []string, out io.Writer) error {
 		return fmt.Errorf("no agent registered as %q", alias)
 	}
 	ag := res.Agent
-	if _, err := fmt.Fprintf(out, "nudging %s → session %s / pane %s on %s\n", ag.Alias, ag.SessionName, ag.PaneID, ag.SocketPath); err != nil {
+	// session_name is mutable — tmux lets an operator rename a session at any
+	// time — so the stored (registration-time) snapshot goes stale the
+	// moment that happens. Query the LIVE name at nudge time; fall back to
+	// the stored snapshot, then the alias, only if the live query comes back
+	// empty (tmux unreachable, or the session no longer exists).
+	sessionName := tmuxenv.SessionName(ag.SocketPath, ag.SessionID)
+	if sessionName == "" {
+		sessionName = ag.SessionName
+	}
+	if sessionName == "" {
+		sessionName = ag.Alias
+	}
+	if _, err := fmt.Fprintf(out, "nudging %s → session %s / pane %s on %s\n", ag.Alias, sessionName, ag.PaneID, ag.SocketPath); err != nil {
 		return err
 	}
 	n := nudge.TmuxNudger{Run: nudgeRun} // nil in prod → real tmux

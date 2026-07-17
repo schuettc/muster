@@ -96,6 +96,20 @@ func SessionAttached(socket, sessionID string) bool {
 	return out != "" && out != "0"
 }
 
+// SessionName reads the LIVE session name for target (a pane or session ID)
+// on socket, via the same query seam as SessionAttached/SessionLabel. Session
+// names are mutable — tmux lets an operator rename a session at any time —
+// so a value captured at register_agent time (store.Agent.SessionName) goes
+// stale the moment that happens. Callers that need the name to reflect
+// reality right now (e.g. `muster nudge`'s "nudging X → session Y" line)
+// should call this instead of trusting the stored snapshot, falling back to
+// it (or further, to the alias) only when this returns "" — an empty socket
+// or target, an unreachable tmux, or a session that no longer exists all
+// read as "" here, exactly like query's other callers.
+func SessionName(socket, target string) string {
+	return query(socket, target, "#{session_name}")
+}
+
 // SessionLabel reads the label option and its manual flag for target (a pane or
 // session) on socket. manual is true only when <option>_manual == "1".
 func SessionLabel(socket, target string) (string, bool) {
