@@ -427,25 +427,47 @@ func (m Model) renderThreadRow(row listThreadRow) string {
 	return fmt.Sprintf("%s#%d%s %s | %s %s | %s", marker, row.ID, word, participants, last, age, subject)
 }
 
+// threadWhoContentWidth is WHO's column-width fix (operator finding: a flat
+// 1/6-of-innerW share truncated long labels on a wide terminal while SUBJECT
+// padded out empty columns). It measures the WIDEST rendered WHO string
+// (display.Width, the same units render.PadDisplay uses) across ALL of
+// rows — not just whichever ones the '/' filter or the current scroll
+// window happen to show — so the column's width is stable for the whole
+// table render: neither filtering nor scrolling ever re-jigs it mid-session,
+// which either would if this were measured over a post-filter or
+// post-window subset instead.
+func (m Model) threadWhoContentWidth(rows []conversationRow) int {
+	widest := 0
+	for _, c := range rows {
+		if w := display.Width(m.renderWho(c.listThreadRow, "→")); w > widest {
+			widest = w
+		}
+	}
+	return widest
+}
+
 // renderConversationLine renders one thread row COLUMNIZED: `#ID intent
 // who → who  AGE  subject`, appending a cross-project marker to the subject
 // when the row touches another project (computed against the AGENT viewing
 // it, see conversationsForAgentAnnotated). WHO resolves both ends through
 // dispLabel, which appends the alias itself whenever a label collides (spec
 // §5-LOCK item 7) — so a cross-project or ambiguous-label thread never
-// reads like nonsense.
-func (m Model) renderConversationLine(c conversationRow, innerW int) string {
-	return m.renderConversationLineMarked(c, innerW, c.ID == m.conversation)
+// reads like nonsense. maxWhoContent is the table's own WHO-width input (see
+// threadWhoContentWidth) — every row in one table render must be passed the
+// SAME value (renderConvListBox computes it once and shares it with the
+// header), or WHO won't line up between rows.
+func (m Model) renderConversationLine(c conversationRow, innerW, maxWhoContent int) string {
+	return m.renderConversationLineMarked(c, innerW, maxWhoContent, c.ID == m.conversation)
 }
 
 // renderConversationLineMarked is renderConversationLine with an EXPLICIT
 // selected flag rather than one implied by c.ID == m.conversation.
-func (m Model) renderConversationLineMarked(c conversationRow, innerW int, selected bool) string {
+func (m Model) renderConversationLineMarked(c conversationRow, innerW, maxWhoContent int, selected bool) string {
 	marker := "  "
 	if selected {
 		marker = "> "
 	}
-	whoW, fixedWidth := threadsColumnWidths(innerW)
+	whoW, fixedWidth := threadsColumnWidths(innerW, maxWhoContent)
 	idCol := render.PadDisplay(display.Sanitize(fmt.Sprintf("#%d", c.ID), threadIDWidth), threadIDWidth)
 	wordPlain := intentWord(c.Intent)
 	intentCol := colorIntentTag(c.Intent, render.PadDisplay(wordPlain, threadTagWidth))
@@ -490,9 +512,15 @@ func (m Model) renderConvListBox(outerW, outerH int, list llList, title string) 
 	if rowsHeight < 0 {
 		rowsHeight = 0
 	}
-	header := render.PadDisplay(display.Sanitize(threadsHeaderLine(innerW), innerW), innerW)
 
 	rows := m.conversationRows()
+	// maxWhoContent is measured over rows — the table's FULL, pre-filter row
+	// set — once per render, then shared by the header and every data row
+	// below, so WHO's width can never depend on (or shift with) the '/'
+	// filter or the scroll window.
+	maxWhoContent := m.threadWhoContentWidth(rows)
+	header := render.PadDisplay(display.Sanitize(threadsHeaderLine(innerW, maxWhoContent), innerW), innerW)
+
 	q, f := m.filterQueryFor(list)
 	var body []string
 	selectedLine := -1
@@ -503,7 +531,7 @@ func (m Model) renderConvListBox(outerW, outerH int, list llList, title string) 
 		if c.ID == m.conversation {
 			selectedLine = len(body)
 		}
-		body = append(body, m.renderConversationLine(c, innerW))
+		body = append(body, m.renderConversationLine(c, innerW, maxWhoContent))
 	}
 	body = windowLines(body, rowsHeight, selectedLine)
 	lines := append([]string{header}, body...)

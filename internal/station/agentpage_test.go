@@ -92,7 +92,7 @@ func TestLabelCollisionAppendsAlias(t *testing.T) {
 
 	// A thread row's WHO column carries the disambiguated form too.
 	row := conversationRow{listThreadRow: listThreadRow{ID: 1, FromAgent: "reviewer-1", ToKind: "agent", ToTarget: "unique-1"}}
-	line := m.renderConversationLine(row, 200)
+	line := m.renderConversationLine(row, 200, m.threadWhoContentWidth([]conversationRow{row}))
 	if !strings.Contains(line, "reviewer (reviewer-1)") {
 		t.Fatalf("WHO column must disambiguate a colliding label with its alias, got %q", line)
 	}
@@ -140,7 +140,8 @@ func TestSelfSendRendersToSelfNotArrow(t *testing.T) {
 	}
 
 	// Columnized THREADS table.
-	convLine := m.renderConversationLine(conversationRow{listThreadRow: selfRow}, 200)
+	selfConvRow := conversationRow{listThreadRow: selfRow}
+	convLine := m.renderConversationLine(selfConvRow, 200, m.threadWhoContentWidth([]conversationRow{selfConvRow}))
 	if !strings.Contains(convLine, "solo · to self") {
 		t.Fatalf("THREADS table WHO must render 'solo · to self', got %q", convLine)
 	}

@@ -110,10 +110,22 @@ func agentHeaderBandHeight() int {
 }
 
 // splitThreadsRows divides available between the threads-level table (top)
-// and its selected thread's preview (bottom) — the default 60/40 split, each
-// side floored so a short terminal never squeezes one pane to nothing.
-func splitThreadsRows(available int) (listH, previewH int) {
-	listH = available * threadsListShareNum / threadsListShareDen
+// and its selected thread's preview (bottom). The table sizes to its OWN
+// CONTENT — one header row plus rowCount data rows plus box chrome
+// (boxBorderRows) — so a short list leaves the preview nearly the whole
+// screen (operator finding: a few rows of THREADS ate most of the terminal,
+// squeezing the preview to a sliver). That content height is clamped to AT
+// MOST the old default 60/40 share (threadsListShareNum/Den) so a long list
+// still windows/scrolls exactly as it did before this fix — this is a cap,
+// not the target, once the list is long enough to want it. Each side is
+// still floored so a short terminal never squeezes one pane to nothing.
+func splitThreadsRows(available, rowCount int) (listH, previewH int) {
+	content := boxBorderRows + 1 + rowCount // border rows + header row + data rows
+	maxShare := available * threadsListShareNum / threadsListShareDen
+	listH = content
+	if listH > maxShare {
+		listH = maxShare
+	}
 	if listH < minThreadsListRows {
 		listH = minThreadsListRows
 	}
@@ -181,7 +193,7 @@ func (m Model) layout() layoutDims {
 				available = 0
 			}
 		}
-		dims.convListH, dims.previewH = splitThreadsRows(available)
+		dims.convListH, dims.previewH = splitThreadsRows(available, len(m.conversationRows()))
 	default:
 		left := leftColWidth
 		if left > w-minPaneOuter {
@@ -380,51 +392,80 @@ const (
 	threadTagWidth = 12 // fits "needs action" (12 chars) verbatim
 	threadAgeWidth = 4
 
-	// threadWhoMinWidth is WHO's floor. threadWhoMaxWidth caps how much of a
-	// very wide terminal's extra room WHO is allowed to claim, so one row's
-	// "long-label→another-long-label" can't swallow the whole table when
-	// most rows are short and SUBJECT still wants a real budget.
+	// threadWhoMinWidth is WHO's floor — a narrow or small terminal (or a
+	// table whose longest WHO string is shorter than this) renders exactly
+	// as it did before content-aware sizing.
 	threadWhoMinWidth = 14
-	threadWhoMaxWidth = 32
+
+	// threadSubjectMinBudget is SUBJECT's own floor: however wide the
+	// longest WHO string in a table wants to be, WHO's cap backs off once
+	// giving it more would leave SUBJECT less than this many columns — so
+	// one row's very long "long-label→another-long-label" can widen the
+	// column, but can never starve SUBJECT down to nothing on a table that
+	// also has real subjects to show. ~40 cols is enough for a short
+	// subject fragment before Sanitize's own ellipsis kicks in; tune here,
+	// not by touching the width math itself.
+	threadSubjectMinBudget = 40
+
+	// threadsFixedNonWhoWidth is every thread-row column EXCEPT WHO, plus
+	// every separator around them — marker + ID + sep + INTENT + sep + [WHO]
+	// + sep + AGE + sep. Both threadWhoWidth's cap and threadsColumnWidths'
+	// SUBJECT budget are computed against this same constant, so the two can
+	// never drift apart.
+	threadsFixedNonWhoWidth = 2 /* marker */ + threadIDWidth + 2 + threadTagWidth + 2 + 2 /* sep around WHO */ + threadAgeWidth + 2
 )
 
 // threadWhoWidth picks WHO's column width for a table rendered at innerW
-// display columns ("WHO shows both full labels where they fit"). The
-// threads-level table spans the full terminal width in non-narrow mode (see
-// isThreadsTableLevel/layout), so WHO scales with it — a flat 1/6 share of
-// innerW, floored at threadWhoMinWidth (so a narrow or small terminal
-// renders exactly as before) and capped at threadWhoMaxWidth.
-func threadWhoWidth(innerW int) int {
-	who := innerW / 6
+// display columns, given maxContent — the widest rendered WHO string across
+// EVERY row in the table (see threadWhoContentWidth), not just the row being
+// drawn. Content wins whenever there's room: WHO sizes to the longest actual
+// "from→to" pair rather than a flat fraction of the table width, so long
+// labels render in full instead of truncating while SUBJECT pads out empty
+// columns (operator finding, wide-terminal screenshot: SUBJECT ran hundreds
+// of blank columns while WHO's "…" ellipsis clipped a real label). It's
+// floored at threadWhoMinWidth (a narrow terminal, or a table whose longest
+// WHO is short, renders exactly as before) and capped ONLY when space
+// genuinely runs out — once WHO would leave SUBJECT less than
+// threadSubjectMinBudget columns, the cap wins instead; if the cap itself
+// would fall below the floor (a narrow terminal), the floor wins, matching
+// pre-fix behavior exactly.
+func threadWhoWidth(innerW, maxContent int) int {
+	who := maxContent
 	if who < threadWhoMinWidth {
 		who = threadWhoMinWidth
 	}
-	if who > threadWhoMaxWidth {
-		who = threadWhoMaxWidth
+	capW := innerW - threadsFixedNonWhoWidth - threadSubjectMinBudget
+	if capW < threadWhoMinWidth {
+		capW = threadWhoMinWidth
+	}
+	if who > capW {
+		who = capW
 	}
 	return who
 }
 
-// threadsColumnWidths computes WHO's width for a table rendered at innerW,
-// plus fixedWidth — every column (ID/INTENT/WHO/AGE) and its separators, in
-// plain display columns — so the SUBJECT budget is innerW minus fixedWidth,
-// always coming out to exactly innerW total (renderBox's content-line
-// contract). Every caller building a table row at some innerW must derive
-// WHO's width through this (never threadWhoWidth alone), so the header row
-// and every thread row size WHO identically.
-func threadsColumnWidths(innerW int) (whoW, fixedWidth int) {
-	whoW = threadWhoWidth(innerW)
-	fixedWidth = 2 /* marker */ + threadIDWidth + 2 + threadTagWidth + 2 + whoW + 2 + threadAgeWidth + 2
+// threadsColumnWidths computes WHO's width for a table rendered at innerW
+// given maxWhoContent (see threadWhoContentWidth), plus fixedWidth — every
+// column (ID/INTENT/WHO/AGE) and its separators, in plain display columns —
+// so the SUBJECT budget is innerW minus fixedWidth, always coming out to
+// exactly innerW total (renderBox's content-line contract). Every caller
+// building a table row at some innerW must derive WHO's width through this
+// (never threadWhoWidth alone), passing the SAME maxWhoContent for the
+// header and every data row in one table render, so they all size WHO
+// identically.
+func threadsColumnWidths(innerW, maxWhoContent int) (whoW, fixedWidth int) {
+	whoW = threadWhoWidth(innerW, maxWhoContent)
+	fixedWidth = threadsFixedNonWhoWidth + whoW
 	return whoW, fixedWidth
 }
 
 // threadsHeaderLine renders a thread list's own column header at innerW,
 // mirroring render.Renderer.Header's role for the activity feed — WHO's
 // width matches renderConversationLineMarked's exactly (both derive it via
-// threadsColumnWidths), so the header stays aligned with every row under it
-// regardless of the table's width.
-func threadsHeaderLine(innerW int) string {
-	whoW, _ := threadsColumnWidths(innerW)
+// threadsColumnWidths from the SAME maxWhoContent), so the header stays
+// aligned with every row under it regardless of the table's width.
+func threadsHeaderLine(innerW, maxWhoContent int) string {
+	whoW, _ := threadsColumnWidths(innerW, maxWhoContent)
 	return "  " + render.PadDisplay("ID", threadIDWidth) + "  " + render.PadDisplay("INTENT", threadTagWidth) + "  " +
 		render.PadDisplay("WHO", whoW) + "  " + render.PadDisplay("AGE", threadAgeWidth) + "  " + "SUBJECT"
 }

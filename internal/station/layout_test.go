@@ -1,6 +1,7 @@
 package station
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -9,6 +10,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
 
+	"github.com/schuettc/muster/internal/display"
 	"github.com/schuettc/muster/internal/render"
 )
 
@@ -342,7 +344,7 @@ func TestThreadsLevelLayoutGoesHorizontal(t *testing.T) {
 		t.Fatalf("setup: expected exactly one conversation row, got %d", len(rows))
 	}
 	oldInnerW := leftColWidth - boxBorderCols
-	oldLine := m.renderConversationLine(rows[0], oldInnerW)
+	oldLine := m.renderConversationLine(rows[0], oldInnerW, m.threadWhoContentWidth(rows))
 	if strings.Contains(oldLine, who) {
 		t.Fatalf("setup: the who pair must NOT fit at the old left-column width %d (defeats the point of this test): %q", oldInnerW, oldLine)
 	}
@@ -439,34 +441,268 @@ func TestThreadsLevelNarrowModeUnchanged(t *testing.T) {
 	}
 }
 
-// TestThreadWhoWidthClampsMinAndMax is threadWhoWidth's own boundary check:
-// floored at the pre-iteration-8 fixed width, capped so a very wide
-// terminal doesn't let WHO swallow the whole table.
-func TestThreadWhoWidthClampsMinAndMax(t *testing.T) {
-	if got := threadWhoWidth(30); got != threadWhoMinWidth {
-		t.Fatalf("threadWhoWidth(30) = %d, want the floor %d", got, threadWhoMinWidth)
+// TestThreadWhoWidthFloorsShortContent is threadWhoWidth's floor check: WHO
+// never shrinks below threadWhoMinWidth even on a huge terminal, when the
+// table's own content doesn't need that much room.
+func TestThreadWhoWidthFloorsShortContent(t *testing.T) {
+	if got := threadWhoWidth(300, 3); got != threadWhoMinWidth {
+		t.Fatalf("threadWhoWidth(300, 3) = %d, want the floor %d (content shorter than the floor)", got, threadWhoMinWidth)
 	}
-	if got := threadWhoWidth(300); got != threadWhoMaxWidth {
-		t.Fatalf("threadWhoWidth(300) = %d, want the cap %d", got, threadWhoMaxWidth)
+}
+
+// TestThreadWhoWidthCapsWhenSubjectWouldStarve checks the NEW cap rule
+// (operator finding: WHO must size to content, but not at SUBJECT's total
+// expense) — once giving WHO everything its content wants would leave
+// SUBJECT less than threadSubjectMinBudget columns, the cap wins instead.
+func TestThreadWhoWidthCapsWhenSubjectWouldStarve(t *testing.T) {
+	const innerW = 100
+	want := innerW - threadsFixedNonWhoWidth - threadSubjectMinBudget
+	if got := threadWhoWidth(innerW, 200); got != want {
+		t.Fatalf("threadWhoWidth(%d, 200) = %d, want the subject-floor-limited cap %d", innerW, got, want)
+	}
+}
+
+// TestThreadWhoWidthNarrowFloorWinsOverCap checks the spec's explicit
+// fallback: on a narrow terminal the subject-floor cap collapses below
+// threadWhoMinWidth itself — the floor wins there instead, reproducing
+// pre-fix (narrow-terminal) rendering exactly.
+func TestThreadWhoWidthNarrowFloorWinsOverCap(t *testing.T) {
+	if got := threadWhoWidth(30, 200); got != threadWhoMinWidth {
+		t.Fatalf("threadWhoWidth(30, 200) = %d, want the floor %d (cap collapses below it)", got, threadWhoMinWidth)
 	}
 }
 
 // TestSplitThreadsRowsFloorsAndSums is splitThreadsRows' own box-math check:
-// list+preview heights always sum to exactly bodyH, whether or not the
+// list+preview heights always sum to exactly available, whether or not the
 // floors are actually binding.
 func TestSplitThreadsRowsFloorsAndSums(t *testing.T) {
-	listH, previewH := splitThreadsRows(48)
+	listH, previewH := splitThreadsRows(48, 20)
 	if listH+previewH != 48 {
-		t.Fatalf("split must sum to bodyH, got %d+%d != 48", listH, previewH)
+		t.Fatalf("split must sum to available, got %d+%d != 48", listH, previewH)
 	}
 	if listH < minThreadsListRows || previewH < minThreadsPreviewRows {
-		t.Fatalf("split must respect the floors at a normal bodyH, got list=%d preview=%d", listH, previewH)
+		t.Fatalf("split must respect the floors at a normal available, got list=%d preview=%d", listH, previewH)
 	}
 
-	// A degenerately small bodyH still sums correctly even once the floors
-	// can no longer both be honored.
-	listH, previewH = splitThreadsRows(6)
+	// A degenerately small available still sums correctly even once the
+	// floors can no longer both be honored.
+	listH, previewH = splitThreadsRows(6, 20)
 	if listH+previewH != 6 {
-		t.Fatalf("split must sum to bodyH even in a degenerate small terminal, got %d+%d != 6", listH, previewH)
+		t.Fatalf("split must sum to available even in a degenerate small terminal, got %d+%d != 6", listH, previewH)
+	}
+}
+
+// TestSplitThreadsRowsSizesToContentWhenShort is the content-sizing fix's
+// core check (operator finding: a 2-row THREADS table ate most of a 52-line
+// screen, squeezing the preview to a sliver). A short list's table box must
+// size to its OWN content (header + rows + chrome), not the old flat 60%
+// share of available — leaving the preview nearly everything else.
+func TestSplitThreadsRowsSizesToContentWhenShort(t *testing.T) {
+	const available = 48
+	listH, previewH := splitThreadsRows(available, 2)
+	wantContent := boxBorderRows + 1 + 2 // border rows + header + 2 data rows
+	if wantContent < minThreadsListRows {
+		wantContent = minThreadsListRows
+	}
+	if listH != wantContent {
+		t.Fatalf("splitThreadsRows(%d, 2) listH = %d, want content-sized %d", available, listH, wantContent)
+	}
+	if oldShare := available * threadsListShareNum / threadsListShareDen; listH >= oldShare {
+		t.Fatalf("a short list's table must be SMALLER than the old flat share %d, got %d", oldShare, listH)
+	}
+	if listH+previewH != available {
+		t.Fatalf("split must still sum to available, got %d+%d != %d", listH, previewH, available)
+	}
+}
+
+// TestSplitThreadsRowsCapsAtShareForLongList checks the OTHER half: a list
+// long enough that its content would want more than the old default share
+// stays capped at that share — windowing/scrolling behaves exactly as it
+// did before this fix (spec requirement: "do NOT change windowing behavior
+// for long lists").
+func TestSplitThreadsRowsCapsAtShareForLongList(t *testing.T) {
+	const available = 48
+	listH, previewH := splitThreadsRows(available, 100)
+	wantShare := available * threadsListShareNum / threadsListShareDen
+	if listH != wantShare {
+		t.Fatalf("splitThreadsRows(%d, 100) listH = %d, want the share cap %d", available, listH, wantShare)
+	}
+	if listH+previewH != available {
+		t.Fatalf("split must still sum to available, got %d+%d != %d", listH, previewH, available)
+	}
+}
+
+// This section is the operator-feedback fix's own coverage (screenshot
+// review: WHO truncated a long "operator→nfl-research-agent
+// (bettor-help-workspace)" pair with "…" while SUBJECT padded out hundreds
+// of empty columns on a wide terminal, and a 2-row THREADS table ate most of
+// a 52-line screen). See threadWhoWidth/threadsColumnWidths (WHO sizing) and
+// splitThreadsRows (table height) above.
+
+// TestLongWhoRendersUntruncatedWithHeaderAligned is coverage item (a): a
+// long WHO pair on a wide innerW must render in FULL (no ellipsis), and the
+// header's WHO column must land at the SAME display-column offset as the
+// data row's WHO text — the alignment invariant threadsColumnWidths exists
+// to guarantee (both the header and the row derive whoW from the identical
+// (innerW, maxWhoContent) pair).
+func TestLongWhoRendersUntruncatedWithHeaderAligned(t *testing.T) {
+	const innerW = 300
+	const target = "nfl-research-agent-in-the-bettor-help-workspace"
+	const who = "operator→" + target
+	maxWhoContent := display.Width(who)
+
+	header := threadsHeaderLine(innerW, maxWhoContent)
+	m := NewModel(fakeCaller{}, Options{})
+	row := conversationRow{listThreadRow: listThreadRow{ID: 1, FromAgent: "operator", ToKind: "agent", ToTarget: target, Subject: "spec review"}}
+	line := m.renderConversationLine(row, innerW, maxWhoContent)
+
+	if !strings.Contains(line, who) {
+		t.Fatalf("a long WHO pair must render UNTRUNCATED at innerW=%d, got %q", innerW, line)
+	}
+	if strings.Contains(line, "…") {
+		t.Fatalf("no truncation should be needed at this width, got an ellipsis: %q", line)
+	}
+
+	// marker+ID+sep+INTENT+sep is fixed-width, plain ASCII in both lines —
+	// rune index and display-column offset coincide, so WHO must start at
+	// the identical rune index in both the header and the data row.
+	prefixW := 2 + threadIDWidth + 2 + threadTagWidth + 2
+	headerRunes := []rune(header)
+	rowRunes := []rune(line)
+	if len(headerRunes) < prefixW+3 || string(headerRunes[prefixW:prefixW+3]) != "WHO" {
+		t.Fatalf("header's WHO label must start at rune offset %d, got header %q", prefixW, header)
+	}
+	if len(rowRunes) < prefixW+len("operator") || string(rowRunes[prefixW:prefixW+len("operator")]) != "operator" {
+		t.Fatalf("data row's WHO text must start at the SAME rune offset %d as the header's WHO label, got row %q", prefixW, line)
+	}
+}
+
+// TestWhoColumnWidthStableAcrossFiltering is coverage item (b): the '/'
+// filter hiding every OTHER row (the one with the long WHO pair that drives
+// the column width) must not shrink the WHO column back down — width is
+// measured over ALL rows once, before the filter is applied, and reused for
+// however many rows the filter leaves visible.
+func TestWhoColumnWidthStableAcrossFiltering(t *testing.T) {
+	m := focusConversationList(t, NewModel(fakeCaller{}, Options{}), "shortname")
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 200, Height: 50})
+	m = mustModel(t, next)
+	const longTarget = "a-very-long-target-alias-indeed"
+	next, cmd := m.Update(threadsMsg{threads: []listThreadRow{
+		{ID: 1, FromAgent: "shortname", ToKind: "agent", ToTarget: longTarget, Subject: "keep me", LastAt: time.Now().UnixMilli()},
+		{ID: 2, FromAgent: "shortname", ToKind: "agent", ToTarget: "x", Subject: "filter me out", LastAt: time.Now().UnixMilli()},
+	}})
+	m = mustModel(t, next)
+	m = drainCmd(t, m, cmd)
+
+	dims := m.layout()
+	unfiltered := m.renderConvListBox(dims.leftW, dims.convListH, llAgentThreads, "THREADS")
+
+	next, _ = m.Update(keyMsg("/"))
+	m = mustModel(t, next)
+	m = typeString(t, m, "keep")
+	next, _ = m.Update(keyMsg("enter")) // stop editing; filter (hides thread 2) stays applied
+	m = mustModel(t, next)
+	filtered := m.renderConvListBox(dims.leftW, dims.convListH, llAgentThreads, "THREADS")
+
+	headerOf := func(box string) string {
+		t.Helper()
+		for _, l := range strings.Split(box, "\n") {
+			if strings.Contains(l, "SUBJECT") {
+				return l
+			}
+		}
+		t.Fatalf("no header line found in box:\n%s", box)
+		return ""
+	}
+	unfilteredHeader, filteredHeader := headerOf(unfiltered), headerOf(filtered)
+	if unfilteredHeader != filteredHeader {
+		t.Fatalf("WHO column width shifted after filtering:\nunfiltered header: %q\nfiltered header:   %q", unfilteredHeader, filteredHeader)
+	}
+	if !strings.Contains(filtered, longTarget) {
+		t.Fatalf("setup: expected the long-WHO thread to remain visible after filtering to \"keep\":\n%s", filtered)
+	}
+	if strings.Contains(filtered, "filter me out") {
+		t.Fatalf("setup: expected the OTHER thread to be hidden by the filter:\n%s", filtered)
+	}
+}
+
+// TestSubjectFloorRespectedWhenWhoWouldStarveIt is coverage item (c): on a
+// modest terminal, a WHO pair long enough to want more room than SUBJECT can
+// spare must be capped so SUBJECT keeps at least threadSubjectMinBudget
+// columns — proven both as a width-budget assertion and by confirming WHO
+// was actually capped below what its content wanted (otherwise the test
+// would pass vacuously).
+func TestSubjectFloorRespectedWhenWhoWouldStarveIt(t *testing.T) {
+	const innerW = 100
+	const longTarget = "an-extremely-long-target-alias-that-would-otherwise-swallow-the-entire-row-if-uncapped"
+	m := focusConversationList(t, NewModel(fakeCaller{}, Options{}), "shortname")
+	next, cmd := m.Update(threadsMsg{threads: []listThreadRow{
+		{ID: 1, FromAgent: "shortname", ToKind: "agent", ToTarget: longTarget, Subject: "a real subject that must stay legible", LastAt: time.Now().UnixMilli()},
+	}})
+	m = mustModel(t, next)
+	m = drainCmd(t, m, cmd)
+
+	rows := m.conversationRows()
+	maxWho := m.threadWhoContentWidth(rows)
+	whoW, fixedWidth := threadsColumnWidths(innerW, maxWho)
+	subjectBudget := innerW - fixedWidth
+	if subjectBudget < threadSubjectMinBudget {
+		t.Fatalf("SUBJECT budget must never fall below threadSubjectMinBudget (%d), got %d (whoW=%d)", threadSubjectMinBudget, subjectBudget, whoW)
+	}
+	if whoW >= maxWho {
+		t.Fatalf("setup: WHO must actually be CAPPED below its full content width %d for this test to mean anything, got whoW=%d", maxWho, whoW)
+	}
+}
+
+// TestThreadsTableHeightSizesToRowCountShortVsLong is coverage item (d): a
+// short thread list's table box must be smaller than the pre-fix flat 60%
+// share (so the preview dominates the screen), while a long list stays
+// capped at exactly that old share — same windowing/scroll behavior as
+// before this fix.
+func TestThreadsTableHeightSizesToRowCountShortVsLong(t *testing.T) {
+	m := focusConversationList(t, NewModel(fakeCaller{}, Options{}), "shortname")
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 200, Height: 50})
+	m = mustModel(t, next)
+	next, cmd := m.Update(threadsMsg{threads: []listThreadRow{
+		{ID: 1, FromAgent: "shortname", Subject: "only one", LastAt: time.Now().UnixMilli()},
+	}})
+	m = mustModel(t, next)
+	m = drainCmd(t, m, cmd)
+
+	dims := m.layout()
+	available := dims.bodyH - dims.headerBandH
+	oldShare := available * threadsListShareNum / threadsListShareDen
+	if dims.convListH >= oldShare {
+		t.Fatalf("a short list's table box must be SMALLER than the old flat share %d, got %d", oldShare, dims.convListH)
+	}
+	if dims.previewH <= dims.convListH {
+		t.Fatalf("with few threads the preview must DOMINATE the screen, got convListH=%d previewH=%d", dims.convListH, dims.previewH)
+	}
+
+	// Now grow the list well past the old share's row capacity.
+	var many []listThreadRow
+	for i := 0; i < 40; i++ {
+		many = append(many, listThreadRow{ID: int64(i + 1), FromAgent: "shortname", Subject: fmt.Sprintf("thread %d", i), LastAt: time.Now().UnixMilli()})
+	}
+	next, cmd = m.Update(threadsMsg{threads: many})
+	m = mustModel(t, next)
+	m = drainCmd(t, m, cmd)
+
+	dims = m.layout()
+	available = dims.bodyH - dims.headerBandH
+	wantShare := available * threadsListShareNum / threadsListShareDen
+	if dims.convListH != wantShare {
+		t.Fatalf("a long list's table box must be capped at the old share %d, got %d", wantShare, dims.convListH)
+	}
+
+	// Windowing for a long list is unchanged: selecting the LAST row must
+	// still scroll it into view within the (still limited) table box.
+	for i := 0; i < 39; i++ {
+		next, _ = m.Update(keyMsg("j"))
+		m = mustModel(t, next)
+	}
+	box := m.renderConvListBox(dims.leftW, dims.convListH, llAgentThreads, "THREADS")
+	if !strings.Contains(box, "thread 39") {
+		t.Fatalf("windowing must still scroll a long list to keep the selected row visible:\n%s", box)
 	}
 }

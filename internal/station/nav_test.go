@@ -277,7 +277,7 @@ func TestCrossProjectMarkerAppearsInBothProjects(t *testing.T) {
 
 	// The rendered line carries the "↔" marker.
 	m := NewModel(fakeCaller{}, Options{})
-	line := m.renderConversationLine(alphaRows[0], 200)
+	line := m.renderConversationLine(alphaRows[0], 200, m.threadWhoContentWidth(alphaRows))
 	if !strings.Contains(line, "↔ beta") {
 		t.Fatalf("rendered thread line missing the cross-project marker, got %q", line)
 	}
@@ -818,7 +818,7 @@ func TestCrossProjectMarkerUnderBothParticipantAgents(t *testing.T) {
 	if len(alphaRows[0].OtherProjects) != 1 || alphaRows[0].OtherProjects[0] != "beta" {
 		t.Fatalf("alpha-1's own row must mark beta as the other project, got %+v", alphaRows[0].OtherProjects)
 	}
-	if line := m.renderConversationLine(alphaRows[0], 200); !strings.Contains(line, "↔ beta") {
+	if line := m.renderConversationLine(alphaRows[0], 200, m.threadWhoContentWidth(alphaRows)); !strings.Contains(line, "↔ beta") {
 		t.Fatalf("alpha-1's own thread page must render the cross-project marker (↔ beta), got %q", line)
 	}
 
@@ -841,7 +841,7 @@ func TestCrossProjectMarkerUnderBothParticipantAgents(t *testing.T) {
 	if len(betaRows[0].OtherProjects) != 1 || betaRows[0].OtherProjects[0] != "alpha" {
 		t.Fatalf("beta-1's own row must mark alpha as the other project, got %+v", betaRows[0].OtherProjects)
 	}
-	if line := m.renderConversationLine(betaRows[0], 200); !strings.Contains(line, "↔ alpha") {
+	if line := m.renderConversationLine(betaRows[0], 200, m.threadWhoContentWidth(betaRows)); !strings.Contains(line, "↔ alpha") {
 		t.Fatalf("beta-1's own thread page must render the cross-project marker (↔ alpha), got %q", line)
 	}
 }
