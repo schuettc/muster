@@ -936,11 +936,12 @@ func (m Model) openReadFromMailbox() (tea.Model, tea.Cmd) {
 }
 
 // handleMailJumpKey implements 'm': pushes the mailbox page (spec §5-LOCK
-// screen 2) — a no-op if the mailbox is already on top, so repeated presses
-// don't stack duplicate frames.
+// screen 2), or — a second press while it's already the top frame — POPS it
+// back to the exact origin, exactly like Esc, so 'm' toggles rather than
+// stacking duplicate mailbox frames.
 func (m Model) handleMailJumpKey() (tea.Model, tea.Cmd) {
 	if m.screen == screenMailbox {
-		return m, nil
+		return m.popFrame(), nil
 	}
 	m = m.pushFrame(navFrame{screen: screenMailbox})
 	m = m.refreshMailboxSelection()

@@ -181,6 +181,16 @@ func dedupeStrings(ss []string) []string {
 	return out
 }
 
+// threadIsSelfSend reports whether a thread's sender and its agent-kind
+// recipient are the literal SAME alias — the same registered identity, never
+// merely two different agents whose display LABELS happen to collide (see
+// computeLabelCollisions, an unrelated concern one layer up in dispLabel).
+// Role/broadcast recipients have no single alias to compare against, so they
+// never qualify as a self-send.
+func threadIsSelfSend(row listThreadRow) bool {
+	return row.ToKind == "agent" && row.ToTarget != "" && row.FromAgent == row.ToTarget
+}
+
 // participantAliases returns a thread row's known participant aliases — the
 // sender, the recipient when addressed directly to an agent (role/broadcast
 // targets have no single alias to attribute), and the last-speaker (so a

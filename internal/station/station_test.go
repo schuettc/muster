@@ -3,6 +3,7 @@ package station
 import (
 	"encoding/json"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -358,6 +359,75 @@ func TestReadStateSurvivesQuitAndRelaunch(t *testing.T) {
 	}
 	if after.Agent.LastReadEntryID != before.Agent.LastReadEntryID {
 		t.Fatalf("relaunch must preserve the read watermark, got %d, want %d (the pre-fix regression: '📬 2 came back')", after.Agent.LastReadEntryID, before.Agent.LastReadEntryID)
+	}
+}
+
+// TestDepartedAgentSurvivesUnderTheBar is task 2's own fixture (spec §5-LOCK
+// decision A: "departed history lives INSIDE its origin project... below a
+// plain divider bar, dimmed, marked ✗" + "station: under-the-bar uses
+// surviving rows"): a cleanly deregistered agent's row must now SURVIVE (the
+// deregistration tombstone) and keep showing up in the AGENTS list's
+// below-the-bar section — dimmed, ✗, its real alias, thread count + age —
+// exactly like a tmux-dead-but-still-registered agent already did. Before the
+// tombstone fix, deregister hard-deleted the row and this exact history is
+// what the ghost-site/bettor-help-workspace-4 incident (spec §5-LOCK's own
+// motivating case) lost.
+func TestDepartedAgentSurvivesUnderTheBar(t *testing.T) {
+	startStationTestDaemon(t)
+	caller := daemonCaller{}
+	registerDirect(t, caller, "alpha-1", "/a", "$A")
+	if _, err := caller.Call("send_message", map[string]any{
+		"from": "alpha-1", "to_kind": "agent", "to_target": "someone", "body": "hi",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// The clean exit: deregister_agent, exactly what SessionEnd/`muster
+	// deregister` drive in production.
+	if _, err := caller.Call("deregister_agent", map[string]any{"alias": "alpha-1"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// fetchAgents is the REAL poll.go path station's tick issues every
+	// second — proving the row still comes back from list_agents, and that
+	// its now-defunct tmux tuple ("/a", "$A") correctly reads as dead.
+	rows, err := fetchAgents(caller)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawAlpha1, live bool
+	for _, r := range rows {
+		if r.Alias == "alpha-1" {
+			sawAlpha1 = true
+			live = r.Live
+		}
+	}
+	if !sawAlpha1 {
+		t.Fatalf("departed agent must still be listed by list_agents/fetchAgents, got %+v", rows)
+	}
+	if live {
+		t.Fatalf("departed agent's defunct tmux tuple must read as dead (Live=false), got Live=true")
+	}
+
+	m := NewModel(caller, Options{Alias: "station"})
+	next, _ := m.Update(agentsMsg{rows: rows})
+	m = mustModel(t, next)
+	next, cmd := m.Update(fetchThreadsCmd(caller)())
+	m = mustModel(t, next)
+	m = drainCmd(t, m, cmd)
+	if m.screen != screenProject {
+		t.Fatalf("setup: expected the single-project auto-skip to screenProject, got %v", m.screen)
+	}
+
+	view := m.View()
+	if !strings.Contains(view, "✗") {
+		t.Fatalf("expected the ✗ marker on the departed agent:\n%s", view)
+	}
+	if !strings.Contains(view, "alpha-1") {
+		t.Fatalf("expected the departed agent's real alias listed:\n%s", view)
+	}
+	if strings.Contains(strings.ToLower(view), "departed") {
+		t.Fatalf("view must never contain the word \"departed\" (spec §5-LOCK decision A):\n%s", view)
 	}
 }
 

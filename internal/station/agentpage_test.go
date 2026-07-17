@@ -114,6 +114,73 @@ func TestLabelEqualsAnotherAliasAlsoCollides(t *testing.T) {
 	}
 }
 
+// TestSelfSendRendersToSelfNotArrow covers the self-send rendering fix: when
+// a thread's from and to resolve to the SAME agent alias, WHO must render
+// "<name> · to self" rather than a literal "x→x", which reads like a
+// duplicate-send bug rather than an agent messaging itself. Checked in both
+// the columnized THREADS table (renderConversationLine) and the plain
+// filter/preview text (renderThreadRow) — the two call sites renderWho
+// shares. A label collision between two DIFFERENT agents must never be
+// mistaken for a self-send (identity, not display text, decides).
+func TestSelfSendRendersToSelfNotArrow(t *testing.T) {
+	m := NewModel(fakeCaller{}, Options{})
+	next, _ := m.Update(agentsMsg{rows: []agentEnriched{
+		{Alias: "solo-1", Project: "p", Label: "solo"},
+		{Alias: "twin-a", Project: "p", Label: "shared"},
+		{Alias: "twin-b", Project: "p", Label: "shared"},
+	}})
+	m = mustModel(t, next)
+
+	selfRow := listThreadRow{ID: 1, FromAgent: "solo-1", ToKind: "agent", ToTarget: "solo-1"}
+	if !threadIsSelfSend(selfRow) {
+		t.Fatalf("threadIsSelfSend must report true for from==to, got false")
+	}
+	if got := m.renderWho(selfRow, "→"); got != "solo · to self" {
+		t.Fatalf("renderWho(self-send) = %q, want %q", got, "solo · to self")
+	}
+
+	// Columnized THREADS table.
+	convLine := m.renderConversationLine(conversationRow{listThreadRow: selfRow}, 200)
+	if !strings.Contains(convLine, "solo · to self") {
+		t.Fatalf("THREADS table WHO must render 'solo · to self', got %q", convLine)
+	}
+	if strings.Contains(convLine, "solo→solo") {
+		t.Fatalf("THREADS table WHO must never render a literal 'x→x' self-arrow, got %q", convLine)
+	}
+
+	// Plain filter/preview text.
+	plainLine := m.renderThreadRow(selfRow)
+	if !strings.Contains(plainLine, "solo · to self") {
+		t.Fatalf("plain thread row must render 'solo · to self', got %q", plainLine)
+	}
+
+	// Two DIFFERENT agents sharing a colliding LABEL must never be treated as
+	// a self-send — identity (alias), not display text, decides.
+	collideRow := listThreadRow{ID: 2, FromAgent: "twin-a", ToKind: "agent", ToTarget: "twin-b"}
+	if threadIsSelfSend(collideRow) {
+		t.Fatalf("two different aliases sharing a colliding label must NOT be treated as a self-send")
+	}
+	if got := m.renderWho(collideRow, "→"); !strings.Contains(got, "→") {
+		t.Fatalf("a genuine two-agent thread must still render an arrow, got %q", got)
+	}
+}
+
+// TestMailboxSelfSendRendersToSelf covers the mailbox-page half of the same
+// fix (spec: "applies in mailbox rows and thread tables"): a thread addressed
+// to station and ALSO sent BY station renders "<name> · to self" in the
+// mailbox row instead of a bare name that would otherwise read as an ordinary
+// message from someone else.
+func TestMailboxSelfSendRendersToSelf(t *testing.T) {
+	m := NewModel(fakeCaller{}, Options{Alias: "station"})
+	next, _ := m.Update(agentsMsg{rows: []agentEnriched{{Alias: "station"}}})
+	m = mustModel(t, next)
+	selfRow := listThreadRow{ID: 1, FromAgent: "station", ToKind: "agent", ToTarget: "station", Subject: "note to self", LastAt: 100}
+	line := m.renderMailboxLine("  ", selfRow, 80)
+	if !strings.Contains(line, "station · to self") {
+		t.Fatalf("mailbox row for a self-sent thread must render 'station · to self', got %q", line)
+	}
+}
+
 // TestEmptyThreadListClearsPreviewNoStaleContent covers spec §5-LOCK screen
 // 4: "when the list is empty the preview is EMPTY (clear any stale
 // content)" — an agent page that had a loaded preview must blank it out the

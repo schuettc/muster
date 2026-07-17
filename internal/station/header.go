@@ -213,7 +213,16 @@ func (m Model) renderMailboxBox(outerW, outerH int) string {
 // how it looks or behaves (spec §5-LOCK screen 2).
 func (m Model) renderMailboxLine(cursorMark string, row listThreadRow, innerW int) string {
 	unread := m.isMailUnread(row)
+	// Every mailbox row is addressed to station's OWN alias by construction
+	// (mailboxRows filters on it), so a row whose FromAgent is ALSO that
+	// alias is station messaging itself — threadIsSelfSend catches it exactly
+	// like the thread tables' WHO column, rendering "<name> · to self" rather
+	// than a bare name that would otherwise read as "sent by you" with no
+	// indication it was addressed to you too.
 	from := m.dispLabel(row.FromAgent)
+	if threadIsSelfSend(row) {
+		from += " · to self"
+	}
 	age := relativeAge(time.Now(), row.LastAt)
 	suffix := fmt.Sprintf("  %s · %s", from, age)
 

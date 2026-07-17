@@ -390,6 +390,22 @@ func (m Model) renderAgentPagePreviewBox(outerW, outerH int) string {
 	return renderBox(title, false, outerW, outerH, lines)
 }
 
+// renderWho renders a thread's participant field as "<from><arrow><to>",
+// collapsing to "<name> · to self" whenever from and to resolve to the SAME
+// agent identity (threadIsSelfSend, nav.go) — a literal "x→x" reads like a
+// duplicate-send bug, not a message an agent sent itself. arrow is the
+// caller's own separator (tightly packed "→" in the columnized THREADS
+// table, spaced " → " in the plain filter/preview text) — the ONE shared
+// helper both call sites go through, so self-send collapses identically
+// everywhere a thread's WHO is rendered.
+func (m Model) renderWho(row listThreadRow, arrow string) string {
+	from := m.dispLabel(row.FromAgent)
+	if threadIsSelfSend(row) {
+		return from + " · to self"
+	}
+	return from + arrow + m.dispToTarget(row)
+}
+
 // renderThreadRow renders one thread row's PLAIN text — the filter/
 // selection predicate's text, reused verbatim by both screenProject's
 // "(unassigned)" thread list and screenAgent's thread list
@@ -404,7 +420,7 @@ func (m Model) renderThreadRow(row listThreadRow) string {
 	if word != "" {
 		word = " " + word
 	}
-	participants := fmt.Sprintf("%s → %s", m.dispLabel(row.FromAgent), m.dispToTarget(row))
+	participants := m.renderWho(row, " → ")
 	last := m.dispLabel(row.LastFrom)
 	age := relativeAge(time.Now(), row.LastAt)
 	subject := display.Sanitize(row.Subject, 200)
@@ -433,7 +449,7 @@ func (m Model) renderConversationLineMarked(c conversationRow, innerW int, selec
 	idCol := render.PadDisplay(display.Sanitize(fmt.Sprintf("#%d", c.ID), threadIDWidth), threadIDWidth)
 	wordPlain := intentWord(c.Intent)
 	intentCol := colorIntentTag(c.Intent, render.PadDisplay(wordPlain, threadTagWidth))
-	who := fmt.Sprintf("%s→%s", m.dispLabel(c.FromAgent), m.dispToTarget(c.listThreadRow))
+	who := m.renderWho(c.listThreadRow, "→")
 	whoCol := render.PadDisplay(display.Sanitize(who, whoW), whoW)
 	ageCol := render.PadDisplay(relativeAge(time.Now(), c.LastAt), threadAgeWidth)
 

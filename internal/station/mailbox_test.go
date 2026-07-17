@@ -221,6 +221,61 @@ func TestMailboxPopsBackToExactOrigin(t *testing.T) {
 	}
 }
 
+// TestMailJumpTogglesBothDirections covers the 'm' toggle: pressing 'm' opens
+// the mailbox page (a push), and pressing 'm' AGAIN while it's already the
+// top frame pops it straight back to the exact origin — a second push must
+// never stack a duplicate mailbox frame on top of itself.
+func TestMailJumpTogglesBothDirections(t *testing.T) {
+	m := NewModel(fakeCaller{}, Options{Alias: "station"})
+	next, _ := m.Update(agentsMsg{rows: []agentEnriched{
+		{Alias: "station"},
+		{Alias: "alpha-1", Project: "alpha", Live: true},
+		{Alias: "beta-1", Project: "beta", Live: true},
+	}})
+	m = mustModel(t, next)
+	if m.screen != screenProjects {
+		t.Fatalf("setup: expected screenProjects (multiple projects), got %v", m.screen)
+	}
+	m.project = "alpha"
+	next, _ = m.Update(keyMsg("enter")) // L0 -> L1
+	m = mustModel(t, next)
+	if m.screen != screenProject {
+		t.Fatalf("setup: expected screenProject, got %v", m.screen)
+	}
+	stackDepthAtOrigin := len(m.stack)
+
+	// First press: pushes the mailbox.
+	next, cmd := m.Update(keyMsg("m"))
+	m = mustModel(t, next)
+	m = drainCmd(t, m, cmd)
+	if m.screen != screenMailbox {
+		t.Fatalf("first 'm' must push the mailbox, got screen=%v", m.screen)
+	}
+	if len(m.stack) != stackDepthAtOrigin+1 {
+		t.Fatalf("first 'm' must push exactly one frame, stack depth=%d, want %d", len(m.stack), stackDepthAtOrigin+1)
+	}
+
+	// Second press, while the mailbox is already on top: pops back to the
+	// exact origin instead of pushing a second mailbox frame.
+	next, cmd = m.Update(keyMsg("m"))
+	m = mustModel(t, next)
+	m = drainCmd(t, m, cmd)
+	if m.screen != screenProject {
+		t.Fatalf("second 'm' (mailbox already on top) must pop back to the origin screenProject, got screen=%v", m.screen)
+	}
+	if len(m.stack) != stackDepthAtOrigin {
+		t.Fatalf("second 'm' must pop exactly the one mailbox frame it pushed, stack depth=%d, want %d", len(m.stack), stackDepthAtOrigin)
+	}
+
+	// A third press re-opens it (fresh push, not left permanently popped).
+	next, cmd = m.Update(keyMsg("m"))
+	m = mustModel(t, next)
+	m = drainCmd(t, m, cmd)
+	if m.screen != screenMailbox {
+		t.Fatalf("third 'm' must re-open the mailbox, got screen=%v", m.screen)
+	}
+}
+
 // TestMailboxReplyWorksDirectlyFromTheList covers spec §5-LOCK screen 2: 'r'
 // replies directly from a selected mailbox row, without first opening it.
 func TestMailboxReplyWorksDirectlyFromTheList(t *testing.T) {
