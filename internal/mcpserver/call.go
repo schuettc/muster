@@ -39,18 +39,26 @@ type AgentView struct {
 	LastSeen     int64  `json:"last_seen" jsonschema:"when the agent was last active (unix ms)"`
 }
 
-// ThreadView is the tool-facing shape of a message/task thread.
+// ThreadView is the tool-facing shape of a message/task thread. LastFrom,
+// LastAt, EntryCount, and Unread are query-time annotations the daemon's
+// get_inbox (and get_thread, for its own thread) populate from store.Thread —
+// zero-valued when a surface doesn't compute them, so they're additive
+// fields, not a breaking change to existing callers.
 type ThreadView struct {
-	ID        int64  `json:"id" jsonschema:"the thread id"`
-	Kind      string `json:"kind" jsonschema:"message or task"`
-	FromAgent string `json:"from_agent" jsonschema:"who created the thread"`
-	ToKind    string `json:"to_kind" jsonschema:"agent, role, or broadcast"`
-	ToTarget  string `json:"to_target" jsonschema:"the addressed alias or role"`
-	Subject   string `json:"subject" jsonschema:"the thread subject"`
-	Ref       string `json:"ref" jsonschema:"a pointer to the work (repo/branch/endpoint/file)"`
-	Status    string `json:"status" jsonschema:"task status, empty for messages"`
-	CreatedAt int64  `json:"created_at" jsonschema:"creation time (unix ms)"`
-	UpdatedAt int64  `json:"updated_at" jsonschema:"last-update time (unix ms)"`
+	ID         int64  `json:"id" jsonschema:"the thread id"`
+	Kind       string `json:"kind" jsonschema:"message or task"`
+	FromAgent  string `json:"from_agent" jsonschema:"who created the thread"`
+	ToKind     string `json:"to_kind" jsonschema:"agent, role, or broadcast"`
+	ToTarget   string `json:"to_target" jsonschema:"the addressed alias or role"`
+	Subject    string `json:"subject" jsonschema:"the thread subject"`
+	Ref        string `json:"ref" jsonschema:"a pointer to the work (repo/branch/endpoint/file)"`
+	Status     string `json:"status" jsonschema:"task status, empty for messages"`
+	CreatedAt  int64  `json:"created_at" jsonschema:"creation time (unix ms)"`
+	UpdatedAt  int64  `json:"updated_at" jsonschema:"last-update time (unix ms)"`
+	LastFrom   string `json:"last_from" jsonschema:"who wrote the thread's most recent entry"`
+	LastAt     int64  `json:"last_at" jsonschema:"when the most recent entry was written (unix ms)"`
+	EntryCount int    `json:"entry_count" jsonschema:"total entries in the thread"`
+	Unread     int    `json:"unread" jsonschema:"entries after your last read that you didn't write yourself; 0 means you've seen everything"`
 }
 
 // EntryView is one append-only entry within a thread.

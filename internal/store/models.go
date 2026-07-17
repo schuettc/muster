@@ -49,12 +49,22 @@ type Thread struct {
 	CreatedAt int64  `json:"created_at"`
 	UpdatedAt int64  `json:"updated_at"`
 	// LastFrom, LastAt, and EntryCount are query-time only, populated by
-	// Threads() from the thread's last entry (by MAX(id), never MAX(created_at)
-	// — same-millisecond entries must not tie-break on timestamp) and its
-	// total entry count. GetThread/Inbox/CreateThread leave them zero.
+	// Threads() and Inbox() from the thread's last entry (by MAX(id), never
+	// MAX(created_at) — same-millisecond entries must not tie-break on
+	// timestamp) and its total entry count. GetThread/CreateThread leave
+	// them zero.
 	LastFrom   string `json:"last_from"`
 	LastAt     int64  `json:"last_at"`
 	EntryCount int    `json:"entry_count"`
+	// Unread is query-time only, populated by Inbox(alias): the count of
+	// this thread's entries after alias's last_read_entry_id watermark that
+	// were NOT written by alias (the same predicate as UnreadCount, scoped
+	// to one thread). It answers "for the alias Inbox was called with," not
+	// a thread-global property — the defect this fixes was an agent unable
+	// to tell "a peer replied on my thread" from "my own last send" without
+	// drilling into get_thread. Threads()/GetThread/CreateThread leave it
+	// zero.
+	Unread int `json:"unread"`
 }
 
 // Entry is one append-only message within a thread.

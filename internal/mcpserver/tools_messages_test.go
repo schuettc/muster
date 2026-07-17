@@ -91,3 +91,62 @@ func TestSendMessageIntentPassesThrough(t *testing.T) {
 		t.Fatalf("thread %d not found in list_threads: %+v", sendOut.ThreadID, res.Threads)
 	}
 }
+
+// TestGetInboxCarriesLastFromAndUnread proves ThreadView's new wire fields
+// (last_from, last_at, entry_count, unread) actually reach the MCP tool
+// output — the fix for the production defect where get_inbox exposed only
+// thread metadata and an agent couldn't distinguish a peer's reply from its
+// own last send without a get_thread round trip.
+func TestGetInboxCarriesLastFromAndUnread(t *testing.T) {
+	startTestDaemon(t)
+	if _, _, err := registerAgentHandler(context.Background(), nil, RegisterAgentIn{
+		Alias: "web", Role: "producer", ModelType: "claude",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := registerAgentHandler(context.Background(), nil, RegisterAgentIn{
+		Alias: "api", Role: "consumer", ModelType: "claude",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, sendOut, err := sendMessageHandler(context.Background(), nil, SendMessageIn{
+		From: "web", ToKind: "agent", ToTarget: "api", Subject: "status?", Body: "how's it going",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := replyHandler(context.Background(), nil, ReplyIn{
+		ThreadID: sendOut.ThreadID, From: "api", Body: "all good",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, inbox, err := getInboxHandler(context.Background(), nil, GetInboxIn{Alias: "web"})
+	if err != nil {
+		t.Fatalf("inbox: %v", err)
+	}
+	var got ThreadView
+	found := false
+	for _, th := range inbox.Threads {
+		if th.ID == sendOut.ThreadID {
+			got = th
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("thread %d not found in inbox: %+v", sendOut.ThreadID, inbox.Threads)
+	}
+	if got.LastFrom != "api" {
+		t.Fatalf("last_from = %q, want %q", got.LastFrom, "api")
+	}
+	if got.EntryCount != 2 {
+		t.Fatalf("entry_count = %d, want 2", got.EntryCount)
+	}
+	if got.Unread != 1 {
+		t.Fatalf("unread = %d, want 1 (peer reply on a thread web originated must be visible)", got.Unread)
+	}
+	if got.LastAt == 0 {
+		t.Fatalf("last_at = 0, want nonzero")
+	}
+}

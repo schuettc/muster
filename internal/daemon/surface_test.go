@@ -291,3 +291,58 @@ VALUES ('task', 'backend', 'role', 'reviewer', 'old task', '', 'open', '', 1, 1)
 		t.Fatalf("get_thread: old task intent = %q, want %q", gtOut.Thread.Intent, store.IntentAction)
 	}
 }
+
+// TestGetInboxUnreadSurvivesOwnMarkRead is the daemon-level defect
+// regression: get_inbox's own MarkRead must not destroy the unread evidence
+// it just returned. The handler computes Inbox() (which carries the
+// caller-relative unread count) BEFORE calling MarkRead — this proves that
+// ordering end to end: the FIRST get_inbox call, made after a peer reply,
+// must show unread>0 on the replied thread, and a SECOND get_inbox call
+// (which sees the watermark the first call's MarkRead just wrote) must show
+// unread=0 on that same thread.
+func TestGetInboxUnreadSurvivesOwnMarkRead(t *testing.T) {
+	sock, _ := startWithNotifierAndStore(t, &fakeNotifier{})
+	call(t, sock, "register_agent", map[string]any{"alias": "web", "role": "producer", "model_type": "claude"})
+	call(t, sock, "register_agent", map[string]any{"alias": "api", "role": "consumer", "model_type": "claude"})
+
+	sendResp := call(t, sock, "send_message", map[string]any{"from": "web", "to_kind": "agent", "to_target": "api", "subject": "hi", "body": "x"})
+	var sendOut struct {
+		ThreadID int64 `json:"thread_id"`
+	}
+	decode(t, sendResp, &sendOut)
+
+	// api replies; web never reads its inbox yet, so the reply is unread
+	// for web on the thread it originated (the defect: from_agent on the
+	// thread row is web itself, so without per-row unread web can't tell a
+	// peer answered).
+	call(t, sock, "reply", map[string]any{"thread_id": sendOut.ThreadID, "from": "api", "body": "got it"})
+
+	firstResp := call(t, sock, "get_inbox", map[string]any{"alias": "web"})
+	var firstOut []store.Thread
+	decode(t, firstResp, &firstOut)
+	var first store.Thread
+	for _, th := range firstOut {
+		if th.ID == sendOut.ThreadID {
+			first = th
+		}
+	}
+	if first.LastFrom != "api" {
+		t.Fatalf("first get_inbox: last_from = %q, want %q", first.LastFrom, "api")
+	}
+	if first.Unread != 1 {
+		t.Fatalf("first get_inbox: unread = %d, want 1 (must survive this same call's own MarkRead)", first.Unread)
+	}
+
+	secondResp := call(t, sock, "get_inbox", map[string]any{"alias": "web"})
+	var secondOut []store.Thread
+	decode(t, secondResp, &secondOut)
+	var second store.Thread
+	for _, th := range secondOut {
+		if th.ID == sendOut.ThreadID {
+			second = th
+		}
+	}
+	if second.Unread != 0 {
+		t.Fatalf("second get_inbox: unread = %d, want 0 (first call's MarkRead must have advanced the watermark)", second.Unread)
+	}
+}

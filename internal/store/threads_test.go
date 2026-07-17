@@ -329,3 +329,106 @@ VALUES ('task', 'backend', 'role', 'reviewer', 'old task', '', 'open', 1, 1)`)
 		t.Fatalf("message with unset intent effective value = %q, want \"\"", got)
 	}
 }
+
+// TestInboxAnnotatesLastFromAndUnread is the defect reproduction (bus report,
+// live production): get_inbox previously returned only thread metadata
+// (from_agent = the ORIGINATOR, subject, updated_at), so an agent listing its
+// own inbox could not tell "a peer replied on my originated thread" from "my
+// own last send" without a get_thread drill-in. Inbox() must now annotate
+// each row with last_from (like Threads()) and a caller-relative unread
+// count: a thread whose last entry is a peer's reply shows LastFrom=peer and
+// Unread=1 for the originator, while a thread whose last entry is the
+// caller's own send shows Unread=0 even though the caller "originated" it.
+func TestInboxAnnotatesLastFromAndUnread(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.RegisterAgent(Agent{Alias: "web"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RegisterAgent(Agent{Alias: "api"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Thread 1: web originates, api replies — last entry is api's, so web's
+	// inbox must show last_from=api and unread=1 (the defect: this used to
+	// be indistinguishable from thread 2 below).
+	repliedID, err := s.CreateThread(Thread{Kind: "message", FromAgent: "web", ToKind: "agent", ToTarget: "api"}, "req")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AppendEntry(repliedID, "api", "done", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	// Thread 2: web originates and that's the only entry so far — last
+	// entry is web's own, so web's inbox must show last_from=web and
+	// unread=0 (awaiting a reply, not "answered").
+	ownLastID, err := s.CreateThread(Thread{Kind: "message", FromAgent: "web", ToKind: "agent", ToTarget: "api"}, "another req")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	in, err := s.Inbox("web")
+	if err != nil {
+		t.Fatalf("inbox: %v", err)
+	}
+	byID := map[int64]Thread{}
+	for _, th := range in {
+		byID[th.ID] = th
+	}
+
+	replied := byID[repliedID]
+	if replied.LastFrom != "api" {
+		t.Fatalf("replied thread last_from = %q, want %q", replied.LastFrom, "api")
+	}
+	if replied.Unread != 1 {
+		t.Fatalf("replied thread unread = %d, want 1 (the defect: peer reply must be visible without get_thread)", replied.Unread)
+	}
+	if replied.EntryCount != 2 {
+		t.Fatalf("replied thread entry_count = %d, want 2", replied.EntryCount)
+	}
+
+	ownLast := byID[ownLastID]
+	if ownLast.LastFrom != "web" {
+		t.Fatalf("own-last thread last_from = %q, want %q", ownLast.LastFrom, "web")
+	}
+	if ownLast.Unread != 0 {
+		t.Fatalf("own-last thread unread = %d, want 0 (own send must never read as unread)", ownLast.Unread)
+	}
+}
+
+// TestInboxUnreadDropsAfterMarkRead: after MarkRead, a subsequent Inbox call
+// for the same alias must show unread=0 on a thread that previously showed
+// unread=1 — proving the annotation is watermark-relative, not sticky.
+func TestInboxUnreadDropsAfterMarkRead(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.RegisterAgent(Agent{Alias: "web"}); err != nil {
+		t.Fatal(err)
+	}
+	id, err := s.CreateThread(Thread{Kind: "message", FromAgent: "web", ToKind: "agent", ToTarget: "api"}, "req")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AppendEntry(id, "api", "done", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	before, err := s.Inbox("web")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(before) != 1 || before[0].Unread != 1 {
+		t.Fatalf("before mark-read: unread = %+v, want 1", before)
+	}
+
+	if err := s.MarkRead("web"); err != nil {
+		t.Fatal(err)
+	}
+
+	after, err := s.Inbox("web")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != 1 || after[0].Unread != 0 {
+		t.Fatalf("after mark-read: unread = %+v, want 0", after)
+	}
+}

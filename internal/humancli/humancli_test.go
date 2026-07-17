@@ -81,6 +81,60 @@ func TestSendThenInboxShowsMessage(t *testing.T) {
 	}
 }
 
+// TestInboxTableShowsLastFromAndUnread proves `muster inbox` renders the
+// LAST-FROM and UNREAD columns from get_inbox's new annotation fields — the
+// CLI side of the fix for the production defect where an inbox listing gave
+// no way to tell a peer's reply from the caller's own last send.
+func TestInboxTableShowsLastFromAndUnread(t *testing.T) {
+	startTestDaemon(t)
+	if _, err := callData("register_agent", map[string]any{"alias": "web", "role": "producer", "model_type": "claude"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := callData("register_agent", map[string]any{"alias": "api", "role": "consumer", "model_type": "claude"}); err != nil {
+		t.Fatal(err)
+	}
+	sendRaw, err := callData("send_message", map[string]any{"from": "web", "to_kind": "agent", "to_target": "api", "subject": "status?", "body": "how's it going"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sendOut struct {
+		ThreadID int64 `json:"thread_id"`
+	}
+	if err := json.Unmarshal(sendRaw, &sendOut); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := callData("reply", map[string]any{"thread_id": sendOut.ThreadID, "from": "api", "body": "all good"}); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	if err := Dispatch([]string{"inbox", "web"}, &buf); err != nil {
+		t.Fatalf("inbox: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "LAST-FROM") || !strings.Contains(out, "UNREAD") {
+		t.Fatalf("inbox table missing new columns:\n%s", out)
+	}
+	if !strings.Contains(out, "api") {
+		t.Fatalf("inbox table missing last_from=api:\n%s", out)
+	}
+	// The row for the thread web originated must show unread=1 (api's
+	// reply), the exact case get_inbox previously left indistinguishable
+	// from web's own last send.
+	found := false
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "status?") {
+			found = true
+			if !strings.Contains(line, "1") {
+				t.Fatalf("inbox row for replied thread missing unread=1:\n%s", line)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("inbox table missing the thread row:\n%s", out)
+	}
+}
+
 // TestSendCommandAcceptsIntent proves --intent lands on the thread (visible
 // via list_threads) and renders as a journal tag in `muster events`.
 func TestSendCommandAcceptsIntent(t *testing.T) {

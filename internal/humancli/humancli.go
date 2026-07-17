@@ -45,6 +45,8 @@ type agentRow struct {
 }
 
 // threadRow decodes daemon thread responses (get_inbox, get_thread, list_tasks).
+// LastFrom and Unread are query-time annotations get_inbox populates (see
+// store.Thread) — zero-valued on surfaces that don't compute them.
 type threadRow struct {
 	ID        int64  `json:"id"`
 	Kind      string `json:"kind"`
@@ -53,6 +55,8 @@ type threadRow struct {
 	ToTarget  string `json:"to_target"`
 	Subject   string `json:"subject"`
 	Status    string `json:"status"`
+	LastFrom  string `json:"last_from"`
+	Unread    int    `json:"unread"`
 }
 
 // callData sends one op to the daemon and returns its Data as JSON, or an error
@@ -312,7 +316,7 @@ func printThreads(out io.Writer, alias string, tasksOnly bool) error {
 		return err
 	}
 	tw := tabwriter.NewWriter(out, 0, 2, 2, ' ', 0)
-	if _, err := fmt.Fprintln(tw, "ID\tKIND\tFROM\tTO\tSTATUS\tSUBJECT"); err != nil {
+	if _, err := fmt.Fprintln(tw, "ID\tKIND\tFROM\tTO\tSTATUS\tLAST-FROM\tUNREAD\tSUBJECT"); err != nil {
 		return err
 	}
 	for _, th := range threads {
@@ -323,7 +327,7 @@ func printThreads(out io.Writer, alias string, tasksOnly bool) error {
 		if th.ToTarget != "" {
 			to = th.ToKind + ":" + th.ToTarget
 		}
-		if _, err := fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%s\t%s\n", th.ID, th.Kind, th.FromAgent, to, th.Status, th.Subject); err != nil {
+		if _, err := fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%s\t%s\t%d\t%s\n", th.ID, th.Kind, th.FromAgent, to, th.Status, th.LastFrom, th.Unread, th.Subject); err != nil {
 			return err
 		}
 	}
