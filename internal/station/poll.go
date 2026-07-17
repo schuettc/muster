@@ -178,3 +178,68 @@ func fetchThreads(caller render.Caller) ([]listThreadRow, error) {
 	}
 	return res.Threads, nil
 }
+
+// threadViewPageSize bounds the thread view's initial get_thread fetch (spec
+// §5: "station passes limit 200"). A "load older" fetch (see
+// fetchThreadPageCmd's older=true path) instead asks for exactly the entries
+// missing below the currently loaded window.
+const threadViewPageSize = 200
+
+// threadEntryRow mirrors store.Entry's wire JSON — station decodes its own
+// copy (get_thread's "entries" field) rather than importing internal/store,
+// the same peer-client pattern as agentRow/listThreadRow.
+type threadEntryRow struct {
+	ID           int64  `json:"id"`
+	ThreadID     int64  `json:"thread_id"`
+	FromAgent    string `json:"from_agent"`
+	Body         string `json:"body"`
+	StatusChange string `json:"status_change"`
+	CreatedAt    int64  `json:"created_at"`
+}
+
+// threadPageMsg carries one get_thread{offset,limit} page. older marks a
+// "load older" fetch (Update prepends its entries instead of replacing the
+// loaded window); threadID lets Update discard a page that resolves after
+// the thread view moved on to a different thread (or closed).
+type threadPageMsg struct {
+	threadID int64
+	offset   int64
+	older    bool
+	entries  []threadEntryRow
+	err      error
+}
+
+// fetchThreadPageCmd issues one get_thread call for threadID's
+// [offset, offset+limit) window (entries ordered oldest-first; see
+// paginateEntries in internal/daemon). older tags the response so Update
+// knows to prepend rather than replace.
+func fetchThreadPageCmd(caller render.Caller, threadID, offset, limit int64, older bool) tea.Cmd {
+	return func() tea.Msg {
+		raw, err := caller.Call("get_thread", map[string]any{
+			"thread_id": threadID, "offset": offset, "limit": limit,
+		})
+		if err != nil {
+			return threadPageMsg{threadID: threadID, offset: offset, older: older, err: err}
+		}
+		var res struct {
+			Entries []threadEntryRow `json:"entries"`
+		}
+		if err := json.Unmarshal(raw, &res); err != nil {
+			return threadPageMsg{threadID: threadID, offset: offset, older: older, err: err}
+		}
+		return threadPageMsg{threadID: threadID, offset: offset, older: older, entries: res.Entries}
+	}
+}
+
+// inboxAckMsg carries the result of the ONE explicit read station ever
+// performs: get_inbox for its own alias, issued exactly once when the
+// operator OPENS a thread addressed to station (spec §5's open-to-
+// acknowledge exception) — never on focus, selection, or poll.
+type inboxAckMsg struct{ err error }
+
+func fetchInboxAckCmd(caller render.Caller, alias string) tea.Cmd {
+	return func() tea.Msg {
+		_, err := caller.Call("get_inbox", map[string]any{"alias": alias})
+		return inboxAckMsg{err: err}
+	}
+}
