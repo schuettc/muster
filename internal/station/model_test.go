@@ -122,7 +122,9 @@ func mustModel(t *testing.T, v interface{}) Model {
 // (spec §5): the cursor moves ONLY in the events-msg branch, and only after
 // a page is actually applied. A threads-fetch failure between two
 // successful events pages must leave the cursor untouched and must not
-// cause the next events page to skip anything.
+// cause the next events page to skip anything. This mechanic is UNCHANGED
+// by the §5-REVISED navigation redesign — the global events buffer it
+// maintains now also backs the agent-activity view (agentActivity).
 func TestCursorAdvancesOnlyOnAppliedEvents(t *testing.T) {
 	m := NewModel(fakeCaller{}, Options{})
 
@@ -192,127 +194,9 @@ func TestCursorAdvancesOnlyOnAppliedEvents(t *testing.T) {
 	}
 }
 
-// TestRosterRendersLabelsAndCounts checks the roster pane groups by project
-// and shows each agent's live dot, label (with alias fallback), and
-// per-session unread count (with an "!" marker for action-requested unread).
-func TestRosterRendersLabelsAndCounts(t *testing.T) {
-	m := NewModel(fakeCaller{}, Options{})
-	next, _ := m.Update(agentsMsg{rows: []agentEnriched{
-		{Alias: "backend-1", Project: "muster", Label: "backend", Live: true, Unread: 3},
-		{Alias: "reviewer-1", Project: "muster", Label: "review", Live: false, Unread: 1, Action: true},
-		{Alias: "no-label-1", Project: "other", Live: true},
-	}})
-	m = mustModel(t, next)
-
-	view := m.View()
-	for _, want := range []string{"muster", "other", "backend", "review", "no-label-1", "(3)", "(1!)"} {
-		if !strings.Contains(view, want) {
-			t.Fatalf("roster view missing %q:\n%s", want, view)
-		}
-	}
-	if !strings.Contains(view, "●") {
-		t.Fatalf("roster view missing the live dot:\n%s", view)
-	}
-	if !strings.Contains(view, "✗") {
-		t.Fatalf("roster view missing the dead dot:\n%s", view)
-	}
-	// no-label-1 has no explicit label — the alias itself must stand in,
-	// and unread must render nothing (no stray "(0)").
-	if strings.Contains(view, "(0)") {
-		t.Fatalf("a zero-unread row must not render a count:\n%s", view)
-	}
-}
-
-// TestFeedUsesRendererVocabulary checks the feed pane renders through
-// render.Renderer verbatim: labels resolve via the roster's alias→label map,
-// send/target arrows read 'from → to', and notify folds its count into the
-// outcome ('lit(2)').
-func TestFeedUsesRendererVocabulary(t *testing.T) {
-	m := NewModel(fakeCaller{}, Options{})
-	next, _ := m.Update(agentsMsg{rows: []agentEnriched{{Alias: "bhw-3", Label: "code review"}}})
-	m = mustModel(t, next)
-
-	next, _ = m.Update(eventsMsg{page: render.EventsPage{
-		Events: []render.EventRow{
-			{ID: 1, Kind: "send", Agent: "web", Target: "agent:bhw-3", ThreadID: 1, Subject: "review req"},
-			{ID: 2, Kind: "notify", Agent: "bhw-3", ThreadID: 1, Count: 2, Detail: "lit"},
-		},
-		MaxID: 2,
-	}})
-	m = mustModel(t, next)
-
-	view := m.View()
-	for _, want := range []string{"web → code review", "lit(2)", "#1", "WHAT"} {
-		if !strings.Contains(view, want) {
-			t.Fatalf("feed view missing %q:\n%s", want, view)
-		}
-	}
-}
-
-// TestTabCyclesFocusAndRosterCursorMoves exercises the read-only keys this
-// task wires: Tab cycles pane focus, j/k move the roster cursor (bounded),
-// q sets quitting and issues tea.Quit.
-func TestTabCyclesFocusAndRosterCursorMoves(t *testing.T) {
-	m := NewModel(fakeCaller{}, Options{})
-	next, _ := m.Update(agentsMsg{rows: []agentEnriched{
-		{Alias: "a", Project: "p"}, {Alias: "b", Project: "p"}, {Alias: "c", Project: "p"},
-	}})
-	m = mustModel(t, next)
-	if m.focus != paneRoster {
-		t.Fatalf("initial focus = %v, want paneRoster", m.focus)
-	}
-
-	next, _ = m.Update(keyMsg("j"))
-	m = mustModel(t, next)
-	if m.rosterIdx != 1 {
-		t.Fatalf("rosterIdx = %d after j, want 1", m.rosterIdx)
-	}
-	next, _ = m.Update(keyMsg("k"))
-	m = mustModel(t, next)
-	if m.rosterIdx != 0 {
-		t.Fatalf("rosterIdx = %d after k, want 0", m.rosterIdx)
-	}
-	// k at the top must not go negative.
-	next, _ = m.Update(keyMsg("k"))
-	m = mustModel(t, next)
-	if m.rosterIdx != 0 {
-		t.Fatalf("rosterIdx = %d, want clamped to 0", m.rosterIdx)
-	}
-
-	next, _ = m.Update(keyMsg("tab"))
-	m = mustModel(t, next)
-	if m.focus != paneFeed {
-		t.Fatalf("focus after tab = %v, want paneFeed", m.focus)
-	}
-	next, _ = m.Update(keyMsg("tab"))
-	m = mustModel(t, next)
-	if m.focus != paneThreads {
-		t.Fatalf("focus after second tab = %v, want paneThreads", m.focus)
-	}
-	next, _ = m.Update(keyMsg("tab"))
-	m = mustModel(t, next)
-	if m.focus != paneRoster {
-		t.Fatalf("focus after third tab = %v, want it wraps back to paneRoster", m.focus)
-	}
-
-	next, cmd := m.Update(keyMsg("q"))
-	m = mustModel(t, next)
-	if !m.quitting {
-		t.Fatalf("q must set quitting")
-	}
-	if cmd == nil {
-		t.Fatalf("q must issue a Cmd (tea.Quit)")
-	}
-}
-
 // TestColdStartBootstrapsFromBacklogNotFollow is Finding 1's regression test:
 // a fresh Model must never issue a follow-mode list_events call with
-// after_id=0. Against a mature journal, follow mode from 0 would let the
-// daemon cap the page at its oldest-1000-row window while still reporting
-// the GLOBAL tail as max_id — applyEvents would then jump the cursor straight
-// to that tail, silently skipping every event between row 1000 and the tail.
-// The fix: the first fetch is BACKLOG mode, seeding the cursor from its own
-// max_id; only the next tick follows, and from that seeded cursor.
+// after_id=0.
 func TestColdStartBootstrapsFromBacklogNotFollow(t *testing.T) {
 	const tailMaxID = 5000
 	var calls []map[string]any
@@ -325,8 +209,6 @@ func TestColdStartBootstrapsFromBacklogNotFollow(t *testing.T) {
 			page := render.EventsPage{Events: eventRowsDesc(tailMaxID, 10), MaxID: tailMaxID}
 			return json.Marshal(page)
 		}
-		// A follow call from after_id=0 against a mature journal: the
-		// daemon's oldest-1000-row cap, but still reporting the real tail.
 		page := render.EventsPage{Events: eventRowsAsc(1, 1000), MaxID: tailMaxID}
 		return json.Marshal(page)
 	}}
@@ -378,9 +260,7 @@ func TestColdStartBootstrapsFromBacklogNotFollow(t *testing.T) {
 
 // TestStaleTickEventsMsgDiscarded is Finding 2's regression test: an
 // events msg from an older tick generation must never apply after a newer
-// generation's msg already has — otherwise a slow in-flight fetch can
-// double-apply events, or look like a journal regression (its stale max_id
-// below the already-advanced cursor) and reset the cursor backwards.
+// generation's msg already has.
 func TestStaleTickEventsMsgDiscarded(t *testing.T) {
 	m := NewModel(fakeCaller{}, Options{})
 	m.bootstrapped = true // skip backlog bootstrap; exercise follow-mode gating directly

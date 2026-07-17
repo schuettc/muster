@@ -131,7 +131,7 @@ func fetchAgents(caller render.Caller) ([]agentEnriched, error) {
 					cache[key] = u
 				}
 			}
-			e.Unread, e.Action = u.total, u.action > 0
+			e.Unread, e.Action, e.ActionCount = u.total, u.action > 0, u.action
 		}
 		out = append(out, e)
 	}
