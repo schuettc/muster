@@ -48,6 +48,15 @@ type Thread struct {
 	Intent    string `json:"intent"`
 	CreatedAt int64  `json:"created_at"`
 	UpdatedAt int64  `json:"updated_at"`
+	// OriginProject is the SENDER's registered project at thread-creation
+	// time (iteration-4 orphan-thread fix): the daemon resolves the sender's
+	// agent record when it calls CreateThread and stamps its Project here —
+	// "" when the sender was unregistered at creation time. Additive and
+	// backfilled best-effort for pre-existing rows (see store.migrate); it
+	// exists so a thread survives every participant later deregistering —
+	// the roster-only project mapping that made ghost-site's threads vanish
+	// (spec iteration-4 queue item 4) has this as its durable fallback.
+	OriginProject string `json:"origin_project"`
 	// LastFrom, LastAt, and EntryCount are query-time only, populated by
 	// Threads() and Inbox() from the thread's last entry (by MAX(id), never
 	// MAX(created_at) — same-millisecond entries must not tie-break on

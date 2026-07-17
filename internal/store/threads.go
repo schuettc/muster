@@ -43,9 +43,9 @@ func (s *Store) CreateThread(t Thread, firstBody string) (int64, error) {
 	defer func() { _ = tx.Rollback() }()
 
 	res, err := tx.Exec(`
-INSERT INTO threads (kind, from_agent, to_kind, to_target, subject, ref, status, intent, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		t.Kind, t.FromAgent, t.ToKind, t.ToTarget, t.Subject, t.Ref, nullable(t.Status), t.Intent, now, now)
+INSERT INTO threads (kind, from_agent, to_kind, to_target, subject, ref, status, intent, created_at, updated_at, origin_project)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		t.Kind, t.FromAgent, t.ToKind, t.ToTarget, t.Subject, t.Ref, nullable(t.Status), t.Intent, now, now, t.OriginProject)
 	if err != nil {
 		return 0, err
 	}
@@ -97,7 +97,7 @@ VALUES (?, ?, ?, ?, ?)`, threadID, fromAgent, body, nullable(statusChange), now)
 func scanThread(row interface{ Scan(...any) error }) (Thread, error) {
 	var t Thread
 	var status sql.NullString
-	err := row.Scan(&t.ID, &t.Kind, &t.FromAgent, &t.ToKind, &t.ToTarget, &t.Subject, &t.Ref, &status, &t.Intent, &t.CreatedAt, &t.UpdatedAt)
+	err := row.Scan(&t.ID, &t.Kind, &t.FromAgent, &t.ToKind, &t.ToTarget, &t.Subject, &t.Ref, &status, &t.Intent, &t.CreatedAt, &t.UpdatedAt, &t.OriginProject)
 	if status.Valid {
 		t.Status = status.String
 	}
@@ -111,7 +111,7 @@ func scanThread(row interface{ Scan(...any) error }) (Thread, error) {
 // they compute eff_intent inside their own "recent" CTE instead — but all
 // three agree on the same effectiveIntent fragment (models.go, spec §2
 // ledger note).
-const threadColsEffectiveIntent = `id, kind, from_agent, to_kind, to_target, subject, ref, status, ` + effectiveIntent + ` AS intent, created_at, updated_at`
+const threadColsEffectiveIntent = `id, kind, from_agent, to_kind, to_target, subject, ref, status, ` + effectiveIntent + ` AS intent, created_at, updated_at, origin_project`
 
 // effectiveIntent is the ONE canonical SQL fragment for a thread's operative
 // intent (spec §2): a task is a request for action, including every
@@ -235,7 +235,7 @@ unread AS (
 )
 SELECT recent.id, recent.kind, recent.from_agent, recent.to_kind, recent.to_target,
        recent.subject, recent.ref, recent.status, recent.eff_intent,
-       recent.created_at, recent.updated_at,
+       recent.created_at, recent.updated_at, recent.origin_project,
        le.from_agent, le.created_at, last.n, COALESCE(unread.n, 0)
 FROM recent`+threadLastEntryJoin+`
 LEFT JOIN unread ON unread.thread_id = recent.id
@@ -250,7 +250,7 @@ ORDER BY recent.updated_at DESC`, alias, alias, alias, alias, alias)
 		var status sql.NullString
 		if err := rows.Scan(&t.ID, &t.Kind, &t.FromAgent, &t.ToKind, &t.ToTarget,
 			&t.Subject, &t.Ref, &status, &t.Intent,
-			&t.CreatedAt, &t.UpdatedAt,
+			&t.CreatedAt, &t.UpdatedAt, &t.OriginProject,
 			&t.LastFrom, &t.LastAt, &t.EntryCount, &t.Unread); err != nil {
 			return nil, err
 		}
@@ -295,7 +295,7 @@ WITH recent AS (
 ),`+threadLastEntryCTE+`
 SELECT recent.id, recent.kind, recent.from_agent, recent.to_kind, recent.to_target,
        recent.subject, recent.ref, recent.status, recent.eff_intent,
-       recent.created_at, recent.updated_at,
+       recent.created_at, recent.updated_at, recent.origin_project,
        le.from_agent, le.created_at, last.n
 FROM recent`+threadLastEntryJoin+`
 ORDER BY recent.updated_at DESC, recent.id DESC`, limit)
@@ -309,7 +309,7 @@ ORDER BY recent.updated_at DESC, recent.id DESC`, limit)
 		var status sql.NullString
 		if err := rows.Scan(&t.ID, &t.Kind, &t.FromAgent, &t.ToKind, &t.ToTarget,
 			&t.Subject, &t.Ref, &status, &t.Intent,
-			&t.CreatedAt, &t.UpdatedAt,
+			&t.CreatedAt, &t.UpdatedAt, &t.OriginProject,
 			&t.LastFrom, &t.LastAt, &t.EntryCount); err != nil {
 			return nil, err
 		}

@@ -365,6 +365,20 @@ func (d *Daemon) notifyForThread(threadID int64, actor string) {
 // never fail or slow the bus operation it describes.
 func (d *Daemon) logEvent(e store.Event) { _ = d.s.AppendEvent(e) }
 
+// senderProject resolves alias's CURRENTLY registered project for stamping
+// onto a new thread's origin_project (iteration-4 orphan-thread fix, spec
+// queue item 4b): "" when alias isn't a registered agent (never registered,
+// or a lookup error) — an unregistered sender's thread simply carries no
+// origin project, exactly like every other best-effort roster lookup in this
+// file (e.g. register/deregister's own discarded GetAgent error).
+func (d *Daemon) senderProject(alias string) string {
+	ag, found, err := d.s.GetAgent(alias)
+	if err != nil || !found {
+		return ""
+	}
+	return ag.Project
+}
+
 // targetOf renders a thread address as a journal target: 'broadcast' or
 // '<to_kind>:<to_target>'.
 func targetOf(a map[string]any) string {
@@ -386,28 +400,30 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 		}
 		return ok(agents)
 	case "send_message":
+		from := str(a, "from")
 		id, err := d.s.CreateThread(store.Thread{
-			Kind: "message", FromAgent: str(a, "from"), ToKind: str(a, "to_kind"),
+			Kind: "message", FromAgent: from, ToKind: str(a, "to_kind"),
 			ToTarget: str(a, "to_target"), Subject: str(a, "subject"), Ref: str(a, "ref"),
-			Intent: str(a, "intent"),
+			Intent: str(a, "intent"), OriginProject: d.senderProject(from),
 		}, str(a, "body"))
 		if err != nil {
 			return fail(err)
 		}
-		d.logEvent(store.Event{Kind: "send", Agent: str(a, "from"), Target: targetOf(a), ThreadID: id, Detail: str(a, "subject")})
-		d.notifyForThread(id, str(a, "from"))
+		d.logEvent(store.Event{Kind: "send", Agent: from, Target: targetOf(a), ThreadID: id, Detail: str(a, "subject")})
+		d.notifyForThread(id, from)
 		return ok(map[string]any{"thread_id": id})
 	case "task_create":
+		from := str(a, "from")
 		id, err := d.s.CreateThread(store.Thread{
-			Kind: "task", FromAgent: str(a, "from"), ToKind: str(a, "to_kind"),
+			Kind: "task", FromAgent: from, ToKind: str(a, "to_kind"),
 			ToTarget: str(a, "to_target"), Subject: str(a, "subject"), Ref: str(a, "ref"), Status: "open",
-			Intent: str(a, "intent"),
+			Intent: str(a, "intent"), OriginProject: d.senderProject(from),
 		}, str(a, "body"))
 		if err != nil {
 			return fail(err)
 		}
-		d.logEvent(store.Event{Kind: "task", Agent: str(a, "from"), Target: targetOf(a), ThreadID: id, Detail: str(a, "subject")})
-		d.notifyForThread(id, str(a, "from"))
+		d.logEvent(store.Event{Kind: "task", Agent: from, Target: targetOf(a), ThreadID: id, Detail: str(a, "subject")})
+		d.notifyForThread(id, from)
 		return ok(map[string]any{"thread_id": id})
 	case "task_claim":
 		if err := d.s.ClaimTask(i64(a, "thread_id"), str(a, "by")); err != nil {

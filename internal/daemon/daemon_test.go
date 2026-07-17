@@ -181,6 +181,87 @@ func TestRegisterCapturesLabelAndDeregister(t *testing.T) {
 	}
 }
 
+// TestSendMessageAndTaskCreateStampOriginProject covers the iteration-4
+// orphan-thread fix (spec queue item 4b): send_message and task_create
+// resolve the SENDER's registered agent record at creation time and stamp
+// its project into the new thread's origin_project — "" when the sender is
+// unregistered, never a failure (a thread must always get created even when
+// the sender can't be looked up).
+func TestSendMessageAndTaskCreateStampOriginProject(t *testing.T) {
+	sock := startTestDaemon(t)
+	if _, err := client.Call(sock, proto.Request{Op: "register_agent", Args: map[string]any{
+		"alias": "sender-1", "role": "producer", "model_type": "claude", "project": "projectA",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	send, err := client.Call(sock, proto.Request{Op: "send_message", Args: map[string]any{
+		"from": "sender-1", "to_kind": "agent", "to_target": "someone", "body": "hi",
+	}})
+	if err != nil || !send.OK {
+		t.Fatalf("send_message: err=%v resp=%+v", err, send)
+	}
+	sendData, ok := send.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map data, got %T %v", send.Data, send.Data)
+	}
+	sendThreadID := int64(sendData["thread_id"].(float64))
+
+	task, err := client.Call(sock, proto.Request{Op: "task_create", Args: map[string]any{
+		"from": "sender-1", "to_kind": "agent", "to_target": "someone", "subject": "s", "body": "b",
+	}})
+	if err != nil || !task.OK {
+		t.Fatalf("task_create: err=%v resp=%+v", err, task)
+	}
+	taskData, ok := task.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map data, got %T %v", task.Data, task.Data)
+	}
+	taskThreadID := int64(taskData["thread_id"].(float64))
+
+	// An UNREGISTERED sender must still succeed, stamping "" rather than
+	// failing the op outright.
+	unregSend, err := client.Call(sock, proto.Request{Op: "send_message", Args: map[string]any{
+		"from": "nobody", "to_kind": "agent", "to_target": "someone", "body": "hi",
+	}})
+	if err != nil || !unregSend.OK {
+		t.Fatalf("send_message from an unregistered sender: err=%v resp=%+v", err, unregSend)
+	}
+	unregData, ok := unregSend.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map data, got %T %v", unregSend.Data, unregSend.Data)
+	}
+	unregThreadID := int64(unregData["thread_id"].(float64))
+
+	list, err := client.Call(sock, proto.Request{Op: "list_threads", Args: map[string]any{"limit": 100}})
+	if err != nil || !list.OK {
+		t.Fatalf("list_threads: err=%v resp=%+v", err, list)
+	}
+	raw, err := json.Marshal(list.Data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var res struct {
+		Threads []store.Thread `json:"threads"`
+	}
+	if err := json.Unmarshal(raw, &res); err != nil {
+		t.Fatal(err)
+	}
+	byID := map[int64]store.Thread{}
+	for _, th := range res.Threads {
+		byID[th.ID] = th
+	}
+	if got := byID[sendThreadID].OriginProject; got != "projectA" {
+		t.Fatalf("send_message thread origin_project = %q, want projectA", got)
+	}
+	if got := byID[taskThreadID].OriginProject; got != "projectA" {
+		t.Fatalf("task_create thread origin_project = %q, want projectA", got)
+	}
+	if got := byID[unregThreadID].OriginProject; got != "" {
+		t.Fatalf("unregistered-sender thread origin_project = %q, want '' (empty)", got)
+	}
+}
+
 // TestPruneEventsOpRejectsNonPositiveCutoff exercises the prune_events daemon
 // op: two events at fake ts 1 and 2, pruning with older_than_ms=2 deletes only
 // the ts=1 row (exact-boundary survives, per store.PruneEvents), and

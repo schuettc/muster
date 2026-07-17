@@ -47,6 +47,7 @@ func migrate(db *sql.DB) error {
 		`ALTER TABLE events ADD COLUMN target TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE threads ADD COLUMN intent TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE agents ADD COLUMN last_read_entry_id INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE threads ADD COLUMN origin_project TEXT NOT NULL DEFAULT ''`,
 	}
 	for _, ddl := range alters {
 		if _, err := db.Exec(ddl); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
@@ -64,6 +65,22 @@ func migrate(db *sql.DB) error {
 UPDATE agents SET last_read_entry_id =
   COALESCE((SELECT MAX(e.id) FROM entries e WHERE e.created_at <= agents.last_read_at), 0)
 WHERE last_read_entry_id = 0 AND last_read_at > 0`); err != nil {
+		return err
+	}
+
+	// One-time origin_project backfill (iteration-4 orphan-thread fix): a
+	// thread row created before this migration has origin_project='' since
+	// the ALTER above defaults it that way. For any such row whose sender
+	// still resolves in the CURRENT roster, stamp its project; a sender that
+	// no longer resolves (deregistered, or never registered) leaves the row
+	// '' — station's "(unassigned)" bucket is the fallback for those.
+	// Idempotent: only rows still at '' are touched, so a re-run after a
+	// previous backfill (or after CreateThread starts stamping new rows
+	// itself) is a no-op over already-stamped rows.
+	if _, err := db.Exec(`
+UPDATE threads SET origin_project = (SELECT project FROM agents WHERE alias = threads.from_agent)
+WHERE origin_project = ''
+  AND EXISTS (SELECT 1 FROM agents WHERE alias = threads.from_agent)`); err != nil {
 		return err
 	}
 	return nil

@@ -26,7 +26,8 @@ CREATE TABLE IF NOT EXISTS threads (
     status     TEXT,                          -- NULL for messages
     intent     TEXT NOT NULL DEFAULT '',       -- '' | fyi | reply-requested | action-requested
     created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL
+    updated_at INTEGER NOT NULL,
+    origin_project TEXT NOT NULL DEFAULT ''    -- sender's registered project at creation time ('' = unregistered sender); see store.migrate's backfill for pre-existing rows
 );
 CREATE INDEX IF NOT EXISTS idx_threads_recipient ON threads(to_kind, to_target);
 
