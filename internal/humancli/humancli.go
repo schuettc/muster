@@ -42,6 +42,11 @@ type agentRow struct {
 	Label       string `json:"label"`
 	LabelManual bool   `json:"label_manual"`
 	LastSeen    int64  `json:"last_seen"`
+	// Departed is true once the agent has been deregistered (tombstoned, not
+	// deleted — see store.Store.DepartAgent): gc's default reap and
+	// --purge-agents both key off this to decide whether a row still needs
+	// reaping or is already history.
+	Departed bool `json:"departed"`
 }
 
 // threadRow decodes daemon thread responses (get_inbox, get_thread, list_tasks).

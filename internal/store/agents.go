@@ -9,11 +9,15 @@ import (
 
 // RegisterAgent upserts by Alias: inserts on first sight (stamping RegisteredAt),
 // and on conflict refreshes the tuple + LastSeen while preserving RegisteredAt.
+// departed is always reset to 0 by both the insert and the conflict update, so
+// re-registering a previously-departed alias (a returning session) revives it
+// cleanly — read-state (last_read_entry_id/last_read_at) is untouched by
+// either branch, so it survives the roundtrip intact.
 func (s *Store) RegisterAgent(a Agent) error {
 	now := clock.NowMillis()
 	_, err := s.db.Exec(`
-INSERT INTO agents (alias, role, model_type, socket_path, pane_id, session_name, session_id, project, label, label_manual, registered_at, last_seen)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO agents (alias, role, model_type, socket_path, pane_id, session_name, session_id, project, label, label_manual, departed, registered_at, last_seen)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
 ON CONFLICT(alias) DO UPDATE SET
     role=excluded.role,
     model_type=excluded.model_type,
@@ -24,16 +28,18 @@ ON CONFLICT(alias) DO UPDATE SET
     project=excluded.project,
     label=excluded.label,
     label_manual=excluded.label_manual,
+    departed=0,
     last_seen=excluded.last_seen`,
 		a.Alias, a.Role, a.ModelType, a.SocketPath, a.PaneID, a.SessionName, a.SessionID,
 		a.Project, a.Label, a.LabelManual, now, now)
 	return err
 }
 
-// ListAgents returns all agents ordered by alias.
+// ListAgents returns all agents ordered by alias — departed (tombstoned)
+// agents included: their rows are history, not gone (see DepartAgent).
 func (s *Store) ListAgents() ([]Agent, error) {
 	rows, err := s.db.Query(`
-SELECT alias, role, model_type, socket_path, pane_id, session_name, session_id, project, label, label_manual, registered_at, last_seen, last_read_entry_id
+SELECT alias, role, model_type, socket_path, pane_id, session_name, session_id, project, label, label_manual, registered_at, last_seen, last_read_entry_id, departed
 FROM agents ORDER BY alias`)
 	if err != nil {
 		return nil, err
@@ -42,7 +48,7 @@ FROM agents ORDER BY alias`)
 	var out []Agent
 	for rows.Next() {
 		var a Agent
-		if err := rows.Scan(&a.Alias, &a.Role, &a.ModelType, &a.SocketPath, &a.PaneID, &a.SessionName, &a.SessionID, &a.Project, &a.Label, &a.LabelManual, &a.RegisteredAt, &a.LastSeen, &a.LastReadEntryID); err != nil {
+		if err := rows.Scan(&a.Alias, &a.Role, &a.ModelType, &a.SocketPath, &a.PaneID, &a.SessionName, &a.SessionID, &a.Project, &a.Label, &a.LabelManual, &a.RegisteredAt, &a.LastSeen, &a.LastReadEntryID, &a.Departed); err != nil {
 			return nil, err
 		}
 		out = append(out, a)
@@ -50,13 +56,15 @@ FROM agents ORDER BY alias`)
 	return out, rows.Err()
 }
 
-// GetAgent looks up a single agent by alias. ok is false if no such agent is registered.
+// GetAgent looks up a single agent by alias. ok is false if no such agent is
+// registered at all — a departed (tombstoned) agent still reports ok=true,
+// with Departed set (see DepartAgent).
 func (s *Store) GetAgent(alias string) (Agent, bool, error) {
 	var a Agent
 	err := s.db.QueryRow(`
-SELECT alias, role, model_type, socket_path, pane_id, session_name, session_id, project, label, label_manual, registered_at, last_seen, last_read_entry_id
+SELECT alias, role, model_type, socket_path, pane_id, session_name, session_id, project, label, label_manual, registered_at, last_seen, last_read_entry_id, departed
 FROM agents WHERE alias=?`, alias).
-		Scan(&a.Alias, &a.Role, &a.ModelType, &a.SocketPath, &a.PaneID, &a.SessionName, &a.SessionID, &a.Project, &a.Label, &a.LabelManual, &a.RegisteredAt, &a.LastSeen, &a.LastReadEntryID)
+		Scan(&a.Alias, &a.Role, &a.ModelType, &a.SocketPath, &a.PaneID, &a.SessionName, &a.SessionID, &a.Project, &a.Label, &a.LabelManual, &a.RegisteredAt, &a.LastSeen, &a.LastReadEntryID, &a.Departed)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Agent{}, false, nil
 	}
@@ -72,9 +80,24 @@ func (s *Store) TouchAgent(alias string) error {
 	return err
 }
 
-// DeleteAgent removes an agent's registration by alias. Unknown alias is a
-// no-op (no error). Message/task history is unaffected — threads store the
-// alias as text, not a foreign key.
+// DepartAgent tombstones alias (spec: deregistration must survive so
+// departed history stays drillable): sets departed=1 in place. Identity,
+// project, label, and read-state (last_read_entry_id/last_read_at) are all
+// preserved — this is the deregister_agent op's normal path now, replacing
+// the old hard DELETE. Unknown alias is a no-op (no error), mirroring
+// DeleteAgent's own contract. RegisterAgent's upsert is the only way back to
+// departed=0 (a returning session revives the row).
+func (s *Store) DepartAgent(alias string) error {
+	_, err := s.db.Exec(`UPDATE agents SET departed=1 WHERE alias=?`, alias)
+	return err
+}
+
+// DeleteAgent hard-deletes an agent's registration by alias — irreversible:
+// identity, project, label, and read-state are all gone, not just flagged.
+// Unknown alias is a no-op (no error). Message/task history is unaffected —
+// threads store the alias as text, not a foreign key. This is now reserved
+// for `muster gc --purge-agents` (the daemon's purge_agent op); plain
+// deregistration goes through DepartAgent instead.
 func (s *Store) DeleteAgent(alias string) error {
 	_, err := s.db.Exec(`DELETE FROM agents WHERE alias=?`, alias)
 	return err

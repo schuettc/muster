@@ -104,6 +104,87 @@ func TestAgentLabelAndDelete(t *testing.T) {
 	}
 }
 
+// TestDepartAgentTombstonesPreservingFields covers the deregistration
+// tombstone (spec: departed history must survive so it stays drillable): after
+// DepartAgent, the row still exists (ListAgents/GetAgent both still find it),
+// Departed is true, and every other field — project, label, label_manual, the
+// read watermark — is untouched. A subsequent RegisterAgent for the same
+// alias revives it (Departed back to false) without needing any of those
+// fields re-supplied by the caller for them to still be present (RegisterAgent
+// preserves them exactly like a plain restart-upsert already does).
+func TestDepartAgentTombstonesPreservingFields(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.RegisterAgent(Agent{
+		Alias: "muster-2", Role: "peer", ModelType: "codex",
+		SocketPath: "/s", SessionID: "$1",
+		Project: "muster", Label: "frontend", LabelManual: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateThread(Thread{Kind: "message", FromAgent: "x", ToKind: "agent", ToTarget: "muster-2"}, "hi"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.MarkRead("muster-2"); err != nil {
+		t.Fatal(err)
+	}
+	before, ok, err := s.GetAgent("muster-2")
+	if err != nil || !ok {
+		t.Fatalf("get before depart: ok=%v err=%v", ok, err)
+	}
+	if before.LastReadEntryID == 0 {
+		t.Fatalf("setup: expected a non-zero read watermark, got %+v", before)
+	}
+
+	if err := s.DepartAgent("muster-2"); err != nil {
+		t.Fatal(err)
+	}
+	after, ok, err := s.GetAgent("muster-2")
+	if err != nil || !ok {
+		t.Fatalf("expected the row to SURVIVE DepartAgent, got ok=%v err=%v", ok, err)
+	}
+	if !after.Departed {
+		t.Fatalf("expected Departed=true after DepartAgent, got %+v", after)
+	}
+	if after.Project != "muster" || after.Label != "frontend" || !after.LabelManual {
+		t.Fatalf("DepartAgent must preserve project/label/label_manual, got %+v", after)
+	}
+	if after.LastReadEntryID != before.LastReadEntryID {
+		t.Fatalf("DepartAgent must preserve the read watermark: before=%d after=%d", before.LastReadEntryID, after.LastReadEntryID)
+	}
+
+	list, err := s.ListAgents()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 || !list[0].Departed {
+		t.Fatalf("ListAgents must still include the departed row, got %+v", list)
+	}
+
+	// DepartAgent on an unknown alias is a no-op, no error.
+	if err := s.DepartAgent("nonexistent"); err != nil {
+		t.Fatalf("DepartAgent of unknown alias must be a no-op, got %v", err)
+	}
+
+	// A returning session revives it: RegisterAgent resets Departed to false.
+	if err := s.RegisterAgent(Agent{
+		Alias: "muster-2", Role: "peer", ModelType: "codex",
+		SocketPath: "/s", SessionID: "$1",
+		Project: "muster", Label: "frontend", LabelManual: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	revived, ok, err := s.GetAgent("muster-2")
+	if err != nil || !ok {
+		t.Fatalf("get after revive: ok=%v err=%v", ok, err)
+	}
+	if revived.Departed {
+		t.Fatalf("re-registering a departed alias must revive it (Departed=false), got %+v", revived)
+	}
+	if revived.LastReadEntryID != before.LastReadEntryID {
+		t.Fatalf("revival must not disturb the read watermark: before=%d after=%d", before.LastReadEntryID, revived.LastReadEntryID)
+	}
+}
+
 // TestMarkReadRecordsEntryWatermark: no incrementing fake clock needed — the
 // wall clock is frozen at one instant so every entry genuinely lands in the
 // same millisecond, and the entry-ID watermark (not created_at) still tells

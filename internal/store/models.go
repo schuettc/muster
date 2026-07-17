@@ -27,6 +27,18 @@ type Agent struct {
 	// agent's inbox was read. Supersedes the wall-clock last_read_at for
 	// unread math; last_read_at is retained internally for display only.
 	LastReadEntryID int64 `json:"last_read_entry_id"`
+	// Departed is true once this agent has been deregistered (see
+	// Store.DepartAgent) — a tombstone, not a delete: identity, project,
+	// label, and read-state (LastReadEntryID/last_read_at) all survive.
+	// RegisterAgent's upsert always resets this to false, so a returning
+	// session revives the row cleanly rather than needing a fresh one.
+	// Addressing/resolution semantics are UNCHANGED for a departed alias — it
+	// remains addressable exactly like a tmux-dead agent (mail waits; they
+	// may return); only notifyForThread and station's roster rendering treat
+	// Departed specially. muster gc's default reap no longer deletes any
+	// row — it sets Departed instead; `gc --purge-agents` hard-deletes
+	// departed/dead rows the old way.
+	Departed bool `json:"departed"`
 }
 
 // Thread is a conversation: a message (no status) or a task (status set).

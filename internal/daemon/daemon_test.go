@@ -151,6 +151,12 @@ func decodeGetAgent(t *testing.T, resp proto.Response) (store.Agent, bool) {
 	return res.Agent, res.Found
 }
 
+// TestRegisterCapturesLabelAndDeregister covers the deregistration tombstone
+// (spec: departed history must survive so it stays drillable, e.g. under
+// station's below-the-bar section): deregister_agent no longer DELETEs the
+// row — it sets Departed, preserving identity/project/label — and a fresh
+// register_agent for the same alias revives it (Departed back to false)
+// without disturbing the fields a plain re-register never touches.
 func TestRegisterCapturesLabelAndDeregister(t *testing.T) {
 	sock := startTestDaemon(t) // existing helper
 	if _, err := client.Call(sock, proto.Request{Op: "register_agent", Args: map[string]any{
@@ -168,6 +174,9 @@ func TestRegisterCapturesLabelAndDeregister(t *testing.T) {
 	if !found || ag.Project != "muster" || ag.Label != "frontend" || !ag.LabelManual {
 		t.Fatalf("expected project/label/label_manual to round-trip, got found=%v agent=%+v", found, ag)
 	}
+	if ag.Departed {
+		t.Fatalf("freshly registered agent must not be Departed, got %+v", ag)
+	}
 
 	if _, err := client.Call(sock, proto.Request{Op: "deregister_agent", Args: map[string]any{"alias": "muster-2"}}); err != nil {
 		t.Fatal(err)
@@ -176,8 +185,92 @@ func TestRegisterCapturesLabelAndDeregister(t *testing.T) {
 	if err != nil || !resp.OK {
 		t.Fatalf("get_agent after deregister: %v %+v", err, resp)
 	}
+	ag, found = decodeGetAgent(t, resp)
+	if !found {
+		t.Fatal("expected agent row to SURVIVE deregister_agent (tombstoned, not deleted)")
+	}
+	if !ag.Departed {
+		t.Fatalf("expected Departed=true after deregister_agent, got %+v", ag)
+	}
+	if ag.Project != "muster" || ag.Label != "frontend" || !ag.LabelManual {
+		t.Fatalf("deregister must preserve project/label/label_manual, got %+v", ag)
+	}
+
+	// A returning session (fresh register_agent) revives the row.
+	if _, err := client.Call(sock, proto.Request{Op: "register_agent", Args: map[string]any{
+		"alias": "muster-2", "role": "peer", "model_type": "codex",
+		"socket_path": "/s", "session_id": "$1",
+		"project": "muster", "label": "frontend", "label_manual": true,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	resp, err = client.Call(sock, proto.Request{Op: "get_agent", Args: map[string]any{"alias": "muster-2"}})
+	if err != nil || !resp.OK {
+		t.Fatalf("get_agent after revive: %v %+v", err, resp)
+	}
+	ag, found = decodeGetAgent(t, resp)
+	if !found || ag.Departed {
+		t.Fatalf("re-registering a departed alias must revive it (Departed=false), got found=%v agent=%+v", found, ag)
+	}
+}
+
+// TestDeregisterPreservesReadWatermark: the whole point of tombstoning over
+// deleting — an agent's read state (last_read_entry_id) must survive its own
+// deregistration, so a re-register (e.g. a station restart) never resurrects
+// already-acknowledged mail as unread.
+func TestDeregisterPreservesReadWatermark(t *testing.T) {
+	sock := startTestDaemon(t)
+	if _, err := client.Call(sock, proto.Request{Op: "register_agent", Args: map[string]any{"alias": "reader", "socket_path": "/s", "session_id": "$1"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Call(sock, proto.Request{Op: "send_message", Args: map[string]any{"from": "peer", "to_kind": "agent", "to_target": "reader", "body": "hi"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Call(sock, proto.Request{Op: "get_inbox", Args: map[string]any{"alias": "reader"}}); err != nil {
+		t.Fatal(err)
+	}
+	resp, err := client.Call(sock, proto.Request{Op: "get_agent", Args: map[string]any{"alias": "reader"}})
+	if err != nil || !resp.OK {
+		t.Fatalf("get_agent: %v %+v", err, resp)
+	}
+	before, _ := decodeGetAgent(t, resp)
+	if before.LastReadEntryID == 0 {
+		t.Fatalf("setup: expected a non-zero read watermark before deregister, got %+v", before)
+	}
+
+	if _, err := client.Call(sock, proto.Request{Op: "deregister_agent", Args: map[string]any{"alias": "reader"}}); err != nil {
+		t.Fatal(err)
+	}
+	resp, err = client.Call(sock, proto.Request{Op: "get_agent", Args: map[string]any{"alias": "reader"}})
+	if err != nil || !resp.OK {
+		t.Fatalf("get_agent after deregister: %v %+v", err, resp)
+	}
+	after, found := decodeGetAgent(t, resp)
+	if !found || !after.Departed {
+		t.Fatalf("expected the row to survive, tombstoned, got found=%v agent=%+v", found, after)
+	}
+	if after.LastReadEntryID != before.LastReadEntryID {
+		t.Fatalf("deregister must not disturb the read watermark: before=%d after=%d", before.LastReadEntryID, after.LastReadEntryID)
+	}
+}
+
+// TestPurgeAgentHardDeletes: purge_agent (muster gc --purge-agents' own op)
+// is the old hard-DELETE — unlike deregister_agent, the row is actually gone
+// afterward.
+func TestPurgeAgentHardDeletes(t *testing.T) {
+	sock := startTestDaemon(t)
+	if _, err := client.Call(sock, proto.Request{Op: "register_agent", Args: map[string]any{"alias": "gone", "socket_path": "/s", "session_id": "$1"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Call(sock, proto.Request{Op: "purge_agent", Args: map[string]any{"alias": "gone"}}); err != nil {
+		t.Fatal(err)
+	}
+	resp, err := client.Call(sock, proto.Request{Op: "get_agent", Args: map[string]any{"alias": "gone"}})
+	if err != nil || !resp.OK {
+		t.Fatalf("get_agent after purge: %v %+v", err, resp)
+	}
 	if _, found := decodeGetAgent(t, resp); found {
-		t.Fatal("expected agent to be gone after deregister_agent")
+		t.Fatal("expected agent to be gone after purge_agent")
 	}
 }
 

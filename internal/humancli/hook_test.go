@@ -308,10 +308,17 @@ func TestHookSessionStartAndEnd(t *testing.T) {
 		t.Fatalf("SessionEnd: %v", err)
 	}
 	agents = listAgentsForTest(t, "")
+	found = false
 	for _, a := range agents {
 		if a.Alias == "muster-hook" {
-			t.Fatalf("expected muster-hook deregistered via SessionEnd hook: %+v", agents)
+			found = true
+			if !a.Departed {
+				t.Fatalf("expected muster-hook tombstoned (Departed=true) via SessionEnd hook, got %+v", a)
+			}
 		}
+	}
+	if !found {
+		t.Fatalf("expected muster-hook's row to SURVIVE SessionEnd (tombstoned, not deleted): %+v", agents)
 	}
 }
 

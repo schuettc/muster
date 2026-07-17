@@ -656,6 +656,40 @@ func TestSessionUnreadOpRejectsEmptyTupleAndReturnsCounts(t *testing.T) {
 	}
 }
 
+// TestNotifyForThreadSkipsDepartedAgent: a departed (tombstoned) recipient
+// keeps its last-known (socket_path, session_id) tuple on the row (DepartAgent
+// never clears it), so without an explicit check it would look exactly like a
+// live tmux-identified recipient to notifyForThread. It must instead be
+// skipped — no Notify call, no badge write — with its own journaled reason
+// distinct from the "no tmux identity" case, since the identity IS known,
+// it's just departed.
+func TestNotifyForThreadSkipsDepartedAgent(t *testing.T) {
+	n := &fakeNotifier{}
+	sock, s := startWithNotifierAndStore(t, n)
+	call(t, sock, "register_agent", map[string]any{"alias": "left", "role": "peer", "model_type": "claude", "socket_path": "/s", "session_id": "$9"})
+	call(t, sock, "deregister_agent", map[string]any{"alias": "left"})
+
+	call(t, sock, "send_message", map[string]any{"from": "peer", "to_kind": "agent", "to_target": "left", "subject": "s", "body": "x"})
+
+	if got := n.snap(&n.notified); len(got) != 0 {
+		t.Fatalf("a departed agent must never be Notify'd, got %v", got)
+	}
+
+	evs, err := s.Events(store.EventQuery{Kind: "notify", Agent: "left", Backlog: true, Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawSkip bool
+	for _, e := range evs {
+		if e.Detail == "skipped: departed" {
+			sawSkip = true
+		}
+	}
+	if !sawSkip {
+		t.Fatalf("expected a 'skipped: departed' notify journal row for left, got %+v", evs)
+	}
+}
+
 // TestReRegisterReconcilesOldSessionBadge: re-registering an agent under a
 // NEW session tuple must rewrite the OLD tuple's badge too (spec §3), so a
 // stale lit flag doesn't survive the move.

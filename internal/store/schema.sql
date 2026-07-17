@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS agents (
     label_manual  INTEGER NOT NULL DEFAULT 0,
     last_read_at  INTEGER NOT NULL DEFAULT 0,
     last_read_entry_id INTEGER NOT NULL DEFAULT 0,
+    departed      INTEGER NOT NULL DEFAULT 0, -- 1 = deregistered (tombstoned): identity/project/label/read-state all preserved; see store.migrate and Store.DepartAgent
     registered_at INTEGER NOT NULL,
     last_seen     INTEGER NOT NULL
 );

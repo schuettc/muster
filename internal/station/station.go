@@ -61,11 +61,12 @@ func (daemonCaller) Call(op string, args map[string]any) (json.RawMessage, error
 // CONFLICT clause overwrites — see agents.go), so the operator's read
 // watermark survives the restart intact.
 //
-// The one caveat, worth stating plainly: `muster gc` reaps dead agents
-// (DeleteAgent) and WILL drop the watermark right along with the rest of the
-// row — acceptable until real tombstone semantics exist (a dead row that
-// keeps last_read_entry_id instead of being deleted outright), which is
-// punch-listed, not solved here.
+// The `muster gc` caveat noted in earlier revisions of this comment is
+// resolved: gc's default reap now tombstones (DepartAgent, departed=1)
+// instead of hard-deleting, so a dead station row — including its read
+// watermark — survives gc exactly like a plain quit/relaunch. Only the
+// explicit, opt-in `muster gc --purge-agents` still hard-deletes (the old
+// behavior), which is an operator's deliberate choice, not gc's default.
 func Run(args []string) error {
 	fs := flag.NewFlagSet("station", flag.ContinueOnError)
 	interval := fs.Duration("interval", time.Second, "poll interval")

@@ -100,8 +100,17 @@ Agents can self-register (so a shell hook can do it at session start):
 ```bash
 muster register [alias] --role <r> --model <name>
 muster deregister [alias]
-muster gc                 # reap agents whose tmux session is gone
+muster gc                 # tombstone agents whose tmux session is gone
+muster gc --purge-agents  # hard-delete departed/dead agent rows (irreversible)
 ```
+
+`deregister` (and `gc`'s default reap) don't delete an agent's row anymore —
+they tombstone it (`departed=1`): identity, project, label, and read-state all
+survive, so a departed agent's history stays visible (`muster station` lists
+them dimmed, below the live roster) and re-registering the same alias revives
+it cleanly. `muster gc --purge-agents` is the old hard-delete behavior, now
+explicit and opt-in: it removes every departed or currently-dead agent row for
+good.
 
 `muster gc` also prunes the event log: rows older than `--events-keep` are
 deleted (default `720h`, i.e. 30 days), so the journal doesn't grow without

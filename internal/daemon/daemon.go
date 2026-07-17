@@ -30,6 +30,7 @@ type storeAPI interface {
 	RegisterAgent(store.Agent) error
 	ListAgents() ([]store.Agent, error)
 	GetAgent(alias string) (store.Agent, bool, error)
+	DepartAgent(alias string) error
 	DeleteAgent(alias string) error
 	CreateThread(t store.Thread, firstBody string) (int64, error)
 	AppendEntry(threadID int64, fromAgent, body, statusChange string) (int64, error)
@@ -340,6 +341,17 @@ func (d *Daemon) notifyForThread(threadID int64, actor string) {
 			d.logEvent(store.Event{Kind: "notify", Agent: alias, ThreadID: threadID, Detail: "skipped: no tmux identity"})
 			continue
 		}
+		// A departed (tombstoned) agent keeps its last-known tuple on the row
+		// (DepartAgent never clears it), so it would otherwise pass the tmux-
+		// identity check above and get grouped for a badge write into a
+		// session nobody is watching anymore. Skipped exactly like the
+		// no-tmux-identity case, with its own journaled reason — mail still
+		// waits for them (addressing is unchanged), it's only the tmux badge
+		// push that's pointless.
+		if a.Departed {
+			d.logEvent(store.Event{Kind: "notify", Agent: alias, ThreadID: threadID, Detail: "skipped: departed"})
+			continue
+		}
 		key := sessionKey(a.SocketPath, a.SessionID)
 		if seen[key] {
 			continue // sibling alias of an already-scheduled session
@@ -569,6 +581,19 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 		}
 		return ok(map[string]any{"found": found, "agent": ag})
 	case "deregister_agent":
+		alias := str(a, "alias")
+		old, hadOld, _ := d.s.GetAgent(alias) // best-effort: capture the tuple to reconcile after tombstoning
+		if err := d.s.DepartAgent(alias); err != nil {
+			return fail(err)
+		}
+		if hadOld {
+			d.reconcileBadge(old.SocketPath, old.SessionID)
+		}
+		return ok(nil)
+	case "purge_agent":
+		// The explicit, irreversible hard-delete: `muster gc --purge-agents`'s
+		// own op, distinct from deregister_agent's tombstone. Identity,
+		// project, label, and read-state are all gone once this returns.
 		alias := str(a, "alias")
 		old, hadOld, _ := d.s.GetAgent(alias) // best-effort: capture the tuple to reconcile after deletion
 		if err := d.s.DeleteAgent(alias); err != nil {
