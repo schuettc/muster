@@ -254,6 +254,34 @@ var sendBoolFlags = map[string]bool{"role": true, "broadcast": true}
 // --role/--model) must pass an explicit empty set rather than rely on that
 // default, since flag names collide across commands (send's --role is
 // boolean; register's --role takes a value).
+//
+// A value flag is registered identically regardless of which value flag it
+// is (--from, --subject, --ref, --intent, …): anything not named in bf is
+// assumed to take a value, so a NEW value flag (like --intent) never needs
+// its own entry here to be recognized — it falls out of the same "not a bool
+// flag" branch --from/--subject already use. The one gap this closes: if a
+// PRECEDING value flag is itself missing its value (a caller bug, or a
+// dangling flag at odds with what a human intended), the naive "always
+// consume the next token" rule used to swallow the FOLLOWING flag as that
+// flag's bogus value — e.g. `--subject --intent action-requested` bound
+// "--intent" to --subject and left "action-requested" as stray text
+// flag.Parse itself then silently discards (Go's flag.Parse stops at the
+// first token that isn't a recognized flag and never surfaces it), so
+// --intent was never parsed and silently stored empty — with no error at
+// all. Go's flag.Parse ALWAYS consumes the very next flagArgs entry as a
+// non-boolean flag's value, regardless of what that entry looks like, so
+// merely leaving the dangling flag and the next flag as adjacent SEPARATE
+// entries (as an earlier version of this fix did) doesn't stop the
+// misbinding — flag.Parse does its own greedy pairing independent of how
+// this function grouped them. The actual fix has to make the dangling flag
+// visibly complete-with-no-value BEFORE flag.Parse ever sees it: when the
+// next token itself looks like a flag, the dangling flag is rewritten to its
+// explicit `name=` form (an unambiguous empty value), so flag.Parse consumes
+// nothing further from it and the following token is left untouched for its
+// own turn through this same loop. A flag dangling at the very end of args
+// (no next token at all) is left bare, unchanged from before — flag.Parse's
+// own "flag needs an argument" error is still the right outcome there, since
+// there's no following flag it could otherwise swallow.
 func splitFlagsAndPositional(args []string, boolFlags ...map[string]bool) (flagArgs, positional []string) {
 	bf := sendBoolFlags
 	if len(boolFlags) > 0 {
@@ -265,16 +293,30 @@ func splitFlagsAndPositional(args []string, boolFlags ...map[string]bool) (flagA
 			positional = append(positional, a)
 			continue
 		}
-		flagArgs = append(flagArgs, a)
 		name := strings.TrimLeft(a, "-")
 		idx := strings.Index(name, "=")
 		hasValue := idx >= 0
 		if hasValue {
 			name = name[:idx]
 		}
-		if !hasValue && !bf[name] && i+1 < len(args) {
+		if hasValue || bf[name] {
+			flagArgs = append(flagArgs, a)
+			continue
+		}
+		// a is a value flag with no explicit "=value" of its own.
+		switch {
+		case i+1 < len(args) && !strings.HasPrefix(args[i+1], "-"):
+			flagArgs = append(flagArgs, a, args[i+1])
 			i++
-			flagArgs = append(flagArgs, args[i])
+		case i+1 < len(args):
+			// Dangling, immediately followed by another flag: force an
+			// explicit empty value so flag.Parse doesn't reach past this
+			// flag and swallow the next one as its bogus value.
+			flagArgs = append(flagArgs, a+"=")
+		default:
+			// Dangling at the very end: unchanged, bare — flag.Parse's own
+			// "flag needs an argument" error is exactly right here.
+			flagArgs = append(flagArgs, a)
 		}
 	}
 	return flagArgs, positional

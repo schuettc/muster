@@ -204,6 +204,77 @@ func TestSendCommandRejectsInvalidIntent(t *testing.T) {
 	}
 }
 
+// soleThreadIntent fetches the one thread list_threads currently holds and
+// returns its intent — the two regression tests below both just want to know
+// what landed in the DB, not the full row shape.
+func soleThreadIntent(t *testing.T) string {
+	t.Helper()
+	raw, err := callData("list_threads", map[string]any{"limit": 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var res struct {
+		Threads []struct {
+			Intent string `json:"intent"`
+		} `json:"threads"`
+	}
+	if err := json.Unmarshal(raw, &res); err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Threads) != 1 {
+		t.Fatalf("expected exactly one thread, got %d", len(res.Threads))
+	}
+	return res.Threads[0].Intent
+}
+
+// TestSendIntentAfterPositionalBody is the literal regression case behind the
+// live incident (thread 35, intent stored ”): --intent given AFTER an
+// unquoted, multi-word positional body — exactly the shape a real shell
+// produces when the body isn't quoted — must still land on the thread.
+func TestSendIntentAfterPositionalBody(t *testing.T) {
+	startTestDaemon(t)
+	if _, err := callData("register_agent", map[string]any{"alias": "bettor", "role": "consumer", "model_type": "codex"}); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	// Unquoted body: the shell would have split "1.2.2 shipped, FYI" into
+	// four separate positional tokens, exactly as Dispatch receives them here.
+	args := []string{"send", "bettor", "1.2.2", "shipped,", "FYI", "--from", "api", "--intent", "action-requested"}
+	if err := Dispatch(args, &out); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	if got := soleThreadIntent(t); got != "action-requested" {
+		t.Fatalf("expected intent action-requested, got %q", got)
+	}
+}
+
+// TestSendIntentNotSwallowedByDanglingValueFlag proves the actual mechanism
+// behind the "silently drops the flag" symptom: Go's flag.Parse ALWAYS
+// consumes the very next token as a non-boolean flag's value, regardless of
+// what that token looks like — so a dangling value flag with no value of its
+// own (--subject given no argument here) used to bind the FOLLOWING
+// "--intent" token as its own bogus value, leaving "action-requested" as
+// stray text flag.Parse silently discards (it stops parsing at the first
+// unrecognized-as-flag token and never surfaces it) — intent landed as ""
+// with no error at all. splitFlagsAndPositional now detects a value flag
+// immediately followed by another flag-looking token and rewrites it to its
+// explicit `name=` (empty value) form, so --intent is left untouched for its
+// own turn and its value lands correctly.
+func TestSendIntentNotSwallowedByDanglingValueFlag(t *testing.T) {
+	startTestDaemon(t)
+	if _, err := callData("register_agent", map[string]any{"alias": "bettor", "role": "consumer", "model_type": "codex"}); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	args := []string{"send", "bettor", "body", "--subject", "--intent", "action-requested"}
+	if err := Dispatch(args, &out); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	if got := soleThreadIntent(t); got != "action-requested" {
+		t.Fatalf("expected intent action-requested (not swallowed by dangling --subject), got %q", got)
+	}
+}
+
 func TestTasksCommandShowsOnlyTasks(t *testing.T) {
 	startTestDaemon(t)
 	if _, err := callData("register_agent", map[string]any{"alias": "rev", "role": "reviewer", "model_type": "codex"}); err != nil {
@@ -362,6 +433,12 @@ func TestSplitFlagsAndPositional(t *testing.T) {
 			name:           "missing value at end does not panic",
 			args:           []string{"a", "b", "--from"},
 			wantFlagArgs:   []string{"--from"},
+			wantPositional: []string{"a", "b"},
+		},
+		{
+			name:           "dangling value flag followed by another flag does not swallow it",
+			args:           []string{"a", "b", "--subject", "--intent", "action-requested"},
+			wantFlagArgs:   []string{"--subject=", "--intent", "action-requested"},
 			wantPositional: []string{"a", "b"},
 		},
 	}
