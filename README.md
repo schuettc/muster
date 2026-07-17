@@ -150,7 +150,8 @@ Keys: `Tab` cycles focus between panes · `j`/`k` or the arrow keys move ·
 · `s` opens the composer to send (with a target picker and an intent
 cycle) · `r` replies on the open thread · `n` nudges the selected agent
 (with a confirmation prompt) · `/` filters the focused pane · `a` toggles
-aliases vs. labels · `q` quits.
+aliases vs. labels · `End` or `G` snaps the feed or thread view back to
+live · `q` quits.
 
 Station registers on the bus itself, as agent `station` — `muster send
 station "…"` and `muster nudge station` reach it like any other agent. If
