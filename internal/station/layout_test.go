@@ -158,7 +158,7 @@ func TestBoxLinesAreExactlyOuterWidth(t *testing.T) {
 			}
 		}
 	}
-	checkExactWidth("merged AGENTS+THREADS list", m.renderProjectItemsBox(dims.leftW, dims.convListH), dims.leftW)
+	checkExactWidth("L1 agents list", m.renderAgentsBox(dims.leftW, dims.convListH), dims.leftW)
 	checkExactWidth("thread list (screenAgent)", m.renderConvListBox(dims.leftW, dims.convListH, llAgentThreads, "THREADS", true), dims.leftW)
 	checkExactWidth("conversation preview", m.renderConversationBox(dims.rightW, dims.bodyH, false), dims.rightW)
 	checkExactWidth("agent page preview", m.renderAgentPagePreviewBox(dims.rightW, dims.bodyH), dims.rightW)
@@ -207,15 +207,23 @@ func TestFocusedPaneBorderStylesDifferently(t *testing.T) {
 	}
 }
 
-// TestConversationListColumnizedAndCrossProjectMarked checks the
-// conversation list's columnized row format (id, intent tag, participants,
-// last speaker + age, subject) and the cross-project marker (spec
-// §5-REVISED: "↔ otherproj").
+// TestConversationListColumnizedAndCrossProjectMarked checks the thread
+// list's columnized row format (id, intent tag, participants, last speaker +
+// age, subject) and the cross-project marker (spec §5-REVISED: "↔
+// otherproj"; iteration-7 item 4: threads now live under their agent, not
+// the project-level L1 list, so this descends into backend-1's own thread
+// page first).
 func TestConversationListColumnizedAndCrossProjectMarked(t *testing.T) {
 	m := NewModel(fakeCaller{}, Options{})
 	m = seedLayoutModel(t, m)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 210, Height: 52})
 	m = mustModel(t, next)
+
+	next, _ = m.Update(keyMsg("enter")) // descend into backend-1 (alphabetically first)
+	m = mustModel(t, next)
+	if m.screen != screenAgent || m.agent != "backend-1" {
+		t.Fatalf("setup: expected screenAgent/backend-1, got screen=%v agent=%q", m.screen, m.agent)
+	}
 
 	view := m.View()
 	for _, want := range []string{"#101", "[action]", "#102", "[reply?]", "#103", "[fyi]", "backend→review", "review→backend", "↔ ext"} {

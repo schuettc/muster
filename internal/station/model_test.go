@@ -121,28 +121,6 @@ func mustModel(t *testing.T, v interface{}) Model {
 	return m
 }
 
-// enterThreadsSection presses 'j' (bounded) until screenProject's merged
-// AGENTS+THREADS list (spec iteration-6 item 3) crosses its single j/k
-// cursor over the section boundary into THREADS — the redesign's
-// replacement for the old "Tab from the agent strip onto the conversation
-// list" entry point, now that there is only one combined cursor per project
-// level. Any Cmd a crossing move issues (e.g. the newly-selected thread's
-// preview fetch, though usually a no-op since applyThreads already
-// preloaded the default selection) is drained along the way.
-func enterThreadsSection(t *testing.T, m Model) Model {
-	t.Helper()
-	for i := 0; i < 50; i++ {
-		if m.l1Section == l1SectionThreads {
-			return m
-		}
-		next, cmd := m.Update(keyMsg("j"))
-		m = mustModel(t, next)
-		m = drainCmd(t, m, cmd)
-	}
-	t.Fatalf("never crossed into the THREADS section (stuck at focus=%v section=%v)", m.focus, m.l1Section)
-	return m
-}
-
 // TestCursorAdvancesOnlyOnAppliedEvents is the data-loop's core invariant
 // (spec §5): the cursor moves ONLY in the events-msg branch, and only after
 // a page is actually applied. A threads-fetch failure between two

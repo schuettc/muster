@@ -2,17 +2,21 @@ package station
 
 import (
 	"sort"
-	"strconv"
 )
 
-// This file is the IA-redesign's own concern (spec §5-REVISED): the
-// project-first, two-column drill-down's navigation state machine and the
-// client-side data derivations it needs (project rollups, project/agent
-// conversation membership, cross-project marking). Nothing here touches
-// polling/cursor discipline (poll.go) or rendering (views.go/layout.go).
+// This file is the IA-redesign's own concern (spec §5-REVISED, refined by
+// §5-CHAIN/iteration-7 to a PURE containment chain): the project-first,
+// two-column drill-down's navigation state machine and the client-side data
+// derivations it needs (project rollups, project/agent conversation
+// membership, cross-project marking). Nothing here touches polling/cursor
+// discipline (poll.go) or rendering (views.go/layout.go).
 //
-// The drill-down is a fixed-depth hierarchy (projects → project → agent? →
-// conversation), so rather than a literal []level stack, Model tracks one
+// The chain is exactly four levels — projects → a project's agents → an
+// agent's threads → a full-width thread read — mirroring mail (threads live
+// UNDER agents like messages in a mailbox), with ONE deliberate exception:
+// the synthetic "(unassigned)" bucket has no living agent for an orphaned
+// thread to live under, so ITS L1 is a thread list directly (see
+// l1IsOrphaned). Rather than a literal []level stack, Model tracks one
 // selection per level (project/agent/conversation, see model.go) plus a
 // screen+focusTarget pair that together encode exactly where in the
 // hierarchy the operator currently is. screen names the current PAGE;
@@ -24,8 +28,8 @@ type screen int
 
 const (
 	screenProjects screen = iota // L0: the project list (auto-skipped on a single-project bus)
-	screenProject                // L1 (+ L2 when focus is focusConvRight): agent strip + conversations
-	screenAgent                  // L1.5 (+ L2 when focus is focusConvRight): one agent's threads + activity
+	screenProject                // L1 (+ full-width read when focus is focusConvRight): a project's AGENTS ONLY — except the "(unassigned)" bucket's ORPHANED THREADS exception, see l1IsOrphaned
+	screenAgent                  // L2 (+ full-width read when focus is focusConvRight): one agent's threads + activity
 )
 
 // focusTarget is which sub-list (or the right-pane reader) currently owns
@@ -35,9 +39,9 @@ type focusTarget int
 const (
 	focusProjectList  focusTarget = iota // screenProjects' only list
 	focusForYou                          // screenProjects' pinned FOR YOU section (spec iteration-5), only a live target while it's showing
-	focusProjectItems                    // screenProject's SINGLE merged AGENTS+THREADS list (spec iteration-6 item 3: "kill the L1 sibling boxes")
+	focusProjectItems                    // screenProject's L1 list — a project's agents, or (the ONE exception) the unassigned bucket's orphaned threads
 	focusAgentThreads                    // screenAgent's thread list
-	focusConvRight                       // full-width reading (spec iteration-6 item 2): the thread reader owns the keys, rendered full terminal width regardless of screen/narrow
+	focusConvRight                       // full-width reading: the thread reader owns the keys, rendered full terminal width regardless of screen/narrow
 )
 
 // llList identifies which LEFT list a '/' filter is scoped to (spec §5-REVISED
@@ -52,36 +56,6 @@ const (
 	llProjectItems
 	llAgentThreads
 )
-
-// l1Section identifies which section of screenProject's merged AGENTS+THREADS
-// list (spec iteration-6 item 3: "ONE continuous list with section headers:
-// 'AGENTS' rows then 'THREADS' rows, a single j/k cursor across both
-// sections") currently owns that single cursor.
-type l1Section int
-
-const (
-	l1SectionAgents l1Section = iota
-	l1SectionThreads
-)
-
-// l1Row is one row of screenProject's merged AGENTS+THREADS list — exactly
-// one of Agent/Thread is populated, discriminated by Section.
-type l1Row struct {
-	Section l1Section
-	Agent   agentEnriched
-	Thread  conversationRow
-}
-
-// l1RowKey is the merged list's identity-key extractor (spec §5 carried-over
-// discipline: every keyed list needs one to survive a poll's regroup) —
-// "a:<alias>" for an agent row, "t:<thread id>" for a thread row; the two
-// domains can never collide on a shared key.
-func l1RowKey(r l1Row) string {
-	if r.Section == l1SectionAgents {
-		return "a:" + r.Agent.Alias
-	}
-	return "t:" + strconv.FormatInt(r.Thread.ID, 10)
-}
 
 // unassignedProject is the synthetic project key for the "(unassigned)"
 // bucket (spec iteration-4 orphan-thread fix, queue item 4d): the home for a
@@ -107,6 +81,16 @@ func projectDisplayName(p string) string {
 	default:
 		return p
 	}
+}
+
+// l1IsOrphaned reports whether screenProject's L1 list is currently the
+// "(unassigned)" bucket's ORPHANED THREADS exception (spec iteration-7 item
+// 5) rather than the normal agents-only list every other project shows — the
+// ONE deliberate deviation from "L1 = agents ONLY": a thread with no living
+// agent to file under still needs a home, so the unassigned bucket's L1 is a
+// thread list instead, labeled "ORPHANED THREADS" so it's self-explaining.
+func (m Model) l1IsOrphaned() bool {
+	return m.project == unassignedProject
 }
 
 // projectSummary is one L0 row (spec §5-REVISED): name, live/total agents,
@@ -313,6 +297,31 @@ func conversationsForAgent(threads []listThreadRow, alias string) []listThreadRo
 				break
 			}
 		}
+	}
+	return out
+}
+
+// conversationsForAgentAnnotated is conversationsForAgent, additionally
+// marking each row with whichever OTHER projects it touches beyond alias's
+// own home project (spec iteration-7 item 4: now that threads live under
+// AGENTS rather than a project-level list, the "↔ otherproj" cross-project
+// marker moves here — a thread's home agent still sees it, and a mark
+// whenever the thread ALSO touches a different project than the agent's
+// own, so a cross-project thread stays visibly cross-project under every
+// participant's own mailbox, exactly as it did at the old project-level
+// list).
+func conversationsForAgentAnnotated(threads []listThreadRow, aliasProject map[string]string, alias string) []conversationRow {
+	home := aliasProject[alias]
+	rows := conversationsForAgent(threads, alias)
+	out := make([]conversationRow, 0, len(rows))
+	for _, row := range rows {
+		var other []string
+		for _, p := range threadProjectsOrUnassigned(row, aliasProject) {
+			if p != home {
+				other = append(other, p)
+			}
+		}
+		out = append(out, conversationRow{listThreadRow: row, OtherProjects: other})
 	}
 	return out
 }

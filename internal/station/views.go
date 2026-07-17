@@ -132,14 +132,18 @@ func (m Model) renderBody(dims layoutDims) string {
 }
 
 // renderLeftColumn renders the current screen's list: the project list (L0),
-// the merged AGENTS+THREADS list (L1, spec iteration-6 item 3: "kill the L1
-// sibling boxes"), or the agent's thread list (L1.5).
+// a project's agents (L1, spec iteration-7 item 1 — or, the ONE exception,
+// the "(unassigned)" bucket's ORPHANED THREADS list, item 5), or the agent's
+// thread list (L2).
 func (m Model) renderLeftColumn(dims layoutDims) string {
 	switch m.screen {
 	case screenAgent:
 		return m.renderConvListBox(dims.leftW, dims.convListH, llAgentThreads, "THREADS", m.focus == focusAgentThreads)
 	case screenProject:
-		return m.renderProjectItemsBox(dims.leftW, dims.convListH)
+		if m.l1IsOrphaned() {
+			return m.renderConvListBox(dims.leftW, dims.convListH, llProjectItems, "ORPHANED THREADS", m.focus == focusProjectItems)
+		}
+		return m.renderAgentsBox(dims.leftW, dims.convListH)
 	default:
 		// FOR YOU is pinned ABOVE the project list (spec iteration-5) only
 		// while station has unread mail — dims.forYouH is 0 otherwise (see
@@ -157,19 +161,19 @@ func (m Model) renderLeftColumn(dims layoutDims) string {
 // renderRightColumn renders the current screen's PREVIEW-only right pane —
 // browse mode never focuses this pane (reading is a separate full-width
 // mode, see renderBody), so every branch here always renders unfocused
-// (focused=false): a project's rollup preview (L0), the merged list's
-// selected item's content (L1, spec iteration-6 item 3: "agent selected →
-// agent page (their threads + recent activity); thread selected → thread
-// preview"), or the agent's selected thread preview (L1.5).
+// (focused=false): a project's rollup preview (L0), the selected agent's own
+// page (L1's agents list: their threads + recent activity) or the selected
+// thread's preview (L1's ONE exception, the unassigned bucket's ORPHANED
+// THREADS list), or the agent's selected thread preview (L2).
 func (m Model) renderRightColumn(dims layoutDims) string {
 	switch m.screen {
 	case screenAgent:
 		return m.renderConversationBox(dims.rightW, dims.bodyH, false)
 	case screenProject:
-		if m.l1Section == l1SectionAgents {
-			return m.renderAgentPagePreviewBox(dims.rightW, dims.bodyH)
+		if m.l1IsOrphaned() {
+			return m.renderConversationBox(dims.rightW, dims.bodyH, false)
 		}
-		return m.renderConversationBox(dims.rightW, dims.bodyH, false)
+		return m.renderAgentPagePreviewBox(dims.rightW, dims.bodyH)
 	default:
 		if m.focus == focusForYou {
 			return m.renderForYouPreviewBox(dims.rightW, dims.bodyH)
@@ -413,19 +417,17 @@ func unreadAgeSuffix(rows []listThreadRow) string {
 	return " · " + relativeAge(time.Now(), oldest)
 }
 
-// sectionHeaderStyle styles renderProjectItemsBox's "AGENTS"/"THREADS"
-// section-header rows (spec iteration-6 item 3: "ONE continuous list with
-// section headers").
+// sectionHeaderStyle styles renderAgentPagePreviewBox's "THREADS"/"ACTIVITY"
+// section-header rows.
 var sectionHeaderStyle = lipgloss.NewStyle().Faint(true).Bold(true)
 
-// renderProjectItemsBox builds screenProject's single merged AGENTS+THREADS
-// list (spec iteration-6 item 3: "kill the L1 sibling boxes... ONE
-// continuous list with section headers: 'AGENTS' rows then 'THREADS' rows,
-// a single j/k cursor across both sections") — AGENTS rows first, then
-// THREADS rows, windowed as ONE combined sequence around whichever row
-// currently owns the cursor (m.l1Section gates which of m.agent/
-// m.conversation is "live" for marking purposes).
-func (m Model) renderProjectItemsBox(outerW, outerH int) string {
+// renderAgentsBox builds screenProject's L1 list (spec iteration-7 item 1:
+// "L1 = agents ONLY" — the THREADS section iteration-6 merged in here is
+// gone; a project's left list at L1 is simply its agents, one per row: live
+// dot, label, unread badge, last active). The "(unassigned)" bucket never
+// reaches here (l1IsOrphaned routes it to renderConvListBox's ORPHANED
+// THREADS list instead, see renderLeftColumn).
+func (m Model) renderAgentsBox(outerW, outerH int) string {
 	innerW := outerW - boxBorderCols
 	if innerW < 1 {
 		innerW = 1
@@ -438,43 +440,28 @@ func (m Model) renderProjectItemsBox(outerW, outerH int) string {
 
 	var lines []string
 	selectedLine := -1
-
-	lines = append(lines, sectionHeaderStyle.Render(render.PadDisplay("AGENTS", innerW)))
 	for _, a := range m.agentStripRows() {
 		if !rowVisible(a, m.renderRosterRow, q, f) {
 			continue
 		}
 		cursorMark := "  "
-		if m.l1Section == l1SectionAgents && a.Alias == m.agent {
+		if a.Alias == m.agent {
 			cursorMark = "> "
 			selectedLine = len(lines)
 		}
 		lines = append(lines, m.renderRosterLine(cursorMark, a, innerW))
 	}
 
-	lines = append(lines, sectionHeaderStyle.Render(render.PadDisplay("THREADS", innerW)))
-	for _, c := range m.conversationRows() {
-		if !rowVisible(c, m.plainConvRow, q, f) {
-			continue
-		}
-		selected := m.l1Section == l1SectionThreads && c.ID == m.conversation
-		if selected {
-			selectedLine = len(lines)
-		}
-		lines = append(lines, m.renderConversationLineMarked(c, innerW, selected))
-	}
-
 	lines = windowLines(lines, innerH, selectedLine)
-	return renderBox("AGENTS + THREADS", m.focus == focusProjectItems, outerW, outerH, lines)
+	return renderBox("AGENTS", m.focus == focusProjectItems, outerW, outerH, lines)
 }
 
-// renderAgentPagePreviewBox builds screenProject's right-pane preview when
-// the merged list's cursor is on an AGENT row (spec iteration-6 item 3:
-// "agent selected → agent page (their threads + recent activity, existing
-// data paths)") — a compact combined preview reusing conversationsForAgent
-// and agentActivity/render.Renderer verbatim, distinct from the fuller
-// screenAgent drill-down (renderConvListBox + renderConversationBox) Enter
-// on this row leads to.
+// renderAgentPagePreviewBox builds screenProject's right-pane preview for
+// L1's selected agent ("agent selected → agent page: their threads + recent
+// activity, existing data paths") — a compact combined preview reusing
+// conversationsForAgent and agentActivity/render.Renderer verbatim, distinct
+// from the fuller screenAgent drill-down (renderConvListBox +
+// renderConversationBox) Enter on this row leads to.
 func (m Model) renderAgentPagePreviewBox(outerW, outerH int) string {
 	innerW := outerW - boxBorderCols
 	if innerW < 1 {
@@ -541,15 +528,15 @@ func (m Model) renderThreadRow(row listThreadRow) string {
 // renderConversationLine renders one conversation row COLUMNIZED: `#ID
 // [tag]  who → who  AGE  subject`, appending a cross-project marker to the
 // subject when the row touches another project (spec §5-REVISED:
-// "cross-project threads marked '↔ otherproj'"). No separate LAST-speaker
-// column (unlike the pre-redesign threads pane) — the left column's fixed
-// width has no room for a third identity column once WHO already conveys
-// the participants. The cursor mark follows m.conversation directly — valid
-// wherever m.conversation is unambiguously "the" selection for the box being
-// rendered (screenAgent's thread list); renderProjectItemsBox (the merged
-// AGENTS+THREADS list) instead calls renderConversationLineMarked, since
-// m.conversation can be a stale per-level selection while the cursor
-// actually sits on an AGENTS row.
+// "cross-project threads marked '↔ otherproj'"; iteration-7 item 4: computed
+// against the AGENT viewing it, see conversationsForAgentAnnotated). No
+// separate LAST-speaker column (unlike the pre-redesign threads pane) — the
+// left column's fixed width has no room for a third identity column once
+// WHO already conveys the participants. The cursor mark follows
+// m.conversation directly — every screen this renders for (screenAgent's
+// thread list, and the "(unassigned)" bucket's ORPHANED THREADS exception)
+// has m.conversation as its own unambiguous selection, unlike iteration-6's
+// now-removed merged AGENTS+THREADS list.
 func (m Model) renderConversationLine(c conversationRow, innerW int) string {
 	return m.renderConversationLineMarked(c, innerW, c.ID == m.conversation)
 }
@@ -855,15 +842,20 @@ func (m Model) renderActivityBox(outerW, outerH int) string {
 }
 
 // llListName renders a llList value for the '/' filter's "filter (X): …"
-// prompt.
-func llListName(l llList) string {
+// prompt. llProjectItems is model-dependent (spec iteration-7 item 5): the
+// "(unassigned)" bucket's ORPHANED THREADS exception filters threads, every
+// other project's L1 filters agents.
+func (m Model) llListName(l llList) string {
 	switch l {
 	case llProjects:
 		return "projects"
 	case llForYou:
 		return "your mail"
 	case llProjectItems:
-		return "agents & threads"
+		if m.l1IsOrphaned() {
+			return "orphaned threads"
+		}
+		return "agents"
 	case llAgentThreads:
 		return "threads"
 	default:
@@ -871,19 +863,19 @@ func llListName(l llList) string {
 	}
 }
 
-// helpKeyLines is the '?' overlay's key reference (spec §5-REVISED: "keys +
-// glyph legend"; amended by iteration-6: Enter now descends an agent or
-// reads a thread full-width, Esc always climbs exactly one level (including
-// out of full-width reading), and Tab only does anything at L0).
+// helpKeyLines is the '?' overlay's key reference (spec §5-CHAIN: the chain
+// is exactly four levels — projects → a project's agents → an agent's
+// threads → a full-width thread read — with the "(unassigned)" bucket's
+// ORPHANED THREADS list as the one exception).
 var helpKeyLines = []string{
 	"enter    on an agent: descend into their threads · on a thread: read it full-width",
 	"esc      climb back up one level (or leave full-width reading)",
 	"tab      L0 only: toggle the FOR YOU section / the project list",
-	"j/k, ↑/↓ move the cursor (crosses the AGENTS/THREADS section boundary)",
+	"j/k, ↑/↓ move the cursor in the current list",
 	"end, G   jump the focused thread reader to its newest entry",
 	"s        send a message from anywhere (roster-filtered picker)",
 	"r        reply (only while reading a thread)",
-	"n        nudge (AGENTS section, or an agent's own page)",
+	"n        nudge (the agents list, or an agent's own page)",
 	"m        jump to your FOR YOU mail (or straight in, if just one)",
 	"/        filter the current left list",
 	"a        toggle raw aliases vs. current labels",
@@ -903,6 +895,7 @@ var helpLegendLines = []string{
 	"[action] [reply?] [fyi]   a thread's intent tag",
 	"↔ proj   this thread also touches another project",
 	"📬 N for you   station has N unread threads addressed to it",
+	"ORPHANED THREADS   the (unassigned) bucket: threads with no living agent to file under",
 }
 
 // renderHelpOverlay renders the '?' overlay: a single bordered box with the
@@ -946,7 +939,7 @@ func (m Model) renderBottomLine() string {
 	case m.nudgeConfirmAlias != "":
 		return fmt.Sprintf("nudge %s? y/n", m.dispLabel(m.nudgeConfirmAlias))
 	case m.filter.editing:
-		return fmt.Sprintf("filter (%s): %s", llListName(m.filter.list), m.filter.input.View())
+		return fmt.Sprintf("filter (%s): %s", m.llListName(m.filter.list), m.filter.input.View())
 	default:
 		return m.renderStatus()
 	}
@@ -1034,12 +1027,12 @@ func (m Model) escIsNoop() bool {
 	return m.screen == screenProjects || (m.screen == screenProject && m.singleProject)
 }
 
-// tabIsNoop reports whether Tab does nothing at the model's CURRENT level
-// (spec iteration-6 item 3: Tab only ever cycles L0's FOR YOU/project-list
-// toggle now — screenProject and screenAgent each have exactly one
-// focusable list and a preview-only right pane, so Tab is ALWAYS a no-op
-// there) — true anywhere but screenProjects, and even there unless the FOR
-// YOU section is showing (spec iteration-5: station has unread mail).
+// tabIsNoop reports whether Tab does nothing at the model's CURRENT level —
+// Tab only ever cycles L0's FOR YOU/project-list toggle: screenProject and
+// screenAgent each have exactly one focusable list and a preview-only right
+// pane, so Tab is ALWAYS a no-op there — true anywhere but screenProjects,
+// and even there unless the FOR YOU section is showing (spec iteration-5:
+// station has unread mail).
 func (m Model) tabIsNoop() bool {
 	if m.screen != screenProjects {
 		return true

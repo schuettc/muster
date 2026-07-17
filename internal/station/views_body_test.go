@@ -104,7 +104,6 @@ func TestRenderConversationBoxMarkdownBodyExactWidth(t *testing.T) {
 	next, cmd := m.Update(threadsMsg{threads: []listThreadRow{{ID: 1, FromAgent: "reviewer", EntryCount: 1}}})
 	m = mustModel(t, next)
 	m = drainCmd(t, m, cmd)
-	m = enterThreadsSection(t, m)
 	next, _ = m.Update(keyMsg("enter")) // focus the reader (L2)
 	m = mustModel(t, next)
 
