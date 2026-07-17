@@ -75,6 +75,26 @@ func (r *Renderer) SetAliases(aliases bool) {
 	r.aliases = aliases
 }
 
+// SetWidth updates the renderer's total line-width budget — station's
+// bordered feed pane calls this on every render so Line()'s WHAT-column cap
+// tracks the pane's actual INNER width rather than the whole terminal's (a
+// pane narrower than the terminal must still never let a line run past its
+// own box). Mirrors SetLabels/SetAliases' role as a runtime knob on an
+// otherwise construction-time Renderer. width <= 0 falls back exactly like
+// NewRenderer's own construction-time default ($COLUMNS, then
+// defaultLineWidth) — callers that don't yet know a real pane width (no
+// tea.WindowSizeMsg has landed) get the same behavior NewRenderer always had.
+func (r *Renderer) SetWidth(width int) {
+	if width <= 0 {
+		if c, err := strconv.Atoi(os.Getenv("COLUMNS")); err == nil && c > 40 {
+			width = c
+		} else {
+			width = defaultLineWidth
+		}
+	}
+	r.width = width
+}
+
 // fit grows column widths to accommodate e; it never shrinks them, keeping
 // alignment stable across a streamed tail.
 func (r *Renderer) fit(e EventRow) {

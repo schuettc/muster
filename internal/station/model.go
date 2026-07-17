@@ -69,12 +69,15 @@ const (
 	paneCount
 )
 
-// Layout knobs. rosterWidth mirrors spec §5's "~30 cols" — there is no
-// --roster-width flag in the spec's flag list, so it stays an internal
-// constant rather than a knob; defaultRows/eventBacklog bound how much feed
-// history the model keeps and shows before a real terminal size arrives.
+// Layout knobs. rosterWidth (spec §5's "~30/34 cols" left column) lives in
+// layout.go now, alongside the rest of the box math it's part of.
+// defaultRows/eventBacklog bound how much feed history the model keeps and
+// shows before a real terminal size arrives — defaultRows in particular is
+// also the FALLBACK feed/threads pane row count layout.go's
+// fallbackTermHeight is derived from, so an unsized caller (no
+// tea.WindowSizeMsg yet, including every test that never sends one) sees
+// exactly the same amount of content it always did.
 const (
-	rosterWidth  = 32
 	defaultRows  = 20
 	eventBacklog = 500
 )
@@ -228,6 +231,14 @@ type Model struct {
 	focus    pane
 	status   string
 	quitting bool
+
+	// termWidth/termHeight are the last tea.WindowSizeMsg the program has
+	// seen (0,0 before the first one arrives) — the ONLY inputs layout()
+	// needs to size every pane box (spec §5 layout item 7: "respect
+	// tea.WindowSizeMsg for all box math"). Purely a rendering input: no
+	// data/keys/polling decision anywhere in Update ever reads these.
+	termWidth  int
+	termHeight int
 }
 
 // composerPhase is the composer's own little state machine: closed (no
@@ -373,6 +384,10 @@ func (m Model) pollCmd() tea.Cmd {
 // regression reset, errors → status line + retry, never exit).
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.termWidth = msg.Width
+		m.termHeight = msg.Height
+		return m, nil
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 	case tickMsg:
@@ -1256,7 +1271,7 @@ func (m Model) applyInboxAck(msg inboxAckMsg) Model {
 // index into m.events, so it stays correct across new events appending at
 // the far end (see applyEvents' backlog-trim compensation).
 func (m Model) scrollFeed(delta int) Model {
-	maxTop := len(m.events) - defaultRows
+	maxTop := len(m.events) - m.feedContentRows()
 	if maxTop < 0 {
 		maxTop = 0
 	}
@@ -1274,11 +1289,26 @@ func (m Model) scrollFeed(delta int) Model {
 	return m
 }
 
+// feedContentRows is the feed pane's visible EVENT-line budget (excluding
+// its own header row) — layout()'s feedH minus border rows minus the header
+// row, so the feed's scroll math (scrollFeed/feedWindowStart) and its
+// actual rendered row count (renderFeedBox) can never disagree about how
+// many events fit. Before a real tea.WindowSizeMsg arrives, layout() falls
+// back to exactly defaultRows here (see fallbackTermHeight's derivation),
+// so this is a pure display-window size, not a data/polling decision.
+func (m Model) feedContentRows() int {
+	n := m.layout().feedH - boxBorderRows - 1
+	if n < 1 {
+		n = 1
+	}
+	return n
+}
+
 // feedWindowStart returns the index into m.events the feed pane should start
 // rendering from: the live tail while following, or feedTop (clamped to the
 // current valid range, in case the buffer shrank) while scrolled up.
 func (m Model) feedWindowStart() int {
-	maxTop := len(m.events) - defaultRows
+	maxTop := len(m.events) - m.feedContentRows()
 	if maxTop < 0 {
 		maxTop = 0
 	}
@@ -1367,9 +1397,10 @@ func (m Model) View() string {
 	if m.viewOpen {
 		return m.renderThreadView() + "\n" + m.renderBottomLine()
 	}
+	dims := m.layout()
 	body := lipgloss.JoinHorizontal(lipgloss.Top,
-		m.renderRoster(),
-		lipgloss.JoinVertical(lipgloss.Left, m.renderFeed(), m.renderThreads()),
+		m.renderRosterBox(dims),
+		lipgloss.JoinVertical(lipgloss.Left, m.renderFeedBox(dims), m.renderThreadsBox(dims)),
 	)
 	return body + "\n" + m.renderBottomLine()
 }
@@ -1423,16 +1454,56 @@ func (m Model) renderRosterRow(a agentEnriched) string {
 	return line
 }
 
-// renderRoster renders the project-grouped agent list (rosterOrder), skipping
-// rows the roster's active '/' filter hides via rosterRowVisible — the SAME
-// predicate moveRosterSelection and handleNudgeKey resolve through (spec §5
-// carried-over fix: filter/selection desync), so the cursor mark (drawn
-// against the exact rosterOrder index, i == m.rosterIdx) can never appear on
-// a row that action would refuse to act on, or vice versa.
-func (m Model) renderRoster() string {
-	var b strings.Builder
-	b.WriteString(paneTitle("ROSTER", m.focus == paneRoster) + "\n")
+// renderRosterLine renders one roster row's VISIBLE text — a SINGLE line,
+// clipped (never wrapped) to innerW display columns via display.Sanitize,
+// with the unread-count suffix (if any) preserved intact rather than being
+// the part that gets cut when a long label doesn't fit (spec §5 layout item
+// 2: "unread count right-aligned or as a suffix... truncated with … to the
+// pane width — NEVER wrapped"). This is the pane's VISUAL row; the filter/
+// selection predicate (rosterRowVisible) still resolves through the plain,
+// unpadded renderRosterRow above, so truncation here can never change which
+// rows a '/' filter or j/k walk considers.
+func (m Model) renderRosterLine(cursorMark string, a agentEnriched, innerW int) string {
+	dot := "✗"
+	if a.Live {
+		dot = "●"
+	}
+	suffix := ""
+	if a.Unread > 0 {
+		marker := ""
+		if a.Action {
+			marker = "!"
+		}
+		suffix = fmt.Sprintf(" (%d%s)", a.Unread, marker)
+	}
+	prefix := cursorMark + dot + " "
+	avail := innerW - display.Width(prefix) - display.Width(suffix)
+	if avail < 1 {
+		avail = 1
+	}
+	label := display.Sanitize(m.dispLabel(a.Alias), avail)
+	return render.PadDisplay(prefix+label+suffix, innerW)
+}
 
+// renderRosterBox builds the roster pane's bordered box: project-grouped
+// agent rows (rosterOrder), skipping rows the roster's active '/' filter
+// hides via rosterRowVisible — the SAME predicate moveRosterSelection and
+// handleNudgeKey resolve through (spec §5 carried-over fix: filter/selection
+// desync) — vertically windowed (windowLines) around the focused selection
+// so a selection scrolled past the visible rows is still on screen (spec §5
+// layout item 1).
+func (m Model) renderRosterBox(dims layoutDims) string {
+	innerW := dims.rosterW - boxBorderCols
+	if innerW < 1 {
+		innerW = 1
+	}
+	innerH := dims.rosterH - boxBorderRows
+	if innerH < 0 {
+		innerH = 0
+	}
+
+	var lines []string
+	selectedLine := -1
 	lastProject := "\x00" // sentinel unequal to any real project name/"(none)"
 	for i, a := range m.rosterOrder() {
 		if !m.rosterRowVisible(a) {
@@ -1443,64 +1514,134 @@ func (m Model) renderRoster() string {
 			p = "(none)"
 		}
 		if p != lastProject {
-			b.WriteString(p + "\n")
+			lines = append(lines, projectHeaderStyle.Render(render.PadDisplay(display.Sanitize(p, innerW), innerW)))
 			lastProject = p
 		}
 		cursorMark := "  "
 		if m.focus == paneRoster && i == m.rosterIdx {
 			cursorMark = "> "
+			selectedLine = len(lines)
 		}
-		b.WriteString(cursorMark + m.renderRosterRow(a) + "\n")
+		lines = append(lines, m.renderRosterLine(cursorMark, a, innerW))
 	}
-	return lipgloss.NewStyle().Width(rosterWidth).Render(strings.TrimRight(b.String(), "\n"))
+	lines = windowLines(lines, innerH, selectedLine)
+	return renderBox("ROSTER", m.focus == paneRoster, dims.rosterW, dims.rosterH, lines)
 }
 
-// renderFeed renders the journal tail with render.Renderer verbatim — the
-// same WHO arrows, labels, and width-capped WHAT the CLI's events/watch
-// commands print — applying the '/' filter (spec §5) over each rendered
-// line's own text.
-func (m Model) renderFeed() string {
-	var b bytes.Buffer
-	b.WriteString(paneTitle("FEED", m.focus == paneFeed) + "\n")
-	m.feed.Header(&b)
+// renderFeedBox builds the feed pane's bordered box: the journal tail
+// rendered with render.Renderer verbatim — the same WHO arrows, labels, and
+// width-capped WHAT the CLI's events/watch commands print — applying the
+// '/' filter (spec §5) over each rendered line's own text. m.feed.SetWidth
+// tracks the PANE's inner width every render (spec §5 layout item 4: the
+// feed's width budget is the pane's, not the terminal's), and every line is
+// still re-clipped via display.Sanitize as a defensive floor against
+// Renderer.Line's own minimum WHAT-budget (10 cols) ever exceeding a very
+// narrow pane.
+func (m Model) renderFeedBox(dims layoutDims) string {
+	innerW := dims.rightW - boxBorderCols
+	if innerW < 1 {
+		innerW = 1
+	}
+	rowsHeight := dims.feedH - boxBorderRows - 1 // -1 for the header row below
+	if rowsHeight < 0 {
+		rowsHeight = 0
+	}
+
+	m.feed.SetWidth(innerW)
+	var hb bytes.Buffer
+	m.feed.Header(&hb)
+	header := render.PadDisplay(display.Sanitize(strings.TrimRight(hb.String(), "\n"), innerW), innerW)
+
 	start := m.feedWindowStart()
-	end := start + defaultRows
+	end := start + rowsHeight
 	if end > len(m.events) {
 		end = len(m.events)
 	}
+	if start > end {
+		start = end
+	}
 	q, filtering := m.filterActiveFor(paneFeed)
+	lines := []string{header}
 	for _, e := range m.events[start:end] {
 		var lb bytes.Buffer
 		m.feed.Line(&lb, e)
-		line := lb.String()
+		line := strings.TrimRight(lb.String(), "\n")
 		if filtering && !containsFold(line, q) {
 			continue
 		}
-		b.WriteString(line)
+		lines = append(lines, render.PadDisplay(display.Sanitize(line, innerW), innerW))
 	}
-	return strings.TrimRight(b.String(), "\n")
+	return renderBox("FEED", m.focus == paneFeed, dims.rightW, dims.feedH, lines)
 }
 
-// renderThreads renders the threads pane (spec §5): action-requested pinned
-// first, then reply-requested, then the rest — see groupThreads — each row
-// showing its id, intent tag, participants, last speaker + relative age, and
-// sanitized subject. The selection marker follows threadSelected by ID, so
-// it always lands on the right row regardless of this poll's grouping. Rows
-// the threads pane's active '/' filter hides are skipped via
-// threadRowVisible — the SAME predicate moveThreadSelection and
-// openSelectedThread resolve through (spec §5 carried-over fix: filter/
-// selection desync), so the marker can never appear on a row action would
-// refuse to act on, or vice versa.
-func (m Model) renderThreads() string {
-	var b strings.Builder
-	b.WriteString(paneTitle("THREADS", m.focus == paneThreads) + "\n")
+// renderThreadLine renders one threads-pane row COLUMNIZED like the feed
+// (spec §5 layout item 3): `#ID  [tag]  who → who  last-from  AGE  subject`,
+// fixed-width columns via render.PadDisplay, subject width-capped to
+// whatever's left of innerW. The intent tag is colored (colorIntentTag)
+// AFTER its column is already padded, so the color never perturbs the
+// column-width accounting the subject budget below depends on.
+func (m Model) renderThreadLine(row listThreadRow, innerW int) string {
+	marker := "  "
+	if row.ID == m.threadSelected {
+		marker = "> "
+	}
+	idCol := render.PadDisplay(display.Sanitize(fmt.Sprintf("#%d", row.ID), threadIDWidth), threadIDWidth)
+	tagPlain := intentRowTag(row.Intent)
+	tagCol := colorIntentTag(row.Intent, render.PadDisplay(tagPlain, threadTagWidth))
+	who := fmt.Sprintf("%s → %s", m.dispLabel(row.FromAgent), m.dispToTarget(row))
+	whoCol := render.PadDisplay(display.Sanitize(who, threadWhoWidth), threadWhoWidth)
+	lastCol := render.PadDisplay(display.Sanitize(m.dispLabel(row.LastFrom), threadLastWidth), threadLastWidth)
+	ageCol := render.PadDisplay(relativeAge(time.Now(), row.LastAt), threadAgeWidth)
+
+	// threadsPlainFixedWidth already accounts for the marker column (see its
+	// own doc comment) — don't subtract display.Width(marker) again here, or
+	// every row comes out len(marker) columns SHORTER than innerW (exactly
+	// the kind of bug that lets a row bleed/misalign against its box).
+	subjectBudget := innerW - threadsPlainFixedWidth
+	if subjectBudget < 0 {
+		subjectBudget = 0
+	}
+	subjectCol := render.PadDisplay(display.Sanitize(row.Subject, subjectBudget), subjectBudget)
+
+	return marker + idCol + "  " + tagCol + "  " + whoCol + "  " + lastCol + "  " + ageCol + "  " + subjectCol
+}
+
+// renderThreadsBox builds the threads pane's bordered box (spec §5):
+// action-requested pinned first, then reply-requested, then the rest — see
+// groupThreads — each row columnized (renderThreadLine). The selection
+// marker follows threadSelected by ID, so it always lands on the right row
+// regardless of this poll's grouping. Rows the threads pane's active '/'
+// filter hides are skipped via threadRowVisible — the SAME predicate
+// moveThreadSelection and openSelectedThread resolve through (spec §5
+// carried-over fix: filter/selection desync) — and the visible rows are
+// vertically windowed (windowLines) around the selection, same as the
+// roster pane.
+func (m Model) renderThreadsBox(dims layoutDims) string {
+	innerW := dims.rightW - boxBorderCols
+	if innerW < 1 {
+		innerW = 1
+	}
+	rowsHeight := dims.threadsH - boxBorderRows - 1 // -1 for the header row below
+	if rowsHeight < 0 {
+		rowsHeight = 0
+	}
+
+	header := render.PadDisplay(display.Sanitize(threadsHeaderLine(), innerW), innerW)
+
+	var rows []string
+	selectedLine := -1
 	for _, row := range groupThreads(m.threads) {
 		if !m.threadRowVisible(row) {
 			continue
 		}
-		b.WriteString(m.renderThreadRow(row) + "\n")
+		if row.ID == m.threadSelected {
+			selectedLine = len(rows)
+		}
+		rows = append(rows, m.renderThreadLine(row, innerW))
 	}
-	return strings.TrimRight(b.String(), "\n")
+	rows = windowLines(rows, rowsHeight, selectedLine)
+	lines := append([]string{header}, rows...)
+	return renderBox("THREADS", m.focus == paneThreads, dims.rightW, dims.threadsH, lines)
 }
 
 // renderThreadRow renders one threads-pane row.
@@ -1528,9 +1669,9 @@ func (m Model) renderThreadRow(row listThreadRow) string {
 // windowing and rendering never compute two different notions of "where is
 // entry i on screen."
 func (m Model) threadViewLines() (lines []string, entryStart []int) {
-	width := m.opts.Width
-	if width <= 0 {
-		width = threadViewDefaultWidth
+	width := m.threadViewBoxWidth() - boxBorderCols
+	if width < 1 {
+		width = 1
 	}
 	entryStart = make([]int, len(m.viewEntries)+1)
 	for i, e := range m.viewEntries {
@@ -1580,35 +1721,67 @@ func (m Model) threadViewWindowTop(lines []string, entryStart []int) int {
 	return top
 }
 
-// renderThreadView renders the thread view overlay (spec §5): entries
-// oldest-first, body text sanitized and wrapped to the pane width, WINDOWED
-// to threadViewRows lines (spec §5 carried-over fix — an unbounded render of
-// a long thread would blow well past any real pane height). A "load older"
+// threadViewBoxWidth is the thread view overlay's outer box width (spec §5
+// layout item 5: a centered/full-right bordered box) — capped to the
+// terminal's own last-known width once a real tea.WindowSizeMsg has landed
+// (spec §5 layout item 7: "never render wider than the terminal"), otherwise
+// threadViewDefaultWidth's existing body-wrap fallback (plus border), so an
+// unsized caller's body wrap width is unchanged from before this box even
+// existed.
+func (m Model) threadViewBoxWidth() int {
+	bodyWidth := m.opts.Width
+	if bodyWidth <= 0 {
+		bodyWidth = threadViewDefaultWidth
+	}
+	outer := bodyWidth + boxBorderCols
+	if m.termWidth > 0 && m.termWidth < outer {
+		outer = m.termWidth
+	}
+	if outer < minPaneOuter {
+		outer = minPaneOuter
+	}
+	return outer
+}
+
+// renderThreadView renders the thread view overlay in a bordered box titled
+// with the thread's ID (spec §5 layout item 5): entries oldest-first, body
+// text sanitized and wrapped to the box's own inner width, WINDOWED to
+// threadViewRows lines (spec §5 carried-over fix — an unbounded render of a
+// long thread would blow well past any real pane height). A "load older"
 // hint shows while more entries remain above the loaded window (viewOffset >
 // 0); a "N newer — press G" hint shows when viewNewerCount reports entries
 // that arrived after this window loaded (spec §5 carried-over fix: the
-// newest-entries gap).
+// newest-entries gap). The box is sized to fit its content exactly (no
+// filler rows) rather than a fixed pane height, since the overlay isn't part
+// of the three-pane grid layout() sizes.
 func (m Model) renderThreadView() string {
-	var b strings.Builder
-	b.WriteString(paneTitle("THREAD #"+strconv.FormatInt(m.viewThreadID, 10), true) + "\n")
-	if m.viewOffset > 0 {
-		b.WriteString("↑ more above — k/↑ to load older\n")
+	outerW := m.threadViewBoxWidth()
+	innerW := outerW - boxBorderCols
+	if innerW < 1 {
+		innerW = 1
 	}
 
+	var content []string
+	if m.viewOffset > 0 {
+		content = append(content, "↑ more above — k/↑ to load older")
+	}
 	lines, entryStart := m.threadViewLines()
 	top := m.threadViewWindowTop(lines, entryStart)
 	end := top + threadViewRows
 	if end > len(lines) || threadViewRows <= 0 {
 		end = len(lines)
 	}
-	for _, l := range lines[top:end] {
-		b.WriteString(l + "\n")
+	content = append(content, lines[top:end]...)
+	if n := m.viewNewerCount(); n > 0 {
+		content = append(content, fmt.Sprintf("↓ %d newer — press G to load", n))
 	}
 
-	if n := m.viewNewerCount(); n > 0 {
-		_, _ = fmt.Fprintf(&b, "↓ %d newer — press G to load\n", n)
+	padded := make([]string, len(content))
+	for i, l := range content {
+		padded[i] = render.PadDisplay(display.Sanitize(l, innerW), innerW)
 	}
-	return strings.TrimRight(b.String(), "\n")
+	outerH := len(padded) + boxBorderRows
+	return renderBox("THREAD #"+strconv.FormatInt(m.viewThreadID, 10), true, outerW, outerH, padded)
 }
 
 // paneName renders a pane value for display (the '/' filter's "filter
@@ -1698,22 +1871,25 @@ func (m Model) renderComposerBody() string {
 	return line
 }
 
+// renderStatus renders the single bottom status line (spec §5 layout item
+// 6): the operator's status/error text on the left, key hints right-aligned
+// against the terminal's own width — errors get a distinct prefix + style
+// (statusIsError) rather than reading identically to routine status notes
+// like "sending to backend…".
 func (m Model) renderStatus() string {
-	if m.status != "" {
-		return m.status
+	width := m.termWidth
+	if width <= 0 {
+		width = fallbackTermWidth
 	}
-	if m.viewOpen {
-		return fmt.Sprintf("%s scroll · %s reply · %s close", keys.Down.Help().Key, keys.Reply.Help().Key, keys.Esc.Help().Key)
-	}
-	return fmt.Sprintf("%s focus · %s/%s move · %s open · %s live · %s send · %s nudge · %s filter · %s aliases · %s quit",
-		keys.Tab.Help().Key, keys.Down.Help().Key, keys.Up.Help().Key,
-		keys.Enter.Help().Key, keys.End.Help().Key, keys.Send.Help().Key,
-		keys.Nudge.Help().Key, keys.Filter.Help().Key, keys.Aliases.Help().Key, keys.Quit.Help().Key)
-}
 
-func paneTitle(name string, focused bool) string {
-	if focused {
-		return "» " + name
+	left := m.status
+	if statusIsError(left) {
+		left = statusErrStyle.Render("✗ " + left)
 	}
-	return "  " + name
+
+	right := keysHintBase
+	if m.viewOpen {
+		right = fmt.Sprintf("%s scroll · %s reply · %s close", keys.Down.Help().Key, keys.Reply.Help().Key, keys.Esc.Help().Key)
+	}
+	return joinStatusLine(left, right, width)
 }
