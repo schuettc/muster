@@ -351,3 +351,121 @@ func TestHelpOverlayRendersLegendAndClosesOnAnyKey(t *testing.T) {
 		t.Fatalf("any key must close the help overlay")
 	}
 }
+
+// TestHelpOverlayReachableFromEveryLevel is the iteration-three fix's
+// navigation-discoverability check (an operator's screenshot showed them
+// unable to find '?' from wherever they'd drilled to): '?' must open the
+// overlay from L0 (screenProjects), L1's conversation list AND its right
+// pane once focused, L1's agent strip, and L1.5's agent-threads list AND
+// ITS right pane once focused — every screen/focus combination handleKey's
+// modal-priority switch can land on. Two DIFFERENT projects keep
+// m.singleProject false, so L0 is never auto-skipped and stays reachable to
+// test directly.
+func TestHelpOverlayReachableFromEveryLevel(t *testing.T) {
+	m := NewModel(fakeCaller{}, Options{})
+	next, _ := m.Update(agentsMsg{rows: []agentEnriched{
+		{Alias: "a1", Project: "p1", Live: true},
+		{Alias: "a2", Project: "p2", Live: true},
+	}})
+	m = mustModel(t, next)
+	next, cmd := m.Update(threadsMsg{threads: []listThreadRow{
+		{ID: 1, FromAgent: "a1", ToKind: "agent", ToTarget: "a1", EntryCount: 1},
+	}})
+	m = mustModel(t, next)
+	m = drainCmd(t, m, cmd)
+	if m.screen != screenProjects {
+		t.Fatalf("setup: expected screenProjects with 2 distinct projects registered, got %v", m.screen)
+	}
+
+	checkHelpTogglesHere := func(label string) {
+		t.Helper()
+		next, _ := m.Update(keyMsg("?"))
+		probe := mustModel(t, next)
+		if !probe.helpOpen {
+			t.Fatalf("%s (screen=%v focus=%v): '?' must open the help overlay", label, probe.screen, probe.focus)
+		}
+		next, _ = probe.Update(keyMsg("x"))
+		probe = mustModel(t, next)
+		if probe.helpOpen {
+			t.Fatalf("%s: help overlay should close on any key", label)
+		}
+	}
+
+	checkHelpTogglesHere("L0 projects list")
+
+	next, _ = m.Update(keyMsg("enter"))
+	m = mustModel(t, next)
+	if m.screen != screenProject || m.focus != focusConvList {
+		t.Fatalf("setup: expected screenProject/focusConvList after Enter, got screen=%v focus=%v", m.screen, m.focus)
+	}
+	checkHelpTogglesHere("L1 conversation list")
+
+	next, _ = m.Update(keyMsg("tab")) // focusConvList -> focusConvRight
+	m = mustModel(t, next)
+	if m.focus != focusConvRight {
+		t.Fatalf("setup: expected focusConvRight after Tab, got %v", m.focus)
+	}
+	checkHelpTogglesHere("L1 conversation reader (focused right pane)")
+
+	next, _ = m.Update(keyMsg("tab")) // focusConvRight -> focusAgentStrip
+	m = mustModel(t, next)
+	if m.focus != focusAgentStrip {
+		t.Fatalf("setup: expected focusAgentStrip after Tab, got %v", m.focus)
+	}
+	checkHelpTogglesHere("L1 agent strip")
+
+	next, _ = m.Update(keyMsg("enter")) // drill into the selected agent
+	m = mustModel(t, next)
+	if m.screen != screenAgent || m.focus != focusAgentThreads {
+		t.Fatalf("setup: expected screenAgent/focusAgentThreads after Enter, got screen=%v focus=%v", m.screen, m.focus)
+	}
+	checkHelpTogglesHere("L1.5 agent threads")
+
+	next, _ = m.Update(keyMsg("tab")) // focusAgentThreads -> focusConvRight
+	m = mustModel(t, next)
+	if m.focus != focusConvRight {
+		t.Fatalf("setup: expected focusConvRight after Tab, got %v", m.focus)
+	}
+	checkHelpTogglesHere("L1.5 agent activity (focused right pane)")
+}
+
+// TestFooterKeyHintIsLevelAware is spec item 5's footer half (iteration-
+// three fix): "esc back" and "tab cycle" must not appear in the bottom-line
+// hint at a level where they're dead keys — L0 (screenProjects, a single
+// list, nothing to climb back to) — but both must appear once there's
+// somewhere for them to go.
+func TestFooterKeyHintIsLevelAware(t *testing.T) {
+	m := NewModel(fakeCaller{}, Options{})
+	next, _ := m.Update(agentsMsg{rows: []agentEnriched{
+		{Alias: "a1", Project: "p1", Live: true},
+		{Alias: "a2", Project: "p2", Live: true},
+	}})
+	m = mustModel(t, next)
+	if m.screen != screenProjects {
+		t.Fatalf("setup: expected screenProjects, got %v", m.screen)
+	}
+
+	hint := m.renderStatus()
+	if strings.Contains(hint, "esc back") {
+		t.Fatalf("L0's footer must not advertise esc (a no-op there): %q", hint)
+	}
+	if strings.Contains(hint, "tab cycle") {
+		t.Fatalf("L0's footer must not advertise tab (a no-op there): %q", hint)
+	}
+	if !strings.Contains(hint, "enter drill") {
+		t.Fatalf("L0's footer must still advertise enter: %q", hint)
+	}
+
+	next, _ = m.Update(keyMsg("enter"))
+	m = mustModel(t, next)
+	if m.screen != screenProject {
+		t.Fatalf("setup: expected screenProject after Enter, got %v", m.screen)
+	}
+	hint = m.renderStatus()
+	if !strings.Contains(hint, "esc back") {
+		t.Fatalf("L1's footer must advertise esc (climbs back to L0): %q", hint)
+	}
+	if !strings.Contains(hint, "tab cycle") {
+		t.Fatalf("L1's footer must advertise tab (cycles agent strip/conversations/reader): %q", hint)
+	}
+}

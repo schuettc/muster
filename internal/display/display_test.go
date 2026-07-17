@@ -553,3 +553,50 @@ func TestSanitizePinsPlainTextBehavior(t *testing.T) {
 		}
 	}
 }
+
+// TestSanitizeLinesPreservesNewlinesAndBlankLines is the body-mode contract
+// (unlike Sanitize, which collapses every '\n' to a space): ordinary
+// multi-line markdown-shaped text — paragraphs, a blank line between them,
+// a bullet list — must come back as one slice element per source line,
+// verbatim, with blank lines kept as empty elements rather than merged away.
+func TestSanitizeLinesPreservesNewlinesAndBlankLines(t *testing.T) {
+	in := "first paragraph\n\n- item one\n- item two\n\nlast line"
+	want := []string{"first paragraph", "", "- item one", "- item two", "", "last line"}
+	got := SanitizeLines(in)
+	if len(got) != len(want) {
+		t.Fatalf("SanitizeLines(%q) = %q (%d lines), want %d lines %q", in, got, len(got), len(want), want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("SanitizeLines(%q)[%d] = %q, want %q", in, i, got[i], want[i])
+		}
+	}
+}
+
+// TestSanitizeLinesStripsControlsButKeepsStructure is the hostile-input
+// case: a body carrying an ESC/CSI escape sequence, a lone bidi override,
+// and a bare CR (the CR half of a stray CRLF) mixed in with real newlines —
+// SanitizeLines must strip the same control-rune hazards Sanitize does
+// (proven via isControlRune, the same predicate FuzzSanitize in
+// fuzz_test.go pins Sanitize to) while still splitting on the real line
+// breaks and leaving the rest of each line's plain text untouched.
+func TestSanitizeLinesStripsControlsButKeepsStructure(t *testing.T) {
+	in := "line one\x1b[31m colored\x1b[0m\nline two\r\n\u202eevil\u202c line three\n\ttab\tline"
+	got := SanitizeLines(in)
+	for _, line := range got {
+		for _, r := range line {
+			if isControlRune(r) {
+				t.Fatalf("SanitizeLines(%q) line %q contains control rune %U", in, line, r)
+			}
+		}
+	}
+	want := []string{"line one colored", "line two", "evil line three", " tab line"}
+	if len(got) != len(want) {
+		t.Fatalf("SanitizeLines(%q) = %q (%d lines), want %d lines %q", in, got, len(got), len(want), want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("SanitizeLines(%q)[%d] = %q, want %q", in, i, got[i], want[i])
+		}
+	}
+}

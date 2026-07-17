@@ -375,15 +375,40 @@ func (m Model) renderConvListBox(outerW, outerH int, list llList, title string, 
 	return renderBox(title, focused, outerW, outerH, lines)
 }
 
+// conversationAuthorStyle styles a conversation entry's header line — spec
+// item 3 of the iteration-three body-structure fix: "author header line
+// styled (author · relative time), body indented two spaces under it" —
+// distinctly from the plain (or markdown-styled) body text under it.
+var conversationAuthorStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("117"))
+
 // conversationLines renders every loaded conversation entry into flat,
-// already-wrapped display lines (header + wrapped body + a blank
+// already-wrapped display lines (header + wrapped/styled body + a blank
 // separator), and returns entryStart[i]..entryStart[i+1] as entry i's line
 // range within lines — entryStart has len(viewEntries)+1 elements, the last
 // one the total line count.
+//
+// Every returned line is EXACTLY width display columns wide already
+// (render.PadDisplay/display.Sanitize for the header, wrapBody's own
+// lipgloss-Width padding plus the bodyBulletIndent prefix for the body)
+// except the blank inter-entry/inter-paragraph separator ("": renderBox's
+// own contract fills a bare "" line with innerW spaces, so it does not need
+// padding here) — renderConversationBox must not re-Sanitize/re-pad this
+// slice, since a body line may already carry lipgloss ANSI from
+// styleMarkdownLine that a second pass would miscount (display.Width is not
+// ANSI-aware) or strip outright (Sanitize deletes ESC sequences).
+//
+// The '>' cursor tracks the MESSAGE (its header line only), never a raw
+// wrapped body line, so scrolling always lands the reader on a message
+// boundary rather than mid-paragraph.
 func (m Model) conversationLines(width int) (lines []string, entryStart []int) {
 	if width < 1 {
 		width = 1
 	}
+	bodyWidth := width - display.Width(bodyBulletIndent)
+	if bodyWidth < 1 {
+		bodyWidth = 1
+	}
+
 	entryStart = make([]int, len(m.viewEntries)+1)
 	for i, e := range m.viewEntries {
 		entryStart[i] = len(lines)
@@ -391,10 +416,17 @@ func (m Model) conversationLines(width int) (lines []string, entryStart []int) {
 		if i == m.viewCursor {
 			marker = "> "
 		}
-		ts := time.UnixMilli(e.CreatedAt).Format("15:04:05")
-		lines = append(lines, fmt.Sprintf("%s%s %s", marker, ts, m.dispLabel(e.FromAgent)))
-		body := lipgloss.NewStyle().Width(width).Render(display.Sanitize(e.Body, conversationBodySanitizeWidth))
-		lines = append(lines, strings.Split(body, "\n")...)
+		age := relativeAge(time.Now(), e.CreatedAt)
+		header := display.Sanitize(fmt.Sprintf("%s%s · %s", marker, m.dispLabel(e.FromAgent), age), width)
+		lines = append(lines, conversationAuthorStyle.Render(render.PadDisplay(header, width)))
+
+		for _, bl := range wrapBody(e.Body, bodyWidth) {
+			if bl == "" {
+				lines = append(lines, "") // a blank paragraph break: let renderBox blank-fill it, same as the inter-entry separator below
+				continue
+			}
+			lines = append(lines, bodyBulletIndent+bl)
+		}
 		lines = append(lines, "")
 	}
 	entryStart[len(m.viewEntries)] = len(lines)
@@ -427,6 +459,27 @@ func (m Model) conversationWindowTop(lines []string, entryStart []int, height in
 	return top
 }
 
+// snapToEntryBoundary rounds top forward to the nearest real entry boundary
+// in entryStart (spec item 4: the passive preview "should start at a
+// MESSAGE boundary... not mid-word") — the smallest entryStart[i] (i over
+// real entries, excluding the trailing total-line-count sentinel) that is
+// >= top. If every real boundary is already behind top (the tail's own
+// entry starts earlier than a straight tail-height slice would), it falls
+// back to that last entry's own start instead — showing all of one
+// long message from its header rather than an empty or mid-body window.
+func snapToEntryBoundary(entryStart []int, top int) int {
+	if len(entryStart) < 2 {
+		return top
+	}
+	realStarts := entryStart[:len(entryStart)-1]
+	for _, s := range realStarts {
+		if s >= top {
+			return s
+		}
+	}
+	return realStarts[len(realStarts)-1]
+}
+
 // renderConversationBox builds the right pane's conversation content — L1's
 // passive "last messages" preview (focused=false: just the tail, no cursor
 // marks, no load-older/newer hints) or L2's focused reader (focused=true:
@@ -457,15 +510,22 @@ func (m Model) renderConversationBox(outerW, outerH int, focused bool) string {
 	if height < 1 {
 		height = 1
 	}
+	// content is renderBox-ready: every entry here is already exactly innerW
+	// display columns (or the bare "" renderBox itself blank-fills — see
+	// conversationLines' doc). The two hint lines below are sanitized/padded
+	// right here, at construction, rather than in a later pass over the
+	// whole slice — a later pass would re-run display.Sanitize/PadDisplay
+	// over conversationLines' output too, corrupting any body line that
+	// already carries lipgloss ANSI from markdown styling.
 	var content []string
 	if focused && m.viewOffset > 0 {
-		content = append(content, "↑ more above — k/↑ to load older")
+		content = append(content, render.PadDisplay(display.Sanitize("↑ more above — k/↑ to load older", innerW), innerW))
 		height--
 	}
 	var newerHint string
 	if focused {
 		if n := m.viewNewerCount(); n > 0 {
-			newerHint = fmt.Sprintf("↓ %d newer — press G to load", n)
+			newerHint = render.PadDisplay(display.Sanitize(fmt.Sprintf("↓ %d newer — press G to load", n), innerW), innerW)
 			height--
 		}
 	}
@@ -479,11 +539,17 @@ func (m Model) renderConversationBox(outerW, outerH int, focused bool) string {
 		top = m.conversationWindowTop(lines, entryStart, height)
 		end = top + height
 	} else {
-		// Passive preview: always show the TAIL, no cursor-based windowing.
+		// Passive preview: always show the TAIL, no cursor-based windowing —
+		// but snapped forward to the nearest message boundary (spec item 4)
+		// so it never opens mid-paragraph/mid-word.
 		end = len(lines)
 		top = end - height
 		if top < 0 {
 			top = 0
+		}
+		top = snapToEntryBoundary(entryStart, top)
+		if top > end {
+			top = end
 		}
 	}
 	if end > len(lines) {
@@ -497,11 +563,7 @@ func (m Model) renderConversationBox(outerW, outerH int, focused bool) string {
 		content = append(content, newerHint)
 	}
 
-	padded := make([]string, len(content))
-	for i, l := range content {
-		padded[i] = render.PadDisplay(display.Sanitize(l, innerW), innerW)
-	}
-	return renderBox(title, focused, outerW, outerH, padded)
+	return renderBox(title, focused, outerW, outerH, content)
 }
 
 // renderActivityBox builds L1.5's right pane: the agent's recent journal
@@ -695,9 +757,47 @@ func (m Model) renderStatus() string {
 		left = statusErrStyle.Render("✗ " + left)
 	}
 
-	right := keysHintBase
+	right := m.levelKeysHint()
 	if m.focus == focusConvRight {
 		right = fmt.Sprintf("%s scroll · %s reply · %s back", keys.Down.Help().Key, keys.Reply.Help().Key, keys.Esc.Help().Key)
 	}
 	return joinStatusLine(left, right, width)
+}
+
+// escIsNoop reports whether Esc does nothing at the model's CURRENT
+// level — true at L0 (screenProjects: nothing to climb back to) and at L1
+// when the bus auto-skipped straight past L0 (m.singleProject: there is no
+// L0 to climb back to either, see handleEscKey). Never consulted while
+// focus == focusConvRight — Esc always un-focuses the reader there,
+// handled by renderStatus's separate branch above.
+func (m Model) escIsNoop() bool {
+	return m.screen == screenProjects || (m.screen == screenProject && m.singleProject)
+}
+
+// tabIsNoop reports whether Tab does nothing at the model's CURRENT level —
+// true only at L0 (screenProjects has a single list; cycleFocus's switch
+// carries no case for it, so focus never changes).
+func (m Model) tabIsNoop() bool {
+	return m.screen == screenProjects
+}
+
+// levelKeysHint is the DEFAULT (non-focusConvRight) bottom-line key hint,
+// level-aware (spec item 5, iteration-three fix: "the footer hints name
+// esc/enter/tab per level"): built from keysHintBase, the single source of
+// truth for each verb's wording, with "esc back"/"tab cycle" dropped
+// whenever escIsNoop/tabIsNoop reports that key does nothing at the current
+// level — advertising a dead key is exactly the kind of footer confusion
+// that left an operator unable to find navigation.
+func (m Model) levelKeysHint() string {
+	var out []string
+	for _, p := range strings.Split(keysHintBase, " · ") {
+		if p == "esc back" && m.escIsNoop() {
+			continue
+		}
+		if p == "tab cycle" && m.tabIsNoop() {
+			continue
+		}
+		out = append(out, p)
+	}
+	return strings.Join(out, " · ")
 }

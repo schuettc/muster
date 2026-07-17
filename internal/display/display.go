@@ -6,7 +6,10 @@
 // the daemon can sanitize at journal time without importing the CLI.
 package display
 
-import "unicode"
+import (
+	"strings"
+	"unicode"
+)
 
 // Sanitize strips control characters that could corrupt a terminal or a TUI
 // pane — C0/C1 controls, NUL, full ESC/CSI escape sequences, and Unicode bidi
@@ -14,12 +17,54 @@ import "unicode"
 // tab/newline/CR into a single space, and truncates the result to maxWidth
 // display columns (wide/combining runes counted properly, not rune count),
 // appending '…' when truncation actually cuts content. maxWidth <= 0 yields
-// "" (there is no room even for the ellipsis).
+// "" (there is no room even for the ellipsis). This is the one-line contract:
+// every caller that renders a single terminal row (journal preview columns,
+// the station TUI's list/status rows) funnels through this. A caller that
+// needs to keep a multi-line body's paragraph/list structure — the station
+// conversation view's message bodies — wants SanitizeLines instead, which
+// shares this function's exact character-level cleaning via cleanControls
+// but preserves newlines rather than collapsing them to spaces.
 func Sanitize(s string, maxWidth int) string {
 	if maxWidth <= 0 {
 		return ""
 	}
-	// Work with bytes first to preserve 8-bit C1 introducers, then convert to runes
+	return truncateToWidth(cleanControls(s, cleanCollapseNewlines), maxWidth)
+}
+
+// SanitizeLines cleans a multi-line body with the SAME character-level
+// scrubbing Sanitize uses — C0/C1 controls, NUL, full ESC/CSI escape
+// sequences, 8-bit and UTF-8-encoded C1 introducers, and Unicode bidi
+// override characters — but, unlike Sanitize, preserves newlines (and blank
+// lines) instead of collapsing them to a single space, then splits the
+// result into lines. Intra-line runs of tab/CR still collapse to a single
+// space exactly as Sanitize's do; only '\n' survives as a literal line
+// break. No width cap: callers (the station conversation body path) wrap
+// each returned line to their pane's width themselves, since word-wrapping a
+// multi-line body needs per-line control the single maxWidth-and-truncate
+// contract above doesn't offer.
+func SanitizeLines(s string) []string {
+	return strings.Split(string(cleanControls(s, cleanPreserveNewlines)), "\n")
+}
+
+// cleanNewlineMode selects how cleanControls' shared character-level
+// cleaning treats '\n' (and the whitespace runs it can be part of):
+// cleanCollapseNewlines folds any run of tab/newline/CR into a single space
+// (Sanitize's one-line contract); cleanPreserveNewlines keeps '\n' as a
+// literal line break, only collapsing intra-line tab/CR runs to a single
+// space (SanitizeLines' multi-line contract).
+type cleanNewlineMode int
+
+const (
+	cleanCollapseNewlines cleanNewlineMode = iota
+	cleanPreserveNewlines
+)
+
+// cleanControls is Sanitize's and SanitizeLines' shared char-level cleaner —
+// the one canonical implementation of the control-character scrubbing both
+// modes need, differing only in how '\n' is handled (see cleanNewlineMode).
+// Work with bytes first to preserve 8-bit C1 introducers, then convert to
+// runes.
+func cleanControls(s string, mode cleanNewlineMode) []rune {
 	bytes := []byte(s)
 	cleaned := make([]rune, 0, len(bytes))
 	inWSRun := false
@@ -52,7 +97,28 @@ func Sanitize(s string, maxWidth int) string {
 			continue
 		}
 
-		// Handle whitespace
+		// A literal newline: cleanPreserveNewlines keeps it as a real line
+		// break (and never merges it into a pending space run — a run of
+		// tabs immediately before a '\n' must not leave a trailing space on
+		// the line it's closing out); cleanCollapseNewlines falls through to
+		// the generic whitespace-run handling below, identical to before
+		// this function existed.
+		if mode == cleanPreserveNewlines && b == '\n' {
+			inWSRun = false
+			cleaned = append(cleaned, '\n')
+			continue
+		}
+		// A bare CR, or the CR half of a CRLF pair: cleanPreserveNewlines
+		// swallows it outright rather than collapsing it into a space — the
+		// '\n' (handled above, whether it follows immediately or the CR was
+		// alone) is the one literal break this mode ever emits.
+		if mode == cleanPreserveNewlines && b == '\r' {
+			continue
+		}
+
+		// Handle whitespace (both modes: tab always collapses; newline/CR
+		// only reach here under cleanCollapseNewlines, having already been
+		// special-cased above under cleanPreserveNewlines).
 		if b == '\t' || b == '\n' || b == '\r' {
 			inWSRun = true
 			continue
@@ -102,7 +168,7 @@ func Sanitize(s string, maxWidth int) string {
 	if inWSRun {
 		cleaned = append(cleaned, ' ')
 	}
-	return truncateToWidth(cleaned, maxWidth)
+	return cleaned
 }
 
 // decodeUTF8Byte decodes a UTF-8 rune starting at bytes[i]. Returns the rune

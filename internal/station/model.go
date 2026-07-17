@@ -69,12 +69,6 @@ const (
 // fetch.
 const initialEventBacklog = defaultRows
 
-// conversationBodySanitizeWidth bounds display.Sanitize's width cap for a
-// conversation entry's body before lipgloss wraps it to the right pane's
-// width — generously large so sanitize's own truncation never fires ahead of
-// the real wrap.
-const conversationBodySanitizeWidth = 4096
-
 // conversationReaderRows bounds the right pane's visible WRAPPED-line budget
 // when a conversation is focused (spec §5 carried-over fix: render
 // windowing).
