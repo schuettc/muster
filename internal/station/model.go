@@ -11,6 +11,7 @@ package station
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -22,13 +23,17 @@ import (
 	"github.com/schuettc/muster/internal/render"
 )
 
-// keyMap is station's canonical key vocabulary (spec §5-REVISED keys): Enter
-// drills / focuses right · Esc climbs · Tab cycles the current screen's
-// sub-targets · j/k move · End/G newest (conversation reader only) · s send
-// (global, roster-filtered picker) · r reply (conversation reader) · n nudge
-// (agent strip/page) · / filter the current left list · a aliases toggle ·
-// ? help overlay · q quit. bubbles/key gives every binding a single named
-// definition instead of a scattered string switch.
+// keyMap is station's canonical key vocabulary (spec §5-REVISED keys, amended
+// by iteration-6): Enter drills into an agent, or reads a thread full-width ·
+// Esc climbs one level (or exits full-width reading back to the previous
+// browse state) · Tab cycles L0's FOR YOU/project-list toggle — its only
+// remaining genuine target (iteration-6 item 3) · j/k move (one cursor per
+// level, crossing the merged AGENTS/THREADS section boundary) · End/G newest
+// (thread reader only) · s send (global, roster-filtered picker) · r reply
+// (thread reader) · n nudge (AGENTS section / agent page) · / filter the
+// current left list · a aliases toggle · ? help overlay · q quit. bubbles/key
+// gives every binding a single named definition instead of a scattered string
+// switch.
 type keyMap struct {
 	Tab, ShiftTab, Down, Up, Quit, Enter, Esc, End         key.Binding
 	Send, Reply, Nudge, Filter, Aliases, CycleIntent, Help key.Binding
@@ -96,12 +101,6 @@ type agentEnriched struct {
 	Unread      int
 	Action      bool // true when the session's unread includes an action-requested thread
 	ActionCount int  // the session's action-requested unread count (spec §5-REVISED project rollup: "(+action)")
-	// Attached is true when a human tmux client is currently attached to
-	// this agent's session (spec iteration-5 Tier 1: the attach marker) —
-	// checked only for a LIVE session, batched into the same per-agent tmux
-	// query loop as Live/Label (see fetchAgents in poll.go), never in
-	// View().
-	Attached bool
 }
 
 // listThreadRow mirrors store.Thread's wire JSON for the conversation lists.
@@ -171,6 +170,13 @@ type Model struct {
 	project       string
 	agent         string
 	conversation  int64
+	// l1Section identifies which section of screenProject's merged
+	// AGENTS+THREADS list (spec iteration-6 item 3) currently owns the single
+	// j/k cursor — l1SectionAgents or l1SectionThreads, gating which of
+	// agent/conversation above the cursor's own moves apply to (see
+	// l1CurrentKey/applyL1Key). Per-poll refreshes never touch this — only a
+	// drill-in (refreshProjectItemsSelection) sets its default.
+	l1Section l1Section
 	// forYou is the currently-selected FOR YOU row's thread ID (spec
 	// iteration-5: the pinned L0 section listing station's own unread
 	// threads) — its own identity-keyed selection, distinct from
@@ -476,22 +482,20 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// currentLeftList identifies which left list '/' filters and Tab/j/k address
-// right now (spec §5-REVISED: "/ filter left list") — screenProjects has
-// only one list; screenProject has two (the agent strip and the
-// conversations below it, switched by focus); screenAgent has one (that
-// agent's threads). Valid even while focus == focusConvRight (a filter
-// opened there still targets the underlying list the operator drilled
+// currentLeftList identifies which left list '/' filters and j/k address
+// right now (spec §5-REVISED: "/ filter left list"; iteration-6 item 3: the
+// merged AGENTS+THREADS list replaces the old agent-strip/conversation-list
+// pair) — screenProjects has only one list (or two, toggled by Tab, while
+// FOR YOU is showing); screenProject has ONE combined list; screenAgent has
+// one (that agent's threads). Valid even while focus == focusConvRight (a
+// filter opened there still targets the underlying list the operator drilled
 // through, exactly as if they'd pressed Esc first).
 func (m Model) currentLeftList() llList {
 	switch m.screen {
 	case screenAgent:
 		return llAgentThreads
 	case screenProject:
-		if m.focus == focusAgentStrip {
-			return llAgentStrip
-		}
-		return llConvList
+		return llProjectItems
 	default:
 		if m.focus == focusForYou {
 			return llForYou
@@ -553,75 +557,114 @@ func (m Model) plainConvRow(c conversationRow) string {
 	return m.renderThreadRow(c.listThreadRow)
 }
 
-// cycleFocus implements Tab (spec §5-REVISED keys): cycles the current
-// screen's sub-targets. screenProjects has only one target (a no-op).
+// l1Rows returns screenProject's merged AGENTS+THREADS list (spec
+// iteration-6 item 3: "kill the L1 sibling boxes... ONE continuous list"):
+// every agent-strip row first, then every conversation row for the active
+// project — the same two underlying row sets the old two-box layout used,
+// concatenated into one combined sequence a single cursor walks.
+func (m Model) l1Rows() []l1Row {
+	agents := m.agentStripRows()
+	convs := m.conversationRows()
+	out := make([]l1Row, 0, len(agents)+len(convs))
+	for _, a := range agents {
+		out = append(out, l1Row{Section: l1SectionAgents, Agent: a})
+	}
+	for _, c := range convs {
+		out = append(out, l1Row{Section: l1SectionThreads, Thread: c})
+	}
+	return out
+}
+
+// plainL1Row is l1Rows' filter/selection predicate text — renderRosterRow
+// for an agent row, plainConvRow for a thread row (spec §5 carried-over
+// discipline: the SAME text every list's filter/move/selection helpers
+// resolve through).
+func (m Model) plainL1Row(r l1Row) string {
+	if r.Section == l1SectionAgents {
+		return m.renderRosterRow(r.Agent)
+	}
+	return m.plainConvRow(r.Thread)
+}
+
+// l1CurrentKey resolves screenProject's current combined selection (m.agent
+// or m.conversation, whichever m.l1Section says owns the cursor) to l1Rows'
+// key form (see l1RowKey) — the inverse of applyL1Key.
+func (m Model) l1CurrentKey() string {
+	if m.l1Section == l1SectionThreads {
+		return "t:" + strconv.FormatInt(m.conversation, 10)
+	}
+	return "a:" + m.agent
+}
+
+// applyL1Key applies a key from l1Rows/l1RowKey back onto the model: which
+// section now owns the cursor, and that section's own per-level selection
+// field (m.agent or m.conversation) — the inverse of l1CurrentKey.
+func (m Model) applyL1Key(key string) Model {
+	if strings.HasPrefix(key, "t:") {
+		id, _ := strconv.ParseInt(strings.TrimPrefix(key, "t:"), 10, 64)
+		m.l1Section = l1SectionThreads
+		m.conversation = id
+		return m
+	}
+	m.l1Section = l1SectionAgents
+	m.agent = strings.TrimPrefix(key, "a:")
+	return m
+}
+
+// refreshProjectItemsSelection defaults screenProject's merged AGENTS+THREADS
+// list onto its AGENTS section (spec iteration-4: "the who first";
+// iteration-6: the merged list keeps that same default) — called ONLY on a
+// drill-IN (L0→L1 Enter, the FOR YOU jump), never on a routine poll, which
+// must never yank the operator's cursor between sections on its own (see
+// refreshAgentStripSelection, the per-poll correction that never touches
+// m.l1Section).
+func (m Model) refreshProjectItemsSelection() Model {
+	m = m.refreshAgentStripSelection()
+	if len(m.agentStripRows()) > 0 {
+		m.l1Section = l1SectionAgents
+	} else {
+		m.l1Section = l1SectionThreads
+	}
+	return m
+}
+
+// operatorInboxCount is station's OWN canonical unread-mail count (spec
+// iteration-6 item 5: "one canonical operator-mail count") — literally
+// len(forYouRows()), the SAME source powering the 📬 header badge, the FOR
+// YOU section's own row count, Tab's L0 toggle, and 'm' — so the header and
+// the section can never disagree the way the header's old
+// session_unread-RPC-derived count and this client-side reconstruction once
+// could (the observed "header said 1, FOR YOU said 2" mismatch).
+func (m Model) operatorInboxCount() int {
+	return len(m.forYouRows())
+}
+
+// cycleFocus implements Tab (spec iteration-6 item 3: "Tab/Shift-Tab now
+// only cycle where multiple focus targets genuinely exist"). screenProject
+// and screenAgent each now have exactly ONE focusable list (the merged
+// AGENTS+THREADS list, and the agent's own thread list respectively) plus a
+// right pane that's pure preview with nothing to focus — so Tab is a no-op
+// at both. Only screenProjects still has two genuine targets: the project
+// list and the pinned FOR YOU section, toggled while the latter is showing
+// (station has unread mail) — a no-op otherwise, same as before this
+// feature.
 func (m Model) cycleFocus() Model {
-	switch m.screen {
-	case screenProjects:
-		// Toggle onto/off the FOR YOU section (spec iteration-5) — only a
-		// live target while the section is actually showing (station has
-		// unread mail); otherwise the project list is the only target, same
-		// no-op as before this feature.
-		if total, _ := m.stationUnread(); total > 0 {
-			if m.focus == focusForYou {
-				m.focus = focusProjectList
-			} else {
-				m.focus = focusForYou
-			}
-		}
-	case screenProject:
-		switch m.focus {
-		case focusAgentStrip:
-			m.focus = focusConvList
-		case focusConvList:
-			m.focus = focusConvRight
-		default:
-			m.focus = focusAgentStrip
-		}
-	case screenAgent:
-		if m.focus == focusAgentThreads {
-			m.focus = focusConvRight
+	if m.screen == screenProjects && m.operatorInboxCount() > 0 {
+		if m.focus == focusForYou {
+			m.focus = focusProjectList
 		} else {
-			m.focus = focusAgentThreads
+			m.focus = focusForYou
 		}
 	}
 	return m
 }
 
-// cycleFocusBack implements Shift-Tab (iteration-4 queue item 2): cycles the
-// current screen's sub-targets in the REVERSE order from cycleFocus. It is
-// cycleFocus's exact mirror image — screenAgent's two-way toggle is its own
-// reverse, so only screenProject's three-way order actually differs.
-// screenProjects has only one target (a no-op).
+// cycleFocusBack implements Shift-Tab (iteration-4 queue item 2). screenProjects'
+// two-way toggle is its own reverse, and it's the only screen with a genuine
+// Tab target left (see cycleFocus) — so Shift-Tab is now simply cycleFocus's
+// exact twin, not a separately-ordered cycle.
 func (m Model) cycleFocusBack() Model {
-	switch m.screen {
-	case screenProjects:
-		// A two-way toggle is its own reverse (same as screenAgent below) —
-		// see cycleFocus's identical case.
-		if total, _ := m.stationUnread(); total > 0 {
-			if m.focus == focusForYou {
-				m.focus = focusProjectList
-			} else {
-				m.focus = focusForYou
-			}
-		}
-	case screenProject:
-		switch m.focus {
-		case focusAgentStrip:
-			m.focus = focusConvRight
-		case focusConvList:
-			m.focus = focusAgentStrip
-		default: // focusConvRight
-			m.focus = focusConvList
-		}
-	case screenAgent:
-		if m.focus == focusAgentThreads {
-			m.focus = focusConvRight
-		} else {
-			m.focus = focusAgentThreads
-		}
-	}
-	return m
+	return m.cycleFocus()
 }
 
 // moveFocused applies a j/k (delta=+1/-1) move to whichever list (or the
@@ -638,12 +681,22 @@ func (m Model) moveFocused(delta int) (tea.Model, tea.Cmd) {
 		q, f := m.filterQueryFor(llForYou)
 		m.forYou = moveSelection(rows, forYouKey, m.forYou, delta, m.plainForYouRow, q, f, 0)
 		return m, nil
-	case focusAgentStrip:
-		rows := m.agentStripRows()
-		q, f := m.filterQueryFor(llAgentStrip)
-		m.agent = moveSelection(rows, agentKey, m.agent, delta, m.renderRosterRow, q, f, "")
+	case focusProjectItems:
+		rows := m.l1Rows()
+		q, f := m.filterQueryFor(llProjectItems)
+		curKey := m.l1CurrentKey()
+		newKey := moveSelection(rows, l1RowKey, curKey, delta, m.plainL1Row, q, f, "")
+		if newKey == curKey {
+			return m, nil
+		}
+		m = m.applyL1Key(newKey)
+		if m.l1Section == l1SectionThreads {
+			var cmd tea.Cmd
+			m, cmd = m.conversationPreviewCmd(m.conversation, false)
+			return m, cmd
+		}
 		return m, nil
-	case focusConvList, focusAgentThreads:
+	case focusAgentThreads:
 		rows := m.conversationRows()
 		q, f := m.filterQueryFor(m.currentLeftList())
 		newSel := moveSelection(rows, convKey, m.conversation, delta, m.plainConvRow, q, f, 0)
@@ -752,29 +805,39 @@ func (m Model) handleEnterKey() (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.screen = screenProject
-		// Default focus on project entry is the AGENTS box (iteration-4 queue
-		// item 1: "the who first") — not the conversation/thread list.
-		m.focus = focusAgentStrip
+		// Default focus on project entry is the AGENTS section (iteration-4
+		// queue item 1: "the who first") — not the threads section.
+		m.focus = focusProjectItems
 		m.everNavigated = true
-		m = m.refreshAgentStripSelection()
+		m = m.refreshProjectItemsSelection()
 		return m.refreshConversationSelection()
 
-	case m.focus == focusAgentStrip:
-		rows := m.agentStripRows()
-		q, f := m.filterQueryFor(llAgentStrip)
-		if !anyRowVisible(rows, m.renderRosterRow, q, f) {
+	case m.focus == focusProjectItems:
+		rows := m.l1Rows()
+		q, f := m.filterQueryFor(llProjectItems)
+		if !anyRowVisible(rows, m.plainL1Row, q, f) {
 			return m, nil
 		}
-		if !selectionVisible(rows, agentKey, m.agent, m.renderRosterRow, q, f) {
-			m.agent = snapSelection(rows, agentKey, m.agent, m.renderRosterRow, q, f, "")
+		curKey := m.l1CurrentKey()
+		if !selectionVisible(rows, l1RowKey, curKey, m.plainL1Row, q, f) {
+			m = m.applyL1Key(snapSelection(rows, l1RowKey, curKey, m.plainL1Row, q, f, ""))
 			return m, nil
 		}
-		m.screen = screenAgent
-		m.focus = focusAgentThreads
-		m.everNavigated = true
-		return m.refreshConversationSelection()
+		if m.l1Section == l1SectionAgents {
+			// Descend into the selected agent (spec iteration-6 item 3: "Enter
+			// on an agent DESCENDS a level").
+			m.screen = screenAgent
+			m.focus = focusAgentThreads
+			m.everNavigated = true
+			return m.refreshConversationSelection()
+		}
+		// A thread row: Enter reads it full-width directly (spec iteration-6
+		// item 2) — m.conversation is already this row's ID (kept in sync by
+		// every combined-list move), so focusConversation needs no further
+		// selection work.
+		return m.focusConversation()
 
-	case m.focus == focusConvList || m.focus == focusAgentThreads:
+	case m.focus == focusAgentThreads:
 		rows := m.conversationRows()
 		q, f := m.filterQueryFor(m.currentLeftList())
 		if !anyRowVisible(rows, m.plainConvRow, q, f) {
@@ -789,22 +852,30 @@ func (m Model) handleEnterKey() (tea.Model, tea.Cmd) {
 	return m, nil // focusConvRight: already the deepest level
 }
 
-// handleEscKey implements Esc (spec §5-REVISED: "Esc climbs"): un-focuses
-// the conversation reader back to its list, then climbs screenAgent →
-// screenProject → screenProjects — a no-op at screenProjects, and at
-// screenProject on a single-project bus (spec §5-REVISED: "L0 skipped
-// entirely" — there is no L0 to climb back to).
+// handleEscKey implements Esc (spec iteration-6 item 2/3: full-width reading
+// returns to "the previous browse state with selection intact"; "Esc climbs
+// exactly one level each press"): un-focuses the reader back to whichever
+// list it was opened from — screenProject's merged list keeps its selection
+// (m.agent/m.conversation, and m.l1Section, are never touched by
+// focusConversation/focusConvRight, so exiting reading lands exactly where
+// the operator left it) — then climbs screenAgent → screenProject →
+// screenProjects. A no-op at screenProjects, and at screenProject on a
+// single-project bus (spec §5-REVISED: "L0 skipped entirely" — there is no
+// L0 to climb back to).
 func (m Model) handleEscKey() Model {
 	switch {
 	case m.focus == focusConvRight:
-		if m.screen == screenAgent {
+		switch m.screen {
+		case screenAgent:
 			m.focus = focusAgentThreads
-		} else {
-			m.focus = focusConvList
+		case screenProject:
+			m.focus = focusProjectItems
+		default:
+			m.focus = focusProjectList
 		}
 	case m.screen == screenAgent:
 		m.screen = screenProject
-		m.focus = focusAgentStrip
+		m.focus = focusProjectItems
 	case m.screen == screenProject:
 		if !m.singleProject {
 			m.screen = screenProjects
@@ -819,7 +890,10 @@ func (m Model) handleEscKey() Model {
 // doesn't belong to THIS project — needed on every L0→L1 drill, since
 // applyAgents only recomputes this against whichever project was active the
 // last time a list_agents poll landed, not against a project switch that
-// just happened via keys alone.
+// just happened via keys alone. A PER-POLL-safe correction: it only touches
+// m.agent, never m.l1Section, so a routine poll (which calls this
+// unconditionally — see applyAgents) can never yank the merged list's cursor
+// off the THREADS section the operator may currently be browsing.
 func (m Model) refreshAgentStripSelection() Model {
 	strip := m.agentStripRows()
 	switch {
@@ -872,21 +946,6 @@ func (m Model) focusConversation() (Model, tea.Cmd) {
 	return m, fetchInboxAckCmd(m.caller, m.opts.Alias)
 }
 
-// stationUnread returns station's OWN session tuple's unread total/action
-// flag (spec iteration-5: the 📬 header badge and the FOR YOU section's
-// visibility gate) — reusing the SAME session_unread result fetchAgents
-// already computes for every distinct (socket_path, session_id) tuple in the
-// roster (station registers itself like any other agent, so its own row
-// carries it), never get_inbox: side-effect-free, exactly the count the
-// operator would see without disturbing it.
-func (m Model) stationUnread() (total int, action bool) {
-	idx := keyIndex(m.agents, agentKey, m.opts.Alias)
-	if idx < 0 {
-		return 0, false
-	}
-	return m.agents[idx].Unread, m.agents[idx].Action
-}
-
 // forYouKey is the FOR YOU list's identity-key extractor (a thread ID),
 // matching projKey/agentKey/convKey's role for the other three keyed lists.
 func forYouKey(r listThreadRow) int64 { return r.ID }
@@ -896,11 +955,13 @@ func forYouKey(r listThreadRow) int64 { return r.ID }
 // open-to-acknowledge eligibility check) whose last entry wasn't written by
 // station itself (spec iteration-5 Tier 0b's same display-only "waiting on
 // me" proxy — see unreadThreadsFor in nav.go), excluding anything already
-// acknowledged this run. This is a best-effort RECONSTRUCTION of which
-// threads make up stationUnread's exact count (per-thread read watermarks
-// aren't obtainable without get_inbox, which this feature must never call
-// outside the acknowledge path) — the header badge's count is authoritative;
-// this is display content for the section that count gates.
+// acknowledged this run — computed client-side from already-fetched thread
+// data, never get_inbox (which this feature must never call outside the
+// acknowledge path). This is now the ONE canonical source behind
+// operatorInboxCount (spec iteration-6 item 5) — the 📬 header badge and this
+// section's own row count both derive from len(forYouRows()), so they can
+// never disagree with each other the way the header's old
+// session_unread-RPC-derived count once could.
 func (m Model) forYouRows() []listThreadRow {
 	var out []listThreadRow
 	for _, row := range m.threads {
@@ -944,6 +1005,7 @@ func (m Model) openForYouThread(threadID int64) (Model, tea.Cmd) {
 	m.screen = screenProject
 	m.everNavigated = true
 	m = m.refreshAgentStripSelection()
+	m.l1Section = l1SectionThreads
 	m.conversation = threadID
 	var previewCmd, ackCmd tea.Cmd
 	m, previewCmd = m.conversationPreviewCmd(threadID, false)
@@ -953,38 +1015,24 @@ func (m Model) openForYouThread(threadID int64) (Model, tea.Cmd) {
 
 // handleMailJumpKey implements 'm' (spec iteration-5: "m from ANY level
 // jumps to the FOR YOU section (or straight into the single unread thread
-// when there is exactly one)"). Gated on stationUnread's count (the same
-// side-effect-free source the header badge uses) rather than len(forYouRows())
-// alone, so a real mismatch between the exact count and the best-effort row
-// reconstruction still lets the operator jump to look, rather than silently
-// doing nothing.
+// when there is exactly one)") — gated on forYouRows() itself, the same
+// canonical source the header badge's count (operatorInboxCount) uses (spec
+// iteration-6 item 5).
 func (m Model) handleMailJumpKey() (tea.Model, tea.Cmd) {
-	total, _ := m.stationUnread()
-	if total <= 0 {
+	rows := m.forYouRows()
+	if len(rows) == 0 {
 		m.status = "no mail for you"
 		return m, nil
 	}
-	rows := m.forYouRows()
 	if len(rows) == 1 {
 		return m.openForYouThread(rows[0].ID)
 	}
 	m.screen = screenProjects
 	m.focus = focusForYou
-	if len(rows) > 0 && keyIndex(rows, forYouKey, m.forYou) < 0 {
+	if keyIndex(rows, forYouKey, m.forYou) < 0 {
 		m.forYou = rows[0].ID
 	}
 	return m, nil
-}
-
-// agentAttached reports whether alias's tmux session currently has a human
-// client attached (spec iteration-5 Tier 1b: the attach marker) — "" /
-// unknown alias reads as not attached.
-func (m Model) agentAttached(alias string) bool {
-	idx := keyIndex(m.agents, agentKey, alias)
-	if idx < 0 {
-		return false
-	}
-	return m.agents[idx].Attached
 }
 
 // applyLastActive applies one fetchLastActiveCmd result (spec iteration-5
@@ -1045,18 +1093,19 @@ func (m Model) conversationPreviewCmd(threadID int64, forceRefresh bool) (Model,
 }
 
 // handleNudgeKey implements 'n' (spec §5-REVISED: "n nudge on agent
-// strip/page"): valid when the agent strip has focus (nudges the strip's
-// selected row) or when a whole agent page (screenAgent) is showing (nudges
-// that page's own agent, regardless of its sub-focus) — a no-op anywhere
-// else. Two guards mirror the pre-redesign roster's (spec §5 carried-over
-// fixes): filter/selection desync (a hidden selection is only snapped, never
-// acted on) and self-nudge (station's own row never opens the confirm gate —
-// nudging it would tmux send-keys INTO station's own pane).
+// strip/page"): valid when the merged AGENTS+THREADS list's cursor is on the
+// AGENTS section (nudges the selected agent) or when a whole agent page
+// (screenAgent) is showing (nudges that page's own agent, regardless of its
+// sub-focus) — a no-op anywhere else. Two guards mirror the pre-redesign
+// roster's (spec §5 carried-over fixes): filter/selection desync (a hidden
+// selection is only snapped, never acted on) and self-nudge (station's own
+// row never opens the confirm gate — nudging it would tmux send-keys INTO
+// station's own pane).
 func (m Model) handleNudgeKey() Model {
 	switch {
-	case m.focus == focusAgentStrip:
+	case m.focus == focusProjectItems && m.l1Section == l1SectionAgents:
 		rows := m.agentStripRows()
-		q, f := m.filterQueryFor(llAgentStrip)
+		q, f := m.filterQueryFor(llProjectItems)
 		if !selectionVisible(rows, agentKey, m.agent, m.renderRosterRow, q, f) {
 			m.agent = snapSelection(rows, agentKey, m.agent, m.renderRosterRow, q, f, "")
 			if m.agent == "" {
@@ -1379,13 +1428,18 @@ func (m Model) applyAgents(msg agentsMsg) Model {
 	}
 	// Single-project auto-skip (spec §5-REVISED: "L0 skipped entirely"),
 	// fired exactly once so a project appearing/disappearing later never
-	// yanks the operator back to L0 mid-session. Lands on the agent strip
-	// (iteration-4 queue item 1), same default as a manual L0 drill-in.
+	// yanks the operator back to L0 mid-session. Lands on the AGENTS section
+	// of the merged list (iteration-4 queue item 1), same default as a
+	// manual L0 drill-in.
 	if !m.everNavigated && m.screen == screenProjects && len(projects) == 1 {
 		m.screen = screenProject
-		m.focus = focusAgentStrip
+		m.focus = focusProjectItems
+		m = m.refreshProjectItemsSelection()
 	}
 
+	// Per-poll correction only — never touches m.l1Section, so a routine
+	// poll can never yank the merged list's cursor off whichever section the
+	// operator is currently browsing (see refreshAgentStripSelection's doc).
 	return m.refreshAgentStripSelection()
 }
 

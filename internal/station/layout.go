@@ -32,8 +32,7 @@ const (
 	boxBorderCols  = 2 // left+right border columns every box spends
 	minPaneOuter   = 5 // smallest sane box (border rows/cols + >=1-3 interior) — a floor, not a target, for a degenerate terminal size
 
-	minAgentStripRows = 5 // screenProject's agent-strip box floor before it eats into the conversation list's share
-	minForYouRows     = 4 // screenProjects' pinned FOR YOU box floor (spec iteration-5) before it eats into the project list's share
+	minForYouRows = 4 // screenProjects' pinned FOR YOU box floor (spec iteration-5) before it eats into the project list's share
 
 	fallbackTermWidth  = 120 // >= narrowWidthThreshold, so an unsized caller (incl. every test that never sends a WindowSizeMsg) sees the WIDE two-column layout
 	fallbackTermHeight = breadcrumbRows + statusLineRows + 2*boxBorderRows + 2*defaultRows
@@ -49,8 +48,11 @@ type layoutDims struct {
 	narrow        bool
 	leftW, rightW int
 	bodyH         int
-	agentStripH   int // screenProject only: the top sub-box's height (0 elsewhere)
-	convListH     int // screenProject: the bottom sub-box's height; screenAgent: the single list box's height
+	// convListH is the left column's single list box height — screenProject's
+	// merged AGENTS+THREADS list (spec iteration-6 item 3: no more separate
+	// agent-strip sub-box) or screenAgent's thread list; always equal to
+	// bodyH now that there's exactly one list per level to size.
+	convListH int
 	// forYouH is screenProjects' pinned FOR YOU sub-box's height (spec
 	// iteration-5) — 0 whenever it isn't showing (station has no unread
 	// mail), in which case renderLeftColumn renders the project list at the
@@ -76,7 +78,7 @@ func (m Model) layout() layoutDims {
 		bodyH = minPaneOuter
 	}
 
-	dims := layoutDims{bodyH: bodyH}
+	dims := layoutDims{bodyH: bodyH, convListH: bodyH}
 	if w < narrowWidthThreshold {
 		dims.narrow = true
 		dims.leftW, dims.rightW = w, w
@@ -95,24 +97,8 @@ func (m Model) layout() layoutDims {
 		dims.leftW, dims.rightW = left, right
 	}
 
-	if m.screen == screenProject {
-		agentH := bodyH / 3
-		if agentH < minAgentStripRows {
-			agentH = minAgentStripRows
-		}
-		if agentH > bodyH-minPaneOuter {
-			agentH = bodyH - minPaneOuter
-		}
-		if agentH < 0 {
-			agentH = 0
-		}
-		dims.agentStripH = agentH
-		dims.convListH = bodyH - agentH
-	} else {
-		dims.convListH = bodyH
-	}
 	if m.screen == screenProjects {
-		if total, _ := m.stationUnread(); total > 0 {
+		if m.operatorInboxCount() > 0 {
 			forYouH := bodyH / 4
 			if forYouH < minForYouRows {
 				forYouH = minForYouRows
@@ -127,6 +113,27 @@ func (m Model) layout() layoutDims {
 		}
 	}
 	return dims
+}
+
+// readingBoxDims reports the full-width reading view's box dimensions (spec
+// iteration-6 item 2: "Enter on a thread... replaces the whole layout with
+// the thread view") — the entire terminal's body area, regardless of the
+// two-column split or narrow-mode's own collapse threshold: reading is
+// always full width, on every terminal size.
+func (m Model) readingBoxDims() (width, height int) {
+	w := m.termWidth
+	if w <= 0 {
+		w = fallbackTermWidth
+	}
+	h := m.termHeight
+	if h <= 0 {
+		h = fallbackTermHeight
+	}
+	bodyH := h - breadcrumbRows - statusLineRows
+	if bodyH < minPaneOuter {
+		bodyH = minPaneOuter
+	}
+	return w, bodyH
 }
 
 // Pane border styles: the FOCUSED box's border reads distinctly (bright +
@@ -144,11 +151,19 @@ var (
 
 	breadcrumbStyle = lipgloss.NewStyle().Bold(true)
 
-	// mailBadgeStyle renders the header's 📬 badge (spec iteration-5:
-	// "styled prominently") — bold and in the same accent color as a
-	// focused pane's border, so it reads as a distinct, attention-grabbing
-	// element rather than blending into the plain breadcrumb text.
+	// mailBadgeStyle renders the header's 📬 badge when station HAS unread
+	// mail (spec iteration-5: "styled prominently") — bold and in the same
+	// accent color as a focused pane's border, so it reads as a distinct,
+	// attention-grabbing element rather than blending into the plain
+	// breadcrumb text.
 	mailBadgeStyle = lipgloss.NewStyle().Bold(true).Foreground(paneBorderFocusedColor)
+
+	// mailBadgeDimStyle renders the badge when station has NO unread mail
+	// (spec iteration-6 item 4: "📬 always visible in the header: dim '📬 0'
+	// when clear, bright '📬 N for you' when not") — same glyph, deliberately
+	// faint so a clear mailbox reads as calm rather than competing with the
+	// bright "N for you" state.
+	mailBadgeDimStyle = lipgloss.NewStyle().Faint(true)
 )
 
 // renderBox draws a rounded, bordered box titled in its own top border

@@ -8,22 +8,17 @@ import (
 )
 
 // focusConversationList drives m to screenProject with a single default
-// project (registering one agent auto-skips L0, landing on focusAgentStrip —
-// spec iteration-4: "agents first"), then Tabs onto focusConvList — the
-// entry point every conversation-list test below needs before it can
-// select/open a conversation. Mirrors the pre-redesign focusThreads helper's
-// role.
+// project (registering one agent auto-skips L0, landing on the merged
+// list's AGENTS section — spec iteration-4: "agents first") — the entry
+// point every conversation-list test below needs before it can
+// select/open a conversation via enterThreadsSection once its own threadsMsg
+// has landed. Mirrors the pre-redesign focusThreads helper's role.
 func focusConversationList(t *testing.T, m Model, agentAlias string) Model {
 	t.Helper()
 	next, _ := m.Update(agentsMsg{rows: []agentEnriched{{Alias: agentAlias}}})
 	m = mustModel(t, next)
-	if m.screen != screenProject || m.focus != focusAgentStrip {
-		t.Fatalf("setup: expected screenProject/focusAgentStrip after registering one agent, got screen=%v focus=%v", m.screen, m.focus)
-	}
-	next, _ = m.Update(keyMsg("tab")) // agent strip -> conversation list
-	m = mustModel(t, next)
-	if m.screen != screenProject || m.focus != focusConvList {
-		t.Fatalf("setup: expected screenProject/focusConvList after tab, got screen=%v focus=%v", m.screen, m.focus)
+	if m.screen != screenProject || m.focus != focusProjectItems || m.l1Section != l1SectionAgents {
+		t.Fatalf("setup: expected screenProject/focusProjectItems/AGENTS after registering one agent, got screen=%v focus=%v section=%v", m.screen, m.focus, m.l1Section)
 	}
 	return m
 }
@@ -41,6 +36,7 @@ func TestConversationSelectionStableAcrossRegroup(t *testing.T) {
 	}})
 	m = mustModel(t, next)
 	m = drainCmd(t, m, cmd)
+	m = enterThreadsSection(t, m) // cross into THREADS; lands on the default (first grouped row, conversation 1)
 
 	// Select conversation 2 by moving down once from the default (first
 	// grouped row, conversation 1).
@@ -107,6 +103,7 @@ func TestPaginationLazyLoadRequestsOffsetCorrectly(t *testing.T) {
 	if m.viewOffset != 50 {
 		t.Fatalf("viewOffset = %d, want 50", m.viewOffset)
 	}
+	m = enterThreadsSection(t, m) // cross into THREADS; the already-loaded preview means no extra get_thread call
 
 	// Focus the conversation (L2) before load-older applies (k/up only
 	// lazily loads while FOCUSED — scrollConversation).
@@ -189,6 +186,7 @@ func TestConversationReaderWindowingBoundsLineCountAndCursorAtBottomShowsNewest(
 	if len(m.viewEntries) != n {
 		t.Fatalf("loaded %d entries, want %d", len(m.viewEntries), n)
 	}
+	m = enterThreadsSection(t, m)
 	next, _ = m.Update(keyMsg("enter")) // focus the reader (L2)
 	m = mustModel(t, next)
 
@@ -306,6 +304,7 @@ func TestViewNewerCountIndicatorAndGFetchesTail(t *testing.T) {
 	if len(calls) != 1 {
 		t.Fatalf("expected exactly 1 get_thread call on selection (guess matched live total), got %d: %+v", len(calls), calls)
 	}
+	m = enterThreadsSection(t, m)
 	next, _ = m.Update(keyMsg("enter")) // focus (L2)
 	m = mustModel(t, next)
 	if m.viewTotal != 100 || m.viewNewerCount() != 0 {
@@ -359,6 +358,7 @@ func TestEscUnfocusesConversationReader(t *testing.T) {
 	next, cmd := m.Update(threadsMsg{threads: []listThreadRow{{ID: 1, FromAgent: "a", EntryCount: 1}}})
 	m = mustModel(t, next)
 	m = drainCmd(t, m, cmd)
+	m = enterThreadsSection(t, m)
 
 	next, _ = m.Update(keyMsg("enter"))
 	m = mustModel(t, next)
@@ -368,7 +368,7 @@ func TestEscUnfocusesConversationReader(t *testing.T) {
 
 	next, _ = m.Update(keyMsg("esc"))
 	m = mustModel(t, next)
-	if m.focus != focusConvList {
-		t.Fatalf("Esc must un-focus the reader back to focusConvList, got %v", m.focus)
+	if m.focus != focusProjectItems || m.l1Section != l1SectionThreads {
+		t.Fatalf("Esc must un-focus the reader back to focusProjectItems/THREADS, got focus=%v section=%v", m.focus, m.l1Section)
 	}
 }

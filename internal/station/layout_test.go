@@ -158,9 +158,10 @@ func TestBoxLinesAreExactlyOuterWidth(t *testing.T) {
 			}
 		}
 	}
-	checkExactWidth("agent strip", m.renderAgentStripBox(dims.leftW, dims.agentStripH), dims.leftW)
-	checkExactWidth("conversations", m.renderConvListBox(dims.leftW, dims.convListH, llConvList, "CONVERSATIONS", true), dims.leftW)
+	checkExactWidth("merged AGENTS+THREADS list", m.renderProjectItemsBox(dims.leftW, dims.convListH), dims.leftW)
+	checkExactWidth("thread list (screenAgent)", m.renderConvListBox(dims.leftW, dims.convListH, llAgentThreads, "THREADS", true), dims.leftW)
 	checkExactWidth("conversation preview", m.renderConversationBox(dims.rightW, dims.bodyH, false), dims.rightW)
+	checkExactWidth("agent page preview", m.renderAgentPagePreviewBox(dims.rightW, dims.bodyH), dims.rightW)
 }
 
 // TestAgentStripLongLabelTruncatesInsteadOfWrapping is a pre-redesign

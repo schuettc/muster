@@ -1,6 +1,9 @@
 package station
 
-import "sort"
+import (
+	"sort"
+	"strconv"
+)
 
 // This file is the IA-redesign's own concern (spec §5-REVISED): the
 // project-first, two-column drill-down's navigation state machine and the
@@ -32,10 +35,9 @@ type focusTarget int
 const (
 	focusProjectList  focusTarget = iota // screenProjects' only list
 	focusForYou                          // screenProjects' pinned FOR YOU section (spec iteration-5), only a live target while it's showing
-	focusAgentStrip                      // screenProject's top strip
-	focusConvList                        // screenProject's conversation list
+	focusProjectItems                    // screenProject's SINGLE merged AGENTS+THREADS list (spec iteration-6 item 3: "kill the L1 sibling boxes")
 	focusAgentThreads                    // screenAgent's thread list
-	focusConvRight                       // L2: the right pane is focused (read/load-older/reply)
+	focusConvRight                       // full-width reading (spec iteration-6 item 2): the thread reader owns the keys, rendered full terminal width regardless of screen/narrow
 )
 
 // llList identifies which LEFT list a '/' filter is scoped to (spec §5-REVISED
@@ -47,10 +49,39 @@ type llList int
 const (
 	llProjects llList = iota
 	llForYou
-	llAgentStrip
-	llConvList
+	llProjectItems
 	llAgentThreads
 )
+
+// l1Section identifies which section of screenProject's merged AGENTS+THREADS
+// list (spec iteration-6 item 3: "ONE continuous list with section headers:
+// 'AGENTS' rows then 'THREADS' rows, a single j/k cursor across both
+// sections") currently owns that single cursor.
+type l1Section int
+
+const (
+	l1SectionAgents l1Section = iota
+	l1SectionThreads
+)
+
+// l1Row is one row of screenProject's merged AGENTS+THREADS list — exactly
+// one of Agent/Thread is populated, discriminated by Section.
+type l1Row struct {
+	Section l1Section
+	Agent   agentEnriched
+	Thread  conversationRow
+}
+
+// l1RowKey is the merged list's identity-key extractor (spec §5 carried-over
+// discipline: every keyed list needs one to survive a poll's regroup) —
+// "a:<alias>" for an agent row, "t:<thread id>" for a thread row; the two
+// domains can never collide on a shared key.
+func l1RowKey(r l1Row) string {
+	if r.Section == l1SectionAgents {
+		return "a:" + r.Agent.Alias
+	}
+	return "t:" + strconv.FormatInt(r.Thread.ID, 10)
+}
 
 // unassignedProject is the synthetic project key for the "(unassigned)"
 // bucket (spec iteration-4 orphan-thread fix, queue item 4d): the home for a

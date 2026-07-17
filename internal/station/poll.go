@@ -121,11 +121,6 @@ func fetchAgents(caller render.Caller) ([]agentEnriched, error) {
 		e.Live = tmuxenv.IsSessionAlive(a.SocketPath, a.SessionID)
 		if e.Live {
 			e.Label, e.LabelManual = tmuxenv.SessionLabel(a.SocketPath, a.SessionID)
-			// Tier 1 attach marker (spec iteration-5): batched into this SAME
-			// per-agent tmux query loop as the liveness/label checks above,
-			// rather than a separate pass — only worth asking for a session
-			// that's actually alive.
-			e.Attached = tmuxenv.SessionAttached(a.SocketPath, a.SessionID)
 		}
 		if a.SocketPath != "" && a.SessionID != "" {
 			key := [2]string{a.SocketPath, a.SessionID}

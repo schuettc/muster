@@ -36,21 +36,17 @@ func typeString(t *testing.T, m Model, s string) Model {
 	return m
 }
 
-// tabToAgentStrip presses Tab (bounded, so a broken cycle fails loudly
-// rather than looping forever) until m.focus == focusAgentStrip — screenProject's
-// Tab cycle order depends on where it started (spec §5-REVISED: "tab cycles
-// this screen's sub-targets"), so tests that need the agent strip focused
-// shouldn't hardcode how many presses that takes.
+// tabToAgentStrip asserts m is already parked on screenProject's merged
+// list's AGENTS section — the default landing spot on every L0→L1 drill /
+// single-project auto-skip (spec iteration-4: "agents first"), so there is
+// no Tab press needed to reach it any more (spec iteration-6 item 3: Tab is
+// a no-op within screenProject now that there's only one focusable list).
+// Kept under its old name so every call site below is unchanged.
 func tabToAgentStrip(t *testing.T, m Model) Model {
 	t.Helper()
-	for i := 0; i < 5; i++ {
-		if m.focus == focusAgentStrip {
-			return m
-		}
-		next, _ := m.Update(keyMsg("tab"))
-		m = mustModel(t, next)
+	if m.focus != focusProjectItems || m.l1Section != l1SectionAgents {
+		t.Fatalf("expected focusProjectItems/AGENTS section (the default landing spot), got focus=%v section=%v", m.focus, m.l1Section)
 	}
-	t.Fatalf("Tab never reached focusAgentStrip (stuck at %v)", m.focus)
 	return m
 }
 
@@ -182,11 +178,10 @@ func TestComposerReplyFromFocusedConversation(t *testing.T) {
 	next, cmd := m.Update(threadsMsg{threads: []listThreadRow{{ID: 7, FromAgent: "agent-1", EntryCount: 0}}})
 	m = mustModel(t, next)
 	m = drainCmd(t, m, cmd) // the auto-selected conversation's preview fetch
-	if m.screen != screenProject || m.focus != focusAgentStrip || m.conversation != 7 {
-		t.Fatalf("setup: expected screenProject/focusAgentStrip/conversation=7, got screen=%v focus=%v conv=%d", m.screen, m.focus, m.conversation)
+	if m.screen != screenProject || m.focus != focusProjectItems || m.l1Section != l1SectionAgents || m.conversation != 7 {
+		t.Fatalf("setup: expected screenProject/focusProjectItems/AGENTS/conversation=7, got screen=%v focus=%v section=%v conv=%d", m.screen, m.focus, m.l1Section, m.conversation)
 	}
-	next, _ = m.Update(keyMsg("tab")) // agent strip -> conversation list, so Enter below focuses the conversation
-	m = mustModel(t, next)
+	m = enterThreadsSection(t, m) // cross into THREADS, so Enter below focuses the conversation
 
 	// 'r' before a conversation is focused must be a no-op.
 	next, _ = m.Update(keyMsg("r"))
@@ -248,9 +243,9 @@ func TestNudgeConfirmGateYesInvokesNudgeWithSelfReport(t *testing.T) {
 	m := NewModel(fake, Options{Nudger: fn})
 	next, _ := m.Update(agentsMsg{rows: []agentEnriched{{Alias: "backend-1", Label: "backend"}}})
 	m = mustModel(t, next)
-	// Single default-project bus auto-skips to screenProject/focusConvList;
-	// Tab to reach the agent strip (spec §5-REVISED: "n nudge on agent
-	// strip/page").
+	// Single default-project bus auto-skips to screenProject/focusProjectItems
+	// on the AGENTS section (spec iteration-4/6: "agents first" / "n nudge on
+	// AGENTS section/page").
 	m = tabToAgentStrip(t, m)
 
 	next, _ = m.Update(keyMsg("n"))
@@ -363,8 +358,8 @@ func TestFilterHidesNonMatchingAgentStripRows(t *testing.T) {
 
 	next, _ = m.Update(keyMsg("/"))
 	m = mustModel(t, next)
-	if !m.filter.editing || m.filter.list != llAgentStrip {
-		t.Fatalf("expected filter editing on llAgentStrip, got %+v", m.filter)
+	if !m.filter.editing || m.filter.list != llProjectItems {
+		t.Fatalf("expected filter editing on llProjectItems, got %+v", m.filter)
 	}
 	m = typeString(t, m, "back")
 
@@ -610,8 +605,7 @@ func TestFilterHidesSelectedConversationEnterIsNoOp(t *testing.T) {
 	if m.conversation != 1 {
 		t.Fatalf("setup: expected conversation 1 selected, got %d", m.conversation)
 	}
-	next, _ = m.Update(keyMsg("tab")) // agent strip -> conversation list, so '/' below filters conversations
-	m = mustModel(t, next)
+	m = enterThreadsSection(t, m) // cross into THREADS, so '/' below filters conversations
 
 	next, _ = m.Update(keyMsg("/"))
 	m = mustModel(t, next)
@@ -660,8 +654,7 @@ func TestFilterConversationsJKSkipsHiddenRows(t *testing.T) {
 	if m.conversation != 1 {
 		t.Fatalf("setup: expected conversation 1 selected, got %d", m.conversation)
 	}
-	next, _ = m.Update(keyMsg("tab")) // agent strip -> conversation list, so j/k below move the conversation selection
-	m = mustModel(t, next)
+	m = enterThreadsSection(t, m) // cross into THREADS, so j/k below move the conversation selection
 
 	next, _ = m.Update(keyMsg("/"))
 	m = mustModel(t, next)

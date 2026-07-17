@@ -10,29 +10,50 @@ import (
 // elevation (📬 header badge, the pinned FOR YOU section, 'm' jump) and the
 // activity/attach enrichments (Tier 0/Tier 1).
 
-// TestMailBadgeShowsOnlyWhenUnread covers item 1a: the header's 📬 badge
-// appears only when station's OWN session_unread-derived count is > 0 —
-// count comes straight from the roster row applyAgents/fetchAgents already
-// populates via session_unread (side-effect-free), never get_inbox.
-func TestMailBadgeShowsOnlyWhenUnread(t *testing.T) {
+// TestMailBadgeAlwaysVisibleDimWhenClearBrightWhenNot covers spec iteration-6
+// item 4 ("📬 always visible in the header: dim '📬 0' when clear, bright
+// '📬 N for you' when not") and item 5 (the header count and forYouRows()
+// share the ONE canonical source, operatorInboxCount) — count comes from
+// threads addressed directly to station's own alias, never get_inbox.
+func TestMailBadgeAlwaysVisibleDimWhenClearBrightWhenNot(t *testing.T) {
 	m := NewModel(fakeCaller{}, Options{Alias: "station"})
-	next, _ := m.Update(agentsMsg{rows: []agentEnriched{{Alias: "station", Unread: 0}}})
+	next, _ := m.Update(agentsMsg{rows: []agentEnriched{{Alias: "station"}, {Alias: "alpha-1", Project: "alpha"}}})
 	m = mustModel(t, next)
-	if strings.Contains(m.renderBreadcrumb(), "📬") {
-		t.Fatalf("badge must not show with 0 unread:\n%s", m.renderBreadcrumb())
+
+	// No threads addressed to station yet: the badge is ALWAYS visible now,
+	// showing the dim "📬 0" form rather than disappearing entirely.
+	if !strings.Contains(m.renderBreadcrumb(), "📬 0") {
+		t.Fatalf("badge must show '📬 0' with no unread mail, got:\n%s", m.renderBreadcrumb())
+	}
+	if m.operatorInboxCount() != 0 {
+		t.Fatalf("operatorInboxCount = %d, want 0", m.operatorInboxCount())
 	}
 
-	next, _ = m.Update(agentsMsg{rows: []agentEnriched{{Alias: "station", Unread: 3, Action: true}}})
+	next, _ = m.Update(threadsMsg{threads: []listThreadRow{
+		{ID: 1, FromAgent: "alpha-1", ToKind: "agent", ToTarget: "station", LastFrom: "alpha-1", Subject: "one", LastAt: 100, EntryCount: 1},
+		{ID: 2, FromAgent: "alpha-1", ToKind: "agent", ToTarget: "station", LastFrom: "alpha-1", Subject: "two", LastAt: 200, EntryCount: 1},
+		{ID: 3, FromAgent: "alpha-1", ToKind: "agent", ToTarget: "station", LastFrom: "alpha-1", Subject: "three", LastAt: 300, EntryCount: 1},
+	}})
 	m = mustModel(t, next)
 	if !strings.Contains(m.renderBreadcrumb(), "📬 3 for you") {
-		t.Fatalf("badge must show '📬 3 for you' with unread=3, got:\n%s", m.renderBreadcrumb())
+		t.Fatalf("badge must show '📬 3 for you' with 3 unread, got:\n%s", m.renderBreadcrumb())
+	}
+	// Canonical count equality (spec item 5): the header's count and the FOR
+	// YOU section's own row count must ALWAYS be the same number — they now
+	// literally derive from the same forYouRows() call, so there is no
+	// "header said 1, FOR YOU said 2" mismatch left to reproduce.
+	if got, want := m.operatorInboxCount(), len(m.forYouRows()); got != want {
+		t.Fatalf("operatorInboxCount()=%d != len(forYouRows())=%d — the header and FOR YOU section must never disagree", got, want)
+	}
+	if m.operatorInboxCount() != 3 {
+		t.Fatalf("operatorInboxCount = %d, want 3", m.operatorInboxCount())
 	}
 
-	// Back to 0: the badge must disappear again (never sticky).
-	next, _ = m.Update(agentsMsg{rows: []agentEnriched{{Alias: "station", Unread: 0}}})
-	m = mustModel(t, next)
-	if strings.Contains(m.renderBreadcrumb(), "📬") {
-		t.Fatalf("badge must disappear once unread returns to 0:\n%s", m.renderBreadcrumb())
+	// Back to 0 (every thread acked): the badge returns to the dim "📬 0"
+	// form rather than vanishing.
+	m.ackedThreads = map[int64]bool{1: true, 2: true, 3: true}
+	if !strings.Contains(m.renderBreadcrumb(), "📬 0") {
+		t.Fatalf("badge must show '📬 0' once every thread is acked, got:\n%s", m.renderBreadcrumb())
 	}
 }
 
@@ -277,31 +298,33 @@ func TestUnreadAgeRendersOnRosterAndProjectRows(t *testing.T) {
 	}
 }
 
-// TestAttachMarkerRenders covers Tier 1b: an agent whose session has a human
-// client attached renders the 👁 marker on its roster row and the agent
-// page's breadcrumb header.
-func TestAttachMarkerRenders(t *testing.T) {
+// TestEyeMarkerRemovedEverywhere covers spec iteration-6 item 1: "remove the
+// attach/eye marker everywhere in station UI (roster rows, agent pages, help
+// legend)" — internal/tmuxenv.SessionAttached and its own test stay in
+// place (unused-by-station is fine per the task brief), but nothing in
+// station's rendering may reference it or show the 👁 glyph any more.
+func TestEyeMarkerRemovedEverywhere(t *testing.T) {
 	m := NewModel(fakeCaller{}, Options{})
 	next, _ := m.Update(agentsMsg{rows: []agentEnriched{
-		{Alias: "alpha-1", Project: "alpha", Live: true, Attached: true},
-		{Alias: "alpha-2", Project: "alpha", Live: true, Attached: false},
+		{Alias: "alpha-1", Project: "alpha", Live: true},
+		{Alias: "alpha-2", Project: "alpha", Live: true},
 	}})
 	m = mustModel(t, next)
 
-	attachedIdx := keyIndex(m.agents, agentKey, "alpha-1")
-	notAttachedIdx := keyIndex(m.agents, agentKey, "alpha-2")
-	attachedLine := m.renderRosterLine("  ", m.agents[attachedIdx], 80)
-	notAttachedLine := m.renderRosterLine("  ", m.agents[notAttachedIdx], 80)
-	if !strings.Contains(attachedLine, "👁") {
-		t.Fatalf("attached agent's row must show the 👁 marker, got %q", attachedLine)
-	}
-	if strings.Contains(notAttachedLine, "👁") {
-		t.Fatalf("a non-attached agent's row must not show the 👁 marker, got %q", notAttachedLine)
+	idx := keyIndex(m.agents, agentKey, "alpha-1")
+	if strings.Contains(m.renderRosterLine("  ", m.agents[idx], 80), "👁") {
+		t.Fatalf("roster rows must never show the 👁 marker any more")
 	}
 
 	m.screen = screenAgent
 	m.agent = "alpha-1"
-	if !strings.Contains(m.renderBreadcrumb(), "👁") {
-		t.Fatalf("agent page header must show the attach marker for an attached agent, got:\n%s", m.renderBreadcrumb())
+	if strings.Contains(m.renderBreadcrumb(), "👁") {
+		t.Fatalf("the agent page header must never show the 👁 marker any more, got:\n%s", m.renderBreadcrumb())
+	}
+
+	help := m
+	help.helpOpen = true
+	if strings.Contains(help.View(), "👁") {
+		t.Fatalf("the help overlay must never mention the 👁 marker any more:\n%s", help.View())
 	}
 }
