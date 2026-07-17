@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/signal"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
@@ -44,20 +43,29 @@ func (daemonCaller) Call(op string, args map[string]any) (json.RawMessage, error
 }
 
 // Run parses station's flags, registers its tmux identity on the bus
-// (collision-safe fail-over per spec §5), runs the Bubble Tea program, and
-// deregisters on exit. Deregistration is a single deferred, CONDITIONAL
-// operation (deregisterOnce — re-fetches the record and deletes only if the
-// session tuple still matches ours) that fires on every exit path: a clean
-// `q`, SIGINT/SIGTERM (translated into the same p.Quit() teardown `q` uses,
-// so the terminal is restored the same way), and a panic — bubbletea itself
-// catches a panic inside Update/View, restores the terminal, and returns it
-// as Run's error, but the recover here also covers anything escaping that
-// guarded region. Init/run failure rolls the registration back too: since
-// deregisterIfStillOurs is conditional on the tuple still matching ours, and
-// nothing else could plausibly have raced onto a brand-new alias in the
-// (sub-second) span between registerStation returning and p.Run() failing,
-// the conditional check is a no-op rollback in practice — one code path
-// covers both "ran fine then quit" and "never really got going."
+// (collision-safe fail-over per spec §5), and runs the Bubble Tea program.
+//
+// Exit does NOT deregister (spec iteration-8: "operator read-state survives
+// restarts"). A prior version deregistered — conditionally but
+// unconditionally-on-every-exit-path — which DELETED the agent row,
+// including last_read_entry_id: the operator's own read watermark. That
+// meant every station restart resurrected already-acknowledged mail as
+// unread (an operator-diagnosed regression: "📬 2 came back" after a plain
+// quit/relaunch). Leaving the row in place instead means: tmux-liveness
+// (get_agent/list_agents' own liveness check, which shells to real tmux
+// rather than trusting this row) correctly shows the row DEAD between runs —
+// nothing here claims station is still live while it isn't — and the NEXT
+// `muster station` launch's registerStation call re-registers the exact same
+// alias, whose upsert (store.Store.RegisterAgent) already preserves
+// last_read_entry_id verbatim (it simply isn't one of the columns the ON
+// CONFLICT clause overwrites — see agents.go), so the operator's read
+// watermark survives the restart intact.
+//
+// The one caveat, worth stating plainly: `muster gc` reaps dead agents
+// (DeleteAgent) and WILL drop the watermark right along with the rest of the
+// row — acceptable until real tombstone semantics exist (a dead row that
+// keeps last_read_entry_id instead of being deleted outright), which is
+// punch-listed, not solved here.
 func Run(args []string) error {
 	fs := flag.NewFlagSet("station", flag.ContinueOnError)
 	interval := fs.Duration("interval", time.Second, "poll interval")
@@ -74,7 +82,6 @@ func Run(args []string) error {
 	if err != nil {
 		return fmt.Errorf("station: register: %w", err)
 	}
-	dereg := deregisterOnce(caller, registeredAlias, c)
 
 	m := NewModel(caller, Options{Interval: *interval, Aliases: *aliases, Width: *width, Alias: registeredAlias})
 	p := tea.NewProgram(m, tea.WithAltScreen())
@@ -96,21 +103,9 @@ func Run(args []string) error {
 		}
 	}()
 
-	// Covers a panic escaping p.Run() itself (bubbletea's default panic
-	// catching already restores the terminal and converts an Update/View
-	// panic into runErr below — this is a backstop, not the primary path).
-	defer func() {
-		if r := recover(); r != nil {
-			dereg()
-			panic(r)
-		}
-	}()
-
 	if _, runErr := p.Run(); runErr != nil {
-		dereg()
 		return fmt.Errorf("station: %w", runErr)
 	}
-	dereg()
 	return nil
 }
 
@@ -197,32 +192,4 @@ func registerStation(caller render.Caller, alias string, c tmuxenv.Capture) (str
 // registerStation treats as "try the next suffix" rather than fatal.
 func isIfAbsentConflict(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "if_absent conflict")
-}
-
-// deregisterIfStillOurs re-fetches alias and deregisters only if its session
-// tuple still matches c — a second station (or a re-registered agent) that
-// took the alias over is never deleted by this one's exit (spec §5:
-// deregistration is CONDITIONAL). Best-effort: errors are swallowed, same as
-// a clean quit that can no longer usefully report anything.
-func deregisterIfStillOurs(caller render.Caller, alias string, c tmuxenv.Capture) {
-	res, err := getAgentTuple(caller, alias)
-	if err != nil || !res.Found {
-		return
-	}
-	if res.Agent.SocketPath == c.SocketPath && res.Agent.SessionID == c.SessionID {
-		_, _ = caller.Call("deregister_agent", map[string]any{"alias": alias})
-	}
-}
-
-// deregisterOnce wraps deregisterIfStillOurs in a sync.Once: Run's several
-// exit paths (a clean quit, a signal, and a recovered panic) can each try to
-// fire the SAME deregistration, and this collapses them to exactly one
-// attempt — harmless even without the Once (deregisterIfStillOurs already
-// no-ops once the record is gone), but avoids a redundant daemon round trip
-// when two paths race to be first.
-func deregisterOnce(caller render.Caller, alias string, c tmuxenv.Capture) func() {
-	var once sync.Once
-	return func() {
-		once.Do(func() { deregisterIfStillOurs(caller, alias, c) })
-	}
 }

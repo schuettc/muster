@@ -49,15 +49,90 @@ type layoutDims struct {
 	leftW, rightW int
 	bodyH         int
 	// convListH is the left column's single list box height — screenProject's
-	// merged AGENTS+THREADS list (spec iteration-6 item 3: no more separate
-	// agent-strip sub-box) or screenAgent's thread list; always equal to
-	// bodyH now that there's exactly one list per level to size.
+	// agents list, the "(unassigned)" bucket's ORPHANED THREADS list, or
+	// screenAgent's thread list; always equal to bodyH EXCEPT when
+	// threadsHorizontal is true, in which case it's the top table's own
+	// (smaller) share — see splitThreadsRows.
 	convListH int
 	// forYouH is screenProjects' pinned FOR YOU sub-box's height (spec
 	// iteration-5) — 0 whenever it isn't showing (station has no unread
 	// mail), in which case renderLeftColumn renders the project list at the
 	// full bodyH exactly as before this feature.
 	forYouH int
+	// threadsHorizontal is true when the CURRENT screen's left list is the
+	// THREADS table (spec iteration-8: "threads-level layout goes
+	// horizontal") — an agent's own thread list (screenAgent) or the
+	// "(unassigned)" bucket's ORPHANED THREADS exception (screenProject +
+	// l1IsOrphaned). At this level the table spans the FULL terminal width
+	// on top (convListH tall) and the selected thread's preview spans full
+	// width below (previewH tall) — parent-above-child instead of the
+	// vertical two-column split every other level keeps. See
+	// isThreadsTableLevel.
+	threadsHorizontal bool
+	// previewH is the bottom preview box's height when threadsHorizontal is
+	// true — meaningless (left 0) otherwise, since every other level's
+	// preview spans the full bodyH (see rightColumnHeight).
+	previewH int
+}
+
+// isThreadsTableLevel reports whether the CURRENT screen's left list is the
+// wide, columnized THREADS table (spec iteration-8's horizontal-layout
+// trigger) rather than a short-label roster: an agent's own thread list
+// (screenAgent), or the "(unassigned)" bucket's ORPHANED THREADS exception
+// (screenProject's one l1IsOrphaned case). Projects and agents levels
+// (screenProjects, and every OTHER project's L1 agents list) keep the
+// vertical two-column split — their left lists are short live-dot/label
+// rows, not this ID/TAG/WHO/AGE/SUBJECT table, so they read fine narrow.
+// screenProjects' pinned FOR YOU section would also qualify here if it ever
+// became table-shaped like this one; today renderForYouBox renders a plain
+// subject/from/age line (renderForYouLine), not the columnized table, so it
+// stays vertical along with the rest of screenProjects.
+func (m Model) isThreadsTableLevel() bool {
+	return m.screen == screenAgent || (m.screen == screenProject && m.l1IsOrphaned())
+}
+
+// threadsListShareNum/threadsListShareDen is the threads-level horizontal
+// split's default list/preview ratio (spec iteration-8: "60/40 by default")
+// — knobs, not a hardcoded fraction, so a future operator preference could
+// retune the split without touching the layout math itself.
+const (
+	threadsListShareNum = 6
+	threadsListShareDen = 10
+
+	minThreadsListRows    = 5 // floor so the table (header + a few rows) stays usable even in a short terminal
+	minThreadsPreviewRows = 3 // floor so the preview keeps at least a line or two of content
+)
+
+// splitThreadsRows divides bodyH between the threads-level table (top) and
+// its selected thread's preview (bottom) — the default 60/40 split, each
+// side floored so a short terminal never squeezes one pane to nothing.
+func splitThreadsRows(bodyH int) (listH, previewH int) {
+	listH = bodyH * threadsListShareNum / threadsListShareDen
+	if listH < minThreadsListRows {
+		listH = minThreadsListRows
+	}
+	if listH > bodyH-minThreadsPreviewRows {
+		listH = bodyH - minThreadsPreviewRows
+	}
+	if listH < 0 {
+		listH = 0
+	}
+	previewH = bodyH - listH
+	if previewH < 0 {
+		previewH = 0
+	}
+	return listH, previewH
+}
+
+// rightColumnHeight is the right pane's height: previewH when the current
+// level lays out horizontally (dims.threadsHorizontal — see
+// isThreadsTableLevel), bodyH otherwise (the vertical two-column split's
+// right column always spans the whole body height).
+func (dims layoutDims) rightColumnHeight() int {
+	if dims.threadsHorizontal {
+		return dims.previewH
+	}
+	return dims.bodyH
 }
 
 // layout computes this render's box dimensions from the model's last-known
@@ -79,10 +154,20 @@ func (m Model) layout() layoutDims {
 	}
 
 	dims := layoutDims{bodyH: bodyH, convListH: bodyH}
-	if w < narrowWidthThreshold {
+	switch {
+	case w < narrowWidthThreshold:
+		// Narrow mode's single-column collapse (spec §5-REVISED) takes
+		// priority over the threads-level horizontal split below — narrow
+		// mode already shows exactly one list, full width, with no preview
+		// pane at all (see renderBody), so there is nothing for
+		// threadsHorizontal to add here.
 		dims.narrow = true
 		dims.leftW, dims.rightW = w, w
-	} else {
+	case m.isThreadsTableLevel():
+		dims.threadsHorizontal = true
+		dims.leftW, dims.rightW = w, w
+		dims.convListH, dims.previewH = splitThreadsRows(bodyH)
+	default:
 		left := leftColWidth
 		if left > w-minPaneOuter {
 			left = w - minPaneOuter
@@ -273,30 +358,70 @@ func windowLines(lines []string, height, selected int) []string {
 }
 
 // Conversation-row column widths (spec §5 layout carried-over item:
-// "columnized like the feed") — narrower than the pre-redesign threads
-// pane's, since conversations now live in the FIXED-width left column
-// (spec §5-REVISED) rather than getting the whole right side of the
-// terminal. LAST (the pre-redesign "last speaker" column) is dropped
-// entirely: WHO's own arrow already conveys the participants, and the
-// tighter left column has no room left for a third identity column.
+// "columnized like the feed"; spec iteration-8: "ID/TAG/WHO/AGE/SUBJECT
+// finally get room — widen the column budgets accordingly"). ID/TAG/AGE stay
+// fixed — TAG must fit the longest intent tag verbatim ("[action]"/
+// "[reply?]" = 8 chars, PadDisplay only PADS a short column, it never
+// truncates a longer one, so this must be >= the longest tag or the column
+// silently overflows; ID/AGE never need more than their pre-iteration-8
+// widths. WHO is the one column that scales with available room — see
+// threadWhoWidth. LAST (the pre-redesign "last speaker" column) stays
+// dropped: WHO's own arrow already conveys the participants.
 const (
 	threadIDWidth  = 5
-	threadTagWidth = 9 // fits the longest tag verbatim ("[action]"/"[reply?]" = 8 chars) — PadDisplay only PADS a short column, it never truncates a longer one, so this must be >= the longest tag or the column silently overflows.
-	threadWhoWidth = 14
+	threadTagWidth = 9
 	threadAgeWidth = 4
+
+	// threadWhoMinWidth is WHO's floor — the pre-iteration-8 fixed width,
+	// still what a narrow-mode terminal (or a degenerately small one) gets.
+	// threadWhoMaxWidth caps how much of a very wide terminal's extra room
+	// WHO is allowed to claim, so one row's "long-label→another-long-label"
+	// can't swallow the whole table when most rows are short and SUBJECT
+	// still wants a real budget.
+	threadWhoMinWidth = 14
+	threadWhoMaxWidth = 32
 )
 
-// threadsPlainFixedWidth is every conversation-row column EXCEPT subject,
-// plus its separators, in plain display columns — the subject budget is
-// innerW minus this, so the columns-plus-subject total always comes out to
-// exactly innerW (renderBox's content-line contract).
-const threadsPlainFixedWidth = 2 /* marker */ + threadIDWidth + 2 + threadTagWidth + 2 + threadWhoWidth + 2 + threadAgeWidth + 2
+// threadWhoWidth picks WHO's column width for a table rendered at innerW
+// display columns (spec iteration-8: "WHO shows both full labels where they
+// fit"). The threads-level table now spans the full terminal width in
+// non-narrow mode (see isThreadsTableLevel/layout), so WHO scales with it —
+// a flat 1/6 share of innerW, floored at threadWhoMinWidth (so a narrow or
+// small terminal renders exactly as before this feature) and capped at
+// threadWhoMaxWidth.
+func threadWhoWidth(innerW int) int {
+	who := innerW / 6
+	if who < threadWhoMinWidth {
+		who = threadWhoMinWidth
+	}
+	if who > threadWhoMaxWidth {
+		who = threadWhoMaxWidth
+	}
+	return who
+}
 
-// threadsHeaderLine renders a conversation list's own column header,
-// mirroring render.Renderer.Header's role for the activity feed.
-func threadsHeaderLine() string {
+// threadsColumnWidths computes WHO's width for a table rendered at innerW,
+// plus fixedWidth — every column (ID/TAG/WHO/AGE) and its separators, in
+// plain display columns — so the SUBJECT budget is innerW minus fixedWidth,
+// always coming out to exactly innerW total (renderBox's content-line
+// contract). Every caller building a table row at some innerW must derive
+// WHO's width through this (never threadWhoWidth alone), so the header row
+// and every conversation row size WHO identically.
+func threadsColumnWidths(innerW int) (whoW, fixedWidth int) {
+	whoW = threadWhoWidth(innerW)
+	fixedWidth = 2 /* marker */ + threadIDWidth + 2 + threadTagWidth + 2 + whoW + 2 + threadAgeWidth + 2
+	return whoW, fixedWidth
+}
+
+// threadsHeaderLine renders a conversation list's own column header at
+// innerW, mirroring render.Renderer.Header's role for the activity feed —
+// WHO's width matches renderConversationLineMarked's exactly (both derive it
+// via threadsColumnWidths), so the header stays aligned with every row under
+// it regardless of the table's width.
+func threadsHeaderLine(innerW int) string {
+	whoW, _ := threadsColumnWidths(innerW)
 	return "  " + render.PadDisplay("ID", threadIDWidth) + "  " + render.PadDisplay("TAG", threadTagWidth) + "  " +
-		render.PadDisplay("WHO", threadWhoWidth) + "  " + render.PadDisplay("AGE", threadAgeWidth) + "  " + "SUBJECT"
+		render.PadDisplay("WHO", whoW) + "  " + render.PadDisplay("AGE", threadAgeWidth) + "  " + "SUBJECT"
 }
 
 // colorIntentTag wraps an already-padded tag column in its intent's style —

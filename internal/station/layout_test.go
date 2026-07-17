@@ -271,3 +271,193 @@ func TestNarrowThresholdMath(t *testing.T) {
 		t.Fatalf("width AT the threshold must not be narrow")
 	}
 }
+
+// This section is spec iteration-8's own test suite: the threads-level
+// layout goes horizontal (an agent's own thread list, and the
+// "(unassigned)" bucket's ORPHANED THREADS exception) — full-width table on
+// top, full-width preview below — while projects/agents levels keep the
+// vertical two-column split, and narrow mode's single-column collapse stays
+// exactly as it was.
+
+// TestThreadsLevelLayoutGoesHorizontal is iteration-8's core sizing +
+// column-widen check: at screenAgent (an agent's own thread list) and a wide
+// (200-col) terminal, layout() must report threadsHorizontal with BOTH the
+// table and the preview spanning the full terminal width, stacked list/
+// preview by height (default 60/40) rather than split left/right — and the
+// widened WHO column must render a from→to pair in FULL that the
+// pre-iteration-8 fixed 14-col width would have truncated.
+func TestThreadsLevelLayoutGoesHorizontal(t *testing.T) {
+	m := NewModel(fakeCaller{}, Options{})
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 200, Height: 50})
+	m = mustModel(t, next)
+	m = focusConversationList(t, m, "backend-reviewer")
+
+	const who = "backend-reviewer→frontend-owner" // 31 display cols: fits the new (up to 32) WHO width, not the old fixed 14
+	next, cmd := m.Update(threadsMsg{threads: []listThreadRow{
+		{ID: 1, FromAgent: "backend-reviewer", ToKind: "agent", ToTarget: "frontend-owner", Subject: "widen the columns", LastAt: time.Now().UnixMilli(), EntryCount: 1},
+	}})
+	m = mustModel(t, next)
+	m = drainCmd(t, m, cmd)
+
+	dims := m.layout()
+	if !dims.threadsHorizontal {
+		t.Fatalf("screenAgent's own thread list must use the iteration-8 horizontal split")
+	}
+	if dims.leftW != 200 || dims.rightW != 200 {
+		t.Fatalf("the threads-level table/preview must EACH span the full terminal width, got left=%d right=%d", dims.leftW, dims.rightW)
+	}
+	if dims.convListH+dims.previewH != dims.bodyH {
+		t.Fatalf("table+preview heights must sum to exactly bodyH, got %d+%d != %d", dims.convListH, dims.previewH, dims.bodyH)
+	}
+	if dims.convListH >= dims.bodyH || dims.previewH >= dims.bodyH {
+		t.Fatalf("table/preview must each be a SHARE of bodyH (stacked), not the whole body, got convListH=%d previewH=%d bodyH=%d", dims.convListH, dims.previewH, dims.bodyH)
+	}
+
+	view := m.View()
+	if !strings.Contains(view, who) {
+		t.Fatalf("a WHO pair sized to fit the widened column must render in FULL at a 200-col terminal:\n%s", view)
+	}
+	if !strings.Contains(view, "THREADS") {
+		t.Fatalf("expected the full-width THREADS table, got:\n%s", view)
+	}
+	if !strings.Contains(view, "THREAD") {
+		t.Fatalf("expected the full-width preview box below the table, got:\n%s", view)
+	}
+
+	// Proving the widen is real (not just a wider box reusing the same
+	// column budget): the SAME who pair, columnized at the OLD
+	// (pre-iteration-8) fixed left-column inner width, must have been
+	// truncated with an ellipsis.
+	rows := m.conversationRows()
+	if len(rows) != 1 {
+		t.Fatalf("setup: expected exactly one conversation row, got %d", len(rows))
+	}
+	oldInnerW := leftColWidth - boxBorderCols
+	oldLine := m.renderConversationLine(rows[0], oldInnerW)
+	if strings.Contains(oldLine, who) {
+		t.Fatalf("setup: the who pair must NOT fit at the old left-column width %d (defeats the point of this test): %q", oldInnerW, oldLine)
+	}
+	if !strings.Contains(oldLine, "…") {
+		t.Fatalf("setup: expected the old-width row to show a truncation ellipsis, got %q", oldLine)
+	}
+}
+
+// TestOrphanedThreadsLevelGoesHorizontal covers iteration-8's OTHER
+// threads-table level: the "(unassigned)" bucket's ORPHANED THREADS
+// exception (screenProject + l1IsOrphaned) — same horizontal treatment as
+// screenAgent's own thread list.
+func TestOrphanedThreadsLevelGoesHorizontal(t *testing.T) {
+	m := NewModel(fakeCaller{}, Options{})
+	next, cmd := m.Update(threadsMsg{threads: []listThreadRow{
+		{ID: 1, FromAgent: "agent-a", Subject: "belongs-to-p"},
+		// No roster entry for either party: falls into the "(unassigned)"
+		// bucket (see threadProjectsOrUnassigned).
+		{ID: 99, FromAgent: "ghost-1", ToKind: "agent", ToTarget: "ghost-2", Subject: "orphaned-subject"},
+	}})
+	m = mustModel(t, next)
+	m = drainCmd(t, m, cmd)
+	next, _ = m.Update(agentsMsg{rows: []agentEnriched{{Alias: "agent-a", Project: "p"}}})
+	m = mustModel(t, next)
+	next, _ = m.Update(tea.WindowSizeMsg{Width: 200, Height: 50})
+	m = mustModel(t, next)
+
+	m.project = unassignedProject
+	next, _ = m.Update(keyMsg("enter"))
+	m = mustModel(t, next)
+	if m.screen != screenProject || !m.l1IsOrphaned() {
+		t.Fatalf("setup: expected screenProject/l1IsOrphaned, got screen=%v project=%q", m.screen, m.project)
+	}
+
+	dims := m.layout()
+	if !dims.threadsHorizontal {
+		t.Fatalf("the ORPHANED THREADS level must also use the horizontal split")
+	}
+	if dims.leftW != 200 || dims.rightW != 200 {
+		t.Fatalf("orphaned-threads table/preview must each span the full width, got left=%d right=%d", dims.leftW, dims.rightW)
+	}
+	view := m.View()
+	if !strings.Contains(view, "ORPHANED THREADS") || !strings.Contains(view, "orphaned-subject") {
+		t.Fatalf("expected the horizontal ORPHANED THREADS table to render, got:\n%s", view)
+	}
+}
+
+// TestProjectsAndAgentsLevelsKeepVerticalSplit covers iteration-8's OTHER
+// half: screenProjects (L0) and a normal project's L1 agents list are
+// short-label rosters, not the wide columnized table, so they must keep the
+// pre-iteration-8 vertical two-column split rather than going horizontal.
+func TestProjectsAndAgentsLevelsKeepVerticalSplit(t *testing.T) {
+	m := NewModel(fakeCaller{}, Options{})
+	m = seedLayoutModel(t, m) // drills into "muster" (a normal, non-orphaned project's L1 agents list)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 210, Height: 52})
+	m = mustModel(t, next)
+	if m.screen != screenProject || m.l1IsOrphaned() {
+		t.Fatalf("setup: expected screenProject with a normal (non-orphaned) agents list")
+	}
+
+	dims := m.layout()
+	if dims.threadsHorizontal {
+		t.Fatalf("a normal project's L1 agents list must keep the vertical two-column split, not go horizontal")
+	}
+	if dims.leftW+dims.rightW != 210 {
+		t.Fatalf("vertical split must sum to the terminal width, got left=%d right=%d", dims.leftW, dims.rightW)
+	}
+
+	// screenProjects (L0) itself, before drilling in at all.
+	l0 := NewModel(fakeCaller{}, Options{})
+	next, _ = l0.Update(tea.WindowSizeMsg{Width: 210, Height: 52})
+	l0 = mustModel(t, next)
+	if l0.layout().threadsHorizontal {
+		t.Fatalf("screenProjects (L0) must keep the vertical two-column split")
+	}
+}
+
+// TestThreadsLevelNarrowModeUnchanged covers the brief's explicit carve-out:
+// narrow mode's single-column collapse at a threads-table level is
+// unchanged by iteration-8 — renderBody must still render ONLY the list
+// column, with no stacked preview added underneath.
+func TestThreadsLevelNarrowModeUnchanged(t *testing.T) {
+	m := focusConversationList(t, NewModel(fakeCaller{}, Options{}), "a")
+	next, _ := m.Update(tea.WindowSizeMsg{Width: narrowWidthThreshold - 1, Height: 40})
+	m = mustModel(t, next)
+	dims := m.layout()
+	if !dims.narrow {
+		t.Fatalf("narrow mode must still apply at the threads level")
+	}
+	got := m.renderBody(dims)
+	want := m.renderLeftColumn(dims)
+	if got != want {
+		t.Fatalf("narrow mode at the threads level must render ONLY the list column (unchanged) — no stacked preview")
+	}
+}
+
+// TestThreadWhoWidthClampsMinAndMax is threadWhoWidth's own boundary check:
+// floored at the pre-iteration-8 fixed width, capped so a very wide
+// terminal doesn't let WHO swallow the whole table.
+func TestThreadWhoWidthClampsMinAndMax(t *testing.T) {
+	if got := threadWhoWidth(30); got != threadWhoMinWidth {
+		t.Fatalf("threadWhoWidth(30) = %d, want the floor %d", got, threadWhoMinWidth)
+	}
+	if got := threadWhoWidth(300); got != threadWhoMaxWidth {
+		t.Fatalf("threadWhoWidth(300) = %d, want the cap %d", got, threadWhoMaxWidth)
+	}
+}
+
+// TestSplitThreadsRowsFloorsAndSums is splitThreadsRows' own box-math check:
+// list+preview heights always sum to exactly bodyH, whether or not the
+// floors are actually binding.
+func TestSplitThreadsRowsFloorsAndSums(t *testing.T) {
+	listH, previewH := splitThreadsRows(48)
+	if listH+previewH != 48 {
+		t.Fatalf("split must sum to bodyH, got %d+%d != 48", listH, previewH)
+	}
+	if listH < minThreadsListRows || previewH < minThreadsPreviewRows {
+		t.Fatalf("split must respect the floors at a normal bodyH, got list=%d preview=%d", listH, previewH)
+	}
+
+	// A degenerately small bodyH still sums correctly even once the floors
+	// can no longer both be honored.
+	listH, previewH = splitThreadsRows(6)
+	if listH+previewH != 6 {
+		t.Fatalf("split must sum to bodyH even in a degenerate small terminal, got %d+%d != 6", listH, previewH)
+	}
+}

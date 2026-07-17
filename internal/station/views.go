@@ -128,6 +128,14 @@ func (m Model) renderBody(dims layoutDims) string {
 	if dims.narrow {
 		return m.renderLeftColumn(dims)
 	}
+	if dims.threadsHorizontal {
+		// Threads-level layout goes horizontal (spec iteration-8): the
+		// hierarchy principle is unchanged — parent above child at this
+		// level instead of left of right — so the full-width THREADS table
+		// stacks above the selected thread's full-width preview, rather than
+		// the vertical two-column split every other level uses below.
+		return lipgloss.JoinVertical(lipgloss.Left, m.renderLeftColumn(dims), m.renderRightColumn(dims))
+	}
 	return lipgloss.JoinHorizontal(lipgloss.Top, m.renderLeftColumn(dims), m.renderRightColumn(dims))
 }
 
@@ -168,10 +176,10 @@ func (m Model) renderLeftColumn(dims layoutDims) string {
 func (m Model) renderRightColumn(dims layoutDims) string {
 	switch m.screen {
 	case screenAgent:
-		return m.renderConversationBox(dims.rightW, dims.bodyH, false)
+		return m.renderConversationBox(dims.rightW, dims.rightColumnHeight(), false)
 	case screenProject:
 		if m.l1IsOrphaned() {
-			return m.renderConversationBox(dims.rightW, dims.bodyH, false)
+			return m.renderConversationBox(dims.rightW, dims.rightColumnHeight(), false)
 		}
 		return m.renderAgentPagePreviewBox(dims.rightW, dims.bodyH)
 	default:
@@ -549,11 +557,12 @@ func (m Model) renderConversationLineMarked(c conversationRow, innerW int, selec
 	if selected {
 		marker = "> "
 	}
+	whoW, fixedWidth := threadsColumnWidths(innerW)
 	idCol := render.PadDisplay(display.Sanitize(fmt.Sprintf("#%d", c.ID), threadIDWidth), threadIDWidth)
 	tagPlain := intentRowTag(c.Intent)
 	tagCol := colorIntentTag(c.Intent, render.PadDisplay(tagPlain, threadTagWidth))
 	who := fmt.Sprintf("%s→%s", m.dispLabel(c.FromAgent), m.dispToTarget(c.listThreadRow))
-	whoCol := render.PadDisplay(display.Sanitize(who, threadWhoWidth), threadWhoWidth)
+	whoCol := render.PadDisplay(display.Sanitize(who, whoW), whoW)
 	ageCol := render.PadDisplay(relativeAge(time.Now(), c.LastAt), threadAgeWidth)
 
 	subject := c.Subject
@@ -564,7 +573,7 @@ func (m Model) renderConversationLineMarked(c conversationRow, innerW int, selec
 		}
 		subject += "  ↔ " + strings.Join(names, ",")
 	}
-	subjectBudget := innerW - threadsPlainFixedWidth
+	subjectBudget := innerW - fixedWidth
 	if subjectBudget < 0 {
 		subjectBudget = 0
 	}
@@ -590,7 +599,7 @@ func (m Model) renderConvListBox(outerW, outerH int, list llList, title string, 
 	if rowsHeight < 0 {
 		rowsHeight = 0
 	}
-	header := render.PadDisplay(display.Sanitize(threadsHeaderLine(), innerW), innerW)
+	header := render.PadDisplay(display.Sanitize(threadsHeaderLine(innerW), innerW), innerW)
 
 	rows := m.conversationRows()
 	q, f := m.filterQueryFor(list)

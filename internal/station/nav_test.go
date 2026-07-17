@@ -841,8 +841,13 @@ func TestAgentDescendLeftListIsTheirThreads(t *testing.T) {
 
 // TestFullWidthReadingUsesFullTerminalWidth is spec iteration-6 item 2's own
 // sizing test: Enter on a thread renders the reader at the terminal's FULL
-// width — not the two-column split's leftW/rightW — on every terminal size,
-// wide or narrow.
+// width/height — not whatever the current LEVEL's own box dims happen to be
+// — on every terminal size, wide or narrow. screenAgent (this test's level)
+// is itself one of spec iteration-8's threads-horizontal levels, so its own
+// dims already give both leftW/rightW the full terminal width; the
+// meaningful "not reused as-is" axis here is HEIGHT — the level's own
+// preview pane (dims.rightColumnHeight()) is only its smaller bottom share,
+// while full-width reading must still claim the WHOLE body height.
 func TestFullWidthReadingUsesFullTerminalWidth(t *testing.T) {
 	fake := fakeCaller{fn: func(op string, _ map[string]any) (json.RawMessage, error) {
 		if op == "get_thread" {
@@ -869,13 +874,16 @@ func TestFullWidthReadingUsesFullTerminalWidth(t *testing.T) {
 	}
 
 	dims := m.layout()
-	if dims.leftW+dims.rightW != 200 {
-		t.Fatalf("setup: expected the two-column split to sum to 200, got left=%d right=%d", dims.leftW, dims.rightW)
+	if !dims.threadsHorizontal {
+		t.Fatalf("setup: expected screenAgent's own level to use the iteration-8 horizontal split")
+	}
+	if dims.rightColumnHeight() >= dims.bodyH {
+		t.Fatalf("setup: expected the level's own preview pane to be SHORTER than the full body height, got preview=%d body=%d", dims.rightColumnHeight(), dims.bodyH)
 	}
 	view := m.renderBody(dims)
 	for i, l := range strings.Split(view, "\n") {
 		if w := lipgloss.Width(l); w != 200 {
-			t.Fatalf("full-width reading line %d is %d columns wide, want exactly 200 (the FULL terminal, not the %d/%d split):\n%q", i, w, dims.leftW, dims.rightW, l)
+			t.Fatalf("full-width reading line %d is %d columns wide, want exactly 200 (the FULL terminal):\n%q", i, w, l)
 		}
 	}
 }
