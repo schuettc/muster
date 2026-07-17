@@ -302,9 +302,9 @@ func TestReadStateSurvivesQuitAndRelaunch(t *testing.T) {
 	}
 
 	// Acknowledge the mail through a REAL station Model driven against the
-	// real daemon: 'm' jumps straight into the single unread thread and, via
-	// focusConversation, fires get_inbox for real (spec §5's open-to-
-	// acknowledge path) — the exact op an operator's keypress triggers.
+	// real daemon: 'm' opens the mailbox page, Enter on the unread row fires
+	// get_inbox for real (spec §5-LOCK's open-to-acknowledge path) — the
+	// exact op an operator's keypress triggers.
 	m := NewModel(caller, Options{Alias: "station"})
 	next, _ := m.Update(fetchAgentsCmd(caller)())
 	m = mustModel(t, next)
@@ -317,8 +317,14 @@ func TestReadStateSurvivesQuitAndRelaunch(t *testing.T) {
 	next, cmd = m.Update(keyMsg("m"))
 	m = mustModel(t, next)
 	m = drainCmd(t, m, cmd)
-	if m.focus != focusConvRight {
-		t.Fatalf("setup: expected 'm' to open the single unread thread directly, got focus=%v", m.focus)
+	if m.screen != screenMailbox {
+		t.Fatalf("setup: expected 'm' to open the mailbox, got screen=%v", m.screen)
+	}
+	next, cmd = m.Update(keyMsg("enter"))
+	m = mustModel(t, next)
+	m = drainCmd(t, m, cmd)
+	if m.screen != screenRead {
+		t.Fatalf("setup: expected Enter on the mailbox's unread row to open it, got screen=%v", m.screen)
 	}
 
 	before := getFullAgent(t, caller, "station")

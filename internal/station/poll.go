@@ -114,7 +114,7 @@ func fetchAgents(caller render.Caller) ([]agentEnriched, error) {
 	out := make([]agentEnriched, 0, len(rows))
 	for _, a := range rows {
 		e := agentEnriched{
-			Alias: a.Alias, Project: a.Project, ModelType: a.ModelType,
+			Alias: a.Alias, Project: a.Project, ModelType: a.ModelType, Role: a.Role,
 			Label: a.Label, LabelManual: a.LabelManual,
 			SocketPath: a.SocketPath, SessionID: a.SessionID,
 		}

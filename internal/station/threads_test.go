@@ -18,13 +18,13 @@ func focusConversationList(t *testing.T, m Model, agentAlias string) Model {
 	t.Helper()
 	next, _ := m.Update(agentsMsg{rows: []agentEnriched{{Alias: agentAlias}}})
 	m = mustModel(t, next)
-	if m.screen != screenProject || m.focus != focusProjectItems || m.agent != agentAlias {
-		t.Fatalf("setup: expected screenProject/focusProjectItems/%s after registering one agent, got screen=%v focus=%v agent=%q", agentAlias, m.screen, m.focus, m.agent)
+	if m.screen != screenProject || m.agent != agentAlias {
+		t.Fatalf("setup: expected screenProject/%s after registering one agent, got screen=%v agent=%q", agentAlias, m.screen, m.agent)
 	}
 	next, _ = m.Update(keyMsg("enter")) // descend into agentAlias's own thread list
 	m = mustModel(t, next)
-	if m.screen != screenAgent || m.focus != focusAgentThreads {
-		t.Fatalf("setup: expected screenAgent/focusAgentThreads after descending into %s, got screen=%v focus=%v", agentAlias, m.screen, m.focus)
+	if m.screen != screenAgent {
+		t.Fatalf("setup: expected screenAgent after descending into %s, got screen=%v", agentAlias, m.screen)
 	}
 	return m
 }
@@ -113,8 +113,8 @@ func TestPaginationLazyLoadRequestsOffsetCorrectly(t *testing.T) {
 	// lazily loads while FOCUSED — scrollConversation).
 	next, _ = m.Update(keyMsg("enter"))
 	m = mustModel(t, next)
-	if m.focus != focusConvRight {
-		t.Fatalf("setup: expected the conversation focused")
+	if m.screen != screenRead {
+		t.Fatalf("setup: expected the thread focused for reading")
 	}
 	if m.viewCursor != 0 {
 		t.Fatalf("viewCursor = %d, want 0 right after focusing", m.viewCursor)
@@ -352,9 +352,9 @@ func TestViewNewerCountIndicatorAndGFetchesTail(t *testing.T) {
 	}
 }
 
-// TestEscUnfocusesConversationReader checks the reader un-focuses on Esc and
-// stops owning keys once unfocused (Tab reaches the lists underneath
-// again).
+// TestEscUnfocusesConversationReader checks Esc pops the reader frame back
+// to the thread list underneath (spec §5-LOCK decision B: "Esc pops exactly
+// one frame everywhere").
 func TestEscUnfocusesConversationReader(t *testing.T) {
 	m := focusConversationList(t, NewModel(fakeCaller{}, Options{}), "a")
 	next, cmd := m.Update(threadsMsg{threads: []listThreadRow{{ID: 1, FromAgent: "a", EntryCount: 1}}})
@@ -363,13 +363,13 @@ func TestEscUnfocusesConversationReader(t *testing.T) {
 
 	next, _ = m.Update(keyMsg("enter"))
 	m = mustModel(t, next)
-	if m.focus != focusConvRight {
-		t.Fatalf("expected the conversation focused after Enter")
+	if m.screen != screenRead {
+		t.Fatalf("expected the thread focused for reading after Enter")
 	}
 
 	next, _ = m.Update(keyMsg("esc"))
 	m = mustModel(t, next)
-	if m.focus != focusAgentThreads {
-		t.Fatalf("Esc must un-focus the reader back to focusAgentThreads, got focus=%v", m.focus)
+	if m.screen != screenAgent {
+		t.Fatalf("Esc must pop back to screenAgent, got screen=%v", m.screen)
 	}
 }

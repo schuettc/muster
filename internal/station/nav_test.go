@@ -9,10 +9,11 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// This file is the IA-redesign's own test suite (spec §5-REVISED): the
-// project-first two-column drill-down's navigation state machine, project
-// rollup math, cross-project marking, single-project auto-skip, narrow-mode
-// rendering, preview-vs-focus-acknowledge, and the '?' help overlay.
+// This file is station's own navigation test suite (spec §5-LOCK): the pure
+// STACK navigation state machine (Enter pushes, Esc pops exactly one frame,
+// g pops home), project rollup math, cross-project marking, single-project
+// auto-skip, narrow-mode rendering, preview-vs-open-to-acknowledge, and the
+// '?' help overlay.
 
 // twoProjectAgents seeds a roster spanning two projects, one agent each.
 func twoProjectAgents() []agentEnriched {
@@ -22,10 +23,101 @@ func twoProjectAgents() []agentEnriched {
 	}
 }
 
+// TestNavStackPushPopAndHome is spec §5-LOCK decision B's own core test: a
+// deep drill (projects → agents → an agent's threads → full-width read)
+// pushes one frame per Enter, Esc pops exactly one frame at a time, and 'g'
+// jumps straight back to the root regardless of how deep the stack is.
+func TestNavStackPushPopAndHome(t *testing.T) {
+	fake := fakeCaller{fn: func(op string, _ map[string]any) (json.RawMessage, error) {
+		if op == "get_thread" {
+			b, _ := json.Marshal(map[string]any{"thread": map[string]any{}, "entries": []threadEntryRow{{ID: 1, FromAgent: "beta-1", Body: "hi"}}, "total": 1})
+			return b, nil
+		}
+		return json.RawMessage(`{}`), nil
+	}}
+	m := NewModel(fake, Options{})
+	next, _ := m.Update(agentsMsg{rows: twoProjectAgents()})
+	m = mustModel(t, next)
+	next, cmd := m.Update(threadsMsg{threads: []listThreadRow{
+		{ID: 1, FromAgent: "beta-1", ToKind: "agent", ToTarget: "beta-1", EntryCount: 1},
+	}})
+	m = mustModel(t, next)
+	m = drainCmd(t, m, cmd)
+	if len(m.stack) != 1 || m.stack[0].screen != screenProjects {
+		t.Fatalf("fresh model: expected a 1-deep stack at screenProjects, got %+v", m.stack)
+	}
+
+	// L0 -> L1: Enter pushes a screenProject frame.
+	m.project = "beta"
+	next, _ = m.Update(keyMsg("enter"))
+	m = mustModel(t, next)
+	if len(m.stack) != 2 || m.screen != screenProject {
+		t.Fatalf("after L0 Enter: expected a 2-deep stack at screenProject, got len=%d screen=%v", len(m.stack), m.screen)
+	}
+
+	// L1 -> L2: Enter pushes a screenAgent frame.
+	next, _ = m.Update(keyMsg("enter"))
+	m = mustModel(t, next)
+	if len(m.stack) != 3 || m.screen != screenAgent || m.agent != "beta-1" {
+		t.Fatalf("after L1 Enter: expected a 3-deep stack at screenAgent/beta-1, got len=%d screen=%v agent=%q", len(m.stack), m.screen, m.agent)
+	}
+
+	// L2 -> L3: Enter pushes a screenRead frame.
+	next, cmd = m.Update(keyMsg("enter"))
+	m = mustModel(t, next)
+	m = drainCmd(t, m, cmd)
+	if len(m.stack) != 4 || m.screen != screenRead {
+		t.Fatalf("after L2 Enter: expected a 4-deep stack at screenRead, got len=%d screen=%v", len(m.stack), m.screen)
+	}
+
+	// 'g' from the deepest frame jumps straight back to the root.
+	next, _ = m.Update(keyMsg("g"))
+	m = mustModel(t, next)
+	if len(m.stack) != 1 || m.screen != screenProjects {
+		t.Fatalf("'g' must pop all the way home from any depth, got len=%d screen=%v", len(m.stack), m.screen)
+	}
+
+	// Re-drill to full depth, then Esc pops EXACTLY one frame per press.
+	m.project = "beta"
+	next, _ = m.Update(keyMsg("enter"))
+	m = mustModel(t, next)
+	next, _ = m.Update(keyMsg("enter"))
+	m = mustModel(t, next)
+	next, cmd = m.Update(keyMsg("enter"))
+	m = mustModel(t, next)
+	m = drainCmd(t, m, cmd)
+	if len(m.stack) != 4 {
+		t.Fatalf("setup: expected a 4-deep stack again, got %d", len(m.stack))
+	}
+
+	next, _ = m.Update(keyMsg("esc"))
+	m = mustModel(t, next)
+	if len(m.stack) != 3 || m.screen != screenAgent {
+		t.Fatalf("Esc #1 must pop exactly one frame (to screenAgent), got len=%d screen=%v", len(m.stack), m.screen)
+	}
+	next, _ = m.Update(keyMsg("esc"))
+	m = mustModel(t, next)
+	if len(m.stack) != 2 || m.screen != screenProject {
+		t.Fatalf("Esc #2 must pop exactly one frame (to screenProject), got len=%d screen=%v", len(m.stack), m.screen)
+	}
+	next, _ = m.Update(keyMsg("esc"))
+	m = mustModel(t, next)
+	if len(m.stack) != 1 || m.screen != screenProjects {
+		t.Fatalf("Esc #3 must pop exactly one frame (to screenProjects), got len=%d screen=%v", len(m.stack), m.screen)
+	}
+
+	// A further Esc at the root is a no-op.
+	before := m
+	after := mustModel(t, before.popFrame())
+	if len(after.stack) != len(before.stack) || after.screen != before.screen {
+		t.Fatalf("Esc at the root must be a no-op")
+	}
+}
+
 // TestNavigationDrillAndClimbTransitions exercises the full chain: L0 → L1
 // (a project's agents list) → L2 (agent) and back, verifying Enter
 // drills/descends, Esc climbs, and each level's selection survives a
-// climb-and-return (spec §5-REVISED "per-level selection").
+// climb-and-return.
 func TestNavigationDrillAndClimbTransitions(t *testing.T) {
 	m := NewModel(fakeCaller{}, Options{})
 	next, _ := m.Update(agentsMsg{rows: twoProjectAgents()})
@@ -48,17 +140,8 @@ func TestNavigationDrillAndClimbTransitions(t *testing.T) {
 	}
 	next, _ = m.Update(keyMsg("enter"))
 	m = mustModel(t, next)
-	if m.screen != screenProject || m.focus != focusProjectItems {
-		t.Fatalf("Enter on a project must drill to screenProject/focusProjectItems (agents list), got screen=%v focus=%v", m.screen, m.focus)
-	}
-
-	// Tab is a no-op within screenProject now (the agents list is the only
-	// focusable target, and the right pane is pure preview) — it must not
-	// move the cursor.
-	next, _ = m.Update(keyMsg("tab"))
-	m = mustModel(t, next)
-	if m.focus != focusProjectItems || m.agent != "beta-1" {
-		t.Fatalf("Tab must be a no-op at screenProject, got focus=%v agent=%q", m.focus, m.agent)
+	if m.screen != screenProject {
+		t.Fatalf("Enter on a project must drill to screenProject (agents list), got screen=%v", m.screen)
 	}
 
 	// Drill into the agents list's selected agent (beta-1, the only agent in
@@ -66,20 +149,20 @@ func TestNavigationDrillAndClimbTransitions(t *testing.T) {
 	next, _ = m.Update(keyMsg("enter"))
 	m = mustModel(t, next)
 	if m.screen != screenAgent || m.agent != "beta-1" {
-		t.Fatalf("Enter on the AGENTS section must drill to screenAgent for beta-1, got screen=%v agent=%q", m.screen, m.agent)
+		t.Fatalf("Enter on the AGENTS list must drill to screenAgent for beta-1, got screen=%v agent=%q", m.screen, m.agent)
 	}
 
-	// Esc climbs back to screenProject/focusProjectItems, then to screenProjects.
-	m = mustModel(t, m.handleEscKey())
-	if m.screen != screenProject || m.focus != focusProjectItems {
-		t.Fatalf("first Esc must climb to screenProject/focusProjectItems, got screen=%v focus=%v", m.screen, m.focus)
+	// Esc climbs back to screenProject, then to screenProjects.
+	m = mustModel(t, m.popFrame())
+	if m.screen != screenProject {
+		t.Fatalf("first Esc must climb to screenProject, got screen=%v", m.screen)
 	}
 	if m.project != "beta" {
 		t.Fatalf("climbing must preserve the per-level project selection, got %q", m.project)
 	}
-	m = mustModel(t, m.handleEscKey())
-	if m.screen != screenProjects || m.focus != focusProjectList {
-		t.Fatalf("second Esc must climb all the way to screenProjects, got screen=%v focus=%v", m.screen, m.focus)
+	m = mustModel(t, m.popFrame())
+	if m.screen != screenProjects {
+		t.Fatalf("second Esc must climb all the way to screenProjects, got screen=%v", m.screen)
 	}
 	if m.project != "beta" {
 		t.Fatalf("L0's own selection must still be beta after climbing back to it, got %q", m.project)
@@ -87,15 +170,15 @@ func TestNavigationDrillAndClimbTransitions(t *testing.T) {
 
 	// A third Esc at the top of the stack is a no-op.
 	before := m
-	after := mustModel(t, before.handleEscKey())
-	if after.screen != before.screen || after.focus != before.focus {
+	after := mustModel(t, before.popFrame())
+	if after.screen != before.screen || len(after.stack) != len(before.stack) {
 		t.Fatalf("Esc at screenProjects must be a no-op")
 	}
 }
 
-// TestSingleProjectAutoSkipsL0 covers spec §5-REVISED: "Auto-skipped when
-// the bus has exactly one project (non-dotfiles users land at L1 —design
-// must not assume the proj-socket convention)".
+// TestSingleProjectAutoSkipsL0 covers: "Auto-skipped when the bus has
+// exactly one project (non-dotfiles users land at L1 — the design must not
+// assume the proj-socket convention)".
 func TestSingleProjectAutoSkipsL0(t *testing.T) {
 	m := NewModel(fakeCaller{}, Options{})
 	next, _ := m.Update(agentsMsg{rows: []agentEnriched{
@@ -109,25 +192,26 @@ func TestSingleProjectAutoSkipsL0(t *testing.T) {
 	if m.project != "onlyproj" {
 		t.Fatalf("auto-skip must select the one project, got %q", m.project)
 	}
-	if m.focus != focusProjectItems {
-		t.Fatalf("auto-skip must land on focusProjectItems (the agents list), got focus=%v", m.focus)
-	}
 	if !m.singleProject {
 		t.Fatalf("singleProject must be true")
 	}
 
 	// Esc must be a no-op — there is no L0 to climb back to.
-	after := mustModel(t, m.handleEscKey())
+	after := mustModel(t, m.popFrame())
 	if after.screen != screenProject {
 		t.Fatalf("Esc on a single-project bus must not climb to screenProjects, got %v", after.screen)
 	}
+
+	// 'g' is ALSO a no-op — the auto-skipped L1 stands in for home.
+	afterHome := m.popToHome()
+	if afterHome.screen != screenProject {
+		t.Fatalf("'g' on a single-project bus must stay at the auto-skipped L1, got %v", afterHome.screen)
+	}
 }
 
-// TestProjectRollupMath is computeProjectSummaries' own unit test (spec
-// §5-REVISED L0: "unread rollup (+action)"): sibling aliases of the SAME
-// session tuple must not double-count that session's unread — mirroring
-// spec §3's "no summing of per-alias counts" principle — while distinct
-// sessions in the same project DO sum.
+// TestProjectRollupMath is computeProjectSummaries' own unit test: sibling
+// aliases of the SAME session tuple must not double-count that session's
+// unread, while distinct sessions in the same project DO sum.
 func TestProjectRollupMath(t *testing.T) {
 	agents := []agentEnriched{
 		{Alias: "a-session-name", Project: "muster", SocketPath: "/s", SessionID: "$1", Unread: 3, ActionCount: 1},
@@ -162,9 +246,9 @@ func TestProjectRollupMath(t *testing.T) {
 	}
 }
 
-// TestCrossProjectMarkerAppearsInBothProjects covers spec §5-REVISED: "a
-// thread belongs to every project having a participant; cross-project
-// threads marked '↔ otherproj' and shown in both projects".
+// TestCrossProjectMarkerAppearsInBothProjects covers: "a thread belongs to
+// every project having a participant; cross-project threads marked
+// '↔ otherproj' and shown in both projects".
 func TestCrossProjectMarkerAppearsInBothProjects(t *testing.T) {
 	agents := []agentEnriched{
 		{Alias: "alpha-1", Project: "alpha"},
@@ -177,7 +261,7 @@ func TestCrossProjectMarkerAppearsInBothProjects(t *testing.T) {
 
 	alphaRows := conversationsForProject(threads, aliasProj, "alpha")
 	if len(alphaRows) != 1 {
-		t.Fatalf("expected thread 1 in alpha's conversation list, got %d rows", len(alphaRows))
+		t.Fatalf("expected thread 1 in alpha's thread list, got %d rows", len(alphaRows))
 	}
 	if len(alphaRows[0].OtherProjects) != 1 || alphaRows[0].OtherProjects[0] != "beta" {
 		t.Fatalf("alpha's row must mark beta as the other project, got %+v", alphaRows[0].OtherProjects)
@@ -185,7 +269,7 @@ func TestCrossProjectMarkerAppearsInBothProjects(t *testing.T) {
 
 	betaRows := conversationsForProject(threads, aliasProj, "beta")
 	if len(betaRows) != 1 {
-		t.Fatalf("expected thread 1 in beta's conversation list too, got %d rows", len(betaRows))
+		t.Fatalf("expected thread 1 in beta's thread list too, got %d rows", len(betaRows))
 	}
 	if len(betaRows[0].OtherProjects) != 1 || betaRows[0].OtherProjects[0] != "alpha" {
 		t.Fatalf("beta's row must mark alpha as the other project, got %+v", betaRows[0].OtherProjects)
@@ -195,7 +279,7 @@ func TestCrossProjectMarkerAppearsInBothProjects(t *testing.T) {
 	m := NewModel(fakeCaller{}, Options{})
 	line := m.renderConversationLine(alphaRows[0], 200)
 	if !strings.Contains(line, "↔ beta") {
-		t.Fatalf("rendered conversation line missing the cross-project marker, got %q", line)
+		t.Fatalf("rendered thread line missing the cross-project marker, got %q", line)
 	}
 
 	// A single-project thread carries no marker at all.
@@ -205,15 +289,13 @@ func TestCrossProjectMarkerAppearsInBothProjects(t *testing.T) {
 	}
 }
 
-// TestOriginProjectKeepsThreadReachableAfterParticipantsDeregister is the
-// iteration-4 orphan-thread fix's own test (spec queue item 4d): with ZERO
-// agents currently registered (every participant has deregistered, the
+// TestOriginProjectKeepsThreadReachableAfterParticipantsDeregister: with
+// ZERO agents currently registered (every participant has deregistered, the
 // ghost-site scenario), a thread whose origin_project was stamped at
 // creation still gets an L0/L1 home under that project name — even though
 // no agent belongs to it anymore — while a thread that was NEVER stamped
 // (and has no roster-resolvable participant either) falls into the
-// "(unassigned)" bucket instead of vanishing. Synthetic data proves BOTH
-// paths in one fixture.
+// "(unassigned)" bucket instead of vanishing.
 func TestOriginProjectKeepsThreadReachableAfterParticipantsDeregister(t *testing.T) {
 	var agents []agentEnriched // every participant has deregistered
 	aliasProj := aliasProjectMap(agents)
@@ -257,11 +339,10 @@ func TestOriginProjectKeepsThreadReachableAfterParticipantsDeregister(t *testing
 	}
 }
 
-// TestNarrowModeSingleColumnSwapsOnFocus covers spec §5-REVISED: "Narrow
-// terminals (< ~110 cols): single-column mode" — full-width reading applies
-// on EVERY terminal size, not just narrow: Enter on a thread always replaces
-// the whole layout with the thread view, and Esc returns to the previous
-// browse state.
+// TestNarrowModeSingleColumnSwapsOnFocus covers: "Narrow terminals (< ~110
+// cols): single-column mode" — full-width reading applies on EVERY terminal
+// size, not just narrow: Enter on a thread always replaces the whole layout
+// with the thread view, and Esc returns to the previous browse state.
 func TestNarrowModeSingleColumnSwapsOnFocus(t *testing.T) {
 	fake := fakeCaller{fn: func(op string, _ map[string]any) (json.RawMessage, error) {
 		if op == "get_thread" {
@@ -285,13 +366,13 @@ func TestNarrowModeSingleColumnSwapsOnFocus(t *testing.T) {
 	}})
 	m = mustModel(t, next)
 	m = drainCmd(t, m, cmd)
-	if m.screen != screenProject || m.focus != focusProjectItems {
-		t.Fatalf("a single-project bus must auto-skip straight to screenProject/focusProjectItems (the agents list), got screen=%v focus=%v", m.screen, m.focus)
+	if m.screen != screenProject {
+		t.Fatalf("a single-project bus must auto-skip straight to screenProject (the agents list), got screen=%v", m.screen)
 	}
 
 	// Not reading, still on the AGENTS list: the body must show the agent
 	// row, not the detail reader.
-	view := m.renderBody(m.layout())
+	view := m.renderBody()
 	if !strings.Contains(view, "alpha-1") {
 		t.Fatalf("narrow list view must show the AGENTS list:\n%s", view)
 	}
@@ -299,14 +380,13 @@ func TestNarrowModeSingleColumnSwapsOnFocus(t *testing.T) {
 		t.Fatalf("narrow list view must NOT show the detail reader's body:\n%s", view)
 	}
 
-	// Descend into alpha-1's own thread list (spec iteration-7: threads live
-	// under their agent, not the project-level L1 list any more).
+	// Descend into alpha-1's own thread list.
 	next, _ = m.Update(keyMsg("enter"))
 	m = mustModel(t, next)
-	if m.screen != screenAgent || m.focus != focusAgentThreads {
-		t.Fatalf("Enter on the AGENTS list must descend to screenAgent, got screen=%v focus=%v", m.screen, m.focus)
+	if m.screen != screenAgent {
+		t.Fatalf("Enter on the AGENTS list must descend to screenAgent, got screen=%v", m.screen)
 	}
-	view = m.renderBody(m.layout())
+	view = m.renderBody()
 	if !strings.Contains(view, "narrow test") {
 		t.Fatalf("narrow agent-threads view must show the thread list:\n%s", view)
 	}
@@ -315,10 +395,10 @@ func TestNarrowModeSingleColumnSwapsOnFocus(t *testing.T) {
 	next, cmd = m.Update(keyMsg("enter"))
 	m = mustModel(t, next)
 	m = drainCmd(t, m, cmd)
-	if m.focus != focusConvRight {
+	if m.screen != screenRead {
 		t.Fatalf("Enter on a thread must focus the reader")
 	}
-	view = m.renderBody(m.layout())
+	view = m.renderBody()
 	if !strings.Contains(view, "hello there") {
 		t.Fatalf("the full-width reading view must show the focused thread's body:\n%s", view)
 	}
@@ -330,17 +410,15 @@ func TestNarrowModeSingleColumnSwapsOnFocus(t *testing.T) {
 	// selection intact).
 	next, _ = m.Update(keyMsg("esc"))
 	m = mustModel(t, next)
-	if m.focus != focusAgentThreads {
-		t.Fatalf("Esc must return to focusAgentThreads, got focus=%v", m.focus)
+	if m.screen != screenAgent {
+		t.Fatalf("Esc must return to screenAgent, got screen=%v", m.screen)
 	}
 }
 
-// TestPreviewDoesNotAcknowledgeFocusDoes is the open-to-acknowledge test
-// (spec §5-REVISED: "preview of a station-addressed thread does NOT
-// acknowledge; only Enter-focusing it does, keep that explicit"). Selecting
-// a conversation (which fetches its preview) must never call get_inbox;
-// Enter-focusing it must call get_inbox EXACTLY once, even across repeated
-// focus/unfocus of the SAME thread.
+// TestPreviewDoesNotAcknowledgeFocusDoes is the open-to-acknowledge test:
+// selecting a thread (which fetches its preview) must never call get_inbox;
+// opening it must call get_inbox EXACTLY once, even across repeated
+// open/close of the SAME thread.
 func TestPreviewDoesNotAcknowledgeFocusDoes(t *testing.T) {
 	var getInboxCalls int
 	var getThreadCalls int
@@ -370,38 +448,38 @@ func TestPreviewDoesNotAcknowledgeFocusDoes(t *testing.T) {
 		t.Fatalf("the PREVIEW fetch (selection, no Enter) must never call get_inbox, got %d calls", getInboxCalls)
 	}
 	if getThreadCalls == 0 {
-		t.Fatalf("selecting a conversation must still fetch its preview via get_thread")
+		t.Fatalf("selecting a thread must still fetch its preview via get_thread")
 	}
-	if m.screen != screenProject || m.focus != focusProjectItems {
-		t.Fatalf("single-project auto-skip must already have landed at screenProject/focusProjectItems (the agents list), got screen=%v focus=%v", m.screen, m.focus)
+	if m.screen != screenProject {
+		t.Fatalf("single-project auto-skip must already have landed at screenProject (the agents list), got screen=%v", m.screen)
 	}
-	next, _ = m.Update(keyMsg("enter")) // descend into alpha-1's own thread list, so Enter below focuses the conversation
+	next, _ = m.Update(keyMsg("enter")) // descend into alpha-1's own thread list, so Enter below opens the thread
 	m = mustModel(t, next)
 	if m.screen != screenAgent {
 		t.Fatalf("setup: expected screenAgent, got %v", m.screen)
 	}
 
-	// Enter-focusing thread 1 (addressed to station) must ack exactly once.
+	// Opening thread 1 (addressed to station) must ack exactly once.
 	next, cmd = m.Update(keyMsg("enter"))
 	m = mustModel(t, next)
 	m = drainCmd(t, m, cmd)
 	if getInboxCalls != 1 {
-		t.Fatalf("get_inbox calls after focusing a station-addressed thread = %d, want exactly 1", getInboxCalls)
+		t.Fatalf("get_inbox calls after opening a station-addressed thread = %d, want exactly 1", getInboxCalls)
 	}
 
-	// Un-focus and re-focus the SAME thread: must not ack again.
+	// Close and reopen the SAME thread: must not ack again.
 	next, _ = m.Update(keyMsg("esc"))
 	m = mustModel(t, next)
 	next, cmd = m.Update(keyMsg("enter"))
 	m = mustModel(t, next)
 	m = drainCmd(t, m, cmd)
 	if getInboxCalls != 1 {
-		t.Fatalf("re-focusing the SAME thread must not re-acknowledge, got %d calls", getInboxCalls)
+		t.Fatalf("reopening the SAME thread must not re-acknowledge, got %d calls", getInboxCalls)
 	}
 }
 
-// TestHelpOverlayRendersLegendAndClosesOnAnyKey covers spec §5-REVISED: "'?'
-// help overlay: keys + glyph legend".
+// TestHelpOverlayRendersLegendAndClosesOnAnyKey covers: "'?' help overlay:
+// keys + glyph legend".
 func TestHelpOverlayRendersLegendAndClosesOnAnyKey(t *testing.T) {
 	m := NewModel(fakeCaller{}, Options{})
 	next, _ := m.Update(keyMsg("?"))
@@ -410,7 +488,7 @@ func TestHelpOverlayRendersLegendAndClosesOnAnyKey(t *testing.T) {
 		t.Fatalf("'?' must open the help overlay")
 	}
 	view := m.View()
-	for _, want := range []string{"KEYS", "LEGEND", "●", "✗", "[action]", "↔"} {
+	for _, want := range []string{"KEYS", "LEGEND", "●", "✗", "needs action", "↔"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("help overlay missing %q:\n%s", want, view)
 		}
@@ -422,13 +500,11 @@ func TestHelpOverlayRendersLegendAndClosesOnAnyKey(t *testing.T) {
 	}
 }
 
-// TestHelpOverlayReachableFromEveryLevel is the iteration-three fix's
-// navigation-discoverability check (an operator's screenshot showed them
-// unable to find '?' from wherever they'd drilled to): '?' must open the
-// overlay from every level of the spec §5-CHAIN four-level chain — L0
-// (screenProjects), L1's agents list, L2's agent-threads list, AND the
-// full-width reading view. Two DIFFERENT projects keep m.singleProject
-// false, so L0 is never auto-skipped and stays reachable to test directly.
+// TestHelpOverlayReachableFromEveryLevel: '?' must open the overlay from
+// every level of the chain — L0 (screenProjects), L1's agents list, L2's
+// agent-threads list, AND the full-width reading view. Two DIFFERENT
+// projects keep m.singleProject false, so L0 is never auto-skipped and
+// stays reachable to test directly.
 func TestHelpOverlayReachableFromEveryLevel(t *testing.T) {
 	m := NewModel(fakeCaller{}, Options{})
 	next, _ := m.Update(agentsMsg{rows: []agentEnriched{
@@ -450,7 +526,7 @@ func TestHelpOverlayReachableFromEveryLevel(t *testing.T) {
 		next, _ := m.Update(keyMsg("?"))
 		probe := mustModel(t, next)
 		if !probe.helpOpen {
-			t.Fatalf("%s (screen=%v focus=%v): '?' must open the help overlay", label, probe.screen, probe.focus)
+			t.Fatalf("%s (screen=%v): '?' must open the help overlay", label, probe.screen)
 		}
 		next, _ = probe.Update(keyMsg("x"))
 		probe = mustModel(t, next)
@@ -463,32 +539,31 @@ func TestHelpOverlayReachableFromEveryLevel(t *testing.T) {
 
 	next, _ = m.Update(keyMsg("enter"))
 	m = mustModel(t, next)
-	if m.screen != screenProject || m.focus != focusProjectItems {
-		t.Fatalf("setup: expected screenProject/focusProjectItems (the agents list) after Enter, got screen=%v focus=%v", m.screen, m.focus)
+	if m.screen != screenProject {
+		t.Fatalf("setup: expected screenProject (the agents list) after Enter, got screen=%v", m.screen)
 	}
 	checkHelpTogglesHere("L1 agents list")
 
 	next, _ = m.Update(keyMsg("enter")) // descend into the selected agent
 	m = mustModel(t, next)
-	if m.screen != screenAgent || m.focus != focusAgentThreads {
-		t.Fatalf("setup: expected screenAgent/focusAgentThreads after Enter, got screen=%v focus=%v", m.screen, m.focus)
+	if m.screen != screenAgent {
+		t.Fatalf("setup: expected screenAgent after Enter, got screen=%v", m.screen)
 	}
 	checkHelpTogglesHere("L2 agent threads")
 
 	next, cmd = m.Update(keyMsg("enter")) // read the selected thread full-width
 	m = mustModel(t, next)
 	m = drainCmd(t, m, cmd)
-	if m.focus != focusConvRight {
-		t.Fatalf("setup: expected focusConvRight after Enter on a thread, got %v", m.focus)
+	if m.screen != screenRead {
+		t.Fatalf("setup: expected screenRead after Enter on a thread, got %v", m.screen)
 	}
 	checkHelpTogglesHere("L3 full-width thread reading")
 }
 
-// TestFooterKeyHintIsLevelAware is spec item 5's footer half (iteration-
-// three fix): "esc back" and "tab cycle" must not appear in the bottom-line
-// hint at a level where they're dead keys — L0 (screenProjects, a single
-// list, nothing to climb back to) — but both must appear once there's
-// somewhere for them to go.
+// TestFooterKeyHintIsLevelAware: "esc back" and "g home" must not appear in
+// the bottom-line hint at a level where they're dead keys — L0
+// (screenProjects, nothing to climb back to or jump home from) — but both
+// must appear once there's somewhere for them to go.
 func TestFooterKeyHintIsLevelAware(t *testing.T) {
 	m := NewModel(fakeCaller{}, Options{})
 	next, _ := m.Update(agentsMsg{rows: []agentEnriched{
@@ -504,8 +579,8 @@ func TestFooterKeyHintIsLevelAware(t *testing.T) {
 	if strings.Contains(hint, "esc back") {
 		t.Fatalf("L0's footer must not advertise esc (a no-op there): %q", hint)
 	}
-	if strings.Contains(hint, "tab cycle") {
-		t.Fatalf("L0's footer must not advertise tab (a no-op there): %q", hint)
+	if strings.Contains(hint, "g home") {
+		t.Fatalf("L0's footer must not advertise g (a no-op there): %q", hint)
 	}
 	if !strings.Contains(hint, "enter drill") {
 		t.Fatalf("L0's footer must still advertise enter: %q", hint)
@@ -520,20 +595,14 @@ func TestFooterKeyHintIsLevelAware(t *testing.T) {
 	if !strings.Contains(hint, "esc back") {
 		t.Fatalf("L1's footer must advertise esc (climbs back to L0): %q", hint)
 	}
-	// Tab is now a no-op at every level except L0-with-mail (spec
-	// iteration-6 item 3: the merged list is the only focus target, and the
-	// right pane is pure preview) — L1's footer must NOT advertise it.
-	if strings.Contains(hint, "tab cycle") {
-		t.Fatalf("L1's footer must not advertise tab (a no-op there now): %q", hint)
+	if !strings.Contains(hint, "g home") {
+		t.Fatalf("L1's footer must advertise g (jumps home to L0): %q", hint)
 	}
 }
 
-// TestNoConversationTerminologyInView is the iteration-4 terminology fix's
-// own check (spec queue item 3: "threads" everywhere in station, "conversation"
-// eliminated from every user-visible string): View() output at every
-// screen/focus combination, the help overlay, an open '/' filter, and narrow
-// mode must never contain the word "conversation" (case-insensitively) —
-// only "thread".
+// TestNoConversationTerminologyInView: View() output at every screen, the
+// help overlay, an open '/' filter, and narrow mode must never contain the
+// word "conversation" (case-insensitively) — only "thread".
 func TestNoConversationTerminologyInView(t *testing.T) {
 	checkNoConversation := func(t *testing.T, label, view string) {
 		t.Helper()
@@ -566,25 +635,24 @@ func TestNoConversationTerminologyInView(t *testing.T) {
 	cases := []struct {
 		label   string
 		screen  screen
-		focus   focusTarget
 		project string
 	}{
-		{"L0 projects", screenProjects, focusProjectList, ""},
-		{"L1 agents list", screenProject, focusProjectItems, "p1"},
-		{"L1 orphaned threads list", screenProject, focusProjectItems, unassignedProject},
-		{"L1 full-width thread reading", screenProject, focusConvRight, unassignedProject},
-		{"L2 agent threads", screenAgent, focusAgentThreads, "p1"},
-		{"L2 full-width thread reading", screenAgent, focusConvRight, "p1"},
+		{"L0 projects", screenProjects, ""},
+		{"L1 agents list", screenProject, "p1"},
+		{"L1 orphaned threads list", screenProject, unassignedProject},
+		{"L1 full-width thread reading", screenRead, unassignedProject},
+		{"L2 agent threads", screenAgent, "p1"},
+		{"L2 full-width thread reading", screenRead, "p1"},
+		{"mailbox", screenMailbox, ""},
 	}
 	for _, c := range cases {
 		probe := m
 		probe.screen = c.screen
-		probe.focus = c.focus
 		probe.project = c.project
-		if c.screen == screenAgent {
+		if c.screen == screenAgent || (c.screen == screenRead && c.project == "p1") {
 			probe.agent = "a1"
 		}
-		if c.focus == focusConvRight {
+		if c.screen == screenRead {
 			probe.viewThreadID = 1
 			probe.viewEntries = []threadEntryRow{{ID: 1, FromAgent: "a1", Body: "hello"}}
 		}
@@ -597,7 +665,6 @@ func TestNoConversationTerminologyInView(t *testing.T) {
 
 	filterOnAgents := m
 	filterOnAgents.screen = screenProject
-	filterOnAgents.focus = focusProjectItems
 	filterOnAgents = filterOnAgents.openFilter()
 	checkNoConversation(t, "'/' filter prompt on the agents list", filterOnAgents.View())
 
@@ -605,21 +672,18 @@ func TestNoConversationTerminologyInView(t *testing.T) {
 	narrow.termWidth = 90
 	narrow.screen = screenAgent
 	narrow.agent = "a1"
-	narrow.focus = focusAgentThreads
 	checkNoConversation(t, "narrow mode (list)", narrow.View())
 	narrowDetail := narrow
-	narrowDetail.focus = focusConvRight
+	narrowDetail.screen = screenRead
 	narrowDetail.viewThreadID = 1
 	narrowDetail.viewEntries = []threadEntryRow{{ID: 1, FromAgent: "a1", Body: "hello"}}
 	checkNoConversation(t, "narrow mode (detail)", narrowDetail.View())
 }
 
-// TestL1RendersAgentsOnlyNoThreadRows is spec iteration-7 item 1's own
-// focused test: "L1 = agents ONLY" — a normal project's L1 list has exactly
-// one row per agent, j/k walks ONLY the agents (never crossing into any
-// thread row, since there is no thread section here any more), and the
-// rendered box shows neither thread subject text nor a "THREADS" section
-// header.
+// TestL1RendersAgentsOnlyNoThreadRows: "L1 = agents ONLY" — a normal
+// project's L1 list has exactly one row per agent, j/k walks ONLY the
+// agents, and the rendered box shows neither thread subject text nor a
+// "THREADS" section header.
 func TestL1RendersAgentsOnlyNoThreadRows(t *testing.T) {
 	m := NewModel(fakeCaller{}, Options{})
 	next, _ := m.Update(agentsMsg{rows: []agentEnriched{
@@ -633,8 +697,8 @@ func TestL1RendersAgentsOnlyNoThreadRows(t *testing.T) {
 	}})
 	m = mustModel(t, next)
 	m = drainCmd(t, m, cmd)
-	if m.screen != screenProject || m.focus != focusProjectItems || m.agent != "agent-a" {
-		t.Fatalf("setup: expected screenProject/focusProjectItems/agent-a selected, got screen=%v focus=%v agent=%q", m.screen, m.focus, m.agent)
+	if m.screen != screenProject || m.agent != "agent-a" {
+		t.Fatalf("setup: expected screenProject/agent-a selected, got screen=%v agent=%q", m.screen, m.agent)
 	}
 
 	// The LEFT column is L1's own list — the right column legitimately
@@ -665,11 +729,11 @@ func TestL1RendersAgentsOnlyNoThreadRows(t *testing.T) {
 	}
 }
 
-// TestUnassignedL1ShowsOrphanedThreads covers spec iteration-7 item 5: the
-// "(unassigned)" bucket is the ONE deliberate exception to "L1 = agents
-// ONLY" — its L1 list is threads directly (no agent to descend through
-// first), self-explainingly labeled "ORPHANED THREADS", and Enter on one of
-// its rows reads it full-width right there.
+// TestUnassignedL1ShowsOrphanedThreads: the "(unassigned)" bucket is the ONE
+// deliberate exception to "L1 = agents ONLY" — its L1 list is threads
+// directly (no agent to descend through first), self-explainingly labeled
+// "ORPHANED THREADS", and Enter on one of its rows reads it full-width
+// right there.
 func TestUnassignedL1ShowsOrphanedThreads(t *testing.T) {
 	m := NewModel(fakeCaller{}, Options{})
 	// threadsMsg lands FIRST: applyAgents' single-project auto-skip decides
@@ -718,16 +782,14 @@ func TestUnassignedL1ShowsOrphanedThreads(t *testing.T) {
 	next, cmd = m.Update(keyMsg("enter"))
 	m = mustModel(t, next)
 	m = drainCmd(t, m, cmd)
-	if m.focus != focusConvRight || m.conversation != 99 {
-		t.Fatalf("Enter on the orphaned thread must read it full-width directly, got focus=%v conversation=%d", m.focus, m.conversation)
+	if m.screen != screenRead || m.conversation != 99 {
+		t.Fatalf("Enter on the orphaned thread must read it full-width directly, got screen=%v conversation=%d", m.screen, m.conversation)
 	}
 }
 
-// TestCrossProjectMarkerUnderBothParticipantAgents covers spec iteration-7
-// item 4: now that threads live under their AGENT rather than a
-// project-level L1 list, a cross-project thread's "↔ otherproj" marker (and
-// the thread itself) must show under EVERY participant's own agent thread
-// page — not just one side.
+// TestCrossProjectMarkerUnderBothParticipantAgents: a cross-project thread's
+// "↔ otherproj" marker (and the thread itself) must show under EVERY
+// participant's own agent thread page — not just one side.
 func TestCrossProjectMarkerUnderBothParticipantAgents(t *testing.T) {
 	m := NewModel(fakeCaller{}, Options{})
 	next, _ := m.Update(agentsMsg{rows: []agentEnriched{
@@ -741,11 +803,6 @@ func TestCrossProjectMarkerUnderBothParticipantAgents(t *testing.T) {
 	m = mustModel(t, next)
 	m = drainCmd(t, m, cmd)
 
-	// Under alpha-1's own mailbox: the thread shows, marked "↔ beta". Uses a
-	// wide explicit render width (mirroring
-	// TestCrossProjectMarkerAppearsInBothProjects) rather than the fixed
-	// ~58-col left-column budget, which would truncate the marker off a
-	// subject this long before it ever reaches assembly.
 	m.project = "alpha"
 	next, _ = m.Update(keyMsg("enter")) // L0 -> L1 (alpha)
 	m = mustModel(t, next)
@@ -766,9 +823,9 @@ func TestCrossProjectMarkerUnderBothParticipantAgents(t *testing.T) {
 	}
 
 	// Climb back out and descend into beta instead: the SAME thread shows
-	// under its OTHER participant's own mailbox too, marked "↔ alpha".
-	m = mustModel(t, m.handleEscKey()) // screenAgent -> screenProject
-	m = mustModel(t, m.handleEscKey()) // screenProject -> screenProjects
+	// under its OTHER participant's own thread page too, marked "↔ alpha".
+	m = mustModel(t, m.popFrame()) // screenAgent -> screenProject
+	m = mustModel(t, m.popFrame()) // screenProject -> screenProjects
 	m.project = "beta"
 	next, _ = m.Update(keyMsg("enter")) // L0 -> L1 (beta)
 	m = mustModel(t, next)
@@ -789,13 +846,10 @@ func TestCrossProjectMarkerUnderBothParticipantAgents(t *testing.T) {
 	}
 }
 
-// TestAgentDescendLeftListIsTheirThreads covers spec iteration-6 item 3:
-// "Enter on an agent DESCENDS a level: left column becomes that agent's
-// threads (their concern-filtered list — reuse the agent-page thread data)".
-// screenAgent's conversationRows() must be EXACTLY conversationsForAgent's
-// participant-filtered set for that agent, grouped the same way — a third
-// party's thread must never leak in, and every thread the agent actually
-// participates in (as sender, direct recipient, or last-speaker) must show.
+// TestAgentDescendLeftListIsTheirThreads: "Enter on an agent DESCENDS a
+// level: left column becomes that agent's threads". screenAgent's
+// conversationRows() must be EXACTLY conversationsForAgent's participant-
+// filtered set for that agent, grouped the same way.
 func TestAgentDescendLeftListIsTheirThreads(t *testing.T) {
 	m := NewModel(fakeCaller{}, Options{})
 	next, _ := m.Update(agentsMsg{rows: []agentEnriched{
@@ -812,7 +866,7 @@ func TestAgentDescendLeftListIsTheirThreads(t *testing.T) {
 	m = mustModel(t, next)
 	m = drainCmd(t, m, cmd)
 
-	// Descend into backend-1 (the AGENTS section's first row, alphabetically).
+	// Descend into backend-1 (the AGENTS list's first row, alphabetically).
 	if m.agent != "backend-1" {
 		t.Fatalf("setup: expected backend-1 selected first, got %q", m.agent)
 	}
@@ -839,14 +893,13 @@ func TestAgentDescendLeftListIsTheirThreads(t *testing.T) {
 	}
 }
 
-// TestFullWidthReadingUsesFullTerminalWidth is spec iteration-6 item 2's own
-// sizing test: Enter on a thread renders the reader at the terminal's FULL
-// width/height — not whatever the current LEVEL's own box dims happen to be
-// — on every terminal size, wide or narrow. screenAgent (this test's level)
-// is itself one of spec iteration-8's threads-horizontal levels, so its own
-// dims already give both leftW/rightW the full terminal width; the
-// meaningful "not reused as-is" axis here is HEIGHT — the level's own
-// preview pane (dims.rightColumnHeight()) is only its smaller bottom share,
+// TestFullWidthReadingUsesFullTerminalWidth: Enter on a thread renders the
+// reader at the terminal's FULL width/height — not whatever the current
+// LEVEL's own box dims happen to be — on every terminal size, wide or
+// narrow. screenAgent (this test's level) is itself one of the
+// threads-horizontal levels, so its own dims already give both leftW/rightW
+// the full terminal width; the meaningful "not reused as-is" axis here is
+// HEIGHT — the level's own preview pane is only its smaller bottom share,
 // while full-width reading must still claim the WHOLE body height.
 func TestFullWidthReadingUsesFullTerminalWidth(t *testing.T) {
 	fake := fakeCaller{fn: func(op string, _ map[string]any) (json.RawMessage, error) {
@@ -869,18 +922,11 @@ func TestFullWidthReadingUsesFullTerminalWidth(t *testing.T) {
 	next, cmd = m.Update(keyMsg("enter"))
 	m = mustModel(t, next)
 	m = drainCmd(t, m, cmd)
-	if m.focus != focusConvRight {
+	if m.screen != screenRead {
 		t.Fatalf("setup: expected the thread focused for reading")
 	}
 
-	dims := m.layout()
-	if !dims.threadsHorizontal {
-		t.Fatalf("setup: expected screenAgent's own level to use the iteration-8 horizontal split")
-	}
-	if dims.rightColumnHeight() >= dims.bodyH {
-		t.Fatalf("setup: expected the level's own preview pane to be SHORTER than the full body height, got preview=%d body=%d", dims.rightColumnHeight(), dims.bodyH)
-	}
-	view := m.renderBody(dims)
+	view := m.renderBody()
 	for i, l := range strings.Split(view, "\n") {
 		if w := lipgloss.Width(l); w != 200 {
 			t.Fatalf("full-width reading line %d is %d columns wide, want exactly 200 (the FULL terminal):\n%q", i, w, l)
@@ -888,11 +934,10 @@ func TestFullWidthReadingUsesFullTerminalWidth(t *testing.T) {
 	}
 }
 
-// TestHierarchyWalkEscChainPreservesSelectionAtEveryLevel is spec
-// §5-CHAIN/iteration-7's end-to-end four-level walk: projects → a project's
-// agents → an agent's threads → a full-width thread read → Esc all the way
-// back, asserting the exact selection at EVERY level survives the round
-// trip.
+// TestHierarchyWalkEscChainPreservesSelectionAtEveryLevel is the end-to-end
+// four-level walk: projects → a project's agents → an agent's threads → a
+// full-width thread read → Esc all the way back, asserting the exact
+// selection at EVERY level survives the round trip.
 func TestHierarchyWalkEscChainPreservesSelectionAtEveryLevel(t *testing.T) {
 	fake := fakeCaller{fn: func(op string, _ map[string]any) (json.RawMessage, error) {
 		if op == "get_thread" {
@@ -927,8 +972,8 @@ func TestHierarchyWalkEscChainPreservesSelectionAtEveryLevel(t *testing.T) {
 	m.project = "p1"
 	next, _ = m.Update(keyMsg("enter"))
 	m = mustModel(t, next)
-	if m.screen != screenProject || m.focus != focusProjectItems || m.agent != "a1" {
-		t.Fatalf("setup: expected screenProject/focusProjectItems/a1, got screen=%v focus=%v agent=%q", m.screen, m.focus, m.agent)
+	if m.screen != screenProject || m.agent != "a1" {
+		t.Fatalf("setup: expected screenProject/a1, got screen=%v agent=%q", m.screen, m.agent)
 	}
 
 	// L1 -> L2: descend into a1's own thread list.
@@ -942,26 +987,26 @@ func TestHierarchyWalkEscChainPreservesSelectionAtEveryLevel(t *testing.T) {
 	next, cmd = m.Update(keyMsg("enter"))
 	m = mustModel(t, next)
 	m = drainCmd(t, m, cmd)
-	if m.focus != focusConvRight || m.conversation != 1 {
-		t.Fatalf("setup: expected full-width reading of conversation 1, got focus=%v conversation=%d", m.focus, m.conversation)
+	if m.screen != screenRead || m.conversation != 1 {
+		t.Fatalf("setup: expected full-width reading of conversation 1, got screen=%v conversation=%d", m.screen, m.conversation)
 	}
 
 	// Esc #1: out of reading, back to screenAgent's thread list — selection intact.
-	m = mustModel(t, m.handleEscKey())
-	if m.screen != screenAgent || m.focus != focusAgentThreads || m.conversation != 1 || m.agent != "a1" {
-		t.Fatalf("Esc #1: expected screenAgent/focusAgentThreads/a1/conversation=1, got screen=%v focus=%v agent=%q conversation=%d", m.screen, m.focus, m.agent, m.conversation)
+	m = mustModel(t, m.popFrame())
+	if m.screen != screenAgent || m.conversation != 1 || m.agent != "a1" {
+		t.Fatalf("Esc #1: expected screenAgent/a1/conversation=1, got screen=%v agent=%q conversation=%d", m.screen, m.agent, m.conversation)
 	}
 
 	// Esc #2: climb to screenProject — the agents list, a1 still selected.
-	m = mustModel(t, m.handleEscKey())
-	if m.screen != screenProject || m.focus != focusProjectItems || m.agent != "a1" {
-		t.Fatalf("Esc #2: expected screenProject/focusProjectItems/a1, got screen=%v focus=%v agent=%q", m.screen, m.focus, m.agent)
+	m = mustModel(t, m.popFrame())
+	if m.screen != screenProject || m.agent != "a1" {
+		t.Fatalf("Esc #2: expected screenProject/a1, got screen=%v agent=%q", m.screen, m.agent)
 	}
 
 	// Esc #3: climb to screenProjects — p1 still selected (the drill target,
 	// not the p2 the operator moved off of at L0).
-	m = mustModel(t, m.handleEscKey())
-	if m.screen != screenProjects || m.focus != focusProjectList || m.project != "p1" {
-		t.Fatalf("Esc #3: expected screenProjects/focusProjectList/p1, got screen=%v focus=%v project=%q", m.screen, m.focus, m.project)
+	m = mustModel(t, m.popFrame())
+	if m.screen != screenProjects || m.project != "p1" {
+		t.Fatalf("Esc #3: expected screenProjects/p1, got screen=%v project=%q", m.screen, m.project)
 	}
 }

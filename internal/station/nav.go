@@ -4,74 +4,73 @@ import (
 	"sort"
 )
 
-// This file is the IA-redesign's own concern (spec §5-REVISED, refined by
-// §5-CHAIN/iteration-7 to a PURE containment chain): the project-first,
-// two-column drill-down's navigation state machine and the client-side data
-// derivations it needs (project rollups, project/agent conversation
-// membership, cross-project marking). Nothing here touches polling/cursor
-// discipline (poll.go) or rendering (views.go/layout.go).
+// This file is the station navigation/data-derivation concern (spec
+// §5-LOCK, "operator-approved, locked design"): the pure-STACK navigation
+// state machine (see navFrame/Model.stack in model.go) and the client-side
+// data derivations it needs (project rollups, project/agent conversation
+// membership, mailbox rows, cross-project marking, label-collision
+// disambiguation). Nothing here touches polling/cursor discipline (poll.go)
+// or rendering (views.go/layout.go).
 //
-// The chain is exactly four levels — projects → a project's agents → an
-// agent's threads → a full-width thread read — mirroring mail (threads live
-// UNDER agents like messages in a mailbox), with ONE deliberate exception:
-// the synthetic "(unassigned)" bucket has no living agent for an orphaned
-// thread to live under, so ITS L1 is a thread list directly (see
-// l1IsOrphaned). Rather than a literal []level stack, Model tracks one
-// selection per level (project/agent/conversation, see model.go) plus a
-// screen+focusTarget pair that together encode exactly where in the
-// hierarchy the operator currently is. screen names the current PAGE;
-// focusTarget names which of that page's sub-lists (or the right-pane
-// reader) currently owns the cursor. Climbing (Esc) never clears a
-// level's selection — only screen/focus move — so re-entering a level
-// lands back on the same row (spec: "per-level selection").
+// §5-LOCK's decision B locks navigation to a PURE STACK: Enter pushes a
+// frame (drill/open), Esc pops exactly one frame everywhere, g pops all the
+// way home. The chain is exactly four content levels — projects (L0) → a
+// project's agents (L1) → an agent's threads (L2) → a full-width thread
+// read (L3) — plus the mailbox, reached via 'm' from any screen and popped
+// back to the exact origin, mirroring mail (threads live UNDER agents like
+// messages in a mailbox). The ONE deliberate exception: the synthetic
+// "(unassigned)" bucket has no living agent for an orphaned thread to live
+// under, so its L1 is a thread list directly (see l1IsOrphaned) — Enter
+// there reads full-width with no agent step in between.
 type screen int
 
 const (
 	screenProjects screen = iota // L0: the project list (auto-skipped on a single-project bus)
-	screenProject                // L1 (+ full-width read when focus is focusConvRight): a project's AGENTS ONLY — except the "(unassigned)" bucket's ORPHANED THREADS exception, see l1IsOrphaned
-	screenAgent                  // L2 (+ full-width read when focus is focusConvRight): one agent's threads + activity
+	screenProject                // L1: a project's AGENTS ONLY — except the "(unassigned)" bucket's ORPHANED THREADS exception, see l1IsOrphaned
+	screenAgent                  // L2: one agent's own thread list (+ header band, spec §5-LOCK screen 4)
+	screenMailbox                // the mailbox overlay page (spec §5-LOCK screen 2) — every thread addressed to station, read and unread
+	screenRead                   // L3: full-width thread reading (spec §5-LOCK screen 5)
 )
 
-// focusTarget is which sub-list (or the right-pane reader) currently owns
-// the cursor within the current screen.
-type focusTarget int
+// navFrame is one entry on Model.stack (spec §5-LOCK decision B: "introduce
+// an explicit navigation stack"). project/agent are snapshotted AT PUSH TIME
+// for screenProject/screenAgent frames — the breadcrumb's own per-frame
+// label (frameCrumb in views.go) — never re-derived from the model's live
+// (possibly since-moved-on) selection fields, so an intervening excursion
+// (e.g. 'm' to the mailbox and back) can never corrupt a shallower frame's
+// remembered path. screenRead/screenMailbox/screenProjects frames need
+// neither field: a Read frame's own crumb text comes from the live
+// m.viewThreadID (there is never more than one Read frame on the stack at a
+// time — Enter is a no-op at screenRead, the deepest level), and Mailbox/
+// Projects both render fixed text.
+type navFrame struct {
+	screen  screen
+	project string
+	agent   string
+}
 
-const (
-	focusProjectList  focusTarget = iota // screenProjects' only list
-	focusForYou                          // screenProjects' pinned FOR YOU section (spec iteration-5), only a live target while it's showing
-	focusProjectItems                    // screenProject's L1 list — a project's agents, or (the ONE exception) the unassigned bucket's orphaned threads
-	focusAgentThreads                    // screenAgent's thread list
-	focusConvRight                       // full-width reading: the thread reader owns the keys, rendered full terminal width regardless of screen/narrow
-)
-
-// llList identifies which LEFT list a '/' filter is scoped to (spec §5-REVISED
-// "/ filter left list") — the direct successor of the old three-pane `pane`
-// filter target, now parameterized over the drill-down's lists instead of
-// three fixed panes.
+// llList identifies which LEFT list a '/' filter is scoped to.
 type llList int
 
 const (
 	llProjects llList = iota
-	llForYou
 	llProjectItems
 	llAgentThreads
+	llMailbox
 )
 
 // unassignedProject is the synthetic project key for the "(unassigned)"
-// bucket (spec iteration-4 orphan-thread fix, queue item 4d): the home for a
-// thread whose participants have ALL deregistered AND whose origin_project
-// never got stamped (an unresolvable historical row, or a genuinely
-// unregistered sender) — never a real agent's Project value, so no agent
-// ever lands here; only threadProjects' fallback assigns it. Chosen with a
-// NUL prefix so it can never collide with an operator-chosen project name,
-// and sorts before every real project name (including "").
+// bucket: the home for a thread whose participants have ALL deregistered AND
+// whose origin_project never got stamped (an unresolvable historical row, or
+// a genuinely unregistered sender) — never a real agent's Project value, so
+// no agent ever lands here; only threadProjects' fallback assigns it. Chosen
+// with a NUL prefix so it can never collide with an operator-chosen project
+// name, and sorts before every real project name (including "").
 const unassignedProject = "\x00unassigned"
 
 // projectDisplayName renders a raw project string for display — "" (the
-// v0.5.1 default bucket) shows as "(default)", matching the roster's
-// existing "(none)" convention's spirit but the term the rest of the CLI
-// (`muster agents`) already uses for an unset project; unassignedProject
-// shows as "(unassigned)" (spec iteration-4: threads with no known project).
+// v0.5.1 default bucket) shows as "(default)"; unassignedProject shows as
+// "(unassigned)".
 func projectDisplayName(p string) string {
 	switch p {
 	case "":
@@ -84,17 +83,14 @@ func projectDisplayName(p string) string {
 }
 
 // l1IsOrphaned reports whether screenProject's L1 list is currently the
-// "(unassigned)" bucket's ORPHANED THREADS exception (spec iteration-7 item
-// 5) rather than the normal agents-only list every other project shows — the
-// ONE deliberate deviation from "L1 = agents ONLY": a thread with no living
-// agent to file under still needs a home, so the unassigned bucket's L1 is a
-// thread list instead, labeled "ORPHANED THREADS" so it's self-explaining.
+// "(unassigned)" bucket's ORPHANED THREADS exception rather than the normal
+// agents-only list every other project shows.
 func (m Model) l1IsOrphaned() bool {
 	return m.project == unassignedProject
 }
 
-// projectSummary is one L0 row (spec §5-REVISED): name, live/total agents,
-// unread rollup (+action), last-activity age.
+// projectSummary is one L0 row: name, live/total agents, unread rollup
+// (+action), last-activity age.
 type projectSummary struct {
 	Name         string
 	Live, Total  int
@@ -126,12 +122,6 @@ func computeProjectSummaries(agents []agentEnriched, threads []listThreadRow) []
 	seenTuple := map[string]map[[2]string]bool{}
 	order := []string{}
 
-	// ensureProject returns name's rollup row, creating an empty one (0
-	// agents, 0 unread) the first time a THREAD references a project no
-	// agent currently belongs to — the "(unassigned)" bucket (and any other
-	// project known only via an origin_project stamp) needs an L0 row of its
-	// own, not just a silently-dropped LastAt update (spec iteration-4: "so
-	// nothing is ever invisible").
 	ensureProject := func(name string) *projectSummary {
 		p, ok := byProject[name]
 		if !ok {
@@ -191,12 +181,11 @@ func dedupeStrings(ss []string) []string {
 	return out
 }
 
-// participantAliases returns a thread row's known participant aliases
-// (spec §5-REVISED: "a thread belongs to every project having a
-// participant") — the sender, the recipient when addressed directly to an
-// agent (role/broadcast targets have no single alias to attribute), and the
-// last-speaker (so a reply from a THIRD alias also counts as participating,
-// not just the original from/to pair).
+// participantAliases returns a thread row's known participant aliases — the
+// sender, the recipient when addressed directly to an agent (role/broadcast
+// targets have no single alias to attribute), and the last-speaker (so a
+// reply from a THIRD alias also counts as participating, not just the
+// original from/to pair).
 func participantAliases(row listThreadRow) []string {
 	out := []string{row.FromAgent}
 	if row.ToKind == "agent" {
@@ -208,14 +197,8 @@ func participantAliases(row listThreadRow) []string {
 
 // threadProjects returns the sorted, deduped set of projects a thread
 // touches: every project of its CURRENTLY-REGISTERED participants (via the
-// roster) UNION its origin_project (spec iteration-4 orphan-thread fix,
-// queue item 4d) — the origin stamp is what keeps a thread reachable once
-// every participant has since deregistered. An alias with no roster entry
-// contributes nothing on its own; an empty origin_project (never stamped)
-// contributes nothing either. A thread with NEITHER kind of project ends up
-// with an empty result here — see threadProjectsOrUnassigned, which is what
-// every caller that needs "a project to file this thread under" (as opposed
-// to raw membership testing) actually uses.
+// roster) UNION its origin_project — the origin stamp is what keeps a
+// thread reachable once every participant has since deregistered.
 func threadProjects(row listThreadRow, aliasProject map[string]string) []string {
 	seen := map[string]bool{}
 	var out []string
@@ -235,10 +218,7 @@ func threadProjects(row listThreadRow, aliasProject map[string]string) []string 
 }
 
 // threadProjectsOrUnassigned is threadProjects, falling back to
-// unassignedProject when a thread maps to no known project at all (spec
-// iteration-4: "so nothing is ever invisible") — the form every filing
-// decision (L0 rollups, L1 conversation-list membership) needs, since a
-// thread must always land SOMEWHERE.
+// unassignedProject when a thread maps to no known project at all.
 func threadProjectsOrUnassigned(row listThreadRow, aliasProject map[string]string) []string {
 	projs := threadProjects(row, aliasProject)
 	if len(projs) == 0 {
@@ -247,11 +227,10 @@ func threadProjectsOrUnassigned(row listThreadRow, aliasProject map[string]strin
 	return projs
 }
 
-// conversationRow is one L1 conversation-list row: the wire thread row plus
-// OTHER projects it also touches (spec §5-REVISED: "cross-project threads
-// marked '↔ otherproj' and shown in both projects") — empty when the
-// thread's participants are all in the ONE project this row is being shown
-// for.
+// conversationRow is one thread-list row: the wire thread row plus OTHER
+// projects it also touches (spec: "cross-project threads marked '↔
+// otherproj'") — empty when the thread's participants are all in the ONE
+// project/agent this row is being shown for.
 type conversationRow struct {
 	listThreadRow
 	OtherProjects []string
@@ -259,8 +238,8 @@ type conversationRow struct {
 
 // conversationsForProject filters threads to those touching project (any
 // participant's roster project matches, or project is unassignedProject and
-// the thread maps to no known project at all — spec iteration-4),
-// annotating each with whichever OTHER projects it also touches.
+// the thread maps to no known project at all), annotating each with
+// whichever OTHER projects it also touches.
 func conversationsForProject(threads []listThreadRow, aliasProject map[string]string, project string) []conversationRow {
 	var out []conversationRow
 	for _, row := range threads {
@@ -286,8 +265,7 @@ func conversationsForProject(threads []listThreadRow, aliasProject map[string]st
 	return out
 }
 
-// conversationsForAgent filters threads to those alias participates in
-// (spec §5-REVISED L1.5: "their threads").
+// conversationsForAgent filters threads to those alias participates in.
 func conversationsForAgent(threads []listThreadRow, alias string) []listThreadRow {
 	var out []listThreadRow
 	for _, row := range threads {
@@ -303,13 +281,9 @@ func conversationsForAgent(threads []listThreadRow, alias string) []listThreadRo
 
 // conversationsForAgentAnnotated is conversationsForAgent, additionally
 // marking each row with whichever OTHER projects it touches beyond alias's
-// own home project (spec iteration-7 item 4: now that threads live under
-// AGENTS rather than a project-level list, the "↔ otherproj" cross-project
-// marker moves here — a thread's home agent still sees it, and a mark
-// whenever the thread ALSO touches a different project than the agent's
-// own, so a cross-project thread stays visibly cross-project under every
-// participant's own mailbox, exactly as it did at the old project-level
-// list).
+// own home project — the "↔ otherproj" cross-project marker computed
+// against the agent viewing it: a thread's home agent still sees it, marked
+// whenever the thread ALSO touches a different project than the agent's own.
 func conversationsForAgentAnnotated(threads []listThreadRow, aliasProject map[string]string, alias string) []conversationRow {
 	home := aliasProject[alias]
 	rows := conversationsForAgent(threads, alias)
@@ -326,13 +300,10 @@ func conversationsForAgentAnnotated(threads []listThreadRow, aliasProject map[st
 	return out
 }
 
-// unreadThreadsFor returns the threads alias participates in (spec iteration-5
-// Tier 0b: unread AGE) where the last entry was NOT written by alias — the
-// display-only proxy for "waiting on alias" this feature uses everywhere a
-// per-alias unread age is needed, since a real per-thread read watermark
-// isn't obtainable without get_inbox (which nothing outside the
-// acknowledge path may call). A thread alias itself spoke last is excluded:
-// it's the OTHER party's turn, not alias's.
+// unreadThreadsFor returns the threads alias participates in where the last
+// entry was NOT written by alias — the display-only proxy for "waiting on
+// alias" used everywhere a per-alias unread age is needed, since a real
+// per-thread read watermark isn't obtainable without get_inbox.
 func unreadThreadsFor(threads []listThreadRow, alias string) []listThreadRow {
 	var out []listThreadRow
 	for _, row := range conversationsForAgent(threads, alias) {
@@ -343,11 +314,9 @@ func unreadThreadsFor(threads []listThreadRow, alias string) []listThreadRow {
 	return out
 }
 
-// unreadThreadsForProject is unreadThreadsFor's project-rollup counterpart
-// (spec iteration-5 Tier 0b, project rollups): a project's conversations
-// whose last speaker is NOT a currently-registered member of that SAME
-// project — i.e. the last word came from outside the project (or from an
-// alias the roster no longer knows), so the project itself is "waiting".
+// unreadThreadsForProject is unreadThreadsFor's project-rollup counterpart: a
+// project's conversations whose last speaker is NOT a currently-registered
+// member of that SAME project.
 func unreadThreadsForProject(threads []listThreadRow, aliasProject map[string]string, project string) []listThreadRow {
 	var out []listThreadRow
 	for _, row := range conversationsForProject(threads, aliasProject, project) {
@@ -363,8 +332,7 @@ func unreadThreadsForProject(threads []listThreadRow, aliasProject map[string]st
 }
 
 // oldestUnreadAt returns the smallest (oldest) LastAt among rows, or 0 when
-// rows is empty or every row's LastAt is unset — the raw ms-epoch value;
-// views.go's relativeAge renders it for display.
+// rows is empty or every row's LastAt is unset.
 func oldestUnreadAt(rows []listThreadRow) int64 {
 	var oldest int64
 	for _, r := range rows {
@@ -378,8 +346,24 @@ func oldestUnreadAt(rows []listThreadRow) int64 {
 	return oldest
 }
 
-// agentsForProject returns the roster rows belonging to project, sorted by
-// alias — the L1 agent strip's row order.
+// lastActivityAt returns the newest LastAt among threads alias participates
+// in — a departed agent's "thread-count + age" row (spec §5-LOCK screen 3)
+// needs this even though it has no live journal activity of its own to
+// derive an age from.
+func lastActivityAt(threads []listThreadRow, alias string) int64 {
+	var latest int64
+	for _, r := range conversationsForAgent(threads, alias) {
+		if r.LastAt > latest {
+			latest = r.LastAt
+		}
+	}
+	return latest
+}
+
+// agentsForProject returns the roster rows belonging to project, LIVE agents
+// first (each group alphabetical by alias) — spec §5-LOCK screen 3: "live
+// agents on top... then quit agents", the same order both cursor movement
+// and rendering must agree on.
 func agentsForProject(agents []agentEnriched, project string) []agentEnriched {
 	var out []agentEnriched
 	for _, a := range agents {
@@ -387,27 +371,60 @@ func agentsForProject(agents []agentEnriched, project string) []agentEnriched {
 			out = append(out, a)
 		}
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Alias < out[j].Alias })
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Live != out[j].Live {
+			return out[i].Live
+		}
+		return out[i].Alias < out[j].Alias
+	})
 	return out
 }
 
-// projKey/agentKey/convKey are the identity-key extractors the generic
-// selection helpers below use for the three keyed lists (projects by name,
-// agent strip by alias, conversations by thread ID) — the zero value of
-// each key type ("" / "" / 0) doubles as "nothing selected", exactly like
-// the pre-redesign code's threadSelected==0 sentinel.
+// computeLabelCollisions reports, for every agent, whether its CURRENT
+// display label needs its alias appended to stay unambiguous (spec §5-LOCK
+// item 7): the label collides with another agent's label, or equals another
+// agent's actual alias — "who → who" must never read like nonsense. The one
+// shared helper feeding Model.dispLabel, which every label-rendering call
+// site in the package goes through — never a second vocabulary.
+func computeLabelCollisions(agents []agentEnriched) map[string]bool {
+	labelCount := map[string]int{}
+	for _, a := range agents {
+		label := a.Label
+		if label == "" {
+			label = a.Alias
+		}
+		labelCount[label]++
+	}
+	out := map[string]bool{}
+	for _, a := range agents {
+		label := a.Label
+		if label == "" {
+			label = a.Alias
+		}
+		collide := labelCount[label] > 1
+		if !collide && label != a.Alias {
+			for _, b := range agents {
+				if b.Alias != a.Alias && b.Alias == label {
+					collide = true
+					break
+				}
+			}
+		}
+		if collide {
+			out[a.Alias] = true
+		}
+	}
+	return out
+}
+
+// projKey/agentKey/convKey/mailKey are the identity-key extractors the
+// generic selection helpers below use for the four keyed lists (projects by
+// name, agent strip by alias, thread lists by thread ID, mailbox by thread
+// ID) — the zero value of each key type doubles as "nothing selected".
 func projKey(p projectSummary) string { return p.Name }
 func agentKey(a agentEnriched) string { return a.Alias }
 func convKey(c conversationRow) int64 { return c.ID }
-
-// The generic trio below (visible/snap/move) is the ONE shared visible-rows
-// filter/selection-stability predicate discipline the current (pre-redesign)
-// code applied separately to the roster and threads panes (rosterRowVisible/
-// moveRosterSelection and threadRowVisible/moveThreadSelection) — carried
-// over per the task brief, now parameterized over row type T and a
-// comparable identity key K so the SAME logic serves all four of the
-// redesign's lists (projects by name, agent strip by alias, conversations by
-// thread ID) instead of four hand-copied variants.
+func mailKey(r listThreadRow) int64   { return r.ID }
 
 // keyIndex returns rows' index whose key(row) == sel, or -1.
 func keyIndex[T any, K comparable](rows []T, key func(T) K, sel K) int {
@@ -425,9 +442,7 @@ func rowVisible[T any](row T, renderText func(T) string, query string, filtering
 	return !filtering || containsFold(renderText(row), query)
 }
 
-// anyRowVisible reports whether any row in rows passes the active filter —
-// callers (Enter/n) use this to distinguish "nothing to act on" from a real
-// selection, mirroring the old code's rosterIdx<0/threadSelected==0 guards.
+// anyRowVisible reports whether any row in rows passes the active filter.
 func anyRowVisible[T any](rows []T, renderText func(T) string, query string, filtering bool) bool {
 	for _, r := range rows {
 		if rowVisible(r, renderText, query, filtering) {
@@ -447,9 +462,8 @@ func selectionVisible[T any, K comparable](rows []T, key func(T) K, sel K, rende
 }
 
 // snapSelection corrects sel to the first row visible under the active
-// filter when it isn't already visible (spec §5 carried-over fix: filter/
-// selection desync) — to zero ("nothing selected") when nothing is visible.
-// A no-op when sel is already visible.
+// filter when it isn't already visible — to zero ("nothing selected") when
+// nothing is visible. A no-op when sel is already visible.
 func snapSelection[T any, K comparable](rows []T, key func(T) K, sel K, renderText func(T) string, query string, filtering bool, zero K) K {
 	if selectionVisible(rows, key, sel, renderText, query, filtering) {
 		return sel
@@ -497,11 +511,10 @@ func moveSelection[T any, K comparable](rows []T, key func(T) K, sel K, delta in
 	return key(rows[visible[pos]])
 }
 
-// groupConversationRows applies groupThreads' action/reply/rest partition
-// (spec §5-REVISED: "action-requested pinned") to a []conversationRow
-// without losing the OtherProjects annotation — groupThreads itself stays
-// the []listThreadRow-only primitive both this and the plain agent-page
-// list (which has no cross-project annotation to carry) share.
+// groupConversationRows applies groupThreads' action/reply/rest partition to
+// a []conversationRow without losing the OtherProjects annotation —
+// groupThreads itself stays the []listThreadRow-only primitive both this and
+// the mailbox list (which has no cross-project annotation to carry) share.
 func groupConversationRows(rows []conversationRow) []conversationRow {
 	byID := make(map[int64]conversationRow, len(rows))
 	plain := make([]listThreadRow, len(rows))

@@ -12,167 +12,98 @@ import (
 	"github.com/schuettc/muster/internal/render"
 )
 
-// This file is every View()-side rendering function for the IA-redesign
-// (spec §5-REVISED): the breadcrumb, the two-column body (projects list /
-// agent strip + conversations / agent threads + activity / conversation
-// reader), the '?' help overlay, and the bottom line (composer/nudge
-// confirm/filter/status). Nothing here mutates Model — every function here
-// is a pure function of the model's current state, consumed only from
-// View().
+// This file is every L0/L1/L2-content View()-side rendering function (spec
+// §5-LOCK): the project list, the agents list + departed bar, the agent
+// header band + vitals slot, the threads table (plain-word intents,
+// label-collision-aware WHO), thread reading, the '?' help overlay, and the
+// bottom line (composer/nudge confirm/filter/status). The nav-stack spine
+// itself — View()'s entry point, renderBody's per-screen dispatch, the
+// breadcrumb + canonical header-badge renderer, and the mailbox page — lives
+// in header.go. Nothing here mutates Model — every function here is a pure
+// function of the model's current state, consumed only from View().
 
-// View implements tea.Model.
-func (m Model) View() string {
-	breadcrumb := m.renderBreadcrumb()
-	if m.helpOpen {
-		return breadcrumb + "\n" + m.renderHelpOverlay() + "\n" + m.renderBottomLine()
+// agentByAlias looks up alias among the currently loaded roster.
+func (m Model) agentByAlias(alias string) (agentEnriched, bool) {
+	for _, a := range m.agents {
+		if a.Alias == alias {
+			return a, true
+		}
 	}
-	dims := m.layout()
-	return breadcrumb + "\n" + m.renderBody(dims) + "\n" + m.renderBottomLine()
+	return agentEnriched{}, false
 }
 
-// renderBreadcrumb renders the current path (spec §5-REVISED: "breadcrumb
-// header always shows the path"; iteration-6 item 2: "breadcrumb keeps the
-// full path" in the full-width reading view too) — ALL PROJECTS at L0, the
-// project name once drilled in, the agent's label at L1.5, and the read
-// thread's "#id subject" once reading (e.g. "bettor-help-workspace ›
-// nfl-research-agent › #34"). The RIGHT side (spec iteration-5: "Header bar
-// (every level, right side of the breadcrumb)") ALWAYS carries the 📬 mail
-// badge now (spec iteration-6 item 4) — dim "📬 0" when station has no
-// unread mail, bright "📬 N for you" when it does — see mailBadgeText/
-// operatorInboxCount.
-func (m Model) renderBreadcrumb() string {
-	var parts []string
-	switch m.screen {
-	case screenProjects:
-		parts = append(parts, "ALL PROJECTS")
-	case screenProject:
-		parts = append(parts, projectDisplayName(m.project))
-	case screenAgent:
-		parts = append(parts, projectDisplayName(m.project), m.dispLabel(m.agent))
+// renderAgentHeaderBandBox builds screenAgent's header band (spec §5-LOCK
+// screen 4): "● live · <model> · <role> · active <t>" plus the 0.6.1 vitals
+// slot — a marked container that renders nothing while hasVitals is false
+// (see renderVitalsLines), ready to light up once 0.6.1 wires real data onto
+// agentEnriched without any layout change here.
+func (m Model) renderAgentHeaderBandBox(outerW int, a agentEnriched) string {
+	innerW := outerW - boxBorderCols
+	if innerW < 1 {
+		innerW = 1
 	}
-	if m.focus == focusConvRight && m.viewThreadID != 0 {
-		parts = append(parts, fmt.Sprintf("#%d %s", m.viewThreadID, m.conversationSubject(m.viewThreadID)))
+	dot, state := "✗", "quit"
+	if a.Live {
+		dot, state = "●", "live"
 	}
-	text := strings.Join(parts, " › ")
-	width := m.termWidth
-	if width <= 0 {
-		width = fallbackTermWidth
+	line := fmt.Sprintf("%s %s", dot, state)
+	if a.ModelType != "" {
+		line += " · " + a.ModelType
 	}
-	plainText := display.Sanitize(text, width)
-	badge := m.mailBadgeText()
-	badgeStyle := mailBadgeDimStyle
-	if m.operatorInboxCount() > 0 {
-		badgeStyle = mailBadgeStyle
+	if a.Role != "" {
+		line += " · " + a.Role
 	}
-	// Width accounting happens on the PLAIN text (same discipline as
-	// colorIntentTag/topBorder: style only AFTER every width decision is
-	// final, since display.Width doesn't understand ANSI) — the badge is
-	// dropped rather than corrupting the line's width when there isn't room
-	// for both, mirroring joinStatusLine's rule for the bottom line.
-	leftW := display.Width(plainText)
-	badgeW := mailBadgeDisplayWidth(badge)
-	gap := width - leftW - badgeW
-	if gap < 2 {
-		return breadcrumbStyle.Render(render.PadDisplay(plainText, width))
+	if ts, ok := m.lastActive[a.Alias]; ok && ts > 0 {
+		line += " · active " + relativeAge(time.Now(), ts)
 	}
-	left := breadcrumbStyle.Render(plainText)
-	right := badgeStyle.Render(badge)
-	return left + strings.Repeat(" ", gap) + right
+	lines := []string{render.PadDisplay(display.Sanitize(line, innerW), innerW)}
+	for _, vl := range renderVitalsLines(agentVitals{}, hasVitals, time.Now()) {
+		lines = append(lines, render.PadDisplay(display.Sanitize(vl, innerW), innerW))
+	}
+	return renderBox(m.dispLabel(a.Alias), false, outerW, len(lines)+boxBorderRows, lines)
 }
 
-// mailBadgeText renders the header's 📬 badge (spec iteration-6 item 4:
-// "📬 always visible... dim '📬 0' when clear, bright '📬 N for you' when
-// not") — count from operatorInboxCount, the ONE canonical source (spec item
-// 5) also behind the FOR YOU section's own row count.
-func (m Model) mailBadgeText() string {
-	n := m.operatorInboxCount()
-	if n <= 0 {
-		return "📬 0"
+// renderVitalsLines renders the 0.6.1 vitals slot's two lines from v — the
+// container's own rendering code, gated on hasVitals explicitly passed in
+// (rather than reading the package const directly) so this function's own
+// test can prove the path renders correctly even while the const stays
+// false for all of 0.6.0 (spec §5-LOCK decision C: "the container exists,
+// renders nothing today, ready to light up when 0.6.1 adds the data").
+func renderVitalsLines(v agentVitals, on bool, now time.Time) []string {
+	if !on {
+		return nil
 	}
-	return fmt.Sprintf("📬 %d for you", n)
-}
-
-// mailBadgeDisplayWidth reports the 📬 badge's true rendered display width.
-// display.Width's East Asian Wide/Fullwidth table (this package's ASCII/CJK-
-// focused width heuristic) doesn't know the mailbox emoji renders 2 columns
-// wide in a real terminal — it has no matching codepoint range — so
-// undercounts the badge by one column; renderBreadcrumb's gap math corrects
-// for that here rather than teaching the shared display package about one
-// specific emoji it was never meant to cover.
-func mailBadgeDisplayWidth(badge string) int {
-	return display.Width(badge) + 1
-}
-
-// conversationSubject looks up threadID's subject among the currently loaded
-// threads — "" if it isn't (yet) known.
-func (m Model) conversationSubject(threadID int64) string {
-	if idx := indexOfThread(m.threads, threadID); idx >= 0 {
-		return m.threads[idx].Subject
+	return []string{
+		"working on  " + v.WorkingOn,
+		fmt.Sprintf("usage       ctx ~%dk / %dk  %d%%  · out %dk last turn · ended %s",
+			v.CtxUsedK, v.CtxWindowK, v.CtxPercent, v.OutTokensK, relativeAge(now, v.LastTurnEndedAt)),
 	}
-	return ""
-}
-
-// renderBody renders full-width thread reading (spec iteration-6 item 2:
-// "Enter on a thread replaces the whole layout with the thread view"),
-// whenever focusConvRight is active — on EVERY terminal size, not just
-// narrow mode, since reading is no longer a two-column right-pane focus, it
-// is its own full-terminal-width layout. Otherwise: the two-column layout,
-// or — in narrow mode (spec §5-REVISED: "< ~110 cols") — the list (left)
-// column alone, since the right pane in browse mode is pure preview with
-// nothing to focus there instead.
-func (m Model) renderBody(dims layoutDims) string {
-	if m.focus == focusConvRight {
-		w, h := m.readingBoxDims()
-		return m.renderConversationBox(w, h, true)
-	}
-	if dims.narrow {
-		return m.renderLeftColumn(dims)
-	}
-	if dims.threadsHorizontal {
-		// Threads-level layout goes horizontal (spec iteration-8): the
-		// hierarchy principle is unchanged — parent above child at this
-		// level instead of left of right — so the full-width THREADS table
-		// stacks above the selected thread's full-width preview, rather than
-		// the vertical two-column split every other level uses below.
-		return lipgloss.JoinVertical(lipgloss.Left, m.renderLeftColumn(dims), m.renderRightColumn(dims))
-	}
-	return lipgloss.JoinHorizontal(lipgloss.Top, m.renderLeftColumn(dims), m.renderRightColumn(dims))
 }
 
 // renderLeftColumn renders the current screen's list: the project list (L0),
-// a project's agents (L1, spec iteration-7 item 1 — or, the ONE exception,
-// the "(unassigned)" bucket's ORPHANED THREADS list, item 5), or the agent's
-// thread list (L2).
+// a project's agents (L1 — or, the ONE exception, the "(unassigned)"
+// bucket's ORPHANED THREADS list), or the agent's thread list (L2).
 func (m Model) renderLeftColumn(dims layoutDims) string {
 	switch m.screen {
 	case screenAgent:
-		return m.renderConvListBox(dims.leftW, dims.convListH, llAgentThreads, "THREADS", m.focus == focusAgentThreads)
+		return m.renderConvListBox(dims.leftW, dims.convListH, llAgentThreads, "THREADS")
 	case screenProject:
 		if m.l1IsOrphaned() {
-			return m.renderConvListBox(dims.leftW, dims.convListH, llProjectItems, "ORPHANED THREADS", m.focus == focusProjectItems)
+			return m.renderConvListBox(dims.leftW, dims.convListH, llProjectItems, "ORPHANED THREADS")
 		}
 		return m.renderAgentsBox(dims.leftW, dims.convListH)
 	default:
-		// FOR YOU is pinned ABOVE the project list (spec iteration-5) only
-		// while station has unread mail — dims.forYouH is 0 otherwise (see
-		// layout()), so an unread-free session renders exactly as before
-		// this feature.
-		if dims.forYouH > 0 {
-			forYouBox := m.renderForYouBox(dims.leftW, dims.forYouH)
-			projectsBox := m.renderProjectsBox(dims.leftW, dims.bodyH-dims.forYouH)
-			return lipgloss.JoinVertical(lipgloss.Left, forYouBox, projectsBox)
-		}
 		return m.renderProjectsBox(dims.leftW, dims.bodyH)
 	}
 }
 
 // renderRightColumn renders the current screen's PREVIEW-only right pane —
 // browse mode never focuses this pane (reading is a separate full-width
-// mode, see renderBody), so every branch here always renders unfocused
-// (focused=false): a project's rollup preview (L0), the selected agent's own
-// page (L1's agents list: their threads + recent activity) or the selected
-// thread's preview (L1's ONE exception, the unassigned bucket's ORPHANED
-// THREADS list), or the agent's selected thread preview (L2).
+// screen), so every branch here always renders unfocused: a project's
+// rollup preview (L0), the selected agent's own page (L1's agents list:
+// their threads + recent activity) or the selected thread's preview (L1's
+// ONE exception, the unassigned bucket's ORPHANED THREADS list), or the
+// agent's selected thread preview (L2).
 func (m Model) renderRightColumn(dims layoutDims) string {
 	switch m.screen {
 	case screenAgent:
@@ -183,15 +114,12 @@ func (m Model) renderRightColumn(dims layoutDims) string {
 		}
 		return m.renderAgentPagePreviewBox(dims.rightW, dims.bodyH)
 	default:
-		if m.focus == focusForYou {
-			return m.renderForYouPreviewBox(dims.rightW, dims.bodyH)
-		}
 		return m.renderProjectPreviewBox(dims.rightW, dims.bodyH)
 	}
 }
 
-// renderProjectsBox builds L0's project list (spec §5-REVISED: "name,
-// live/total agents, unread rollup (+action), last-activity age").
+// renderProjectsBox builds L0's project list: name, live/total agents,
+// unread rollup (+action), last-activity age.
 func (m Model) renderProjectsBox(outerW, outerH int) string {
 	innerW := outerW - boxBorderCols
 	if innerW < 1 {
@@ -218,7 +146,7 @@ func (m Model) renderProjectsBox(outerW, outerH int) string {
 		lines = append(lines, m.renderProjectLine(cursorMark, p, innerW))
 	}
 	lines = windowLines(lines, innerH, selectedLine)
-	return renderBox("PROJECTS", m.focus == focusProjectList, outerW, outerH, lines)
+	return renderBox("PROJECTS", true, outerW, outerH, lines)
 }
 
 // renderProjectLine renders one L0 row's VISIBLE text — a single line,
@@ -232,8 +160,6 @@ func (m Model) renderProjectLine(cursorMark string, p projectSummary, innerW int
 		if p.ActionUnread > 0 {
 			marker = fmt.Sprintf("!%d", p.ActionUnread)
 		}
-		// Unread AGE (spec iteration-5 Tier 0b): how long the oldest unread
-		// thread in this project has been waiting, format "(N · age)".
 		rows := unreadThreadsForProject(m.threads, aliasProjectMap(m.agents), p.Name)
 		unread = fmt.Sprintf(" (%d%s%s)", p.Unread, marker, unreadAgeSuffix(rows))
 	}
@@ -245,85 +171,6 @@ func (m Model) renderProjectLine(cursorMark string, p projectSummary, innerW int
 	}
 	label := display.Sanitize(name, avail)
 	return render.PadDisplay(cursorMark+label+suffix, innerW)
-}
-
-// renderForYouBox builds L0's pinned FOR YOU section (spec iteration-5:
-// "listing station's unread threads (subject, from, age)") — only rendered
-// (by renderLeftColumn) while operatorInboxCount is > 0.
-func (m Model) renderForYouBox(outerW, outerH int) string {
-	innerW := outerW - boxBorderCols
-	if innerW < 1 {
-		innerW = 1
-	}
-	innerH := outerH - boxBorderRows
-	if innerH < 0 {
-		innerH = 0
-	}
-	rows := m.forYouRows()
-	q, f := m.filterQueryFor(llForYou)
-
-	var lines []string
-	selectedLine := -1
-	for _, row := range rows {
-		if !rowVisible(row, m.plainForYouRow, q, f) {
-			continue
-		}
-		cursorMark := "  "
-		if row.ID == m.forYou {
-			cursorMark = "> "
-			selectedLine = len(lines)
-		}
-		lines = append(lines, m.renderForYouLine(cursorMark, row, innerW))
-	}
-	lines = windowLines(lines, innerH, selectedLine)
-	title := fmt.Sprintf("📬 FOR YOU (%d)", len(rows))
-	return renderBox(title, m.focus == focusForYou, outerW, outerH, lines)
-}
-
-// renderForYouLine renders one FOR YOU row's VISIBLE text — subject, from,
-// age (spec iteration-5) — clipped (never wrapped) to innerW.
-func (m Model) renderForYouLine(cursorMark string, row listThreadRow, innerW int) string {
-	from := m.dispLabel(row.FromAgent)
-	age := relativeAge(time.Now(), row.LastAt)
-	suffix := fmt.Sprintf("  %s  %s", from, age)
-	avail := innerW - display.Width(cursorMark) - display.Width(suffix)
-	if avail < 1 {
-		avail = 1
-	}
-	subject := display.Sanitize(row.Subject, avail)
-	return render.PadDisplay(cursorMark+subject+suffix, innerW)
-}
-
-// renderForYouPreviewBox builds L0's right-pane preview when the FOR YOU
-// section is focused — lightweight (subject/from/age + "enter to open"),
-// not the full message preview: unlike a project/conversation selection,
-// nothing has pre-loaded this thread's entries (see moveFocused's focusForYou
-// case), so this stays a row-summary preview rather than reusing
-// renderConversationBox against stale or absent data.
-func (m Model) renderForYouPreviewBox(outerW, outerH int) string {
-	innerW := outerW - boxBorderCols
-	if innerW < 1 {
-		innerW = 1
-	}
-	rows := m.forYouRows()
-	idx := keyIndex(rows, forYouKey, m.forYou)
-	var lines []string
-	if idx < 0 {
-		lines = append(lines, "no thread selected")
-	} else {
-		row := rows[idx]
-		lines = append(lines, display.Sanitize(row.Subject, innerW))
-		lines = append(lines, "from "+m.dispLabel(row.FromAgent))
-		if row.LastAt > 0 {
-			lines = append(lines, "waiting "+relativeAge(time.Now(), row.LastAt))
-		}
-		lines = append(lines, "", "enter to open")
-	}
-	padded := make([]string, len(lines))
-	for i, l := range lines {
-		padded[i] = render.PadDisplay(display.Sanitize(l, innerW), innerW)
-	}
-	return renderBox("PREVIEW", false, outerW, outerH, padded)
 }
 
 // renderProjectPreviewBox builds L0's right-pane preview of the selected
@@ -359,13 +206,13 @@ func (m Model) renderProjectPreviewBox(outerW, outerH int) string {
 	return renderBox("PREVIEW", false, outerW, outerH, padded)
 }
 
-// renderRosterRow renders one agent-strip row's plain text: live dot, label
-// (resolved via dispLabel, so the 'a' aliases toggle affects the strip
+// renderRosterRow renders one agent-list row's plain text: live dot, label
+// (resolved via dispLabel, so the 'a' aliases toggle affects the list
 // exactly like every other row), and per-session unread count — "!" marks a
 // session whose unread includes an action-requested thread. This is the
-// SAME predicate text moveFocused/handleEnterKey/handleNudgeKey resolve
-// filter/selection through (spec §5 carried-over fix: filter/selection
-// desync) — renderRosterLine below is the padded VISUAL variant.
+// SAME predicate text moveCurrentList/handleEnterKey/handleNudgeKey resolve
+// filter/selection through — renderRosterLine below is the padded VISUAL
+// variant.
 func (m Model) renderRosterRow(a agentEnriched) string {
 	dot := "✗"
 	if a.Live {
@@ -382,17 +229,11 @@ func (m Model) renderRosterRow(a agentEnriched) string {
 	return line
 }
 
-// renderRosterLine renders one agent-strip row's VISIBLE text — a single
-// line, clipped (never wrapped) to innerW. Spec iteration-5 enrichments: the
-// unread block's oldest-unread AGE (Tier 0b, "(N · age)"), and a trailing
-// "last active: <relative>" (Tier 0a) once fetchLastActiveCmd has resolved
-// this alias. Spec iteration-6 item 1 removes the attach/eye marker that
-// used to sit after the liveness dot here.
+// renderRosterLine renders one LIVE agent-list row's VISIBLE text — a single
+// line, clipped (never wrapped) to innerW: the unread block's oldest-unread
+// AGE ("(N · age)"), and a trailing "last active: <relative>" once
+// fetchLastActiveCmd has resolved this alias.
 func (m Model) renderRosterLine(cursorMark string, a agentEnriched, innerW int) string {
-	dot := "✗"
-	if a.Live {
-		dot = "●"
-	}
 	suffix := ""
 	if a.Unread > 0 {
 		marker := ""
@@ -404,7 +245,7 @@ func (m Model) renderRosterLine(cursorMark string, a agentEnriched, innerW int) 
 	if ts, ok := m.lastActive[a.Alias]; ok && ts > 0 {
 		suffix += "  last active: " + relativeAge(time.Now(), ts)
 	}
-	prefix := cursorMark + dot + " "
+	prefix := cursorMark + "● "
 	avail := innerW - display.Width(prefix) - display.Width(suffix)
 	if avail < 1 {
 		avail = 1
@@ -413,10 +254,9 @@ func (m Model) renderRosterLine(cursorMark string, a agentEnriched, innerW int) 
 	return render.PadDisplay(prefix+label+suffix, innerW)
 }
 
-// unreadAgeSuffix renders Tier 0b's "· age" fragment (spec iteration-5:
-// format "(1 · 25m)") for an unread block already known to be non-empty
-// (a.Unread > 0 / p.Unread > 0) — "" when rows carries no derivable age
-// (e.g. every candidate row's LastAt is unset).
+// unreadAgeSuffix renders the "· age" fragment ("(1 · 25m)") for an unread
+// block already known to be non-empty (a.Unread > 0 / p.Unread > 0) — "" when
+// rows carries no derivable age.
 func unreadAgeSuffix(rows []listThreadRow) string {
 	oldest := oldestUnreadAt(rows)
 	if oldest <= 0 {
@@ -429,12 +269,15 @@ func unreadAgeSuffix(rows []listThreadRow) string {
 // section-header rows.
 var sectionHeaderStyle = lipgloss.NewStyle().Faint(true).Bold(true)
 
-// renderAgentsBox builds screenProject's L1 list (spec iteration-7 item 1:
-// "L1 = agents ONLY" — the THREADS section iteration-6 merged in here is
-// gone; a project's left list at L1 is simply its agents, one per row: live
-// dot, label, unread badge, last active). The "(unassigned)" bucket never
-// reaches here (l1IsOrphaned routes it to renderConvListBox's ORPHANED
-// THREADS list instead, see renderLeftColumn).
+// renderAgentsBox builds screenProject's L1 list (spec §5-LOCK screen 3):
+// live agents on top (● green, unread badge + last-active), then — only
+// when at least one agent has quit — a PLAIN divider bar (no label text at
+// all: the bar and the ✗ mark are self-explaining), then quit agents by
+// their REAL NAMES (the alias, not a possibly-stale display label — a
+// deregistered session's tmux-derived label can never be refreshed again),
+// dimmed, with a thread-count + age instead of an unread badge. The
+// "(unassigned)" bucket never reaches here (l1IsOrphaned routes it to
+// renderConvListBox's ORPHANED THREADS list instead, see renderLeftColumn).
 func (m Model) renderAgentsBox(outerW, outerH int) string {
 	innerW := outerW - boxBorderCols
 	if innerW < 1 {
@@ -446,12 +289,21 @@ func (m Model) renderAgentsBox(outerW, outerH int) string {
 	}
 	q, f := m.filterQueryFor(llProjectItems)
 
-	var lines []string
-	selectedLine := -1
+	var live, quit []agentEnriched
 	for _, a := range m.agentStripRows() {
 		if !rowVisible(a, m.renderRosterRow, q, f) {
 			continue
 		}
+		if a.Live {
+			live = append(live, a)
+		} else {
+			quit = append(quit, a)
+		}
+	}
+
+	var lines []string
+	selectedLine := -1
+	for _, a := range live {
 		cursorMark := "  "
 		if a.Alias == m.agent {
 			cursorMark = "> "
@@ -459,17 +311,43 @@ func (m Model) renderAgentsBox(outerW, outerH int) string {
 		}
 		lines = append(lines, m.renderRosterLine(cursorMark, a, innerW))
 	}
+	if len(quit) > 0 {
+		lines = append(lines, quitDividerStyle.Render(strings.Repeat("─", innerW)))
+		for _, a := range quit {
+			cursorMark := "  "
+			if a.Alias == m.agent {
+				cursorMark = "> "
+				selectedLine = len(lines)
+			}
+			lines = append(lines, m.renderQuitAgentLine(cursorMark, a, innerW))
+		}
+	}
 
 	lines = windowLines(lines, innerH, selectedLine)
-	return renderBox("AGENTS", m.focus == focusProjectItems, outerW, outerH, lines)
+	return renderBox("AGENTS", true, outerW, outerH, lines)
+}
+
+// renderQuitAgentLine renders one departed agent's row: "✗ <alias>  N
+// threads  age" — dimmed in full (spec §5-LOCK decision A).
+func (m Model) renderQuitAgentLine(cursorMark string, a agentEnriched, innerW int) string {
+	n := len(conversationsForAgent(m.threads, a.Alias))
+	age := relativeAge(time.Now(), lastActivityAt(m.threads, a.Alias))
+	suffix := fmt.Sprintf("  %d threads  %s", n, age)
+	prefix := cursorMark + "✗ "
+	avail := innerW - display.Width(prefix) - display.Width(suffix)
+	if avail < 1 {
+		avail = 1
+	}
+	label := display.Sanitize(a.Alias, avail) // REAL NAME: the alias, never a stale label
+	padded := render.PadDisplay(prefix+label+suffix, innerW)
+	return quitAgentLineStyle.Render(padded)
 }
 
 // renderAgentPagePreviewBox builds screenProject's right-pane preview for
-// L1's selected agent ("agent selected → agent page: their threads + recent
-// activity, existing data paths") — a compact combined preview reusing
-// conversationsForAgent and agentActivity/render.Renderer verbatim, distinct
-// from the fuller screenAgent drill-down (renderConvListBox +
-// renderConversationBox) Enter on this row leads to.
+// L1's selected agent (their threads + recent activity) — a compact
+// combined preview reusing conversationsForAgent and agentActivity/
+// render.Renderer verbatim, distinct from the fuller screenAgent drill-down
+// Enter on this row leads to.
 func (m Model) renderAgentPagePreviewBox(outerW, outerH int) string {
 	innerW := outerW - boxBorderCols
 	if innerW < 1 {
@@ -512,46 +390,40 @@ func (m Model) renderAgentPagePreviewBox(outerW, outerH int) string {
 	return renderBox(title, false, outerW, outerH, lines)
 }
 
-// renderThreadRow renders one conversation row's PLAIN text — the filter/
-// selection predicate's text (spec §5 carried-over fix: filter/selection
-// desync), reused verbatim by both screenProject's conversation list and
-// screenAgent's thread list (conversationRows() already picks the right
-// underlying rows for whichever screen is active).
+// renderThreadRow renders one thread row's PLAIN text — the filter/
+// selection predicate's text, reused verbatim by both screenProject's
+// "(unassigned)" thread list and screenAgent's thread list
+// (conversationRows() already picks the right underlying rows for whichever
+// screen is active).
 func (m Model) renderThreadRow(row listThreadRow) string {
 	marker := "  "
 	if row.ID == m.conversation {
 		marker = "> "
 	}
-	tag := intentRowTag(row.Intent)
-	if tag != "" {
-		tag = " " + tag
+	word := intentWord(row.Intent)
+	if word != "" {
+		word = " " + word
 	}
 	participants := fmt.Sprintf("%s → %s", m.dispLabel(row.FromAgent), m.dispToTarget(row))
 	last := m.dispLabel(row.LastFrom)
 	age := relativeAge(time.Now(), row.LastAt)
 	subject := display.Sanitize(row.Subject, 200)
-	return fmt.Sprintf("%s#%d%s %s | %s %s | %s", marker, row.ID, tag, participants, last, age, subject)
+	return fmt.Sprintf("%s#%d%s %s | %s %s | %s", marker, row.ID, word, participants, last, age, subject)
 }
 
-// renderConversationLine renders one conversation row COLUMNIZED: `#ID
-// [tag]  who → who  AGE  subject`, appending a cross-project marker to the
-// subject when the row touches another project (spec §5-REVISED:
-// "cross-project threads marked '↔ otherproj'"; iteration-7 item 4: computed
-// against the AGENT viewing it, see conversationsForAgentAnnotated). No
-// separate LAST-speaker column (unlike the pre-redesign threads pane) — the
-// left column's fixed width has no room for a third identity column once
-// WHO already conveys the participants. The cursor mark follows
-// m.conversation directly — every screen this renders for (screenAgent's
-// thread list, and the "(unassigned)" bucket's ORPHANED THREADS exception)
-// has m.conversation as its own unambiguous selection, unlike iteration-6's
-// now-removed merged AGENTS+THREADS list.
+// renderConversationLine renders one thread row COLUMNIZED: `#ID intent
+// who → who  AGE  subject`, appending a cross-project marker to the subject
+// when the row touches another project (computed against the AGENT viewing
+// it, see conversationsForAgentAnnotated). WHO resolves both ends through
+// dispLabel, which appends the alias itself whenever a label collides (spec
+// §5-LOCK item 7) — so a cross-project or ambiguous-label thread never
+// reads like nonsense.
 func (m Model) renderConversationLine(c conversationRow, innerW int) string {
 	return m.renderConversationLineMarked(c, innerW, c.ID == m.conversation)
 }
 
 // renderConversationLineMarked is renderConversationLine with an EXPLICIT
-// selected flag rather than one implied by c.ID == m.conversation — see
-// renderConversationLine's doc.
+// selected flag rather than one implied by c.ID == m.conversation.
 func (m Model) renderConversationLineMarked(c conversationRow, innerW int, selected bool) string {
 	marker := "  "
 	if selected {
@@ -559,8 +431,8 @@ func (m Model) renderConversationLineMarked(c conversationRow, innerW int, selec
 	}
 	whoW, fixedWidth := threadsColumnWidths(innerW)
 	idCol := render.PadDisplay(display.Sanitize(fmt.Sprintf("#%d", c.ID), threadIDWidth), threadIDWidth)
-	tagPlain := intentRowTag(c.Intent)
-	tagCol := colorIntentTag(c.Intent, render.PadDisplay(tagPlain, threadTagWidth))
+	wordPlain := intentWord(c.Intent)
+	intentCol := colorIntentTag(c.Intent, render.PadDisplay(wordPlain, threadTagWidth))
 	who := fmt.Sprintf("%s→%s", m.dispLabel(c.FromAgent), m.dispToTarget(c.listThreadRow))
 	whoCol := render.PadDisplay(display.Sanitize(who, whoW), whoW)
 	ageCol := render.PadDisplay(relativeAge(time.Now(), c.LastAt), threadAgeWidth)
@@ -579,18 +451,21 @@ func (m Model) renderConversationLineMarked(c conversationRow, innerW int, selec
 	}
 	subjectCol := render.PadDisplay(display.Sanitize(subject, subjectBudget), subjectBudget)
 
-	return marker + idCol + "  " + tagCol + "  " + whoCol + "  " + ageCol + "  " + subjectCol
+	return marker + idCol + "  " + intentCol + "  " + whoCol + "  " + ageCol + "  " + subjectCol
 }
 
-// renderConvListBox builds a conversation-list box (spec §5-REVISED: shared
-// by screenProject's CONVERSATIONS and screenAgent's THREADS) — rows already
-// grouped action-requested-first by conversationRows(), each columnized
-// (renderConversationLine), the selection marker following m.conversation by
-// ID so it always lands on the right row regardless of this poll's
-// grouping. Rows the active '/' filter hides are skipped via rowVisible —
-// the SAME predicate moveFocused/handleEnterKey resolve through — and the
-// visible rows are vertically windowed around the selection.
-func (m Model) renderConvListBox(outerW, outerH int, list llList, title string, focused bool) string {
+// renderConvListBox builds a thread-list box (shared by screenProject's
+// "(unassigned)" ORPHANED THREADS list and screenAgent's THREADS) — rows
+// already grouped action-requested-first by conversationRows(), each
+// columnized (renderConversationLine), the selection marker following
+// m.conversation by ID so it always lands on the right row regardless of
+// this poll's grouping. Rows the active '/' filter hides are skipped via
+// rowVisible — the SAME predicate moveCurrentList/handleEnterKey resolve
+// through — and the visible rows are vertically windowed around the
+// selection. Always the sole browsing target at its level (spec §5-LOCK
+// decision B: no second focus target left anywhere), so always rendered
+// "focused".
+func (m Model) renderConvListBox(outerW, outerH int, list llList, title string) string {
 	innerW := outerW - boxBorderCols
 	if innerW < 1 {
 		innerW = 1
@@ -616,20 +491,19 @@ func (m Model) renderConvListBox(outerW, outerH int, list llList, title string, 
 	}
 	body = windowLines(body, rowsHeight, selectedLine)
 	lines := append([]string{header}, body...)
-	return renderBox(title, focused, outerW, outerH, lines)
+	return renderBox(title, true, outerW, outerH, lines)
 }
 
-// conversationAuthorStyle styles a conversation entry's header line — spec
-// item 3 of the iteration-three body-structure fix: "author header line
-// styled (author · relative time), body indented two spaces under it" —
-// distinctly from the plain (or markdown-styled) body text under it.
+// conversationAuthorStyle styles a thread entry's header line ("author ·
+// relative time"), distinctly from the plain (or markdown-styled) body text
+// under it.
 var conversationAuthorStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("117"))
 
-// conversationLines renders every loaded conversation entry into flat,
-// already-wrapped display lines (header + wrapped/styled body + a blank
-// separator), and returns entryStart[i]..entryStart[i+1] as entry i's line
-// range within lines — entryStart has len(viewEntries)+1 elements, the last
-// one the total line count.
+// conversationLines renders every loaded thread entry into flat, already-
+// wrapped display lines (header + wrapped/styled body + a blank separator),
+// and returns entryStart[i]..entryStart[i+1] as entry i's line range within
+// lines — entryStart has len(viewEntries)+1 elements, the last one the total
+// line count.
 //
 // Every returned line is EXACTLY width display columns wide already
 // (render.PadDisplay/display.Sanitize for the header, wrapBody's own
@@ -678,10 +552,9 @@ func (m Model) conversationLines(width int) (lines []string, entryStart []int) {
 }
 
 // conversationWindowTop picks which line to start rendering from when the
-// reader is FOCUSED (spec §5 carried-over fix: render windowing): the
-// window always ends right at the cursor entry's own lines. Stateless by
-// design: the cursor's own index is enough to re-derive the correct window
-// on every render.
+// reader is FOCUSED (screenRead): the window always ends right at the
+// cursor entry's own lines. Stateless by design: the cursor's own index is
+// enough to re-derive the correct window on every render.
 func (m Model) conversationWindowTop(lines []string, entryStart []int, height int) int {
 	if height <= 0 || len(lines) <= height || len(entryStart) <= 1 {
 		return 0
@@ -704,13 +577,11 @@ func (m Model) conversationWindowTop(lines []string, entryStart []int, height in
 }
 
 // snapToEntryBoundary rounds top forward to the nearest real entry boundary
-// in entryStart (spec item 4: the passive preview "should start at a
-// MESSAGE boundary... not mid-word") — the smallest entryStart[i] (i over
-// real entries, excluding the trailing total-line-count sentinel) that is
-// >= top. If every real boundary is already behind top (the tail's own
-// entry starts earlier than a straight tail-height slice would), it falls
-// back to that last entry's own start instead — showing all of one
-// long message from its header rather than an empty or mid-body window.
+// in entryStart — the passive preview "should start at a MESSAGE boundary...
+// not mid-word" even when a straight tail-height slice would otherwise land
+// inside a message's wrapped body. If every real boundary is already behind
+// top, it falls back to that last entry's own start instead — showing all of
+// one long message from its header rather than an empty or mid-body window.
 func snapToEntryBoundary(entryStart []int, top int) int {
 	if len(entryStart) < 2 {
 		return top
@@ -724,11 +595,10 @@ func snapToEntryBoundary(entryStart []int, top int) int {
 	return realStarts[len(realStarts)-1]
 }
 
-// renderConversationBox builds the right pane's conversation content — L1's
+// renderConversationBox builds the right pane's thread content — the
 // passive "last messages" preview (focused=false: just the tail, no cursor
-// marks, no load-older/newer hints) or L2's focused reader (focused=true:
-// cursor-windowed, "load older"/"N newer" hints, spec §5 carried-over fixes:
-// render windowing + the newest-entries gap).
+// marks, no load-older/newer hints) or screenRead's focused reader
+// (focused=true: cursor-windowed, "load older"/"N newer" hints).
 func (m Model) renderConversationBox(outerW, outerH int, focused bool) string {
 	innerW := outerW - boxBorderCols
 	if innerW < 1 {
@@ -754,13 +624,6 @@ func (m Model) renderConversationBox(outerW, outerH int, focused bool) string {
 	if height < 1 {
 		height = 1
 	}
-	// content is renderBox-ready: every entry here is already exactly innerW
-	// display columns (or the bare "" renderBox itself blank-fills — see
-	// conversationLines' doc). The two hint lines below are sanitized/padded
-	// right here, at construction, rather than in a later pass over the
-	// whole slice — a later pass would re-run display.Sanitize/PadDisplay
-	// over conversationLines' output too, corrupting any body line that
-	// already carries lipgloss ANSI from markdown styling.
 	var content []string
 	if focused && m.viewOffset > 0 {
 		content = append(content, render.PadDisplay(display.Sanitize("↑ more above — k/↑ to load older", innerW), innerW))
@@ -784,8 +647,8 @@ func (m Model) renderConversationBox(outerW, outerH int, focused bool) string {
 		end = top + height
 	} else {
 		// Passive preview: always show the TAIL, no cursor-based windowing —
-		// but snapped forward to the nearest message boundary (spec item 4)
-		// so it never opens mid-paragraph/mid-word.
+		// but snapped forward to the nearest message boundary so it never
+		// opens mid-paragraph/mid-word.
 		end = len(lines)
 		top = end - height
 		if top < 0 {
@@ -810,56 +673,14 @@ func (m Model) renderConversationBox(outerW, outerH int, focused bool) string {
 	return renderBox(title, focused, outerW, outerH, content)
 }
 
-// renderActivityBox builds L1.5's right pane: the agent's recent journal
-// activity (spec §5-REVISED: "their recent journal activity (list_events
-// agent filter)"), rendered through render.Renderer verbatim (spec: "the
-// render.Renderer stays — agent-activity lines reuse it").
-func (m Model) renderActivityBox(outerW, outerH int) string {
-	innerW := outerW - boxBorderCols
-	if innerW < 1 {
-		innerW = 1
-	}
-	rowsHeight := outerH - boxBorderRows - 1 // -1 for the header row below
-	if rowsHeight < 0 {
-		rowsHeight = 0
-	}
-
-	m.activity.SetWidth(innerW)
-	var hb bytes.Buffer
-	m.activity.Header(&hb)
-	header := render.PadDisplay(display.Sanitize(strings.TrimRight(hb.String(), "\n"), innerW), innerW)
-
-	rows := agentActivity(m.events, m.agent)
-	start := 0
-	if len(rows) > rowsHeight {
-		start = len(rows) - rowsHeight
-	}
-	lines := []string{header}
-	for _, e := range rows[start:] {
-		var lb bytes.Buffer
-		m.activity.Line(&lb, e)
-		line := strings.TrimRight(lb.String(), "\n")
-		lines = append(lines, render.PadDisplay(display.Sanitize(line, innerW), innerW))
-	}
-	title := "ACTIVITY: " + m.dispLabel(m.agent)
-	// Tier 0a (spec iteration-5): "Agent page ... gain 'last active:
-	// <relative>'" — shown once fetchLastActiveCmd has resolved this agent.
-	if ts, ok := m.lastActive[m.agent]; ok && ts > 0 {
-		title += " — last active " + relativeAge(time.Now(), ts) + " ago"
-	}
-	return renderBox(title, false, outerW, outerH, lines)
-}
-
 // llListName renders a llList value for the '/' filter's "filter (X): …"
-// prompt. llProjectItems is model-dependent (spec iteration-7 item 5): the
-// "(unassigned)" bucket's ORPHANED THREADS exception filters threads, every
-// other project's L1 filters agents.
+// prompt. llProjectItems is model-dependent: the "(unassigned)" bucket's
+// ORPHANED THREADS exception filters threads, every other project's L1
+// filters agents.
 func (m Model) llListName(l llList) string {
 	switch l {
 	case llProjects:
 		return "projects"
-	case llForYou:
-		return "your mail"
 	case llProjectItems:
 		if m.l1IsOrphaned() {
 			return "orphaned threads"
@@ -867,43 +688,40 @@ func (m Model) llListName(l llList) string {
 		return "agents"
 	case llAgentThreads:
 		return "threads"
+	case llMailbox:
+		return "mailbox"
 	default:
 		return ""
 	}
 }
 
-// helpKeyLines is the '?' overlay's key reference (spec §5-CHAIN: the chain
-// is exactly four levels — projects → a project's agents → an agent's
-// threads → a full-width thread read — with the "(unassigned)" bucket's
-// ORPHANED THREADS list as the one exception).
+// helpKeyLines is the '?' overlay's key reference.
 var helpKeyLines = []string{
 	"enter    on an agent: descend into their threads · on a thread: read it full-width",
 	"esc      climb back up one level (or leave full-width reading)",
-	"tab      L0 only: toggle the FOR YOU section / the project list",
+	"g        home — jump straight back to the projects list",
 	"j/k, ↑/↓ move the cursor in the current list",
 	"end, G   jump the focused thread reader to its newest entry",
 	"s        send a message from anywhere (roster-filtered picker)",
-	"r        reply (only while reading a thread)",
+	"r        reply to the currently selected/open thread",
 	"n        nudge (the agents list, or an agent's own page)",
-	"m        jump to your FOR YOU mail (or straight in, if just one)",
+	"m        jump to your mailbox — every thread addressed to you, read and unread",
 	"/        filter the current left list",
 	"a        toggle raw aliases vs. current labels",
 	"?        toggle this help",
 	"q        quit (deregisters this station)",
 }
 
-// helpLegendLines is the glyph legend (spec §5-REVISED: "● ✗ (n) ! [action]
-// ↔"; iteration-6 item 1 removes the attach/eye marker that used to appear
-// here).
+// helpLegendLines is the glyph legend.
 var helpLegendLines = []string{
-	"●        agent's tmux session is live",
-	"✗        agent's tmux session is dead",
+	"●        agent is live",
+	"✗        agent has quit (dimmed; history stays in place, still drillable)",
 	"(n)      n unread messages for that session",
 	"(n · age) n unread, oldest waiting since age",
 	"!        the unread includes an action-requested thread",
-	"[action] [reply?] [fyi]   a thread's intent tag",
+	"needs action / wants reply / fyi   a thread's intent, in plain words",
 	"↔ proj   this thread also touches another project",
-	"📬 N for you   station has N unread threads addressed to it",
+	"📬 N for you   station's own unread mail (gray 0 when clear)",
 	"ORPHANED THREADS   the (unassigned) bucket: threads with no living agent to file under",
 }
 
@@ -956,28 +774,19 @@ func (m Model) renderBottomLine() string {
 
 // renderComposerPicker renders the 's' target-picker line: the filter input
 // plus the (label-resolved) candidates it currently matches, the highlighted
-// one marked. Two candidates sharing the same display label are
-// disambiguated with their project prefixed ("project:label").
+// one marked. Two candidates sharing the same display label are already
+// disambiguated by dispLabel itself (spec §5-LOCK item 7: the ONE shared
+// collision helper's alias-suffix form, not a second picker-local
+// vocabulary).
 func (m Model) renderComposerPicker() string {
 	cands := m.composerCandidates()
-	labels := make([]string, len(cands))
-	counts := make(map[string]int, len(cands))
-	for i, a := range cands {
-		l := m.dispLabel(a.Alias)
-		labels[i] = l
-		counts[l]++
-	}
 	names := make([]string, 0, len(cands))
 	for i, a := range cands {
 		marker := ""
 		if i == m.composer.pickerIdx {
 			marker = ">"
 		}
-		label := labels[i]
-		if counts[label] > 1 && a.Project != "" {
-			label = a.Project + ":" + label
-		}
-		names = append(names, marker+label)
+		names = append(names, marker+m.dispLabel(a.Alias))
 	}
 	line := "to: " + m.composer.filter.View()
 	if len(names) == 0 {
@@ -1020,59 +829,43 @@ func (m Model) renderStatus() string {
 	}
 
 	right := m.levelKeysHint()
-	if m.focus == focusConvRight {
-		right = fmt.Sprintf("%s scroll · %s reply · %s back", keys.Down.Help().Key, keys.Reply.Help().Key, keys.Esc.Help().Key)
+	if m.screen == screenRead {
+		right = fmt.Sprintf("%s scroll · %s reply · %s back · g home", keys.Down.Help().Key, keys.Reply.Help().Key, keys.Esc.Help().Key)
 	}
 	return joinStatusLine(left, right, width)
 }
 
-// escIsNoop reports whether Esc does nothing at the model's CURRENT
-// level — true at L0 (screenProjects: nothing to climb back to) and at L1
-// when the bus auto-skipped straight past L0 (m.singleProject: there is no
-// L0 to climb back to either, see handleEscKey). Never consulted while
-// focus == focusConvRight — Esc always un-focuses the reader there,
-// handled by renderStatus's separate branch above.
+// escIsNoop reports whether Esc does nothing at the model's CURRENT level —
+// true at L0 (screenProjects: nothing to climb back to) and at L1 when the
+// bus auto-skipped straight past L0 (m.singleProject: there is no L0 to
+// climb back to either) — the exact inverse of canPop.
 func (m Model) escIsNoop() bool {
-	return m.screen == screenProjects || (m.screen == screenProject && m.singleProject)
+	return !m.canPop()
 }
 
-// tabIsNoop reports whether Tab does nothing at the model's CURRENT level —
-// Tab only ever cycles L0's FOR YOU/project-list toggle: screenProject and
-// screenAgent each have exactly one focusable list and a preview-only right
-// pane, so Tab is ALWAYS a no-op there — true anywhere but screenProjects,
-// and even there unless the FOR YOU section is showing (spec iteration-5:
-// station has unread mail).
-func (m Model) tabIsNoop() bool {
-	if m.screen != screenProjects {
-		return true
+// gIsNoop reports whether 'g' does nothing right now: already at home (the
+// true root, or — on a single-project bus — the auto-skipped L1 that stands
+// in for home).
+func (m Model) gIsNoop() bool {
+	if m.singleProject {
+		return len(m.stack) <= 2
 	}
-	return m.operatorInboxCount() <= 0
+	return len(m.stack) <= 1
 }
 
-// mailIsNoop reports whether 'm' does nothing right now (spec iteration-5:
-// suppress the dead-key footer hint exactly like escIsNoop/tabIsNoop) —
-// station has no unread mail to jump to.
-func (m Model) mailIsNoop() bool {
-	return m.operatorInboxCount() <= 0
-}
-
-// levelKeysHint is the DEFAULT (non-focusConvRight) bottom-line key hint,
-// level-aware (spec item 5, iteration-three fix: "the footer hints name
-// esc/enter/tab per level"): built from keysHintBase, the single source of
-// truth for each verb's wording, with "esc back"/"tab cycle" dropped
-// whenever escIsNoop/tabIsNoop reports that key does nothing at the current
-// level — advertising a dead key is exactly the kind of footer confusion
-// that left an operator unable to find navigation.
+// levelKeysHint is the DEFAULT (non-screenRead) bottom-line key hint: built
+// from keysHintBase, the single source of truth for each verb's wording,
+// with "esc back"/"g home" dropped whenever escIsNoop/gIsNoop reports that
+// key does nothing at the current level — advertising a dead key is exactly
+// the kind of footer confusion that once left an operator unable to find
+// navigation.
 func (m Model) levelKeysHint() string {
 	var out []string
 	for _, p := range strings.Split(keysHintBase, " · ") {
 		if p == "esc back" && m.escIsNoop() {
 			continue
 		}
-		if p == "tab cycle" && m.tabIsNoop() {
-			continue
-		}
-		if p == "m mail" && m.mailIsNoop() {
+		if p == "g home" && m.gIsNoop() {
 			continue
 		}
 		out = append(out, p)

@@ -38,13 +38,11 @@ func typeString(t *testing.T, m Model, s string) Model {
 
 // tabToAgentStrip asserts m is already parked on screenProject's L1 agents
 // list — the default landing spot on every L0→L1 drill / single-project
-// auto-skip, so there is no Tab press needed to reach it any more (Tab is a
-// no-op within screenProject now that there's only one focusable list).
-// Kept under its old name so every call site below is unchanged.
+// auto-skip. Kept under its old name so every call site below is unchanged.
 func tabToAgentStrip(t *testing.T, m Model) Model {
 	t.Helper()
-	if m.focus != focusProjectItems || m.l1IsOrphaned() {
-		t.Fatalf("expected focusProjectItems on the agents list (the default landing spot), got focus=%v project=%q", m.focus, m.project)
+	if m.screen != screenProject || m.l1IsOrphaned() {
+		t.Fatalf("expected screenProject on the agents list (the default landing spot), got screen=%v project=%q", m.screen, m.project)
 	}
 	return m
 }
@@ -158,8 +156,10 @@ func TestComposerEscCancelsWithoutSending(t *testing.T) {
 
 // TestComposerReplyFromFocusedConversation covers spec §5-REVISED: 'r' is
 // valid only while a conversation is FOCUSED (focusConvRight, L2) — no
-// target picker, the target is the thread already focused — and Enter
-// sends via the reply op.
+// target picker, the target is the thread that's currently selected/open —
+// spec §5-LOCK: 'r' works directly from a thread-LIST row (the agent page's
+// own threads table), not only once actually reading one — and Enter sends
+// via the reply op.
 func TestComposerReplyFromFocusedConversation(t *testing.T) {
 	var calls []map[string]any
 	fake := fakeCaller{fn: func(op string, args map[string]any) (json.RawMessage, error) {
@@ -177,21 +177,32 @@ func TestComposerReplyFromFocusedConversation(t *testing.T) {
 	next, cmd := m.Update(threadsMsg{threads: []listThreadRow{{ID: 7, FromAgent: "agent-1", EntryCount: 0}}})
 	m = mustModel(t, next)
 	m = drainCmd(t, m, cmd) // the auto-selected conversation's preview fetch
-	if m.screen != screenProject || m.focus != focusProjectItems || m.agent != "agent-1" {
-		t.Fatalf("setup: expected screenProject/focusProjectItems/agent-1, got screen=%v focus=%v agent=%q", m.screen, m.focus, m.agent)
+	if m.screen != screenProject || m.agent != "agent-1" {
+		t.Fatalf("setup: expected screenProject/agent-1, got screen=%v agent=%q", m.screen, m.agent)
 	}
-	next, _ = m.Update(keyMsg("enter")) // descend into agent-1's own thread list, so Enter below focuses the conversation
+
+	// 'r' at screenProject (no thread selection meaningful here) is a no-op.
+	next, _ = m.Update(keyMsg("r"))
+	m = mustModel(t, next)
+	if m.composer.phase != composerClosed {
+		t.Fatalf("'r' at screenProject must be a no-op, got composer phase %v", m.composer.phase)
+	}
+
+	next, _ = m.Update(keyMsg("enter")) // descend into agent-1's own thread list
 	m = mustModel(t, next)
 	if m.screen != screenAgent || m.conversation != 7 {
 		t.Fatalf("setup: expected screenAgent/conversation=7, got screen=%v conv=%d", m.screen, m.conversation)
 	}
 
-	// 'r' before a conversation is focused must be a no-op.
+	// 'r' directly from the threads-table row (not yet reading it) must open
+	// a reply composer targeting the selected thread.
 	next, _ = m.Update(keyMsg("r"))
 	m = mustModel(t, next)
-	if m.composer.phase != composerClosed {
-		t.Fatalf("'r' before focusing a conversation must be a no-op, got composer phase %v", m.composer.phase)
+	if m.composer.phase != composerEditingBody || m.composer.kind != composerKindReply || m.composer.threadID != 7 {
+		t.Fatalf("'r' from the threads list must open a reply composer targeting thread 7, got %+v", m.composer)
 	}
+	next, _ = m.Update(keyMsg("esc")) // cancel; re-open reply after actually reading it below
+	m = mustModel(t, next)
 
 	next, cmd = m.Update(keyMsg("enter"))
 	m = mustModel(t, next)
@@ -199,8 +210,8 @@ func TestComposerReplyFromFocusedConversation(t *testing.T) {
 		next, _ = m.Update(msg)
 		m = mustModel(t, next)
 	}
-	if m.focus != focusConvRight {
-		t.Fatalf("expected the conversation focused before replying")
+	if m.screen != screenRead {
+		t.Fatalf("expected the thread focused for reading before replying")
 	}
 
 	next, _ = m.Update(keyMsg("r"))
@@ -404,7 +415,10 @@ func TestFilterHidesNonMatchingAgentStripRows(t *testing.T) {
 // the activity feed (via the shared render.Renderer).
 func TestAliasesToggleSwitchesDisplay(t *testing.T) {
 	m := NewModel(fakeCaller{}, Options{})
-	next, _ := m.Update(agentsMsg{rows: []agentEnriched{{Alias: "backend-1", Label: "backend"}}})
+	// Live: true — a departed agent's row always shows its real alias
+	// regardless of the aliases toggle (spec §5-LOCK decision A), so this
+	// needs a LIVE row to exercise dispLabel's own toggle behavior.
+	next, _ := m.Update(agentsMsg{rows: []agentEnriched{{Alias: "backend-1", Label: "backend", Live: true}}})
 	m = mustModel(t, next)
 	if strings.Contains(m.View(), "backend-1") {
 		t.Fatalf("default view should show the label, not the raw alias:\n%s", m.View())
@@ -628,7 +642,7 @@ func TestFilterHidesSelectedConversationEnterIsNoOp(t *testing.T) {
 	if cmd != nil {
 		t.Fatalf("Enter on a filtered-out selection must be a no-op (no ack), got a Cmd")
 	}
-	if m.focus == focusConvRight {
+	if m.screen == screenRead {
 		t.Fatalf("Enter on a filtered-out selection must not focus the conversation")
 	}
 	if m.conversation != 2 {
@@ -639,7 +653,7 @@ func TestFilterHidesSelectedConversationEnterIsNoOp(t *testing.T) {
 	// focuses normally.
 	next, _ = m.Update(keyMsg("enter"))
 	m = mustModel(t, next)
-	if m.focus != focusConvRight {
+	if m.screen != screenRead {
 		t.Fatalf("Enter on the now-visible snapped selection must focus the conversation")
 	}
 }
@@ -693,10 +707,10 @@ func TestFilterConversationsJKSkipsHiddenRows(t *testing.T) {
 	}
 }
 
-// TestComposerPickerDisambiguatesSameLabelByProject covers a carried-over
-// fix: two candidates sharing the same display label are ambiguous in the
-// picker's plain label list, so each gets its project prefixed
-// ("project:label"), mirroring the CLI resolver's own qualify cue.
+// TestComposerPickerDisambiguatesSameLabelByProject covers spec §5-LOCK item
+// 7: two candidates sharing the same display label are ambiguous in the
+// picker's plain label list, so dispLabel's OWN collision handling — the ONE
+// shared helper used wherever labels render — appends each one's alias.
 func TestComposerPickerDisambiguatesSameLabelByProject(t *testing.T) {
 	m := NewModel(fakeCaller{}, Options{Alias: "station"})
 	next, _ := m.Update(agentsMsg{rows: []agentEnriched{
@@ -709,8 +723,8 @@ func TestComposerPickerDisambiguatesSameLabelByProject(t *testing.T) {
 	m = mustModel(t, next)
 
 	view := m.renderComposerPicker()
-	want := "[>muster:backend otherproj:backend]"
+	want := "[>backend (backend-1) backend (backend-2)]"
 	if !strings.Contains(view, want) {
-		t.Fatalf("picker = %q, want it to contain %q (project-disambiguated labels)", view, want)
+		t.Fatalf("picker = %q, want it to contain %q (alias-disambiguated labels)", view, want)
 	}
 }

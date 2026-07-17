@@ -9,32 +9,29 @@ import (
 	"github.com/schuettc/muster/internal/render"
 )
 
-// This file is the IA-redesign's own box-math concern (spec §5-REVISED):
-// real lipgloss-bordered pane boxes sized from tea.WindowSizeMsg, the
-// two-column (miller-style) split, and narrow-mode's single-column collapse
-// — nothing here touches the Model's navigation, data, or polling logic; it
-// is consumed entirely from views.go's rendering functions.
+// This file is station's own box-math concern (spec §5-LOCK): real
+// lipgloss-bordered pane boxes sized from tea.WindowSizeMsg, the two-column
+// (miller-style) split, the agent page's header-band + full-width threads
+// table, and narrow-mode's single-column collapse — nothing here touches the
+// Model's navigation, data, or polling logic; it is consumed entirely from
+// views.go's rendering functions.
 
-// Box-math knobs. narrowWidthThreshold is spec §5-REVISED's "< ~110 cols"
-// single-column cutoff. leftColWidth is the two-column split's fixed left
-// width (wider than the pre-redesign roster's ~34 cols, since the left
-// column now also carries conversation subjects/participants, not just a
-// one-line-per-agent roster). fallback* constants reproduce a sane
-// footprint for any test — or the real program's very first frame, before
-// Init's tea.WindowSizeMsg has arrived — that never sees a window size.
+// Box-math knobs. narrowWidthThreshold is the "< ~110 cols" single-column
+// cutoff. leftColWidth is the two-column split's fixed left width. fallback*
+// constants reproduce a sane footprint for any test — or the real program's
+// very first frame, before Init's tea.WindowSizeMsg has arrived — that never
+// sees a window size.
 const (
 	narrowWidthThreshold = 110
 	leftColWidth         = 60
 
-	breadcrumbRows = 1 // the breadcrumb line above the two-column body
+	breadcrumbRows = 1 // the breadcrumb line above the body
 	statusLineRows = 1 // the bottom line View() appends outside the box layout
 	boxBorderRows  = 2 // top+bottom border rows every box spends
 	boxBorderCols  = 2 // left+right border columns every box spends
 	minPaneOuter   = 5 // smallest sane box (border rows/cols + >=1-3 interior) — a floor, not a target, for a degenerate terminal size
 
-	minForYouRows = 4 // screenProjects' pinned FOR YOU box floor (spec iteration-5) before it eats into the project list's share
-
-	fallbackTermWidth  = 120 // >= narrowWidthThreshold, so an unsized caller (incl. every test that never sends a WindowSizeMsg) sees the WIDE two-column layout
+	fallbackTermWidth  = 140 // >= narrowWidthThreshold, so an unsized caller (incl. every test that never sends a WindowSizeMsg) sees the WIDE two-column layout, with enough room for the full (now Tab-less, g-home-inclusive) footer hint alongside a status note
 	fallbackTermHeight = breadcrumbRows + statusLineRows + 2*boxBorderRows + 2*defaultRows
 )
 
@@ -42,8 +39,7 @@ const (
 // every render from the model's last-known terminal size (tea.WindowSizeMsg)
 // or, before one has arrived, the fallback footprint above. All *W/*H fields
 // are OUTER box sizes (border chars included). narrow is true when the
-// single-column collapse applies (spec §5-REVISED: "Narrow terminals (<
-// ~110 cols): single-column mode").
+// single-column collapse applies.
 type layoutDims struct {
 	narrow        bool
 	leftW, rightW int
@@ -54,47 +50,40 @@ type layoutDims struct {
 	// threadsHorizontal is true, in which case it's the top table's own
 	// (smaller) share — see splitThreadsRows.
 	convListH int
-	// forYouH is screenProjects' pinned FOR YOU sub-box's height (spec
-	// iteration-5) — 0 whenever it isn't showing (station has no unread
-	// mail), in which case renderLeftColumn renders the project list at the
-	// full bodyH exactly as before this feature.
-	forYouH int
 	// threadsHorizontal is true when the CURRENT screen's left list is the
-	// THREADS table (spec iteration-8: "threads-level layout goes
-	// horizontal") — an agent's own thread list (screenAgent) or the
+	// THREADS table — an agent's own thread list (screenAgent) or the
 	// "(unassigned)" bucket's ORPHANED THREADS exception (screenProject +
-	// l1IsOrphaned). At this level the table spans the FULL terminal width
-	// on top (convListH tall) and the selected thread's preview spans full
-	// width below (previewH tall) — parent-above-child instead of the
-	// vertical two-column split every other level keeps. See
-	// isThreadsTableLevel.
+	// l1IsOrphaned). At this level the table spans the FULL terminal width on
+	// top (convListH tall) and the selected thread's preview spans full width
+	// below (previewH tall) — parent-above-child instead of the vertical
+	// two-column split every other level keeps. See isThreadsTableLevel.
 	threadsHorizontal bool
 	// previewH is the bottom preview box's height when threadsHorizontal is
 	// true — meaningless (left 0) otherwise, since every other level's
 	// preview spans the full bodyH (see rightColumnHeight).
 	previewH int
+	// headerBandH is screenAgent's own agent header-band box height (spec
+	// §5-LOCK screen 4: "an agent HEADER BAND above the threads table") — 0 at
+	// every other level, including the "(unassigned)" bucket's ORPHANED
+	// THREADS exception (there is no single agent to band-header there).
+	headerBandH int
 }
 
 // isThreadsTableLevel reports whether the CURRENT screen's left list is the
-// wide, columnized THREADS table (spec iteration-8's horizontal-layout
-// trigger) rather than a short-label roster: an agent's own thread list
-// (screenAgent), or the "(unassigned)" bucket's ORPHANED THREADS exception
-// (screenProject's one l1IsOrphaned case). Projects and agents levels
-// (screenProjects, and every OTHER project's L1 agents list) keep the
-// vertical two-column split — their left lists are short live-dot/label
-// rows, not this ID/TAG/WHO/AGE/SUBJECT table, so they read fine narrow.
-// screenProjects' pinned FOR YOU section would also qualify here if it ever
-// became table-shaped like this one; today renderForYouBox renders a plain
-// subject/from/age line (renderForYouLine), not the columnized table, so it
-// stays vertical along with the rest of screenProjects.
+// wide, columnized THREADS table rather than a short-label roster: an
+// agent's own thread list (screenAgent), or the "(unassigned)" bucket's
+// ORPHANED THREADS exception (screenProject's one l1IsOrphaned case).
+// Projects and agents levels keep the vertical two-column split — their
+// left lists are short live-dot/label rows, not this ID/INTENT/WHO/AGE/
+// SUBJECT table, so they read fine narrow.
 func (m Model) isThreadsTableLevel() bool {
 	return m.screen == screenAgent || (m.screen == screenProject && m.l1IsOrphaned())
 }
 
 // threadsListShareNum/threadsListShareDen is the threads-level horizontal
-// split's default list/preview ratio (spec iteration-8: "60/40 by default")
-// — knobs, not a hardcoded fraction, so a future operator preference could
-// retune the split without touching the layout math itself.
+// split's default list/preview ratio ("60/40 by default") — knobs, not a
+// hardcoded fraction, so a future operator preference could retune the split
+// without touching the layout math itself.
 const (
 	threadsListShareNum = 6
 	threadsListShareDen = 10
@@ -103,21 +92,38 @@ const (
 	minThreadsPreviewRows = 3 // floor so the preview keeps at least a line or two of content
 )
 
-// splitThreadsRows divides bodyH between the threads-level table (top) and
-// its selected thread's preview (bottom) — the default 60/40 split, each
+// agentHeaderBandLines is the agent-page header band's own line count: the
+// one always-present "● live · model · role · active t" line, plus the two
+// 0.6.1 vitals lines whenever hasVitals is true (spec §5-LOCK decision C:
+// the container exists now, renders nothing until 0.6.1's data lands).
+func agentHeaderBandLines() int {
+	if hasVitals {
+		return 3
+	}
+	return 1
+}
+
+// agentHeaderBandHeight is the header band's OUTER box height (content lines
+// plus its own border rows).
+func agentHeaderBandHeight() int {
+	return agentHeaderBandLines() + boxBorderRows
+}
+
+// splitThreadsRows divides available between the threads-level table (top)
+// and its selected thread's preview (bottom) — the default 60/40 split, each
 // side floored so a short terminal never squeezes one pane to nothing.
-func splitThreadsRows(bodyH int) (listH, previewH int) {
-	listH = bodyH * threadsListShareNum / threadsListShareDen
+func splitThreadsRows(available int) (listH, previewH int) {
+	listH = available * threadsListShareNum / threadsListShareDen
 	if listH < minThreadsListRows {
 		listH = minThreadsListRows
 	}
-	if listH > bodyH-minThreadsPreviewRows {
-		listH = bodyH - minThreadsPreviewRows
+	if listH > available-minThreadsPreviewRows {
+		listH = available - minThreadsPreviewRows
 	}
 	if listH < 0 {
 		listH = 0
 	}
-	previewH = bodyH - listH
+	previewH = available - listH
 	if previewH < 0 {
 		previewH = 0
 	}
@@ -137,7 +143,9 @@ func (dims layoutDims) rightColumnHeight() int {
 
 // layout computes this render's box dimensions from the model's last-known
 // terminal size, clamped so nothing ever goes negative or wider than the
-// terminal even at a degenerate size.
+// terminal even at a degenerate size. Only meaningful for screenProjects/
+// screenProject/screenAgent — screenRead and screenMailbox always render
+// full-width/full-height via readingBoxDims instead (see renderBody).
 func (m Model) layout() layoutDims {
 	w := m.termWidth
 	if w <= 0 {
@@ -156,17 +164,24 @@ func (m Model) layout() layoutDims {
 	dims := layoutDims{bodyH: bodyH, convListH: bodyH}
 	switch {
 	case w < narrowWidthThreshold:
-		// Narrow mode's single-column collapse (spec §5-REVISED) takes
-		// priority over the threads-level horizontal split below — narrow
-		// mode already shows exactly one list, full width, with no preview
-		// pane at all (see renderBody), so there is nothing for
-		// threadsHorizontal to add here.
+		// Narrow mode's single-column collapse takes priority over the
+		// threads-level horizontal split below — narrow mode already shows
+		// exactly one list, full width, with no preview pane at all (see
+		// renderBody), so there is nothing for threadsHorizontal to add here.
 		dims.narrow = true
 		dims.leftW, dims.rightW = w, w
 	case m.isThreadsTableLevel():
 		dims.threadsHorizontal = true
 		dims.leftW, dims.rightW = w, w
-		dims.convListH, dims.previewH = splitThreadsRows(bodyH)
+		available := bodyH
+		if m.screen == screenAgent {
+			dims.headerBandH = agentHeaderBandHeight()
+			available -= dims.headerBandH
+			if available < 0 {
+				available = 0
+			}
+		}
+		dims.convListH, dims.previewH = splitThreadsRows(available)
 	default:
 		left := leftColWidth
 		if left > w-minPaneOuter {
@@ -181,29 +196,12 @@ func (m Model) layout() layoutDims {
 		}
 		dims.leftW, dims.rightW = left, right
 	}
-
-	if m.screen == screenProjects {
-		if m.operatorInboxCount() > 0 {
-			forYouH := bodyH / 4
-			if forYouH < minForYouRows {
-				forYouH = minForYouRows
-			}
-			if forYouH > bodyH-minPaneOuter {
-				forYouH = bodyH - minPaneOuter
-			}
-			if forYouH < 0 {
-				forYouH = 0
-			}
-			dims.forYouH = forYouH
-		}
-	}
 	return dims
 }
 
-// readingBoxDims reports the full-width reading view's box dimensions (spec
-// iteration-6 item 2: "Enter on a thread... replaces the whole layout with
-// the thread view") — the entire terminal's body area, regardless of the
-// two-column split or narrow-mode's own collapse threshold: reading is
+// readingBoxDims reports the full-width thread-reading or mailbox view's box
+// dimensions — the entire terminal's body area, regardless of the
+// two-column split or narrow-mode's own collapse threshold: both screens are
 // always full width, on every terminal size.
 func (m Model) readingBoxDims() (width, height int) {
 	w := m.termWidth
@@ -221,9 +219,10 @@ func (m Model) readingBoxDims() (width, height int) {
 	return w, bodyH
 }
 
-// Pane border styles: the FOCUSED box's border reads distinctly (bright +
-// bold title) from an unfocused box's dim border, so the operator's eye
-// finds the active box at a glance.
+// Pane border styles: every browsing list box renders as the "focused" style
+// now (spec §5-LOCK decision B: the right pane is always preview-only — the
+// LEFT list is the sole cursor target at every level, so it's always the
+// active pane); the preview/right-pane boxes always render unfocused.
 var (
 	paneBorderFocusedColor = lipgloss.Color("212")
 	paneBorderDimColor     = lipgloss.Color("240")
@@ -237,18 +236,29 @@ var (
 	breadcrumbStyle = lipgloss.NewStyle().Bold(true)
 
 	// mailBadgeStyle renders the header's 📬 badge when station HAS unread
-	// mail (spec iteration-5: "styled prominently") — bold and in the same
-	// accent color as a focused pane's border, so it reads as a distinct,
-	// attention-grabbing element rather than blending into the plain
-	// breadcrumb text.
+	// mail — bold and in the same accent color as a focused pane's border, so
+	// it reads as a distinct, attention-grabbing element rather than blending
+	// into the plain breadcrumb text.
 	mailBadgeStyle = lipgloss.NewStyle().Bold(true).Foreground(paneBorderFocusedColor)
 
-	// mailBadgeDimStyle renders the badge when station has NO unread mail
-	// (spec iteration-6 item 4: "📬 always visible in the header: dim '📬 0'
-	// when clear, bright '📬 N for you' when not"). An explicit mid-gray, NOT
-	// Faint(true): many terminal themes render faint text invisibly, which
-	// made the "always visible" badge vanish at zero (operator-reported).
+	// mailBadgeDimStyle renders the badge when station has NO unread mail. An
+	// explicit mid-gray, NOT Faint(true): many terminal themes render faint
+	// text invisibly, which made the "always visible" badge vanish at zero
+	// (operator-reported).
 	mailBadgeDimStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
+
+	// quitDividerStyle draws the plain rule between a project's live and quit
+	// agents (spec §5-LOCK decision A: "below a plain divider bar... NO
+	// 'departed' label word").
+	quitDividerStyle = lipgloss.NewStyle().Foreground(paneBorderDimColor)
+
+	// quitAgentLineStyle dims a departed agent's row (spec §5-LOCK decision A:
+	// "dimmed, marked ✗").
+	quitAgentLineStyle = lipgloss.NewStyle().Faint(true)
+
+	// mailboxReadLineStyle dims an already-read mailbox row (spec §5-LOCK
+	// screen 2: "read rows sit below, dimmed but always there").
+	mailboxReadLineStyle = lipgloss.NewStyle().Faint(true)
 )
 
 // renderBox draws a rounded, bordered box titled in its own top border
@@ -357,38 +367,33 @@ func windowLines(lines []string, height, selected int) []string {
 	return lines[top : top+height]
 }
 
-// Conversation-row column widths (spec §5 layout carried-over item:
-// "columnized like the feed"; spec iteration-8: "ID/TAG/WHO/AGE/SUBJECT
-// finally get room — widen the column budgets accordingly"). ID/TAG/AGE stay
-// fixed — TAG must fit the longest intent tag verbatim ("[action]"/
-// "[reply?]" = 8 chars, PadDisplay only PADS a short column, it never
-// truncates a longer one, so this must be >= the longest tag or the column
-// silently overflows; ID/AGE never need more than their pre-iteration-8
-// widths. WHO is the one column that scales with available room — see
-// threadWhoWidth. LAST (the pre-redesign "last speaker" column) stays
-// dropped: WHO's own arrow already conveys the participants.
+// Thread-row column widths ("ID/INTENT/WHO/AGE/SUBJECT finally get room —
+// widen the column budgets accordingly"). ID/AGE stay fixed — INTENT must
+// fit the longest plain-word intent verbatim ("needs action" = 12 chars,
+// PadDisplay only PADS a short column, it never truncates a longer one, so
+// this must be >= the longest word or the column silently overflows; ID/AGE
+// never need more. WHO is the one column that scales with available room —
+// see threadWhoWidth. LAST (the old "last speaker" column) stays dropped:
+// WHO's own arrow already conveys the participants.
 const (
 	threadIDWidth  = 5
-	threadTagWidth = 9
+	threadTagWidth = 12 // fits "needs action" (12 chars) verbatim
 	threadAgeWidth = 4
 
-	// threadWhoMinWidth is WHO's floor — the pre-iteration-8 fixed width,
-	// still what a narrow-mode terminal (or a degenerately small one) gets.
-	// threadWhoMaxWidth caps how much of a very wide terminal's extra room
-	// WHO is allowed to claim, so one row's "long-label→another-long-label"
-	// can't swallow the whole table when most rows are short and SUBJECT
-	// still wants a real budget.
+	// threadWhoMinWidth is WHO's floor. threadWhoMaxWidth caps how much of a
+	// very wide terminal's extra room WHO is allowed to claim, so one row's
+	// "long-label→another-long-label" can't swallow the whole table when
+	// most rows are short and SUBJECT still wants a real budget.
 	threadWhoMinWidth = 14
 	threadWhoMaxWidth = 32
 )
 
 // threadWhoWidth picks WHO's column width for a table rendered at innerW
-// display columns (spec iteration-8: "WHO shows both full labels where they
-// fit"). The threads-level table now spans the full terminal width in
-// non-narrow mode (see isThreadsTableLevel/layout), so WHO scales with it —
-// a flat 1/6 share of innerW, floored at threadWhoMinWidth (so a narrow or
-// small terminal renders exactly as before this feature) and capped at
-// threadWhoMaxWidth.
+// display columns ("WHO shows both full labels where they fit"). The
+// threads-level table spans the full terminal width in non-narrow mode (see
+// isThreadsTableLevel/layout), so WHO scales with it — a flat 1/6 share of
+// innerW, floored at threadWhoMinWidth (so a narrow or small terminal
+// renders exactly as before) and capped at threadWhoMaxWidth.
 func threadWhoWidth(innerW int) int {
 	who := innerW / 6
 	if who < threadWhoMinWidth {
@@ -401,32 +406,32 @@ func threadWhoWidth(innerW int) int {
 }
 
 // threadsColumnWidths computes WHO's width for a table rendered at innerW,
-// plus fixedWidth — every column (ID/TAG/WHO/AGE) and its separators, in
+// plus fixedWidth — every column (ID/INTENT/WHO/AGE) and its separators, in
 // plain display columns — so the SUBJECT budget is innerW minus fixedWidth,
 // always coming out to exactly innerW total (renderBox's content-line
 // contract). Every caller building a table row at some innerW must derive
 // WHO's width through this (never threadWhoWidth alone), so the header row
-// and every conversation row size WHO identically.
+// and every thread row size WHO identically.
 func threadsColumnWidths(innerW int) (whoW, fixedWidth int) {
 	whoW = threadWhoWidth(innerW)
 	fixedWidth = 2 /* marker */ + threadIDWidth + 2 + threadTagWidth + 2 + whoW + 2 + threadAgeWidth + 2
 	return whoW, fixedWidth
 }
 
-// threadsHeaderLine renders a conversation list's own column header at
-// innerW, mirroring render.Renderer.Header's role for the activity feed —
-// WHO's width matches renderConversationLineMarked's exactly (both derive it
-// via threadsColumnWidths), so the header stays aligned with every row under
-// it regardless of the table's width.
+// threadsHeaderLine renders a thread list's own column header at innerW,
+// mirroring render.Renderer.Header's role for the activity feed — WHO's
+// width matches renderConversationLineMarked's exactly (both derive it via
+// threadsColumnWidths), so the header stays aligned with every row under it
+// regardless of the table's width.
 func threadsHeaderLine(innerW int) string {
 	whoW, _ := threadsColumnWidths(innerW)
-	return "  " + render.PadDisplay("ID", threadIDWidth) + "  " + render.PadDisplay("TAG", threadTagWidth) + "  " +
+	return "  " + render.PadDisplay("ID", threadIDWidth) + "  " + render.PadDisplay("INTENT", threadTagWidth) + "  " +
 		render.PadDisplay("WHO", whoW) + "  " + render.PadDisplay("AGE", threadAgeWidth) + "  " + "SUBJECT"
 }
 
-// colorIntentTag wraps an already-padded tag column in its intent's style —
-// called AFTER padding (never before), so the invisible ANSI it adds can
-// never throw off the column's plain-width accounting.
+// colorIntentTag wraps an already-padded intent-word column in its intent's
+// style — called AFTER padding (never before), so the invisible ANSI it
+// adds can never throw off the column's plain-width accounting.
 func colorIntentTag(intent, padded string) string {
 	switch intent {
 	case "action-requested":
@@ -440,9 +445,26 @@ func colorIntentTag(intent, padded string) string {
 	}
 }
 
-// keysHintBase is the bottom line's key hint (spec §5-REVISED keys),
-// right-aligned by joinStatusLine against the status/error text.
-const keysHintBase = "enter drill · esc back · tab cycle · s send · r reply · n nudge · m mail · / filter · a aliases · ? help · q quit"
+// colorIntentLine wraps an already-padded FULL mailbox row in its intent's
+// style (spec §5-LOCK screen 2: unread rows render bright, colored by
+// intent) — "fyi"/unspecified stay at default brightness (no dimming; that's
+// reserved for READ rows, see mailboxReadLineStyle).
+func colorIntentLine(intent, padded string) string {
+	switch intent {
+	case "action-requested":
+		return tagStyleAction.Render(padded)
+	case "reply-requested":
+		return tagStyleReply.Render(padded)
+	default:
+		return padded
+	}
+}
+
+// keysHintBase is the bottom line's key hint, right-aligned by
+// joinStatusLine against the status/error text. Tab is retired entirely
+// (spec §5-LOCK decision B) — every screen has exactly one focusable list, so
+// there is never a second target to cycle to.
+const keysHintBase = "enter drill · esc back · g home · s send · r reply · n nudge · m mail · / filter · a aliases · ? help · q quit"
 
 // statusIsError classifies m.status text for the bottom line's distinct
 // error prefix — a pure text heuristic over already-assigned status strings

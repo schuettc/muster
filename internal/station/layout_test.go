@@ -159,7 +159,7 @@ func TestBoxLinesAreExactlyOuterWidth(t *testing.T) {
 		}
 	}
 	checkExactWidth("L1 agents list", m.renderAgentsBox(dims.leftW, dims.convListH), dims.leftW)
-	checkExactWidth("thread list (screenAgent)", m.renderConvListBox(dims.leftW, dims.convListH, llAgentThreads, "THREADS", true), dims.leftW)
+	checkExactWidth("thread list (screenAgent)", m.renderConvListBox(dims.leftW, dims.convListH, llAgentThreads, "THREADS"), dims.leftW)
 	checkExactWidth("conversation preview", m.renderConversationBox(dims.rightW, dims.bodyH, false), dims.rightW)
 	checkExactWidth("agent page preview", m.renderAgentPagePreviewBox(dims.rightW, dims.bodyH), dims.rightW)
 }
@@ -226,10 +226,13 @@ func TestConversationListColumnizedAndCrossProjectMarked(t *testing.T) {
 	}
 
 	view := m.View()
-	for _, want := range []string{"#101", "[action]", "#102", "[reply?]", "#103", "[fyi]", "backend→review", "review→backend", "↔ ext"} {
+	for _, want := range []string{"#101", "needs action", "#102", "wants reply", "#103", "fyi", "backend→review", "review→backend", "↔ ext"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("view missing %q:\n%s", want, view)
 		}
+	}
+	if strings.Contains(view, "[action]") || strings.Contains(view, "[reply?]") {
+		t.Fatalf("view must use plain-word intents, not the old bracket shorthand:\n%s", view)
 	}
 }
 
@@ -306,8 +309,14 @@ func TestThreadsLevelLayoutGoesHorizontal(t *testing.T) {
 	if dims.leftW != 200 || dims.rightW != 200 {
 		t.Fatalf("the threads-level table/preview must EACH span the full terminal width, got left=%d right=%d", dims.leftW, dims.rightW)
 	}
-	if dims.convListH+dims.previewH != dims.bodyH {
-		t.Fatalf("table+preview heights must sum to exactly bodyH, got %d+%d != %d", dims.convListH, dims.previewH, dims.bodyH)
+	// screenAgent additionally reserves its own header-band height above the
+	// table (spec §5-LOCK screen 4) — table+preview sum to bodyH MINUS that
+	// band, not the whole bodyH.
+	if dims.convListH+dims.previewH+dims.headerBandH != dims.bodyH {
+		t.Fatalf("table+preview+headerBand heights must sum to exactly bodyH, got %d+%d+%d != %d", dims.convListH, dims.previewH, dims.headerBandH, dims.bodyH)
+	}
+	if dims.headerBandH <= 0 {
+		t.Fatalf("screenAgent must reserve a non-zero header-band height, got %d", dims.headerBandH)
 	}
 	if dims.convListH >= dims.bodyH || dims.previewH >= dims.bodyH {
 		t.Fatalf("table/preview must each be a SHARE of bodyH (stacked), not the whole body, got convListH=%d previewH=%d bodyH=%d", dims.convListH, dims.previewH, dims.bodyH)
@@ -423,7 +432,7 @@ func TestThreadsLevelNarrowModeUnchanged(t *testing.T) {
 	if !dims.narrow {
 		t.Fatalf("narrow mode must still apply at the threads level")
 	}
-	got := m.renderBody(dims)
+	got := m.renderBody()
 	want := m.renderLeftColumn(dims)
 	if got != want {
 		t.Fatalf("narrow mode at the threads level must render ONLY the list column (unchanged) — no stacked preview")
