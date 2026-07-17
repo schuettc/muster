@@ -214,8 +214,15 @@ type Model struct {
 	nudger            nudger
 
 	// filter implements '/' (spec §5): a substring filter over one pane's
-	// RENDERED row text — purely a display-time skip, it never touches
-	// selection/cursor movement (see filterActiveFor).
+	// RENDERED row text. For the feed it's a pure display-time skip. For the
+	// roster and threads panes it's ALSO selection-aware (spec §5 carried-over
+	// fix: filter/selection desync): j/k walks only visible rows
+	// (moveRosterSelection/moveThreadSelection), and an action key (n/Enter)
+	// whose stored selection currently points at a filtered-out row only
+	// corrects that selection (snapRosterSelection/snapThreadSelection) rather
+	// than firing on a row the operator was never shown — see
+	// rosterRowVisible/threadRowVisible, the one predicate render, movement,
+	// and action lookup all share.
 	filter filterState
 
 	focus    pane
@@ -434,9 +441,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.openComposerSend(), nil
 	case key.Matches(msg, keys.Nudge):
 		if m.focus == paneRoster {
-			if a := m.selectedAgent(); a != nil {
-				m.nudgeConfirmAlias = a.Alias
-			}
+			m = m.handleNudgeKey()
 		}
 		return m, nil
 	case key.Matches(msg, keys.Filter):
@@ -449,17 +454,91 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// selectedAgent returns the roster row the cursor is currently drawn on
-// (rosterOrder — the SAME grouped/sorted order renderRoster walks, so 'n'
-// nudge always targets what's actually highlighted on screen), or nil when
-// the roster is empty.
-func (m Model) selectedAgent() *agentEnriched {
-	rows := m.rosterOrder()
-	if m.rosterIdx < 0 || m.rosterIdx >= len(rows) {
-		return nil
+// rosterRowVisible reports whether a passes the roster pane's active '/'
+// filter (spec §5 carried-over fix: filter/selection desync) — true always
+// when the roster isn't currently filtered. This is the ONE predicate
+// renderRoster, moveRosterSelection, and handleNudgeKey all resolve through,
+// so they can never disagree about which rows are visible or selected.
+func (m Model) rosterRowVisible(a agentEnriched) bool {
+	q, filtering := m.filterActiveFor(paneRoster)
+	if !filtering {
+		return true
 	}
-	a := rows[m.rosterIdx]
-	return &a
+	return containsFold(m.renderRosterRow(a), q)
+}
+
+// rosterSelectionVisible reports whether m.rosterIdx currently points at a
+// row visible under the roster's active filter (rows in order, rosterOrder's
+// order — the SAME order renderRoster walks).
+func (m Model) rosterSelectionVisible(order []agentEnriched) bool {
+	if m.rosterIdx < 0 || m.rosterIdx >= len(order) {
+		return false
+	}
+	return m.rosterRowVisible(order[m.rosterIdx])
+}
+
+// snapRosterSelection corrects m.rosterIdx to the first row visible under
+// the active filter, when the current selection isn't visible (spec §5
+// carried-over fix: filter/selection desync) — to -1 ("no selection", the
+// same sentinel handleNudgeKey/moveRosterSelection already treat as "nothing
+// to act on") when nothing at all is visible. A no-op when the current
+// selection is already visible, so moveRosterSelection can call it
+// unconditionally without disturbing an already-valid position.
+func (m Model) snapRosterSelection(order []agentEnriched) Model {
+	if m.rosterSelectionVisible(order) {
+		return m
+	}
+	for i, a := range order {
+		if m.rosterRowVisible(a) {
+			m.rosterIdx = i
+			return m
+		}
+	}
+	m.rosterIdx = -1
+	return m
+}
+
+// visibleRosterIndices returns order's indices whose row passes the active
+// filter, in order — moveRosterSelection's walk space.
+func (m Model) visibleRosterIndices(order []agentEnriched) []int {
+	out := make([]int, 0, len(order))
+	for i, a := range order {
+		if m.rosterRowVisible(a) {
+			out = append(out, i)
+		}
+	}
+	return out
+}
+
+// handleNudgeKey implements 'n' on the roster pane (spec §5's "nudge
+// <label>? y/n" gate). Two guards run before it opens the confirm gate
+// (spec §5 carried-over fixes):
+//
+//   - filter/selection desync: if the stored selection isn't currently
+//     VISIBLE under an active '/' filter, this keypress only corrects it
+//     (snapRosterSelection) rather than confirming a nudge against a row the
+//     operator was never shown — the next 'n' press (now landing on a
+//     visible, marked row) behaves normally.
+//   - self-nudge: station's own row appears in the roster: nudging it would
+//     tmux send-keys INTO station's own pane, whose quit key is literally
+//     'q' (part of the nudge text) — so selecting station's own alias shows
+//     a status note instead of ever entering the confirm state.
+func (m Model) handleNudgeKey() Model {
+	order := m.rosterOrder()
+	if !m.rosterSelectionVisible(order) {
+		m = m.snapRosterSelection(order)
+		if m.rosterIdx < 0 {
+			m.status = "no agent visible — adjust or clear the filter"
+		}
+		return m
+	}
+	a := order[m.rosterIdx]
+	if a.Alias == m.opts.Alias {
+		m.status = "that's you — can't nudge yourself"
+		return m
+	}
+	m.nudgeConfirmAlias = a.Alias
+	return m
 }
 
 // handleNudgeConfirmKey owns every key while nudgeConfirmAlias is pending
@@ -698,23 +777,46 @@ func (m Model) applyComposerSent(msg composerSentMsg) Model {
 }
 
 // moveFocused applies a j/k (delta=+1/-1) move to whichever pane currently
-// has focus: the roster cursor, the threads selection (by ID, see
-// moveThreadSelection), or the feed scroll position (see scrollFeed).
+// has focus: the roster cursor (see moveRosterSelection), the threads
+// selection (by ID, see moveThreadSelection), or the feed scroll position
+// (see scrollFeed).
 func (m Model) moveFocused(delta int) Model {
 	switch m.focus {
 	case paneRoster:
-		m.rosterIdx += delta
-		if m.rosterIdx < 0 {
-			m.rosterIdx = 0
-		}
-		if n := len(m.agents); m.rosterIdx > n-1 {
-			m.rosterIdx = max(n-1, 0)
-		}
+		m = m.moveRosterSelection(delta)
 	case paneThreads:
 		m = m.moveThreadSelection(delta)
 	case paneFeed:
 		m = m.scrollFeed(delta)
 	}
+	return m
+}
+
+// moveRosterSelection applies a j/k (delta=+1/-1) move to the roster cursor,
+// walking only rows visible under the roster's active '/' filter (spec §5
+// carried-over fix: filter/selection desync) — snapping first
+// (snapRosterSelection) so a move starting from a filtered-out selection
+// lands relative to the nearest visible row rather than an invisible one.
+func (m Model) moveRosterSelection(delta int) Model {
+	order := m.rosterOrder()
+	m = m.snapRosterSelection(order)
+	visible := m.visibleRosterIndices(order)
+	if len(visible) == 0 {
+		return m
+	}
+	pos := indexOfInt(visible, m.rosterIdx)
+	if pos < 0 {
+		pos = 0
+	} else {
+		pos += delta
+		if pos < 0 {
+			pos = 0
+		}
+		if pos > len(visible)-1 {
+			pos = len(visible) - 1
+		}
+	}
+	m.rosterIdx = visible[pos]
 	return m
 }
 
@@ -930,17 +1032,92 @@ func indexOfThread(rows []listThreadRow, id int64) int {
 	return -1
 }
 
-// moveThreadSelection moves the threads pane's selection by delta (+1/-1)
-// within the current grouped order, re-deriving the index from
-// threadSelected's ID each time (never a stored index) — so a selection that
-// survives a regroup between keystrokes still moves relative to where it
-// actually is now, not some stale position.
-func (m Model) moveThreadSelection(delta int) Model {
+// indexOfInt returns needle's position in haystack, or -1 if absent —
+// moveRosterSelection's index-space counterpart to indexOfThread.
+func indexOfInt(haystack []int, needle int) int {
+	for i, v := range haystack {
+		if v == needle {
+			return i
+		}
+	}
+	return -1
+}
+
+// threadRowVisible reports whether row passes the threads pane's active '/'
+// filter (spec §5 carried-over fix: filter/selection desync) — true always
+// when the threads pane isn't currently filtered. This is the ONE predicate
+// renderThreads, moveThreadSelection, and openSelectedThread all resolve
+// through, so they can never disagree about which rows are visible or
+// selected.
+func (m Model) threadRowVisible(row listThreadRow) bool {
+	q, filtering := m.filterActiveFor(paneThreads)
+	if !filtering {
+		return true
+	}
+	return containsFold(m.renderThreadRow(row), q)
+}
+
+// visibleGroupedThreads returns groupThreads' order filtered down to rows
+// visible under the active filter — moveThreadSelection's walk space.
+func (m Model) visibleGroupedThreads() []listThreadRow {
 	grouped := groupThreads(m.threads)
-	if len(grouped) == 0 {
+	out := make([]listThreadRow, 0, len(grouped))
+	for _, r := range grouped {
+		if m.threadRowVisible(r) {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// threadSelectionVisible reports whether m.threadSelected currently points
+// at a row visible under the threads pane's active filter.
+func (m Model) threadSelectionVisible() bool {
+	grouped := groupThreads(m.threads)
+	idx := indexOfThread(grouped, m.threadSelected)
+	if idx < 0 {
+		return false
+	}
+	return m.threadRowVisible(grouped[idx])
+}
+
+// snapThreadSelection corrects m.threadSelected to the first row visible
+// under the active filter, when the current selection isn't visible (spec §5
+// carried-over fix: filter/selection desync) — to 0 ("no selection", mirrors
+// applyThreads' own "nothing left" sentinel) when nothing at all is visible.
+// A no-op when the current selection is already visible, so
+// moveThreadSelection can call it unconditionally without disturbing an
+// already-valid position.
+func (m Model) snapThreadSelection() Model {
+	if m.threadSelectionVisible() {
 		return m
 	}
-	idx := indexOfThread(grouped, m.threadSelected)
+	for _, r := range groupThreads(m.threads) {
+		if m.threadRowVisible(r) {
+			m.threadSelected = r.ID
+			return m
+		}
+	}
+	m.threadSelected = 0
+	return m
+}
+
+// moveThreadSelection moves the threads pane's selection by delta (+1/-1)
+// within the VISIBLE grouped order (spec §5 carried-over fix: filter/
+// selection desync — j/k walks only rows visible under the active '/'
+// filter), re-deriving the index from threadSelected's ID each time (never a
+// stored index) — so a selection that survives a regroup between keystrokes
+// still moves relative to where it actually is now, not some stale position.
+// Snaps first (snapThreadSelection) so a move starting from a filtered-out
+// selection lands relative to the nearest visible row rather than an
+// invisible one.
+func (m Model) moveThreadSelection(delta int) Model {
+	m = m.snapThreadSelection()
+	visible := m.visibleGroupedThreads()
+	if len(visible) == 0 {
+		return m
+	}
+	idx := indexOfThread(visible, m.threadSelected)
 	if idx < 0 {
 		idx = 0
 	} else {
@@ -948,11 +1125,11 @@ func (m Model) moveThreadSelection(delta int) Model {
 		if idx < 0 {
 			idx = 0
 		}
-		if idx > len(grouped)-1 {
-			idx = len(grouped) - 1
+		if idx > len(visible)-1 {
+			idx = len(visible) - 1
 		}
 	}
-	m.threadSelected = grouped[idx].ID
+	m.threadSelected = visible[idx].ID
 	return m
 }
 
@@ -968,7 +1145,21 @@ func (m Model) moveThreadSelection(delta int) Model {
 // thread's to_target is station's OWN registered alias, this also issues
 // exactly one get_inbox for that alias — never on selection, focus, or a
 // later poll.
+//
+// Filter/selection desync guard (spec §5 carried-over fix): if the stored
+// selection isn't currently VISIBLE under an active '/' filter, Enter only
+// corrects it (snapThreadSelection) rather than opening — and firing
+// open-to-acknowledge's get_inbox on — a thread the operator was never
+// shown. The next Enter press (now landing on a visible, marked row) opens
+// normally.
 func (m Model) openSelectedThread() (Model, tea.Cmd) {
+	if !m.threadSelectionVisible() {
+		m = m.snapThreadSelection()
+		if m.threadSelected == 0 {
+			m.status = "no thread visible — adjust or clear the filter"
+		}
+		return m, nil
+	}
 	idx := indexOfThread(m.threads, m.threadSelected)
 	if idx < 0 {
 		return m, nil
@@ -1185,8 +1376,9 @@ func (m Model) View() string {
 
 // rosterOrder returns the roster's rows in the exact order renderRoster walks
 // them — grouped by project alphabetically, then by alias within a project —
-// so rosterIdx (and selectedAgent) index into the SAME order the roster
-// actually draws, regardless of any '/' filter applied on top of it.
+// so rosterIdx indexes into the SAME order the roster actually draws,
+// regardless of any '/' filter applied on top of it (rosterRowVisible is the
+// filter itself; this is just the walk order it filters over).
 func (m Model) rosterOrder() []agentEnriched {
 	byProject := map[string][]agentEnriched{}
 	for _, a := range m.agents {
@@ -1231,37 +1423,34 @@ func (m Model) renderRosterRow(a agentEnriched) string {
 	return line
 }
 
-// renderRoster renders the project-grouped agent list (rosterOrder), applying
-// the '/' filter (spec §5) as a pure display-time skip — filtered-out rows
-// still count toward idx, so rosterIdx keeps meaning "position in the FULL
-// unfiltered order" even while a filter is narrowing what's drawn.
+// renderRoster renders the project-grouped agent list (rosterOrder), skipping
+// rows the roster's active '/' filter hides via rosterRowVisible — the SAME
+// predicate moveRosterSelection and handleNudgeKey resolve through (spec §5
+// carried-over fix: filter/selection desync), so the cursor mark (drawn
+// against the exact rosterOrder index, i == m.rosterIdx) can never appear on
+// a row that action would refuse to act on, or vice versa.
 func (m Model) renderRoster() string {
 	var b strings.Builder
 	b.WriteString(paneTitle("ROSTER", m.focus == paneRoster) + "\n")
 
-	q, filtering := m.filterActiveFor(paneRoster)
 	lastProject := "\x00" // sentinel unequal to any real project name/"(none)"
-	idx := 0
-	for _, a := range m.rosterOrder() {
+	for i, a := range m.rosterOrder() {
+		if !m.rosterRowVisible(a) {
+			continue
+		}
 		p := a.Project
 		if p == "" {
 			p = "(none)"
-		}
-		line := m.renderRosterRow(a)
-		if filtering && !containsFold(line, q) {
-			idx++
-			continue
 		}
 		if p != lastProject {
 			b.WriteString(p + "\n")
 			lastProject = p
 		}
 		cursorMark := "  "
-		if m.focus == paneRoster && idx == m.rosterIdx {
+		if m.focus == paneRoster && i == m.rosterIdx {
 			cursorMark = "> "
 		}
-		b.WriteString(cursorMark + line + "\n")
-		idx++
+		b.WriteString(cursorMark + m.renderRosterRow(a) + "\n")
 	}
 	return lipgloss.NewStyle().Width(rosterWidth).Render(strings.TrimRight(b.String(), "\n"))
 }
@@ -1296,18 +1485,20 @@ func (m Model) renderFeed() string {
 // first, then reply-requested, then the rest — see groupThreads — each row
 // showing its id, intent tag, participants, last speaker + relative age, and
 // sanitized subject. The selection marker follows threadSelected by ID, so
-// it always lands on the right row regardless of this poll's grouping. The
-// '/' filter (spec §5) applies over each row's own rendered text.
+// it always lands on the right row regardless of this poll's grouping. Rows
+// the threads pane's active '/' filter hides are skipped via
+// threadRowVisible — the SAME predicate moveThreadSelection and
+// openSelectedThread resolve through (spec §5 carried-over fix: filter/
+// selection desync), so the marker can never appear on a row action would
+// refuse to act on, or vice versa.
 func (m Model) renderThreads() string {
 	var b strings.Builder
 	b.WriteString(paneTitle("THREADS", m.focus == paneThreads) + "\n")
-	q, filtering := m.filterActiveFor(paneThreads)
 	for _, row := range groupThreads(m.threads) {
-		line := m.renderThreadRow(row)
-		if filtering && !containsFold(line, q) {
+		if !m.threadRowVisible(row) {
 			continue
 		}
-		b.WriteString(line + "\n")
+		b.WriteString(m.renderThreadRow(row) + "\n")
 	}
 	return strings.TrimRight(b.String(), "\n")
 }
@@ -1456,16 +1647,30 @@ func (m Model) renderBottomLine() string {
 
 // renderComposerPicker renders the 's' target-picker line: the filter input
 // plus the (label-resolved) candidates it currently matches, the highlighted
-// one marked.
+// one marked. Two candidates sharing the same display label are ambiguous on
+// screen (spec §5 carried-over fix: picker ambiguity), so any label with more
+// than one hit is disambiguated with its project prefixed ("project:label"),
+// mirroring the CLI resolver's own qualify cue (internal/humancli.qualify).
 func (m Model) renderComposerPicker() string {
 	cands := m.composerCandidates()
+	labels := make([]string, len(cands))
+	counts := make(map[string]int, len(cands))
+	for i, a := range cands {
+		l := m.dispLabel(a.Alias)
+		labels[i] = l
+		counts[l]++
+	}
 	names := make([]string, 0, len(cands))
 	for i, a := range cands {
 		marker := ""
 		if i == m.composer.pickerIdx {
 			marker = ">"
 		}
-		names = append(names, marker+m.dispLabel(a.Alias))
+		label := labels[i]
+		if counts[label] > 1 && a.Project != "" {
+			label = a.Project + ":" + label
+		}
+		names = append(names, marker+label)
 	}
 	line := "to: " + m.composer.filter.View()
 	if len(names) == 0 {

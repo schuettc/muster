@@ -355,3 +355,282 @@ func TestAliasesToggleSwitchesDisplay(t *testing.T) {
 		t.Fatalf("after toggling aliases on, the raw alias must show:\n%s", view)
 	}
 }
+
+// TestSelfNudgeGuardShowsStatusNoteAndNeverConfirms is Task 9 review Finding
+// 1 (Critical): station's own row appears in the roster (it registers itself
+// like any other agent), and nudging it would tmux send-keys INTO station's
+// own pane — whose quit key is literally 'q', which the nudge text contains.
+// Pressing 'n' with that row selected must never enter the confirm state,
+// and must explain why on the status line instead.
+func TestSelfNudgeGuardShowsStatusNoteAndNeverConfirms(t *testing.T) {
+	var getAgentCalls int
+	fake := fakeCaller{fn: func(op string, _ map[string]any) (json.RawMessage, error) {
+		if op == "get_agent" {
+			getAgentCalls++
+		}
+		return json.RawMessage(`{}`), nil
+	}}
+	fn := &fakeNudger{}
+	m := NewModel(fake, Options{Alias: "station", Nudger: fn})
+	next, _ := m.Update(agentsMsg{rows: []agentEnriched{
+		{Alias: "backend-1", Label: "backend"},
+		{Alias: "station", Label: "me"},
+	}})
+	m = mustModel(t, next)
+
+	// rosterOrder sorts by project (both "(none)" here) then alias:
+	// "backend-1" < "station", so index 0 is backend-1 and one 'j' reaches
+	// station's own row.
+	next, _ = m.Update(keyMsg("j"))
+	m = mustModel(t, next)
+	if got := m.rosterOrder()[m.rosterIdx].Alias; got != "station" {
+		t.Fatalf("expected the cursor on station's own row, got %q", got)
+	}
+
+	next, _ = m.Update(keyMsg("n"))
+	m = mustModel(t, next)
+	if m.nudgeConfirmAlias != "" {
+		t.Fatalf("self-nudge must never enter the confirm state, got %q", m.nudgeConfirmAlias)
+	}
+	if !strings.Contains(m.status, "that's you") {
+		t.Fatalf("status = %q, want it to explain the self-nudge guard", m.status)
+	}
+
+	// A stray 'y' afterward must be inert too: nudgeConfirmAlias is empty, so
+	// it falls through to the base key vocabulary (unbound) rather than
+	// confirming anything.
+	next, cmd := m.Update(keyMsg("y"))
+	m = mustModel(t, next)
+	if cmd != nil {
+		t.Fatalf("'y' after a self-nudge guard must not issue a Cmd")
+	}
+	if getAgentCalls != 0 || len(fn.calls) != 0 {
+		t.Fatalf("self-nudge guard must never call get_agent or Nudge, got %d/%d calls", getAgentCalls, len(fn.calls))
+	}
+}
+
+// TestFilterHidesSelectedAgentNudgeIsNoOp is Task 9 review Finding 2
+// (filter/selection desync) on the roster: when the '/' filter hides the
+// row rosterIdx currently points at, 'n' must not confirm a nudge against an
+// invisible row — it only corrects the selection (snaps to the first visible
+// row) so the operator can see what a follow-up 'n' would act on.
+func TestFilterHidesSelectedAgentNudgeIsNoOp(t *testing.T) {
+	var getAgentCalls int
+	fake := fakeCaller{fn: func(op string, _ map[string]any) (json.RawMessage, error) {
+		if op == "get_agent" {
+			getAgentCalls++
+		}
+		return json.RawMessage(`{}`), nil
+	}}
+	m := NewModel(fake, Options{})
+	next, _ := m.Update(agentsMsg{rows: []agentEnriched{
+		{Alias: "backend-1", Label: "backend"},
+		{Alias: "reviewer-1", Label: "review"},
+	}})
+	m = mustModel(t, next)
+	if got := m.rosterOrder()[m.rosterIdx].Alias; got != "backend-1" {
+		t.Fatalf("expected initial selection on backend-1, got %q", got)
+	}
+
+	next, _ = m.Update(keyMsg("/"))
+	m = mustModel(t, next)
+	m = typeString(t, m, "review")
+	next, _ = m.Update(keyMsg("enter")) // stop editing; filter (hides backend-1) stays applied
+	m = mustModel(t, next)
+
+	next, _ = m.Update(keyMsg("n"))
+	m = mustModel(t, next)
+	if m.nudgeConfirmAlias != "" {
+		t.Fatalf("n on a filtered-out selection must not enter the confirm state, got %q", m.nudgeConfirmAlias)
+	}
+	if got := m.rosterOrder()[m.rosterIdx].Alias; got != "reviewer-1" {
+		t.Fatalf("selection must snap to the first visible agent (reviewer-1), got %q", got)
+	}
+	if getAgentCalls != 0 {
+		t.Fatalf("n must never call get_agent when it only corrects a filtered-out selection, got %d calls", getAgentCalls)
+	}
+}
+
+// TestFilterRosterJKSkipsHiddenRows is Task 9 review Finding 2 (a): j/k must
+// walk only rows visible under the roster's active '/' filter, never landing
+// the cursor on a hidden one.
+func TestFilterRosterJKSkipsHiddenRows(t *testing.T) {
+	m := NewModel(fakeCaller{}, Options{})
+	next, _ := m.Update(agentsMsg{rows: []agentEnriched{
+		{Alias: "alpha-odd"}, {Alias: "beta-even"}, {Alias: "gamma-odd"},
+	}})
+	m = mustModel(t, next)
+
+	next, _ = m.Update(keyMsg("/"))
+	m = mustModel(t, next)
+	m = typeString(t, m, "odd")
+	next, _ = m.Update(keyMsg("enter")) // stop editing; filter (hides beta-even) stays applied
+	m = mustModel(t, next)
+
+	next, _ = m.Update(keyMsg("j"))
+	m = mustModel(t, next)
+	if got := m.rosterOrder()[m.rosterIdx].Alias; got != "gamma-odd" {
+		t.Fatalf("j must skip hidden beta-even and land on gamma-odd, got %q", got)
+	}
+	next, _ = m.Update(keyMsg("j")) // already at the last visible row: must clamp, not wrap
+	m = mustModel(t, next)
+	if got := m.rosterOrder()[m.rosterIdx].Alias; got != "gamma-odd" {
+		t.Fatalf("j at the last visible row must clamp, got %q", got)
+	}
+	next, _ = m.Update(keyMsg("k"))
+	m = mustModel(t, next)
+	if got := m.rosterOrder()[m.rosterIdx].Alias; got != "alpha-odd" {
+		t.Fatalf("k must skip back over hidden beta-even to alpha-odd, got %q", got)
+	}
+}
+
+// TestClearingFilterRestoresNavigationWithSelectionIntact is Task 9 review
+// Finding 2 (iv): clearing the '/' filter must restore normal j/k navigation
+// over every row again, and must not disturb a selection that's still
+// present.
+func TestClearingFilterRestoresNavigationWithSelectionIntact(t *testing.T) {
+	m := NewModel(fakeCaller{}, Options{})
+	next, _ := m.Update(agentsMsg{rows: []agentEnriched{
+		{Alias: "alpha-odd"}, {Alias: "beta-even"}, {Alias: "gamma-odd"},
+	}})
+	m = mustModel(t, next)
+
+	next, _ = m.Update(keyMsg("/"))
+	m = mustModel(t, next)
+	m = typeString(t, m, "odd")
+	next, _ = m.Update(keyMsg("enter")) // stop editing; filter (hides beta-even) stays applied
+	m = mustModel(t, next)
+
+	next, _ = m.Update(keyMsg("j")) // alpha-odd -> gamma-odd, skipping hidden beta-even
+	m = mustModel(t, next)
+	if got := m.rosterOrder()[m.rosterIdx].Alias; got != "gamma-odd" {
+		t.Fatalf("setup: expected gamma-odd selected, got %q", got)
+	}
+
+	// Re-open the filter and clear it with Esc.
+	next, _ = m.Update(keyMsg("/"))
+	m = mustModel(t, next)
+	next, _ = m.Update(keyMsg("esc"))
+	m = mustModel(t, next)
+	if m.filter.query != "" || m.filter.editing {
+		t.Fatalf("esc must clear the filter entirely, got %+v", m.filter)
+	}
+	if got := m.rosterOrder()[m.rosterIdx].Alias; got != "gamma-odd" {
+		t.Fatalf("clearing the filter must keep the current selection intact, got %q", got)
+	}
+
+	// With the filter cleared, k must move normally across every row again,
+	// including the previously-hidden beta-even.
+	next, _ = m.Update(keyMsg("k"))
+	m = mustModel(t, next)
+	if got := m.rosterOrder()[m.rosterIdx].Alias; got != "beta-even" {
+		t.Fatalf("k after clearing the filter must reach beta-even, got %q", got)
+	}
+}
+
+// TestFilterHidesSelectedThreadEnterIsNoOp is Task 9 review Finding 2 on the
+// threads pane: when the '/' filter hides the currently selected thread,
+// Enter must not open it (and must not fire the open-to-acknowledge
+// get_inbox side effect on a thread the operator never saw) — it only snaps
+// the selection to the first visible thread instead.
+func TestFilterHidesSelectedThreadEnterIsNoOp(t *testing.T) {
+	m := NewModel(fakeCaller{}, Options{})
+	next, _ := m.Update(threadsMsg{threads: []listThreadRow{
+		{ID: 1, Subject: "keep-hidden"},
+		{ID: 2, Subject: "keep-visible"},
+	}})
+	m = mustModel(t, next)
+	m = focusThreads(t, m)
+	if m.threadSelected != 1 {
+		t.Fatalf("setup: expected thread 1 selected, got %d", m.threadSelected)
+	}
+
+	next, _ = m.Update(keyMsg("/"))
+	m = mustModel(t, next)
+	m = typeString(t, m, "visible")
+	next, _ = m.Update(keyMsg("enter")) // stop editing; filter (hides thread 1) stays applied
+	m = mustModel(t, next)
+	if m.filter.editing {
+		t.Fatalf("setup: expected filter editing stopped")
+	}
+
+	next, cmd := m.Update(keyMsg("enter"))
+	m = mustModel(t, next)
+	if cmd != nil {
+		t.Fatalf("Enter on a filtered-out selection must be a no-op (no get_thread/get_inbox), got a Cmd")
+	}
+	if m.viewOpen {
+		t.Fatalf("Enter on a filtered-out selection must not open the thread view")
+	}
+	if m.threadSelected != 2 {
+		t.Fatalf("selection must snap to the first visible thread (2), got %d", m.threadSelected)
+	}
+
+	// A follow-up Enter now lands on a visible, snapped selection and opens
+	// normally.
+	next, cmd = m.Update(keyMsg("enter"))
+	m = mustModel(t, next)
+	if cmd == nil {
+		t.Fatalf("Enter on the now-visible snapped selection must open the thread")
+	}
+}
+
+// TestFilterThreadsJKSkipsHiddenRows is Task 9 review Finding 2 (a) on the
+// threads pane: j/k must walk only rows visible under the active '/' filter.
+func TestFilterThreadsJKSkipsHiddenRows(t *testing.T) {
+	m := NewModel(fakeCaller{}, Options{})
+	next, _ := m.Update(threadsMsg{threads: []listThreadRow{
+		{ID: 1, Subject: "one-A"},
+		{ID: 2, Subject: "two-B"},
+		{ID: 3, Subject: "three-A"},
+	}})
+	m = mustModel(t, next)
+	m = focusThreads(t, m)
+	if m.threadSelected != 1 {
+		t.Fatalf("setup: expected thread 1 selected, got %d", m.threadSelected)
+	}
+
+	next, _ = m.Update(keyMsg("/"))
+	m = mustModel(t, next)
+	m = typeString(t, m, "A")
+	next, _ = m.Update(keyMsg("enter")) // stop editing; filter (hides thread 2) stays applied
+	m = mustModel(t, next)
+
+	next, _ = m.Update(keyMsg("j"))
+	m = mustModel(t, next)
+	if m.threadSelected != 3 {
+		t.Fatalf("j must skip hidden thread 2 and land on 3, got %d", m.threadSelected)
+	}
+	next, _ = m.Update(keyMsg("j")) // already at the last visible row: must clamp, not wrap
+	m = mustModel(t, next)
+	if m.threadSelected != 3 {
+		t.Fatalf("j at the last visible row must clamp, got %d", m.threadSelected)
+	}
+	next, _ = m.Update(keyMsg("k"))
+	m = mustModel(t, next)
+	if m.threadSelected != 1 {
+		t.Fatalf("k must skip back over hidden thread 2 to 1, got %d", m.threadSelected)
+	}
+}
+
+// TestComposerPickerDisambiguatesSameLabelByProject is Task 9 review Finding
+// 3 (Minor): two candidates sharing the same display label are ambiguous in
+// the picker's plain label list, so each gets its project prefixed
+// ("project:label"), mirroring the CLI resolver's own qualify cue.
+func TestComposerPickerDisambiguatesSameLabelByProject(t *testing.T) {
+	m := NewModel(fakeCaller{}, Options{Alias: "station"})
+	next, _ := m.Update(agentsMsg{rows: []agentEnriched{
+		{Alias: "backend-1", Project: "muster", Label: "backend"},
+		{Alias: "backend-2", Project: "otherproj", Label: "backend"},
+	}})
+	m = mustModel(t, next)
+
+	next, _ = m.Update(keyMsg("s"))
+	m = mustModel(t, next)
+
+	view := m.renderComposerPicker()
+	want := "[>muster:backend otherproj:backend]"
+	if !strings.Contains(view, want) {
+		t.Fatalf("picker = %q, want it to contain %q (project-disambiguated labels)", view, want)
+	}
+}
