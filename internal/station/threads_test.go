@@ -8,16 +8,22 @@ import (
 )
 
 // focusConversationList drives m to screenProject with a single default
-// project (registering one agent auto-skips L0), landing on focusConvList —
-// the entry point every conversation-list test below needs before it can
+// project (registering one agent auto-skips L0, landing on focusAgentStrip —
+// spec iteration-4: "agents first"), then Tabs onto focusConvList — the
+// entry point every conversation-list test below needs before it can
 // select/open a conversation. Mirrors the pre-redesign focusThreads helper's
 // role.
 func focusConversationList(t *testing.T, m Model, agentAlias string) Model {
 	t.Helper()
 	next, _ := m.Update(agentsMsg{rows: []agentEnriched{{Alias: agentAlias}}})
 	m = mustModel(t, next)
+	if m.screen != screenProject || m.focus != focusAgentStrip {
+		t.Fatalf("setup: expected screenProject/focusAgentStrip after registering one agent, got screen=%v focus=%v", m.screen, m.focus)
+	}
+	next, _ = m.Update(keyMsg("tab")) // agent strip -> conversation list
+	m = mustModel(t, next)
 	if m.screen != screenProject || m.focus != focusConvList {
-		t.Fatalf("setup: expected screenProject/focusConvList after registering one agent, got screen=%v focus=%v", m.screen, m.focus)
+		t.Fatalf("setup: expected screenProject/focusConvList after tab, got screen=%v focus=%v", m.screen, m.focus)
 	}
 	return m
 }

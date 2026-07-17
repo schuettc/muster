@@ -53,13 +53,16 @@ func eventRowsAsc(lo int64, n int) []render.EventRow {
 }
 
 // keyMsg builds a tea.KeyMsg for the given key name, matching how the real
-// program would deliver it (KeyTab for "tab", KeyEnter for "enter", KeyEsc
-// for "esc", KeyEnd for "end", KeyRunes otherwise) — enough for exercising
-// Update's key.Matches branches without a PTY.
+// program would deliver it (KeyTab for "tab", KeyShiftTab for "shift+tab",
+// KeyEnter for "enter", KeyEsc for "esc", KeyEnd for "end", KeyRunes
+// otherwise) — enough for exercising Update's key.Matches branches without a
+// PTY.
 func keyMsg(name string) tea.KeyMsg {
 	switch name {
 	case "tab":
 		return tea.KeyMsg{Type: tea.KeyTab}
+	case "shift+tab":
+		return tea.KeyMsg{Type: tea.KeyShiftTab}
 	case "enter":
 		return tea.KeyMsg{Type: tea.KeyEnter}
 	case "esc":

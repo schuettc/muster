@@ -89,7 +89,7 @@ func (m Model) renderLeftColumn(dims layoutDims) string {
 		return m.renderConvListBox(dims.leftW, dims.convListH, llAgentThreads, "THREADS", m.focus == focusAgentThreads)
 	case screenProject:
 		agentBox := m.renderAgentStripBox(dims.leftW, dims.agentStripH)
-		convBox := m.renderConvListBox(dims.leftW, dims.convListH, llConvList, "CONVERSATIONS", m.focus == focusConvList)
+		convBox := m.renderConvListBox(dims.leftW, dims.convListH, llConvList, "THREADS", m.focus == focusConvList)
 		return lipgloss.JoinVertical(lipgloss.Left, agentBox, convBox)
 	default:
 		return m.renderProjectsBox(dims.leftW, dims.bodyH)
@@ -490,13 +490,13 @@ func (m Model) renderConversationBox(outerW, outerH int, focused bool) string {
 	if innerW < 1 {
 		innerW = 1
 	}
-	title := "CONVERSATION"
+	title := "THREAD"
 	if focused && m.viewThreadID != 0 {
-		title = fmt.Sprintf("CONVERSATION #%d", m.viewThreadID)
+		title = fmt.Sprintf("THREAD #%d", m.viewThreadID)
 	}
 
 	if m.viewThreadID == 0 {
-		return renderBox(title, focused, outerW, outerH, []string{render.PadDisplay("no conversation selected", innerW)})
+		return renderBox(title, focused, outerW, outerH, []string{render.PadDisplay("no thread selected", innerW)})
 	}
 	if len(m.viewEntries) == 0 {
 		msg := "no messages yet"
@@ -609,7 +609,7 @@ func llListName(l llList) string {
 	case llAgentStrip:
 		return "agents"
 	case llConvList:
-		return "conversations"
+		return "threads"
 	case llAgentThreads:
 		return "threads"
 	default:
@@ -624,9 +624,9 @@ var helpKeyLines = []string{
 	"esc      climb back up one level",
 	"tab      cycle this screen's sub-lists / the right pane",
 	"j/k, ↑/↓ move the selection (or scroll the focused reader)",
-	"end, G   jump the focused conversation reader to its newest entry",
+	"end, G   jump the focused thread reader to its newest entry",
 	"s        send a message from anywhere (roster-filtered picker)",
-	"r        reply (only while a conversation is focused)",
+	"r        reply (only while a thread is focused)",
 	"n        nudge (agent strip, or an agent's own page)",
 	"/        filter the current left list",
 	"a        toggle raw aliases vs. current labels",
@@ -642,7 +642,7 @@ var helpLegendLines = []string{
 	"(n)      n unread messages for that session",
 	"!        the unread includes an action-requested thread",
 	"[action] [reply?] [fyi]   a thread's intent tag",
-	"↔ proj   this conversation also touches another project",
+	"↔ proj   this thread also touches another project",
 }
 
 // renderHelpOverlay renders the '?' overlay: a single bordered box with the

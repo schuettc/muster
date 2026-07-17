@@ -182,9 +182,11 @@ func TestComposerReplyFromFocusedConversation(t *testing.T) {
 	next, cmd := m.Update(threadsMsg{threads: []listThreadRow{{ID: 7, FromAgent: "agent-1", EntryCount: 0}}})
 	m = mustModel(t, next)
 	m = drainCmd(t, m, cmd) // the auto-selected conversation's preview fetch
-	if m.screen != screenProject || m.focus != focusConvList || m.conversation != 7 {
-		t.Fatalf("setup: expected screenProject/focusConvList/conversation=7, got screen=%v focus=%v conv=%d", m.screen, m.focus, m.conversation)
+	if m.screen != screenProject || m.focus != focusAgentStrip || m.conversation != 7 {
+		t.Fatalf("setup: expected screenProject/focusAgentStrip/conversation=7, got screen=%v focus=%v conv=%d", m.screen, m.focus, m.conversation)
 	}
+	next, _ = m.Update(keyMsg("tab")) // agent strip -> conversation list, so Enter below focuses the conversation
+	m = mustModel(t, next)
 
 	// 'r' before a conversation is focused must be a no-op.
 	next, _ = m.Update(keyMsg("r"))
@@ -608,6 +610,8 @@ func TestFilterHidesSelectedConversationEnterIsNoOp(t *testing.T) {
 	if m.conversation != 1 {
 		t.Fatalf("setup: expected conversation 1 selected, got %d", m.conversation)
 	}
+	next, _ = m.Update(keyMsg("tab")) // agent strip -> conversation list, so '/' below filters conversations
+	m = mustModel(t, next)
 
 	next, _ = m.Update(keyMsg("/"))
 	m = mustModel(t, next)
@@ -656,6 +660,8 @@ func TestFilterConversationsJKSkipsHiddenRows(t *testing.T) {
 	if m.conversation != 1 {
 		t.Fatalf("setup: expected conversation 1 selected, got %d", m.conversation)
 	}
+	next, _ = m.Update(keyMsg("tab")) // agent strip -> conversation list, so j/k below move the conversation selection
+	m = mustModel(t, next)
 
 	next, _ = m.Update(keyMsg("/"))
 	m = mustModel(t, next)

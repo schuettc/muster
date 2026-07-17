@@ -30,17 +30,20 @@ import (
 // ? help overlay · q quit. bubbles/key gives every binding a single named
 // definition instead of a scattered string switch.
 type keyMap struct {
-	Tab, Down, Up, Quit, Enter, Esc, End                   key.Binding
+	Tab, ShiftTab, Down, Up, Quit, Enter, Esc, End         key.Binding
 	Send, Reply, Nudge, Filter, Aliases, CycleIntent, Help key.Binding
 }
 
 var keys = keyMap{
-	Tab:   key.NewBinding(key.WithKeys("tab"), key.WithHelp("tab", "cycle")),
-	Down:  key.NewBinding(key.WithKeys("j", "down"), key.WithHelp("j/↓", "move")),
-	Up:    key.NewBinding(key.WithKeys("k", "up"), key.WithHelp("k/↑", "move")),
-	Quit:  key.NewBinding(key.WithKeys("q", "ctrl+c"), key.WithHelp("q", "quit")),
-	Enter: key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "drill")),
-	Esc:   key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "back")),
+	Tab: key.NewBinding(key.WithKeys("tab"), key.WithHelp("tab", "cycle")),
+	// ShiftTab cycles the SAME sub-targets as Tab, in reverse (iteration-4
+	// queue item 2) — see cycleFocusBack, cycleFocus's mirror-image twin.
+	ShiftTab: key.NewBinding(key.WithKeys("shift+tab"), key.WithHelp("shift+tab", "cycle back")),
+	Down:     key.NewBinding(key.WithKeys("j", "down"), key.WithHelp("j/↓", "move")),
+	Up:       key.NewBinding(key.WithKeys("k", "up"), key.WithHelp("k/↑", "move")),
+	Quit:     key.NewBinding(key.WithKeys("q", "ctrl+c"), key.WithHelp("q", "quit")),
+	Enter:    key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "drill")),
+	Esc:      key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "back")),
 	// End snaps the focused conversation reader to its live tail (spec
 	// §5-REVISED: "End/G newest") — a no-op everywhere else, since the
 	// global feed pane it used to control is gone.
@@ -93,19 +96,26 @@ type agentEnriched struct {
 
 // listThreadRow mirrors store.Thread's wire JSON for the conversation lists.
 type listThreadRow struct {
-	ID         int64  `json:"id"`
-	Kind       string `json:"kind"`
-	FromAgent  string `json:"from_agent"`
-	ToKind     string `json:"to_kind"`
-	ToTarget   string `json:"to_target"`
-	Subject    string `json:"subject"`
-	Status     string `json:"status"`
-	Intent     string `json:"intent"`
-	CreatedAt  int64  `json:"created_at"`
-	UpdatedAt  int64  `json:"updated_at"`
-	LastFrom   string `json:"last_from"`
-	LastAt     int64  `json:"last_at"`
-	EntryCount int    `json:"entry_count"`
+	ID        int64  `json:"id"`
+	Kind      string `json:"kind"`
+	FromAgent string `json:"from_agent"`
+	ToKind    string `json:"to_kind"`
+	ToTarget  string `json:"to_target"`
+	Subject   string `json:"subject"`
+	Status    string `json:"status"`
+	Intent    string `json:"intent"`
+	CreatedAt int64  `json:"created_at"`
+	UpdatedAt int64  `json:"updated_at"`
+	// OriginProject is the sender's registered project stamped at thread
+	// creation time (iteration-4 orphan-thread fix, spec queue item 4) — ""
+	// when unstamped (a pre-migration row whose sender no longer resolves,
+	// or a genuinely unregistered sender). nav.go's threadProjects unions
+	// this with the roster-derived participant projects so a thread whose
+	// participants have ALL since deregistered still has a project home.
+	OriginProject string `json:"origin_project"`
+	LastFrom      string `json:"last_from"`
+	LastAt        int64  `json:"last_at"`
+	EntryCount    int    `json:"entry_count"`
 }
 
 // Options configures a Model — station.Run's flags, or whatever a test wants
@@ -398,6 +408,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, keys.Tab):
 		m = m.cycleFocus()
 		return m, nil
+	case key.Matches(msg, keys.ShiftTab):
+		m = m.cycleFocusBack()
+		return m, nil
 	case key.Matches(msg, keys.Down):
 		return m.moveFocused(1)
 	case key.Matches(msg, keys.Up):
@@ -524,6 +537,32 @@ func (m Model) cycleFocus() Model {
 	return m
 }
 
+// cycleFocusBack implements Shift-Tab (iteration-4 queue item 2): cycles the
+// current screen's sub-targets in the REVERSE order from cycleFocus. It is
+// cycleFocus's exact mirror image — screenAgent's two-way toggle is its own
+// reverse, so only screenProject's three-way order actually differs.
+// screenProjects has only one target (a no-op).
+func (m Model) cycleFocusBack() Model {
+	switch m.screen {
+	case screenProject:
+		switch m.focus {
+		case focusAgentStrip:
+			m.focus = focusConvRight
+		case focusConvList:
+			m.focus = focusAgentStrip
+		default: // focusConvRight
+			m.focus = focusConvList
+		}
+	case screenAgent:
+		if m.focus == focusAgentThreads {
+			m.focus = focusConvRight
+		} else {
+			m.focus = focusAgentThreads
+		}
+	}
+	return m
+}
+
 // moveFocused applies a j/k (delta=+1/-1) move to whichever list (or the
 // conversation reader) currently has focus.
 func (m Model) moveFocused(delta int) (tea.Model, tea.Cmd) {
@@ -635,7 +674,9 @@ func (m Model) handleEnterKey() (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.screen = screenProject
-		m.focus = focusConvList
+		// Default focus on project entry is the AGENTS box (iteration-4 queue
+		// item 1: "the who first") — not the conversation/thread list.
+		m.focus = focusAgentStrip
 		m.everNavigated = true
 		m = m.refreshAgentStripSelection()
 		return m.refreshConversationSelection()
@@ -1127,10 +1168,11 @@ func (m Model) applyAgents(msg agentsMsg) Model {
 	}
 	// Single-project auto-skip (spec §5-REVISED: "L0 skipped entirely"),
 	// fired exactly once so a project appearing/disappearing later never
-	// yanks the operator back to L0 mid-session.
+	// yanks the operator back to L0 mid-session. Lands on the agent strip
+	// (iteration-4 queue item 1), same default as a manual L0 drill-in.
 	if !m.everNavigated && m.screen == screenProjects && len(projects) == 1 {
 		m.screen = screenProject
-		m.focus = focusConvList
+		m.focus = focusAgentStrip
 	}
 
 	return m.refreshAgentStripSelection()

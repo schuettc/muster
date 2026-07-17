@@ -50,15 +50,30 @@ const (
 	llAgentThreads
 )
 
+// unassignedProject is the synthetic project key for the "(unassigned)"
+// bucket (spec iteration-4 orphan-thread fix, queue item 4d): the home for a
+// thread whose participants have ALL deregistered AND whose origin_project
+// never got stamped (an unresolvable historical row, or a genuinely
+// unregistered sender) — never a real agent's Project value, so no agent
+// ever lands here; only threadProjects' fallback assigns it. Chosen with a
+// NUL prefix so it can never collide with an operator-chosen project name,
+// and sorts before every real project name (including "").
+const unassignedProject = "\x00unassigned"
+
 // projectDisplayName renders a raw project string for display — "" (the
 // v0.5.1 default bucket) shows as "(default)", matching the roster's
 // existing "(none)" convention's spirit but the term the rest of the CLI
-// (`muster agents`) already uses for an unset project.
+// (`muster agents`) already uses for an unset project; unassignedProject
+// shows as "(unassigned)" (spec iteration-4: threads with no known project).
 func projectDisplayName(p string) string {
-	if p == "" {
+	switch p {
+	case "":
 		return "(default)"
+	case unassignedProject:
+		return "(unassigned)"
+	default:
+		return p
 	}
-	return p
 }
 
 // projectSummary is one L0 row (spec §5-REVISED): name, live/total agents,
@@ -93,14 +108,26 @@ func computeProjectSummaries(agents []agentEnriched, threads []listThreadRow) []
 	byProject := map[string]*projectSummary{}
 	seenTuple := map[string]map[[2]string]bool{}
 	order := []string{}
-	for _, a := range agents {
-		p, ok := byProject[a.Project]
+
+	// ensureProject returns name's rollup row, creating an empty one (0
+	// agents, 0 unread) the first time a THREAD references a project no
+	// agent currently belongs to — the "(unassigned)" bucket (and any other
+	// project known only via an origin_project stamp) needs an L0 row of its
+	// own, not just a silently-dropped LastAt update (spec iteration-4: "so
+	// nothing is ever invisible").
+	ensureProject := func(name string) *projectSummary {
+		p, ok := byProject[name]
 		if !ok {
-			p = &projectSummary{Name: a.Project}
-			byProject[a.Project] = p
-			seenTuple[a.Project] = map[[2]string]bool{}
-			order = append(order, a.Project)
+			p = &projectSummary{Name: name}
+			byProject[name] = p
+			seenTuple[name] = map[[2]string]bool{}
+			order = append(order, name)
 		}
+		return p
+	}
+
+	for _, a := range agents {
+		p := ensureProject(a.Project)
 		p.Total++
 		if a.Live {
 			p.Live++
@@ -116,8 +143,9 @@ func computeProjectSummaries(agents []agentEnriched, threads []listThreadRow) []
 	}
 	aliasProj := aliasProjectMap(agents)
 	for _, row := range threads {
-		for _, proj := range threadProjects(row, aliasProj) {
-			if p, ok := byProject[proj]; ok && row.LastAt > p.LastAt {
+		for _, proj := range threadProjectsOrUnassigned(row, aliasProj) {
+			p := ensureProject(proj)
+			if row.LastAt > p.LastAt {
 				p.LastAt = row.LastAt
 			}
 		}
@@ -162,9 +190,15 @@ func participantAliases(row listThreadRow) []string {
 }
 
 // threadProjects returns the sorted, deduped set of projects a thread
-// touches, via its participants' roster projects — an alias with no roster
-// entry (deregistered, or never registered) contributes nothing, since its
-// project can't be known.
+// touches: every project of its CURRENTLY-REGISTERED participants (via the
+// roster) UNION its origin_project (spec iteration-4 orphan-thread fix,
+// queue item 4d) — the origin stamp is what keeps a thread reachable once
+// every participant has since deregistered. An alias with no roster entry
+// contributes nothing on its own; an empty origin_project (never stamped)
+// contributes nothing either. A thread with NEITHER kind of project ends up
+// with an empty result here — see threadProjectsOrUnassigned, which is what
+// every caller that needs "a project to file this thread under" (as opposed
+// to raw membership testing) actually uses.
 func threadProjects(row listThreadRow, aliasProject map[string]string) []string {
 	seen := map[string]bool{}
 	var out []string
@@ -176,8 +210,24 @@ func threadProjects(row listThreadRow, aliasProject map[string]string) []string 
 		seen[proj] = true
 		out = append(out, proj)
 	}
+	if row.OriginProject != "" && !seen[row.OriginProject] {
+		out = append(out, row.OriginProject)
+	}
 	sort.Strings(out)
 	return out
+}
+
+// threadProjectsOrUnassigned is threadProjects, falling back to
+// unassignedProject when a thread maps to no known project at all (spec
+// iteration-4: "so nothing is ever invisible") — the form every filing
+// decision (L0 rollups, L1 conversation-list membership) needs, since a
+// thread must always land SOMEWHERE.
+func threadProjectsOrUnassigned(row listThreadRow, aliasProject map[string]string) []string {
+	projs := threadProjects(row, aliasProject)
+	if len(projs) == 0 {
+		return []string{unassignedProject}
+	}
+	return projs
 }
 
 // conversationRow is one L1 conversation-list row: the wire thread row plus
@@ -191,12 +241,13 @@ type conversationRow struct {
 }
 
 // conversationsForProject filters threads to those touching project (any
-// participant's roster project matches), annotating each with whichever
-// OTHER projects it also touches.
+// participant's roster project matches, or project is unassignedProject and
+// the thread maps to no known project at all — spec iteration-4),
+// annotating each with whichever OTHER projects it also touches.
 func conversationsForProject(threads []listThreadRow, aliasProject map[string]string, project string) []conversationRow {
 	var out []conversationRow
 	for _, row := range threads {
-		projs := threadProjects(row, aliasProject)
+		projs := threadProjectsOrUnassigned(row, aliasProject)
 		touches := false
 		for _, p := range projs {
 			if p == project {

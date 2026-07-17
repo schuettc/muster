@@ -48,20 +48,42 @@ func TestNavigationDrillAndClimbTransitions(t *testing.T) {
 	}
 	next, _ = m.Update(keyMsg("enter"))
 	m = mustModel(t, next)
-	if m.screen != screenProject || m.focus != focusConvList {
-		t.Fatalf("Enter on a project must drill to screenProject/focusConvList, got screen=%v focus=%v", m.screen, m.focus)
+	if m.screen != screenProject || m.focus != focusAgentStrip {
+		t.Fatalf("Enter on a project must drill to screenProject/focusAgentStrip (agents first — spec iteration-4), got screen=%v focus=%v", m.screen, m.focus)
 	}
 
-	// Tab cycles: focusConvList -> focusConvRight -> focusAgentStrip -> focusConvList.
+	// Tab cycles: focusAgentStrip -> focusConvList -> focusConvRight -> focusAgentStrip.
+	next, _ = m.Update(keyMsg("tab"))
+	m = mustModel(t, next)
+	if m.focus != focusConvList {
+		t.Fatalf("focus after 1st tab = %v, want focusConvList", m.focus)
+	}
 	next, _ = m.Update(keyMsg("tab"))
 	m = mustModel(t, next)
 	if m.focus != focusConvRight {
-		t.Fatalf("focus after 1st tab = %v, want focusConvRight", m.focus)
+		t.Fatalf("focus after 2nd tab = %v, want focusConvRight", m.focus)
 	}
 	next, _ = m.Update(keyMsg("tab"))
 	m = mustModel(t, next)
 	if m.focus != focusAgentStrip {
-		t.Fatalf("focus after 2nd tab = %v, want focusAgentStrip", m.focus)
+		t.Fatalf("focus after 3rd tab = %v, want focusAgentStrip (cycle wraps)", m.focus)
+	}
+
+	// Shift-Tab cycles the SAME targets in reverse (iteration-4 queue item 2).
+	next, _ = m.Update(keyMsg("shift+tab"))
+	m = mustModel(t, next)
+	if m.focus != focusConvRight {
+		t.Fatalf("focus after 1st shift-tab = %v, want focusConvRight", m.focus)
+	}
+	next, _ = m.Update(keyMsg("shift+tab"))
+	m = mustModel(t, next)
+	if m.focus != focusConvList {
+		t.Fatalf("focus after 2nd shift-tab = %v, want focusConvList", m.focus)
+	}
+	next, _ = m.Update(keyMsg("shift+tab"))
+	m = mustModel(t, next)
+	if m.focus != focusAgentStrip {
+		t.Fatalf("focus after 3rd shift-tab = %v, want focusAgentStrip (back where Enter left us)", m.focus)
 	}
 
 	// Drill into the agent strip's selected agent (beta-1, the only agent in
@@ -111,6 +133,9 @@ func TestSingleProjectAutoSkipsL0(t *testing.T) {
 	}
 	if m.project != "onlyproj" {
 		t.Fatalf("auto-skip must select the one project, got %q", m.project)
+	}
+	if m.focus != focusAgentStrip {
+		t.Fatalf("auto-skip must land on focusAgentStrip (agents first — spec iteration-4), got %v", m.focus)
 	}
 	if !m.singleProject {
 		t.Fatalf("singleProject must be true")
@@ -205,6 +230,58 @@ func TestCrossProjectMarkerAppearsInBothProjects(t *testing.T) {
 	}
 }
 
+// TestOriginProjectKeepsThreadReachableAfterParticipantsDeregister is the
+// iteration-4 orphan-thread fix's own test (spec queue item 4d): with ZERO
+// agents currently registered (every participant has deregistered, the
+// ghost-site scenario), a thread whose origin_project was stamped at
+// creation still gets an L0/L1 home under that project name — even though
+// no agent belongs to it anymore — while a thread that was NEVER stamped
+// (and has no roster-resolvable participant either) falls into the
+// "(unassigned)" bucket instead of vanishing. Synthetic data proves BOTH
+// paths in one fixture.
+func TestOriginProjectKeepsThreadReachableAfterParticipantsDeregister(t *testing.T) {
+	var agents []agentEnriched // every participant has deregistered
+	aliasProj := aliasProjectMap(agents)
+
+	stamped := listThreadRow{ID: 9, FromAgent: "ghost-1", ToKind: "agent", ToTarget: "ghost-2", OriginProject: "muster"}
+	unstamped := listThreadRow{ID: 14, FromAgent: "ghost-3", ToKind: "agent", ToTarget: "ghost-4"} // OriginProject "" — never resolved
+	threads := []listThreadRow{stamped, unstamped}
+
+	summaries := computeProjectSummaries(agents, threads)
+	var muster, unassigned *projectSummary
+	for i := range summaries {
+		switch summaries[i].Name {
+		case "muster":
+			muster = &summaries[i]
+		case unassignedProject:
+			unassigned = &summaries[i]
+		}
+	}
+	if muster == nil {
+		t.Fatalf("expected an L0 'muster' bucket from the STAMPED thread even with 0 agents left there, got %+v", summaries)
+	}
+	if muster.Total != 0 || muster.Live != 0 {
+		t.Fatalf("the muster bucket must show 0 agents (all deregistered), got %+v", muster)
+	}
+	if unassigned == nil {
+		t.Fatalf("expected an L0 '(unassigned)' bucket from the UNSTAMPED thread, got %+v", summaries)
+	}
+
+	musterRows := conversationsForProject(threads, aliasProj, "muster")
+	if len(musterRows) != 1 || musterRows[0].ID != 9 {
+		t.Fatalf("expected only the stamped thread 9 filed under muster, got %+v", musterRows)
+	}
+
+	unassignedRows := conversationsForProject(threads, aliasProj, unassignedProject)
+	if len(unassignedRows) != 1 || unassignedRows[0].ID != 14 {
+		t.Fatalf("expected only the unstamped thread 14 filed under (unassigned), got %+v", unassignedRows)
+	}
+
+	if got := projectDisplayName(unassignedProject); got != "(unassigned)" {
+		t.Fatalf("projectDisplayName(unassignedProject) = %q, want \"(unassigned)\"", got)
+	}
+}
+
 // TestNarrowModeSingleColumnSwapsOnFocus covers spec §5-REVISED: "Narrow
 // terminals (< ~110 cols): single-column mode — Enter swaps list→detail,
 // Esc back." Narrow rendering is derived purely from focus (see
@@ -233,18 +310,27 @@ func TestNarrowModeSingleColumnSwapsOnFocus(t *testing.T) {
 	}})
 	m = mustModel(t, next)
 	m = drainCmd(t, m, cmd)
-	if m.screen != screenProject || m.focus != focusConvList {
-		t.Fatalf("a single-project bus must auto-skip straight to screenProject/focusConvList, got screen=%v focus=%v", m.screen, m.focus)
+	if m.screen != screenProject || m.focus != focusAgentStrip {
+		t.Fatalf("a single-project bus must auto-skip straight to screenProject/focusAgentStrip, got screen=%v focus=%v", m.screen, m.focus)
 	}
 
 	// Not focused-right: the body must show the LIST (conversation subject),
-	// not the detail reader.
+	// not the detail reader — true regardless of which sub-list has focus,
+	// since screenProject's left column always stacks the agent strip over
+	// the conversation list.
 	view := m.renderBody(m.layout())
 	if !strings.Contains(view, "narrow test") {
 		t.Fatalf("narrow list view must show the conversation list:\n%s", view)
 	}
 	if strings.Contains(view, "hello there") {
 		t.Fatalf("narrow list view must NOT show the detail reader's body:\n%s", view)
+	}
+
+	// Tab onto the conversation list before Enter can focus a conversation.
+	next, _ = m.Update(keyMsg("tab"))
+	m = mustModel(t, next)
+	if m.focus != focusConvList {
+		t.Fatalf("setup: expected focusConvList after tab, got %v", m.focus)
 	}
 
 	// Enter focuses the conversation (detail) — body swaps to the reader.
@@ -307,9 +393,11 @@ func TestPreviewDoesNotAcknowledgeFocusDoes(t *testing.T) {
 	if getThreadCalls == 0 {
 		t.Fatalf("selecting a conversation must still fetch its preview via get_thread")
 	}
-	if m.screen != screenProject || m.focus != focusConvList {
-		t.Fatalf("single-project auto-skip must already have landed at screenProject/focusConvList, got screen=%v focus=%v", m.screen, m.focus)
+	if m.screen != screenProject || m.focus != focusAgentStrip {
+		t.Fatalf("single-project auto-skip must already have landed at screenProject/focusAgentStrip, got screen=%v focus=%v", m.screen, m.focus)
 	}
+	next, _ = m.Update(keyMsg("tab")) // agent strip -> conversation list, so Enter below focuses the conversation
+	m = mustModel(t, next)
 
 	// Enter-focusing thread 1 (addressed to station) must ack exactly once.
 	next, cmd = m.Update(keyMsg("enter"))
@@ -395,8 +483,15 @@ func TestHelpOverlayReachableFromEveryLevel(t *testing.T) {
 
 	next, _ = m.Update(keyMsg("enter"))
 	m = mustModel(t, next)
-	if m.screen != screenProject || m.focus != focusConvList {
-		t.Fatalf("setup: expected screenProject/focusConvList after Enter, got screen=%v focus=%v", m.screen, m.focus)
+	if m.screen != screenProject || m.focus != focusAgentStrip {
+		t.Fatalf("setup: expected screenProject/focusAgentStrip after Enter, got screen=%v focus=%v", m.screen, m.focus)
+	}
+	checkHelpTogglesHere("L1 agent strip")
+
+	next, _ = m.Update(keyMsg("tab")) // focusAgentStrip -> focusConvList
+	m = mustModel(t, next)
+	if m.focus != focusConvList {
+		t.Fatalf("setup: expected focusConvList after Tab, got %v", m.focus)
 	}
 	checkHelpTogglesHere("L1 conversation list")
 
@@ -407,12 +502,11 @@ func TestHelpOverlayReachableFromEveryLevel(t *testing.T) {
 	}
 	checkHelpTogglesHere("L1 conversation reader (focused right pane)")
 
-	next, _ = m.Update(keyMsg("tab")) // focusConvRight -> focusAgentStrip
+	next, _ = m.Update(keyMsg("tab")) // focusConvRight -> focusAgentStrip (cycle wraps)
 	m = mustModel(t, next)
 	if m.focus != focusAgentStrip {
 		t.Fatalf("setup: expected focusAgentStrip after Tab, got %v", m.focus)
 	}
-	checkHelpTogglesHere("L1 agent strip")
 
 	next, _ = m.Update(keyMsg("enter")) // drill into the selected agent
 	m = mustModel(t, next)
@@ -468,4 +562,87 @@ func TestFooterKeyHintIsLevelAware(t *testing.T) {
 	if !strings.Contains(hint, "tab cycle") {
 		t.Fatalf("L1's footer must advertise tab (cycles agent strip/conversations/reader): %q", hint)
 	}
+}
+
+// TestNoConversationTerminologyInView is the iteration-4 terminology fix's
+// own check (spec queue item 3: "threads" everywhere in station, "conversation"
+// eliminated from every user-visible string): View() output at every
+// screen/focus combination, the help overlay, an open '/' filter, and narrow
+// mode must never contain the word "conversation" (case-insensitively) —
+// only "thread".
+func TestNoConversationTerminologyInView(t *testing.T) {
+	checkNoConversation := func(t *testing.T, label, view string) {
+		t.Helper()
+		if strings.Contains(strings.ToLower(view), "conversation") {
+			t.Fatalf("%s: View() output must not say \"conversation\" (terminology unified on \"threads\"):\n%s", label, view)
+		}
+	}
+
+	fake := fakeCaller{fn: func(op string, _ map[string]any) (json.RawMessage, error) {
+		if op == "get_thread" {
+			b, _ := json.Marshal(map[string]any{"thread": map[string]any{}, "entries": []threadEntryRow{{ID: 1, FromAgent: "a1", Body: "hello"}}, "total": 1})
+			return b, nil
+		}
+		return json.RawMessage(`{}`), nil
+	}}
+	m := NewModel(fake, Options{Alias: "station"})
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 140, Height: 40})
+	m = mustModel(t, next)
+	next, _ = m.Update(agentsMsg{rows: []agentEnriched{
+		{Alias: "a1", Project: "p1", Live: true},
+		{Alias: "a2", Project: "p2", Live: true},
+	}})
+	m = mustModel(t, next)
+	next, cmd := m.Update(threadsMsg{threads: []listThreadRow{
+		{ID: 1, FromAgent: "a1", ToKind: "agent", ToTarget: "a2", Subject: "cross project test", EntryCount: 1},
+	}})
+	m = mustModel(t, next)
+	m = drainCmd(t, m, cmd)
+
+	cases := []struct {
+		label  string
+		screen screen
+		focus  focusTarget
+	}{
+		{"L0 projects", screenProjects, focusProjectList},
+		{"L1 agent strip", screenProject, focusAgentStrip},
+		{"L1 thread list", screenProject, focusConvList},
+		{"L1 thread reader", screenProject, focusConvRight},
+		{"L1.5 agent threads", screenAgent, focusAgentThreads},
+		{"L1.5 activity reader", screenAgent, focusConvRight},
+	}
+	for _, c := range cases {
+		probe := m
+		probe.screen = c.screen
+		probe.focus = c.focus
+		if c.screen == screenAgent {
+			probe.agent = "a1"
+		}
+		if c.focus == focusConvRight {
+			probe.viewThreadID = 1
+			probe.viewEntries = []threadEntryRow{{ID: 1, FromAgent: "a1", Body: "hello"}}
+		}
+		checkNoConversation(t, c.label, probe.View())
+	}
+
+	help := m
+	help.helpOpen = true
+	checkNoConversation(t, "help overlay", help.View())
+
+	filterOnThreads := m
+	filterOnThreads.screen = screenProject
+	filterOnThreads.focus = focusConvList
+	filterOnThreads = filterOnThreads.openFilter()
+	checkNoConversation(t, "'/' filter prompt on the thread list", filterOnThreads.View())
+
+	narrow := m
+	narrow.termWidth = 90
+	narrow.screen = screenProject
+	narrow.focus = focusConvList
+	checkNoConversation(t, "narrow mode (list)", narrow.View())
+	narrowDetail := narrow
+	narrowDetail.focus = focusConvRight
+	narrowDetail.viewThreadID = 1
+	narrowDetail.viewEntries = []threadEntryRow{{ID: 1, FromAgent: "a1", Body: "hello"}}
+	checkNoConversation(t, "narrow mode (detail)", narrowDetail.View())
 }
