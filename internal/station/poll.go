@@ -14,10 +14,18 @@ import (
 // three fetch Cmds and reschedules the next tick.
 type tickMsg time.Time
 
-// eventsMsg carries one list_events follow-mode page (or a fetch error).
+// eventsMsg carries one list_events page — follow mode on every tick after
+// the model has bootstrapped, or the one-time cold-start BACKLOG fetch
+// (backlog=true) before it has. gen is the poll generation that issued the
+// fetch (Model.pollGen at dispatch time); Update discards any eventsMsg whose
+// gen no longer matches the model's current pollGen, so a slow in-flight
+// fetch from an older tick can never apply after a newer tick's fetch already
+// has (see Update's eventsMsg case and applyEvents).
 type eventsMsg struct {
-	page render.EventsPage
-	err  error
+	page    render.EventsPage
+	err     error
+	gen     int64
+	backlog bool
 }
 
 // agentsMsg carries one enriched roster snapshot (or a fetch error).
@@ -41,10 +49,25 @@ func tickCmd(interval time.Duration) tea.Cmd {
 // like watch's, just issued from a tea.Cmd instead of a for-loop.
 const eventFetchLimit = 0
 
-func fetchEventsCmd(caller render.Caller, cursor int64) tea.Cmd {
+func fetchEventsCmd(caller render.Caller, cursor, gen int64) tea.Cmd {
 	return func() tea.Msg {
 		page, err := render.FetchEvents(caller, "", "", 0, cursor, eventFetchLimit)
-		return eventsMsg{page: page, err: err}
+		return eventsMsg{page: page, err: err, gen: gen}
+	}
+}
+
+// fetchBacklogEventsCmd issues the cold-start (or bootstrap-retry) fetch in
+// BACKLOG mode — afterID -1 — exactly like `muster watch`'s initial fetch.
+// Follow mode from after_id=0 would let the daemon cap the page at its
+// oldest-1000-row window while still reporting the GLOBAL tail as max_id,
+// silently skipping every event between row 1000 and the tail on a mature
+// journal; backlog mode instead returns the most recent `limit` rows and lets
+// the model seed its cursor from their max_id (see Model.pollCmd,
+// Model.applyEvents).
+func fetchBacklogEventsCmd(caller render.Caller, limit int, gen int64) tea.Cmd {
+	return func() tea.Msg {
+		page, err := render.FetchEvents(caller, "", "", 0, -1, limit)
+		return eventsMsg{page: page, err: err, gen: gen, backlog: true}
 	}
 }
 

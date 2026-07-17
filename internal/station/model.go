@@ -59,6 +59,13 @@ const (
 	eventBacklog = 500
 )
 
+// initialEventBacklog bounds the cold-start (and bootstrap-retry) backlog
+// fetch: sized to the feed pane's visible height (defaultRows) since that's
+// all the first screen can show anyway. Like rosterWidth, this isn't one of
+// spec §5's named flags, so it's a knob-style constant rather than an
+// --flag.
+const initialEventBacklog = defaultRows
+
 // agentEnriched is one roster row: the wire agent row plus tmux-live state
 // and its session's unread count (spec §5: "per-tuple unread via
 // session_unread").
@@ -109,9 +116,11 @@ type Model struct {
 	caller render.Caller
 	opts   Options
 
-	cursor int64 // event journal read cursor; advances only on applied event pages
-	events []render.EventRow
-	feed   *render.Renderer
+	cursor       int64 // event journal read cursor; advances only on applied event pages
+	bootstrapped bool  // false until the cold-start BACKLOG fetch has applied; gates pollCmd's mode
+	pollGen      int64 // current poll generation; bumped per tick, stamped onto each fetch's msg so a stale in-flight fetch from an older tick is discarded rather than applied (Update's eventsMsg case)
+	events       []render.EventRow
+	feed         *render.Renderer
 
 	agents    []agentEnriched
 	rosterIdx int
@@ -139,19 +148,32 @@ func NewModel(caller render.Caller, opts Options) Model {
 }
 
 // Init issues the first poll immediately (so the screen isn't blank for a
-// full --interval) and schedules the first tick.
+// full --interval) and schedules the first tick. Since a fresh Model is not
+// yet bootstrapped, that first poll's events fetch is pollCmd's backlog
+// branch, not follow — see pollCmd and applyEvents (Finding 1).
 func (m Model) Init() tea.Cmd {
 	return tea.Batch(m.pollCmd(), tickCmd(m.opts.Interval))
 }
 
 // pollCmd issues the tick's three independent fetches (spec §5 data loop):
-// events after_id=cursor, list_agents, list_threads. Each yields its own
-// message; none may be combined into a shared snapshot before Update sees
-// them, so a failure in one can never block or corrupt the others, and no
-// decision is ever derived from a mixed tick bundle.
+// events, list_agents, list_threads. Each yields its own message; none may
+// be combined into a shared snapshot before Update sees them, so a failure
+// in one can never block or corrupt the others, and no decision is ever
+// derived from a mixed tick bundle.
+//
+// The events fetch's MODE depends on m.bootstrapped (Finding 1): until the
+// cold-start backlog fetch has actually applied, every attempt — including
+// retries after a failed backlog fetch — stays in BACKLOG mode. The model
+// only ever issues a follow-mode after_id=cursor fetch once it has a cursor
+// seeded from a real backlog response; it never follows from the implicit
+// zero value.
 func (m Model) pollCmd() tea.Cmd {
+	eventsCmd := fetchEventsCmd(m.caller, m.cursor, m.pollGen)
+	if !m.bootstrapped {
+		eventsCmd = fetchBacklogEventsCmd(m.caller, initialEventBacklog, m.pollGen)
+	}
 	return tea.Batch(
-		fetchEventsCmd(m.caller, m.cursor),
+		eventsCmd,
 		fetchAgentsCmd(m.caller),
 		fetchThreadsCmd(m.caller),
 	)
@@ -165,8 +187,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 	case tickMsg:
+		m.pollGen++ // a new tick supersedes any still-in-flight fetch from the previous one (Finding 2)
 		return m, tea.Batch(m.pollCmd(), tickCmd(m.opts.Interval))
 	case eventsMsg:
+		if msg.gen != m.pollGen {
+			return m, nil // stale: a newer tick has already superseded this in-flight fetch
+		}
 		return m.applyEvents(msg), nil
 	case agentsMsg:
 		return m.applyAgents(msg), nil
@@ -201,12 +227,37 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // applyEvents is the ONLY place the cursor advances, and only once a page is
 // actually applied: a failed fetch (err != nil) leaves the cursor and the
 // buffered events untouched, so a dropped/failed poll can never skip events —
-// the next successful poll picks up from exactly the same after_id. A
-// regression (max_id < cursor — the DB was replaced) resets the cursor to
-// the new tail without applying the (stale) page, exactly like watch.
+// the next successful poll retries in the same mode (backlog stays backlog
+// until it succeeds; follow picks up from exactly the same after_id).
+//
+// msg.backlog (Finding 1) is the cold-start (or bootstrap-retry) case: the
+// daemon returns backlog rows NEWEST-first, so they're reversed into the
+// oldest-first order the buffer and every follow-mode page use, the cursor
+// is seeded straight from max_id (there is no prior cursor to regress
+// against), and bootstrapped flips true so every subsequent pollCmd follows
+// instead of re-fetching backlog.
+//
+// Otherwise this is a follow-mode page: a regression (max_id < cursor — the
+// DB was replaced) resets the cursor to the new tail without applying the
+// (stale) page, exactly like watch.
 func (m Model) applyEvents(msg eventsMsg) Model {
 	if msg.err != nil {
-		m.status = fmt.Sprintf("events: poll failed, retrying: %v", msg.err)
+		what := "events"
+		if msg.backlog {
+			what = "events backlog"
+		}
+		m.status = fmt.Sprintf("%s: poll failed, retrying: %v", what, msg.err)
+		return m
+	}
+	if msg.backlog {
+		events := make([]render.EventRow, len(msg.page.Events))
+		for i, e := range msg.page.Events {
+			events[len(events)-1-i] = e
+		}
+		m.events = events
+		m.cursor = msg.page.MaxID
+		m.bootstrapped = true
+		m.status = ""
 		return m
 	}
 	if msg.page.MaxID < m.cursor {
