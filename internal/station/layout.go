@@ -160,10 +160,10 @@ var (
 
 	// mailBadgeDimStyle renders the badge when station has NO unread mail
 	// (spec iteration-6 item 4: "📬 always visible in the header: dim '📬 0'
-	// when clear, bright '📬 N for you' when not") — same glyph, deliberately
-	// faint so a clear mailbox reads as calm rather than competing with the
-	// bright "N for you" state.
-	mailBadgeDimStyle = lipgloss.NewStyle().Faint(true)
+	// when clear, bright '📬 N for you' when not"). An explicit mid-gray, NOT
+	// Faint(true): many terminal themes render faint text invisibly, which
+	// made the "always visible" badge vanish at zero (operator-reported).
+	mailBadgeDimStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
 )
 
 // renderBox draws a rounded, bordered box titled in its own top border
