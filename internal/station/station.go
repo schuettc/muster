@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"strings"
@@ -40,6 +41,23 @@ func (daemonCaller) Call(op string, args map[string]any) (json.RawMessage, error
 		return nil, fmt.Errorf("marshal %s result: %w", op, err)
 	}
 	return b, nil
+}
+
+// FlagSet declares station's flags, exported so muster's CLI command
+// registry (internal/humancli) can render `muster help station` /
+// `muster station -h` and detect flag.ErrHelp before ever spinning up the
+// full-screen TUI, without keeping a second, driftable copy of the flag
+// list. Run below builds its OWN identical FlagSet rather than calling this
+// one directly, because it needs typed *string/*bool/*int pointers back —
+// keep the two declarations in sync if you touch either.
+func FlagSet() *flag.FlagSet {
+	fs := flag.NewFlagSet("station", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	fs.Duration("interval", time.Second, "poll interval")
+	fs.Bool("aliases", false, "show raw aliases instead of current labels")
+	fs.Int("width", 0, "line budget in columns (default $COLUMNS or 120)")
+	fs.String("alias", "station", "this station's registration alias (so two stations on one machine don't collide)")
+	return fs
 }
 
 // Run parses station's flags, registers its tmux identity on the bus

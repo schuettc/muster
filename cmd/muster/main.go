@@ -4,6 +4,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -22,44 +23,70 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: muster <serve|debug|mcp|agents|inbox|send|tasks|events|watch|station|nudge|register|deregister|gc|hook|label> [args]")
+		humancli.Usage(os.Stdout)
 		os.Exit(2)
 	}
 	switch os.Args[1] {
 	case "serve":
+		if wantsHelp(os.Args[2:]) {
+			_ = humancli.HelpFor("serve", os.Stdout)
+			return
+		}
 		os.Exit(runServe())
 	case "debug":
+		if wantsHelp(os.Args[2:]) {
+			_ = humancli.HelpFor("debug", os.Stdout)
+			return
+		}
 		runDebug(os.Args[2:])
 	case "mcp":
+		if wantsHelp(os.Args[2:]) {
+			_ = humancli.HelpFor("mcp", os.Stdout)
+			return
+		}
 		runMCP()
 	default:
-		// humancli.Dispatch owns the CLI subcommand list and errors on an
-		// unknown one — routing everything here keeps that list canonical
-		// (a second list in this switch once shipped a release whose usage
-		// advertised a subcommand main() refused to route).
+		// humancli.Dispatch owns the CLI subcommand list (including
+		// help/version) and errors on an unknown one — routing everything
+		// here keeps that list canonical (a second list in this switch once
+		// shipped a release whose usage advertised a subcommand main()
+		// refused to route).
 		if err := humancli.Dispatch(os.Args[1:], os.Stdout); err != nil {
 			fmt.Fprintln(os.Stderr, "muster:", err)
-			os.Exit(1)
+			code := 1
+			var usageErr *humancli.UsageError
+			if errors.As(err, &usageErr) {
+				code = 2
+			}
+			os.Exit(code)
 		}
 	}
+}
+
+// wantsHelp reports whether the first token after a subcommand name is a
+// help flag. serve/mcp/debug are owned by main() (not humancli.Dispatch),
+// so their -h/--help handling lives here rather than behind flag.ErrHelp
+// interception the way the humancli-dispatched commands do it.
+func wantsHelp(args []string) bool {
+	return len(args) > 0 && humancli.IsHelpArg(args[0])
 }
 
 // runServe runs the daemon until it receives SIGINT/SIGTERM, returning the
 // process exit code (0 on a clean shutdown, non-zero on setup failure).
 func runServe() int {
 	if err := os.MkdirAll(paths.Home(), 0o755); err != nil {
-		fmt.Fprintln(os.Stderr, "mkdir:", err)
+		fmt.Fprintln(os.Stderr, "muster: mkdir:", err)
 		return 1
 	}
 	s, err := store.Open(paths.DBPath())
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "open store:", err)
+		fmt.Fprintln(os.Stderr, "muster: open store:", err)
 		return 1
 	}
 	defer func() { _ = s.Close() }()
 	d, err := daemon.Serve(paths.SocketPath(), s, wake.NewTmuxNotifier("@muster_inbox", 500*time.Millisecond))
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "serve:", err)
+		fmt.Fprintln(os.Stderr, "muster: serve:", err)
 		return 1
 	}
 	defer func() { _ = d.Close() }()
@@ -77,7 +104,7 @@ func runServe() int {
 //	muster debug list_agents
 func runDebug(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: muster debug <op> [key=value ...]")
+		fmt.Fprintln(os.Stderr, "muster: usage: muster debug <op> [key=value ...]")
 		os.Exit(2)
 	}
 	req := proto.Request{Op: args[0], Args: map[string]any{}}
@@ -91,7 +118,7 @@ func runDebug(args []string) {
 	}
 	resp, err := client.Call(paths.SocketPath(), req)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "call:", err)
+		fmt.Fprintln(os.Stderr, "muster: call:", err)
 		os.Exit(1)
 	}
 	out, _ := json.MarshalIndent(resp, "", "  ")
@@ -105,7 +132,7 @@ func runDebug(args []string) {
 // all diagnostics go to stderr.
 func runMCP() {
 	if err := mcpserver.Run(context.Background()); err != nil {
-		fmt.Fprintln(os.Stderr, "mcp:", err)
+		fmt.Fprintln(os.Stderr, "muster: mcp:", err)
 		os.Exit(1)
 	}
 }

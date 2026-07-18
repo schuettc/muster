@@ -2,6 +2,7 @@ package humancli
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -41,23 +42,51 @@ func loadLabels() map[string]string {
 	return render.LoadLabels(callDataCaller{})
 }
 
+// eventsFlagVals holds cmdEvents' parsed flag pointers.
+type eventsFlagVals struct {
+	agent, kind       *string
+	thread            *int64
+	limit, width      *int
+	aliases, fullTime *bool
+}
+
+// newEventsFlagsWithVals declares events' flags and returns typed access to
+// their values — shared by cmdEvents (real parsing) and newEventsFlags
+// (registry help/man rendering).
+func newEventsFlagsWithVals() (*flag.FlagSet, eventsFlagVals) {
+	fs := flag.NewFlagSet("events", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	var v eventsFlagVals
+	v.agent = fs.String("agent", "", "only events for this agent alias")
+	v.kind = fs.String("kind", "", "only events of this kind")
+	v.thread = fs.Int64("thread", 0, "only events for this thread id")
+	v.limit = fs.Int("limit", 50, "max events to show")
+	v.aliases = fs.Bool("aliases", false, "show raw aliases instead of current labels")
+	v.fullTime = fs.Bool("full-time", false, "show dates, not just times")
+	v.width = fs.Int("width", 0, "line budget in columns (default $COLUMNS or 120)")
+	return fs, v
+}
+
+// newEventsFlags builds events' flag.FlagSet for registry-driven help/man
+// rendering.
+func newEventsFlags() *flag.FlagSet {
+	fs, _ := newEventsFlagsWithVals()
+	return fs
+}
+
 // cmdEvents prints the daemon's observability event log — every mailbox
 // notify outcome (lit / cleared / skipped / error), inbox read, send, task,
 // and nudge event, oldest first. This is the "when was whose mailbox
 // actually lit" answer.
 func cmdEvents(args []string, out io.Writer) error {
-	fs := flag.NewFlagSet("events", flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
-	agent := fs.String("agent", "", "only events for this agent alias")
-	kind := fs.String("kind", "", "only events of this kind")
-	thread := fs.Int64("thread", 0, "only events for this thread id")
-	limit := fs.Int("limit", 50, "max events to show (default 50)")
-	aliases := fs.Bool("aliases", false, "show raw aliases instead of current labels")
-	fullTime := fs.Bool("full-time", false, "show dates, not just times")
-	width := fs.Int("width", 0, "line budget in columns (default $COLUMNS or 120)")
+	fs, v := newEventsFlagsWithVals()
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return HelpFor("events", out)
+		}
 		return fmt.Errorf("usage: muster events [--agent <alias>] [--kind <kind>] [--thread <id>] [--limit <n>] [--aliases] [--full-time] [--width <cols>]")
 	}
+	agent, kind, thread, limit, aliases, fullTime, width := v.agent, v.kind, v.thread, v.limit, v.aliases, v.fullTime, v.width
 	page, err := fetchEvents(*agent, *kind, *thread, -1, *limit)
 	if err != nil {
 		return err

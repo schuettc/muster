@@ -20,6 +20,9 @@ import (
 // internal error is swallowed, and on any input other than a recognized
 // event it is simply a no-op.
 func cmdHook(args []string, stdin io.Reader, out io.Writer) error {
+	if helpRequested(args) {
+		return HelpFor("hook", out)
+	}
 	if len(args) < 1 {
 		return fmt.Errorf("usage: muster hook <SessionStart|SessionEnd|Stop> [model]")
 	}
