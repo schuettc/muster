@@ -66,6 +66,19 @@ a { color: var(--signal); }
 .theme-toggle { font: inherit; color: var(--muted); background: transparent; border: 1px solid var(--line); border-radius: 6px; padding: .25rem .6rem; cursor: pointer; letter-spacing: .1em; }
 .theme-toggle:hover { color: var(--text); border-color: var(--muted); }
 
+/* statusbar cross-page nav — brand + docs/github links, left-adjacent */
+.sb-left { display: flex; align-items: center; gap: 1.15rem; min-width: 0; }
+.sb-brand { display: inline-flex; align-items: center; gap: .35em; flex-shrink: 0; }
+.sb-nav { display: flex; align-items: center; gap: .95rem; }
+.sb-nav a { color: var(--muted); text-decoration: none; }
+.sb-nav a:hover, .sb-nav a:focus-visible { color: var(--text); text-decoration: underline; }
+.sb-nav a.active { color: var(--text); }
+.sb-meta { display: flex; align-items: center; flex-shrink: 0; }
+@media (max-width: 30rem) {
+  .sb-meta-text { display: none; }
+  .sb-nav { gap: .7rem; }
+}
+
 .hero { padding: clamp(3.25rem, 8vw, 5.5rem) 0 2.5rem; }
 .eyebrow { font-family: var(--mono); font-size: .78rem; letter-spacing: .15em; text-transform: uppercase; color: var(--signal); margin: 0 0 1.3rem; }
 .wordmark { font-family: var(--mono); font-weight: 600; font-size: clamp(2.5rem, 8vw, 4.2rem); letter-spacing: -.02em; margin: 0; line-height: 1; }
