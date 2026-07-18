@@ -40,6 +40,20 @@ func TestIsSessionAlive(t *testing.T) {
 	}
 }
 
+func TestIsPaneAlive(t *testing.T) {
+	withRun(t, func(_ ...string) (string, error) { return "%5", nil })
+	if !IsPaneAlive("/s", "%5") {
+		t.Fatal("want alive when display-message returns a pane id")
+	}
+	withRun(t, func(_ ...string) (string, error) { return "", fmt.Errorf("no such pane") })
+	if IsPaneAlive("/s", "%5") {
+		t.Fatal("want dead when the query errors")
+	}
+	if IsPaneAlive("", "%5") || IsPaneAlive("/s", "") {
+		t.Fatal("empty socket/pane must be dead without calling Run")
+	}
+}
+
 func TestSessionLabelManualVsAuto(t *testing.T) {
 	withRun(t, func(_ ...string) (string, error) { return "frontend\x1f1", nil })
 	if l, m := SessionLabel("/s", "$1"); l != "frontend" || !m {

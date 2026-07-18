@@ -32,13 +32,90 @@ func cmdHook(args []string, stdin io.Reader, out io.Writer) error {
 	}
 	switch args[0] {
 	case "SessionStart":
-		_ = cmdRegister([]string{"--model", model}, io.Discard)
+		if hookMayClaimIdentity(tmuxenv.CaptureEnv()) {
+			_ = cmdRegister([]string{"--model", model}, io.Discard)
+		}
 	case "SessionEnd":
-		_ = cmdDeregister(nil, io.Discard)
+		if hookOwnsIdentity(tmuxenv.CaptureEnv()) {
+			_ = cmdDeregister(nil, io.Discard)
+		}
 	case "Stop":
 		hookStop(stdin, out)
 	}
 	return nil
+}
+
+// hookAlias resolves the identity a hook event acts on, mirroring
+// cmdRegister/cmdDeregister's no-arg precedence: $MUSTER_ALIAS, else the
+// captured tmux session name.
+func hookAlias(c tmuxenv.Capture) string {
+	if v := os.Getenv("MUSTER_ALIAS"); v != "" {
+		return v
+	}
+	return c.SessionName
+}
+
+// hookGetAgent fetches an alias's full roster row via the daemon's get_agent
+// op, decoded exactly like cmdNudge's pane resolution. false on any
+// transport/daemon failure or a not-found alias — callers degrade to
+// today's behavior in that case, never block on it.
+func hookGetAgent(alias string) (agentFull, bool) {
+	raw, err := callData("get_agent", map[string]any{"alias": alias})
+	if err != nil {
+		return agentFull{}, false
+	}
+	var res struct {
+		Found bool      `json:"found"`
+		Agent agentFull `json:"agent"`
+	}
+	if json.Unmarshal(raw, &res) != nil || !res.Found {
+		return agentFull{}, false
+	}
+	return res.Agent, true
+}
+
+// hookMayClaimIdentity is the SessionStart gate (spec: first live claimant
+// wins the session's primary-agent pane). Degrades to true — today's
+// register — whenever tmux identity or the roster can't answer.
+func hookMayClaimIdentity(c tmuxenv.Capture) bool {
+	if c.SocketPath == "" || c.PaneID == "" {
+		return true
+	}
+	ag, found := hookGetAgent(hookAlias(c))
+	if !found {
+		return true
+	}
+	if ag.Departed {
+		return true // a tombstone never owns the identity
+	}
+	if ag.SocketPath != c.SocketPath || ag.SessionID != c.SessionID {
+		return true // cross-session takeover: a renamed/recreated session reclaims its name
+	}
+	if ag.PaneID == "" || ag.PaneID == c.PaneID {
+		return true
+	}
+	return !tmuxenv.IsPaneAlive(c.SocketPath, ag.PaneID)
+}
+
+// hookOwnsIdentity is the SessionEnd gate: deregister only what this pane
+// owns — a dying sibling (subagent) must not tombstone the primary.
+func hookOwnsIdentity(c tmuxenv.Capture) bool {
+	if hookAlias(c) == "" {
+		// No resolvable identity (global hooks, non-tmux sessions): nothing to
+		// deregister, and never dial the daemon from an identity-less hook.
+		return false
+	}
+	ag, found := hookGetAgent(hookAlias(c))
+	if !found {
+		return false
+	}
+	if ag.Departed {
+		return false // a tombstone is already gone: nothing live to deregister
+	}
+	if ag.SocketPath != c.SocketPath || ag.SessionID != c.SessionID {
+		return false
+	}
+	return ag.PaneID == "" || ag.PaneID == c.PaneID
 }
 
 // stopInput decodes the Stop-hook stdin payload. Invalid or empty JSON leaves
@@ -101,6 +178,10 @@ func hookStop(stdin io.Reader, out io.Writer) {
 	}
 	aliases := sessionAliasesForHook(socketPath, sessionID)
 
+	if !hookStopOwnsAnyAlias(aliases) {
+		return // roster names a live owner and it isn't me: don't drain a sibling's mail
+	}
+
 	reason := hookReason(total, action, aliases)
 	b, err := json.Marshal(stopReason{Decision: "block", Reason: reason})
 	if err != nil {
@@ -143,6 +224,32 @@ func sessionUnreadForHook(socketPath, sessionID string) (total, action int, ok b
 		return 0, 0, false
 	}
 	return res.Total, res.Action, true
+}
+
+// hookStopOwnsAnyAlias is the Stop gate (spec §2): drain only when this pane
+// is a named owner. It resolves each alias's stored pane_id via get_agent —
+// cheap, local, at most a couple of daemon round trips — and engages ONLY
+// when the roster actually names a live pane_id for at least one alias and
+// none of them is mine. An empty $TMUX_PANE, an unresolvable roster, or every
+// alias having no stored pane_id all mean the roster can't name an owner, so
+// this falls through to true — today's unconditional drain.
+func hookStopOwnsAnyAlias(aliases []string) bool {
+	myPane := os.Getenv("TMUX_PANE")
+	if myPane == "" {
+		return true
+	}
+	sawNamedOwner := false
+	for _, alias := range aliases {
+		ag, found := hookGetAgent(alias)
+		if !found || ag.Departed || ag.PaneID == "" {
+			continue // a tombstoned row neither grants nor denies ownership
+		}
+		if ag.PaneID == myPane {
+			return true
+		}
+		sawNamedOwner = true
+	}
+	return !sawNamedOwner
 }
 
 // hookReason builds the Stop hook's decision:block reason (spec §2 drain

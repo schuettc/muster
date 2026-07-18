@@ -96,6 +96,14 @@ func SessionAttached(socket, sessionID string) bool {
 	return out != "" && out != "0"
 }
 
+// IsPaneAlive reports whether paneID still exists on socket — the client-side
+// liveness check hook ownership gates use to tell a dead former owner from a
+// live one (spec: "first live claimant wins"), via the same query seam as
+// IsSessionAlive.
+func IsPaneAlive(socket, paneID string) bool {
+	return query(socket, paneID, "#{pane_id}") != ""
+}
+
 // SessionName reads the LIVE session name for target (a pane or session ID)
 // on socket, via the same query seam as SessionAttached/SessionLabel. Session
 // names are mutable — tmux lets an operator rename a session at any time —

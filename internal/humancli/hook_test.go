@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/schuettc/muster/internal/mustertest"
 	"github.com/schuettc/muster/internal/tmuxenv"
 )
 
@@ -354,10 +356,333 @@ func TestHookStaleBadgeSuppressedByAuthoritativeZero(t *testing.T) {
 	}
 }
 
+// hookAgentPane fetches an alias's stored pane_id through get_agent, for
+// asserting ownership-gate outcomes in the tests below.
+func hookAgentPane(t *testing.T, alias string) (paneID string, found bool) {
+	t.Helper()
+	raw, err := callData("get_agent", map[string]any{"alias": alias})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var res struct {
+		Found bool      `json:"found"`
+		Agent agentFull `json:"agent"`
+	}
+	if err := json.Unmarshal(raw, &res); err != nil {
+		t.Fatal(err)
+	}
+	return res.Agent.PaneID, res.Found
+}
+
+// TestHookSessionStartNoOpForLiveForeignOwner covers the SessionStart gate's
+// core no-op case (spec: "a live different pane means a primary already owns
+// this identity"): the alias is already registered to the SAME
+// (socket_path, session_id) tuple, but its stored pane ('%1') is a different,
+// still-live pane than mine ('%2') — SessionStart must not steal it.
+func TestHookSessionStartNoOpForLiveForeignOwner(t *testing.T) {
+	startTestDaemon(t)
+	if _, err := callData("register_agent", map[string]any{
+		"alias": "start-owner", "socket_path": "/tmp/sockA", "session_id": "$1", "pane_id": "%1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("TMUX", "/tmp/sockA,1,0")
+	t.Setenv("TMUX_PANE", "%2")
+	t.Setenv("MUSTER_ALIAS", "")
+	prev := tmuxenv.Run
+	tmuxenv.Run = hookRun(map[string]string{
+		"#{session_id}":   "$1",
+		"#{session_name}": "start-owner",
+		"#{pane_id}":      "%1", // IsPaneAlive("/tmp/sockA","%1") -> alive
+	})
+	t.Cleanup(func() { tmuxenv.Run = prev })
+
+	var buf bytes.Buffer
+	if err := cmdHook([]string{"SessionStart"}, strings.NewReader(""), &buf); err != nil {
+		t.Fatalf("SessionStart: %v", err)
+	}
+	pane, found := hookAgentPane(t, "start-owner")
+	if !found || pane != "%1" {
+		t.Fatalf("expected stored pane to remain the live foreign owner '%%1', got pane=%q found=%v", pane, found)
+	}
+}
+
+// TestHookSessionStartClaims table-drives every case where SessionStart MUST
+// claim the identity (register/overwrite to the calling pane), per spec §1:
+// dead former owner, empty stored pane, stored pane already mine, no prior
+// registration, and a foreign (socket_path, session_id) tuple (cross-session
+// takeover).
+func TestHookSessionStartClaims(t *testing.T) {
+	cases := []struct {
+		name        string
+		preRegister bool
+		socketPath  string
+		sessionID   string
+		storedPane  string
+		paneAlive   string // stub value for the "#{pane_id}" liveness query
+	}{
+		{name: "foreign pane dead", preRegister: true, socketPath: "/tmp/sockC", sessionID: "$1", storedPane: "%1", paneAlive: ""},
+		{name: "stored pane empty", preRegister: true, socketPath: "/tmp/sockC", sessionID: "$1", storedPane: ""},
+		{name: "stored pane mine", preRegister: true, socketPath: "/tmp/sockC", sessionID: "$1", storedPane: "%2"},
+		{name: "alias absent", preRegister: false},
+		{name: "foreign tuple", preRegister: true, socketPath: "/tmp/sockOTHER", sessionID: "$99", storedPane: "%1", paneAlive: "%1"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			startTestDaemon(t)
+			if c.preRegister {
+				if _, err := callData("register_agent", map[string]any{
+					"alias": "claim-me", "socket_path": c.socketPath, "session_id": c.sessionID, "pane_id": c.storedPane,
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			t.Setenv("TMUX", "/tmp/sockC,1,0")
+			t.Setenv("TMUX_PANE", "%2")
+			t.Setenv("MUSTER_ALIAS", "")
+			prev := tmuxenv.Run
+			tmuxenv.Run = hookRun(map[string]string{
+				"#{session_id}":   "$1",
+				"#{session_name}": "claim-me",
+				"#{pane_id}":      c.paneAlive,
+			})
+			t.Cleanup(func() { tmuxenv.Run = prev })
+
+			var buf bytes.Buffer
+			if err := cmdHook([]string{"SessionStart"}, strings.NewReader(""), &buf); err != nil {
+				t.Fatalf("SessionStart: %v", err)
+			}
+			pane, found := hookAgentPane(t, "claim-me")
+			if !found || pane != "%2" {
+				t.Fatalf("expected claim-me claimed to my pane '%%2', got pane=%q found=%v", pane, found)
+			}
+		})
+	}
+}
+
+// TestHookStopSilentForNonOwner covers the Stop gate (spec §2): the session's
+// registered alias has unread mail, but its stored pane ('%1') is a
+// different, live pane than mine ('%2') — the drain decision must not be
+// emitted to a sibling pane.
+func TestHookStopSilentForNonOwner(t *testing.T) {
+	startTestDaemon(t)
+	if _, err := callData("register_agent", map[string]any{
+		"alias": "stop-nonowner", "socket_path": "/tmp/sockB", "session_id": "$5", "pane_id": "%1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := callData("register_agent", map[string]any{
+		"alias": "other", "socket_path": "/tmp/otherB", "session_id": "$6",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := callData("send_message", map[string]any{
+		"from": "other", "to_kind": "agent", "to_target": "stop-nonowner", "subject": "s", "body": "b",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("TMUX", "/tmp/sockB,1,0")
+	t.Setenv("TMUX_PANE", "%2")
+	prev := tmuxenv.Run
+	tmuxenv.Run = hookRun(map[string]string{"@muster_inbox": "3", "#{session_id}": "$5"})
+	t.Cleanup(func() { tmuxenv.Run = prev })
+
+	var buf bytes.Buffer
+	if err := cmdHook([]string{"Stop"}, strings.NewReader(`{}`), &buf); err != nil {
+		t.Fatal(err)
+	}
+	if buf.Len() != 0 {
+		t.Fatalf("expected no output for a non-owner pane, got %q", buf.String())
+	}
+}
+
+// TestHookStopDrainsForOwner is TestHookStopSilentForNonOwner's mirror: same
+// setup, but $TMUX_PANE matches the registered alias's stored pane — the
+// drain decision must be emitted.
+func TestHookStopDrainsForOwner(t *testing.T) {
+	startTestDaemon(t)
+	if _, err := callData("register_agent", map[string]any{
+		"alias": "stop-owner", "socket_path": "/tmp/sockD", "session_id": "$7", "pane_id": "%1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := callData("register_agent", map[string]any{
+		"alias": "other", "socket_path": "/tmp/otherD", "session_id": "$8",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := callData("send_message", map[string]any{
+		"from": "other", "to_kind": "agent", "to_target": "stop-owner", "subject": "s", "body": "b",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("TMUX", "/tmp/sockD,1,0")
+	t.Setenv("TMUX_PANE", "%1")
+	prev := tmuxenv.Run
+	tmuxenv.Run = hookRun(map[string]string{"@muster_inbox": "3", "#{session_id}": "$7"})
+	t.Cleanup(func() { tmuxenv.Run = prev })
+
+	res := runHook(t)
+	if !strings.Contains(res.Reason, "alias 'stop-owner'") {
+		t.Fatalf("reason missing owner alias: %q", res.Reason)
+	}
+}
+
+// TestHookStopFallbackWhenPaneUnknown asserts the existing-tests-keep-passing
+// property explicitly (spec §2): a registration with an EMPTY pane_id carries
+// no owner information at all, so the Stop gate must not engage — it drains
+// exactly as it did before pane ownership existed, regardless of $TMUX_PANE.
+func TestHookStopFallbackWhenPaneUnknown(t *testing.T) {
+	startTestDaemon(t)
+	if _, err := callData("register_agent", map[string]any{
+		"alias": "stop-unknown-pane", "socket_path": "/tmp/sockE", "session_id": "$9",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := callData("register_agent", map[string]any{
+		"alias": "other", "socket_path": "/tmp/otherE", "session_id": "$10",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := callData("send_message", map[string]any{
+		"from": "other", "to_kind": "agent", "to_target": "stop-unknown-pane", "subject": "s", "body": "b",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("TMUX", "/tmp/sockE,1,0")
+	t.Setenv("TMUX_PANE", "%9")
+	prev := tmuxenv.Run
+	tmuxenv.Run = hookRun(map[string]string{"@muster_inbox": "3", "#{session_id}": "$9"})
+	t.Cleanup(func() { tmuxenv.Run = prev })
+
+	res := runHook(t)
+	if !strings.Contains(res.Reason, "alias 'stop-unknown-pane'") {
+		t.Fatalf("reason missing owner alias: %q", res.Reason)
+	}
+}
+
+// TestHookSessionEndNoOpForNonOwner covers the SessionEnd gate (spec §3): a
+// dying sibling pane must not tombstone the primary's registration.
+func TestHookSessionEndNoOpForNonOwner(t *testing.T) {
+	startTestDaemon(t)
+	if _, err := callData("register_agent", map[string]any{
+		"alias": "end-nonowner", "socket_path": "/tmp/sockF", "session_id": "$1", "pane_id": "%1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("TMUX", "/tmp/sockF,1,0")
+	t.Setenv("TMUX_PANE", "%2")
+	t.Setenv("MUSTER_ALIAS", "")
+	prev := tmuxenv.Run
+	tmuxenv.Run = hookRun(map[string]string{"#{session_id}": "$1", "#{session_name}": "end-nonowner"})
+	t.Cleanup(func() { tmuxenv.Run = prev })
+
+	var buf bytes.Buffer
+	if err := cmdHook([]string{"SessionEnd"}, strings.NewReader(""), &buf); err != nil {
+		t.Fatalf("SessionEnd: %v", err)
+	}
+	agents := listAgentsForTest(t, "")
+	for _, a := range agents {
+		if a.Alias == "end-nonowner" && a.Departed {
+			t.Fatalf("a non-owner pane's SessionEnd must not tombstone the primary: %+v", a)
+		}
+	}
+}
+
+// TestHookSessionEndDeregistersForOwner is the mirror: my pane owns the
+// registration, so SessionEnd must deregister (tombstone) it as today.
+func TestHookSessionEndDeregistersForOwner(t *testing.T) {
+	startTestDaemon(t)
+	if _, err := callData("register_agent", map[string]any{
+		"alias": "end-owner", "socket_path": "/tmp/sockG", "session_id": "$1", "pane_id": "%2",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("TMUX", "/tmp/sockG,1,0")
+	t.Setenv("TMUX_PANE", "%2")
+	t.Setenv("MUSTER_ALIAS", "")
+	prev := tmuxenv.Run
+	tmuxenv.Run = hookRun(map[string]string{"#{session_id}": "$1", "#{session_name}": "end-owner"})
+	t.Cleanup(func() { tmuxenv.Run = prev })
+
+	var buf bytes.Buffer
+	if err := cmdHook([]string{"SessionEnd"}, strings.NewReader(""), &buf); err != nil {
+		t.Fatalf("SessionEnd: %v", err)
+	}
+	agents := listAgentsForTest(t, "")
+	found := false
+	for _, a := range agents {
+		if a.Alias == "end-owner" {
+			found = true
+			if !a.Departed {
+				t.Fatalf("owner's SessionEnd must tombstone the registration, got %+v", a)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected end-owner's row to survive SessionEnd (tombstoned, not deleted)")
+	}
+}
+
+// TestHookSessionEndNoOpForForeignTuple: the alias is registered, but to a
+// DIFFERENT (socket_path, session_id) than mine (e.g. a stale row from a
+// previous incarnation of this session name) — SessionEnd must not touch a
+// registration it doesn't own the identity of.
+func TestHookSessionEndNoOpForForeignTuple(t *testing.T) {
+	startTestDaemon(t)
+	if _, err := callData("register_agent", map[string]any{
+		"alias": "end-foreign-tuple", "socket_path": "/tmp/sockOLD", "session_id": "$OLD", "pane_id": "%1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("TMUX", "/tmp/sockH,1,0")
+	t.Setenv("TMUX_PANE", "%2")
+	t.Setenv("MUSTER_ALIAS", "")
+	prev := tmuxenv.Run
+	tmuxenv.Run = hookRun(map[string]string{"#{session_id}": "$NEW", "#{session_name}": "end-foreign-tuple"})
+	t.Cleanup(func() { tmuxenv.Run = prev })
+
+	var buf bytes.Buffer
+	if err := cmdHook([]string{"SessionEnd"}, strings.NewReader(""), &buf); err != nil {
+		t.Fatalf("SessionEnd: %v", err)
+	}
+	agents := listAgentsForTest(t, "")
+	for _, a := range agents {
+		if a.Alias == "end-foreign-tuple" && a.Departed {
+			t.Fatalf("SessionEnd must not tombstone a registration owned by a different (socket,session) tuple: %+v", a)
+		}
+	}
+}
+
 func TestHookSessionStartBestEffortWhenDaemonUnreachable(t *testing.T) {
 	// No test daemon started, and no tmux identity to fall back on: cmdRegister
 	// will fail (can't determine alias / can't reach daemon), but the hook must
 	// swallow that and still return nil — a hook must never block a session.
+	//
+	// MUSTER_HOME must be isolated here (a dead socket path with nothing
+	// listening): left unset, paths.SocketPath() falls back to the real
+	// ~/.local/share/muster/sock, which on a dev machine running the live
+	// muster daemon would silently dial IT instead of exercising the
+	// unreachable-daemon branch this test is named for. MUSTER_NO_AUTOSPAWN
+	// skips client.dialOrSpawn's auto-start fallback — under `go test`,
+	// os.Executable() resolves to the test binary itself, so that fallback
+	// would otherwise re-exec the whole suite as a detached child (a fork
+	// bomb reproduced in CI) instead of a real `muster serve`.
+	dir, cleanup, err := mustertest.ShortHome()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(cleanup)
+	t.Setenv("MUSTER_HOME", dir)
+	t.Setenv("MUSTER_NO_AUTOSPAWN", "1")
 	t.Setenv("TMUX", "")
 	t.Setenv("TMUX_PANE", "")
 	t.Setenv("MUSTER_ALIAS", "")
@@ -367,5 +692,127 @@ func TestHookSessionStartBestEffortWhenDaemonUnreachable(t *testing.T) {
 	}
 	if err := cmdHook([]string{"SessionEnd"}, strings.NewReader(""), &buf); err != nil {
 		t.Fatalf("hook must never return an error, got %v", err)
+	}
+}
+
+// TestHookSessionStartClaimsOverDepartedRow covers finding 1's SessionStart
+// half (a tombstone never owns the identity): the same (socket_path,
+// session_id) tuple is registered, then deregistered — the row survives as a
+// tombstone (departed=true) with its pane_id ('%1') intact, and that pane is
+// still alive-but-foreign (a different, still-live pane than mine). Without
+// decoding Departed, the old-owner-alive check would refuse to claim forever
+// (the lockout scenario from the review finding). A departed row must be
+// claimable regardless of whether its stored pane is alive.
+func TestHookSessionStartClaimsOverDepartedRow(t *testing.T) {
+	startTestDaemon(t)
+	if _, err := callData("register_agent", map[string]any{
+		"alias": "claim-departed", "socket_path": "/tmp/sockDep", "session_id": "$1", "pane_id": "%1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := callData("deregister_agent", map[string]any{"alias": "claim-departed"}); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("TMUX", "/tmp/sockDep,1,0")
+	t.Setenv("TMUX_PANE", "%2")
+	t.Setenv("MUSTER_ALIAS", "")
+	prev := tmuxenv.Run
+	tmuxenv.Run = hookRun(map[string]string{
+		"#{session_id}":   "$1",
+		"#{session_name}": "claim-departed",
+		"#{pane_id}":      "%1", // the old owner's pane is still alive
+	})
+	t.Cleanup(func() { tmuxenv.Run = prev })
+
+	var buf bytes.Buffer
+	if err := cmdHook([]string{"SessionStart"}, strings.NewReader(""), &buf); err != nil {
+		t.Fatalf("SessionStart: %v", err)
+	}
+	ag, found := hookGetAgent("claim-departed")
+	if !found {
+		t.Fatal("expected claim-departed to still be registered")
+	}
+	if ag.PaneID != "%2" {
+		t.Fatalf("expected the roster pane to become mine ('%%2'), got %q", ag.PaneID)
+	}
+	if ag.Departed {
+		t.Fatalf("expected claim-departed revived (Departed=false) after SessionStart claims it, got %+v", ag)
+	}
+}
+
+// TestHookStopDrainsWhenOnlyNamedOwnerIsDeparted covers finding 1's Stop half:
+// the session's only registered alias is a tombstone. A departed row must
+// neither grant nor deny ownership — hookStopOwnsAnyAlias must skip it
+// entirely, leaving sawNamedOwner false, so the gate falls through to true
+// (today's unconditional drain) rather than silently refusing forever.
+func TestHookStopDrainsWhenOnlyNamedOwnerIsDeparted(t *testing.T) {
+	startTestDaemon(t)
+	if _, err := callData("register_agent", map[string]any{
+		"alias": "stop-departed", "socket_path": "/tmp/sockStopDep", "session_id": "$5", "pane_id": "%1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := callData("register_agent", map[string]any{
+		"alias": "other", "socket_path": "/tmp/otherStopDep", "session_id": "$6",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := callData("send_message", map[string]any{
+		"from": "other", "to_kind": "agent", "to_target": "stop-departed", "subject": "s", "body": "b",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := callData("deregister_agent", map[string]any{"alias": "stop-departed"}); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("TMUX", "/tmp/sockStopDep,1,0")
+	t.Setenv("TMUX_PANE", "%2") // not the tombstone's stored pane ('%1')
+	prev := tmuxenv.Run
+	tmuxenv.Run = hookRun(map[string]string{"@muster_inbox": "3", "#{session_id}": "$5"})
+	t.Cleanup(func() { tmuxenv.Run = prev })
+
+	res := runHook(t)
+	if !strings.Contains(res.Reason, "alias 'stop-departed'") {
+		t.Fatalf("reason missing owner alias: %q", res.Reason)
+	}
+}
+
+// TestHookSessionEndUnresolvableIdentityNeverDialsDaemon covers finding 2:
+// outside any resolvable identity (no $MUSTER_ALIAS, no tmux session name —
+// e.g. a global hook firing for a non-tmux Claude session), hookOwnsIdentity
+// must return false BEFORE ever calling the daemon. Deliberately no
+// startTestDaemon and MUSTER_NO_AUTOSPAWN set to "" (which is INACTIVE, not
+// unset — the guard checks != "", so an empty string leaves client.Call free
+// to auto-spawn): if the fix regressed and this hook dialed the daemon
+// anyway, dialOrSpawn would find the socket dead and re-exec the test binary
+// itself as "serve", reproducing the CI fork bomb the review finding
+// describes. Bounded with a goroutine + timeout so a regression fails fast
+// instead of hanging/forking the suite.
+func TestHookSessionEndUnresolvableIdentityNeverDialsDaemon(t *testing.T) {
+	dir, cleanup, err := mustertest.ShortHome()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(cleanup)
+	t.Setenv("MUSTER_HOME", dir) // isolated, dead socket path — nothing listens here
+	t.Setenv("MUSTER_NO_AUTOSPAWN", "")
+	t.Setenv("TMUX", "")
+	t.Setenv("TMUX_PANE", "")
+	t.Setenv("MUSTER_ALIAS", "")
+
+	done := make(chan error, 1)
+	go func() {
+		var buf bytes.Buffer
+		done <- cmdHook([]string{"SessionEnd"}, strings.NewReader(""), &buf)
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("hook must never return an error, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("cmdHook SessionEnd did not return promptly — likely dialed/spawned the daemon with an unresolvable identity")
 	}
 }
