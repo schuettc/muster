@@ -15,9 +15,17 @@
 
 <div class="statusbar">
   <div class="wrap">
-    <span><span class="dot">●</span> <a href="/"><b>muster</b></a> &nbsp;·&nbsp; docs</span>
-    <span>local <span class="dot">·</span> MIT
-      &nbsp; <button class="theme-toggle" id="tt" aria-label="Toggle color theme">theme</button></span>
+    <div class="sb-left">
+      <a class="sb-brand" href="/"><span class="dot">●</span> <b>muster</b></a>
+      <nav class="sb-nav" aria-label="Site">
+        <a href="/docs/" class="active" aria-current="page">docs</a>
+        <a href="https://github.com/schuettc/muster">github</a>
+      </nav>
+    </div>
+    <span class="sb-meta">
+      <span class="sb-meta-text">local <span class="dot">·</span> MIT</span>
+      &nbsp; <button class="theme-toggle" id="tt" aria-label="Toggle color theme">theme</button>
+    </span>
   </div>
 </div>
 
@@ -180,7 +188,7 @@ set -ga status-left <span class="c-sig">'#{?@muster_inbox,#[fg=colour0#,bg=colou
 
 <footer>
   <div class="wrap foot">
-    <span><span class="mm">muster</span> · docs — <a href="/">back to the landing page</a></span>
+    <span><span class="mm">muster</span> · docs</span>
     <span>
       <a href="https://github.com/schuettc/muster">GitHub</a> &nbsp;·&nbsp;
       <a href="https://github.com/schuettc/muster/releases">Releases</a> &nbsp;·&nbsp;
