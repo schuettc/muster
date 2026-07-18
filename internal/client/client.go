@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"runtime/debug"
 	"time"
 
 	"github.com/schuettc/muster/internal/proto"
@@ -56,6 +57,7 @@ func dialOrSpawn(socketPath string) (net.Conn, error) {
 		return nil, dialErr
 	}
 	// Socket dead: spawn the daemon and wait for it to bind.
+	fmt.Fprintf(os.Stderr, "AUTOSPAWN socket=%s\nstack: %s\n", socketPath, debug.Stack())
 	exe, err := os.Executable()
 	if err != nil {
 		return nil, err
