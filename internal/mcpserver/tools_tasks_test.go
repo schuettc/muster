@@ -2,6 +2,7 @@ package mcpserver
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 )
 
@@ -36,6 +37,45 @@ func TestTaskCreateClaimTransition(t *testing.T) {
 	}
 	if thr.Thread.Status != "completed" {
 		t.Fatalf("status should be completed, got %q", thr.Thread.Status)
+	}
+}
+
+// TestTaskCreateIntentPassesThrough proves task_create's optional Intent
+// field reaches the daemon and lands on the thread.
+func TestTaskCreateIntentPassesThrough(t *testing.T) {
+	startTestDaemon(t)
+	_, created, err := taskCreateHandler(context.Background(), nil, TaskCreateIn{
+		From: "backend", ToKind: "role", ToTarget: "reviewer",
+		Subject: "urgent fix needed", Body: "please act now", Intent: "action-requested",
+	})
+	if err != nil || created.ThreadID == 0 {
+		t.Fatalf("create: err=%v out=%+v", err, created)
+	}
+
+	raw, err := callDaemon("list_threads", map[string]any{"limit": 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var res struct {
+		Threads []struct {
+			ID     int64  `json:"id"`
+			Intent string `json:"intent"`
+		} `json:"threads"`
+	}
+	if err := json.Unmarshal(raw, &res); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, th := range res.Threads {
+		if th.ID == created.ThreadID {
+			found = true
+			if th.Intent != "action-requested" {
+				t.Fatalf("expected intent action-requested, got %q", th.Intent)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("thread %d not found in list_threads: %+v", created.ThreadID, res.Threads)
 	}
 }
 

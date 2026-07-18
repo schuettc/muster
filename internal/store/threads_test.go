@@ -32,18 +32,8 @@ func TestCreateThreadAppendAndGet(t *testing.T) {
 }
 
 func TestUnreadCountAndMarkRead(t *testing.T) {
-	// UnreadCount/MarkRead compare millisecond timestamps with a strict ">",
-	// so this test needs each clock.NowMillis() call (CreateThread,
-	// MarkRead, CreateThread) to land on a distinct tick. The real clock
-	// can collide within the same millisecond on fast hardware, so drive
-	// a fake, strictly-increasing clock instead of the wall clock.
-	var tick int64
-	clock.SetForTesting(func() int64 {
-		tick++
-		return tick
-	})
-	t.Cleanup(clock.ResetForTesting)
-
+	// UnreadCount/MarkRead now compare entry IDs (monotonic, never colliding),
+	// not millisecond timestamps, so no fake clock is needed here.
 	s := newTestStore(t)
 	if err := s.RegisterAgent(Agent{Alias: "a", Role: "r"}); err != nil {
 		t.Fatal(err)
@@ -143,7 +133,6 @@ func TestInboxIncludesOriginatedThreads(t *testing.T) {
 // originator blindness: a reply on a thread you started must count as unread
 // for you, so the notify fan-out lights your mailbox instead of clearing it.
 func TestUnreadCountOriginatorSeesPeerReply(t *testing.T) {
-	fakeTick(t)
 	s := newTestStore(t)
 	if err := s.RegisterAgent(Agent{Alias: "web"}); err != nil {
 		t.Fatal(err)
@@ -172,7 +161,6 @@ func TestUnreadCountOriginatorSeesPeerReply(t *testing.T) {
 // TestUnreadCountIgnoresOwnReply: an agent replying on a thread addressed to
 // it must not re-flag its own inbox.
 func TestUnreadCountIgnoresOwnReply(t *testing.T) {
-	fakeTick(t)
 	s := newTestStore(t)
 	if err := s.RegisterAgent(Agent{Alias: "api"}); err != nil {
 		t.Fatal(err)
@@ -189,5 +177,258 @@ func TestUnreadCountIgnoresOwnReply(t *testing.T) {
 	}
 	if n, err := s.UnreadCount("api"); err != nil || n != 0 {
 		t.Fatalf("own reply re-flagged own inbox: %d unread (%v), want 0", n, err)
+	}
+}
+
+// TestThreadsLastEntrySameMillisecond: two entries land in the same
+// millisecond (frozen clock) — the last entry identified by Threads() must be
+// the one with the higher id (append order), never an ambiguous pick off
+// MAX(created_at).
+func TestThreadsLastEntrySameMillisecond(t *testing.T) {
+	clock.SetForTesting(func() int64 { return 5000 })
+	t.Cleanup(clock.ResetForTesting)
+
+	s := newTestStore(t)
+	id, err := s.CreateThread(Thread{Kind: "message", FromAgent: "a", ToKind: "broadcast"}, "first")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AppendEntry(id, "b", "second", ""); err != nil {
+		t.Fatal(err)
+	}
+	threads, err := s.Threads(10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(threads) != 1 {
+		t.Fatalf("expected 1 thread, got %d", len(threads))
+	}
+	if threads[0].LastFrom != "b" {
+		t.Fatalf("last entry from = %q, want %q (the higher-id entry, despite same-millisecond created_at)", threads[0].LastFrom, "b")
+	}
+	if threads[0].EntryCount != 2 {
+		t.Fatalf("entry count = %d, want 2", threads[0].EntryCount)
+	}
+}
+
+// TestThreadsOrderingTiesByID: threads sharing the same updated_at (frozen
+// clock) must order newest-id-first.
+func TestThreadsOrderingTiesByID(t *testing.T) {
+	clock.SetForTesting(func() int64 { return 9000 })
+	t.Cleanup(clock.ResetForTesting)
+
+	s := newTestStore(t)
+	firstID, err := s.CreateThread(Thread{Kind: "message", FromAgent: "a", ToKind: "broadcast"}, "one")
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondID, err := s.CreateThread(Thread{Kind: "message", FromAgent: "a", ToKind: "broadcast"}, "two")
+	if err != nil {
+		t.Fatal(err)
+	}
+	threads, err := s.Threads(10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(threads) != 2 || threads[0].ID != secondID || threads[1].ID != firstID {
+		t.Fatalf("tie-break order = %+v, want [%d, %d]", threads, secondID, firstID)
+	}
+}
+
+// TestThreadsLimitClamp exercises the documented clamp: <=0 defaults to 100,
+// over 500 clamps to 500, everything else passes through.
+func TestThreadsLimitClamp(t *testing.T) {
+	cases := []struct {
+		in, want int
+	}{
+		{0, 100}, {-5, 100}, {1, 1}, {500, 500}, {501, 500}, {10000, 500},
+	}
+	for _, c := range cases {
+		if got := clampThreadsLimit(c.in); got != c.want {
+			t.Fatalf("clampThreadsLimit(%d) = %d, want %d", c.in, got, c.want)
+		}
+	}
+}
+
+// TestThreadsAggregatesOnlyLimitedSet: entries belonging to a thread outside
+// the limited window must never be scanned — Threads() must still return the
+// correct last-entry/entry-count for the threads it DOES return.
+func TestThreadsAggregatesOnlyLimitedSet(t *testing.T) {
+	s := newTestStore(t)
+	// Oldest thread, several entries — will be excluded once newer threads
+	// push it outside limit=1.
+	oldID, err := s.CreateThread(Thread{Kind: "message", FromAgent: "a", ToKind: "broadcast"}, "old-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AppendEntry(oldID, "a", "old-2", ""); err != nil {
+		t.Fatal(err)
+	}
+	newID, err := s.CreateThread(Thread{Kind: "message", FromAgent: "b", ToKind: "broadcast"}, "new-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	threads, err := s.Threads(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(threads) != 1 || threads[0].ID != newID || threads[0].EntryCount != 1 {
+		t.Fatalf("limit=1 result = %+v, want just thread %d with 1 entry", threads, newID)
+	}
+}
+
+// TestIntentValidationAtStore: CreateThread accepts the empty string and the
+// three named intents, and rejects anything else — the validation boundary
+// so MCP, CLI, and station cannot diverge (spec §2).
+func TestIntentValidationAtStore(t *testing.T) {
+	s := newTestStore(t)
+	for _, ok := range []string{"", IntentFYI, IntentReply, IntentAction} {
+		if _, err := s.CreateThread(Thread{Kind: "message", FromAgent: "a", ToKind: "broadcast", Intent: ok}, "body"); err != nil {
+			t.Fatalf("intent %q should be valid: %v", ok, err)
+		}
+	}
+	if _, err := s.CreateThread(Thread{Kind: "message", FromAgent: "a", ToKind: "broadcast", Intent: "urgent"}, "body"); err == nil {
+		t.Fatal("unknown intent should be rejected")
+	}
+}
+
+// TestEffectiveIntentOldTasksAreAction: a task row with intent ” (the
+// pre-migration state — every v0.5 task) must read as action-requested via
+// effectiveIntent, with no retroactive migration backfill needed. A message
+// with intent ” stays unspecified — only 'task' triggers the default.
+func TestEffectiveIntentOldTasksAreAction(t *testing.T) {
+	s := newTestStore(t)
+	res, err := s.DB().Exec(`
+INSERT INTO threads (kind, from_agent, to_kind, to_target, subject, ref, status, created_at, updated_at)
+VALUES ('task', 'backend', 'role', 'reviewer', 'old task', '', 'open', 1, 1)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	taskID, _ := res.LastInsertId()
+	if _, err := s.DB().Exec(`INSERT INTO entries (thread_id, from_agent, body, created_at) VALUES (?, 'backend', 'please review', 1)`, taskID); err != nil {
+		t.Fatal(err)
+	}
+
+	msgID, err := s.CreateThread(Thread{Kind: "message", FromAgent: "backend", ToKind: "broadcast"}, "fyi-ish")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	threads, err := s.Threads(10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[int64]Thread{}
+	for _, th := range threads {
+		byID[th.ID] = th
+	}
+	if got := byID[taskID].Intent; got != IntentAction {
+		t.Fatalf("old task row effective intent = %q, want %q", got, IntentAction)
+	}
+	if got := byID[msgID].Intent; got != "" {
+		t.Fatalf("message with unset intent effective value = %q, want \"\"", got)
+	}
+}
+
+// TestInboxAnnotatesLastFromAndUnread is the defect reproduction (bus report,
+// live production): get_inbox previously returned only thread metadata
+// (from_agent = the ORIGINATOR, subject, updated_at), so an agent listing its
+// own inbox could not tell "a peer replied on my originated thread" from "my
+// own last send" without a get_thread drill-in. Inbox() must now annotate
+// each row with last_from (like Threads()) and a caller-relative unread
+// count: a thread whose last entry is a peer's reply shows LastFrom=peer and
+// Unread=1 for the originator, while a thread whose last entry is the
+// caller's own send shows Unread=0 even though the caller "originated" it.
+func TestInboxAnnotatesLastFromAndUnread(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.RegisterAgent(Agent{Alias: "web"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RegisterAgent(Agent{Alias: "api"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Thread 1: web originates, api replies — last entry is api's, so web's
+	// inbox must show last_from=api and unread=1 (the defect: this used to
+	// be indistinguishable from thread 2 below).
+	repliedID, err := s.CreateThread(Thread{Kind: "message", FromAgent: "web", ToKind: "agent", ToTarget: "api"}, "req")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AppendEntry(repliedID, "api", "done", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	// Thread 2: web originates and that's the only entry so far — last
+	// entry is web's own, so web's inbox must show last_from=web and
+	// unread=0 (awaiting a reply, not "answered").
+	ownLastID, err := s.CreateThread(Thread{Kind: "message", FromAgent: "web", ToKind: "agent", ToTarget: "api"}, "another req")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	in, err := s.Inbox("web")
+	if err != nil {
+		t.Fatalf("inbox: %v", err)
+	}
+	byID := map[int64]Thread{}
+	for _, th := range in {
+		byID[th.ID] = th
+	}
+
+	replied := byID[repliedID]
+	if replied.LastFrom != "api" {
+		t.Fatalf("replied thread last_from = %q, want %q", replied.LastFrom, "api")
+	}
+	if replied.Unread != 1 {
+		t.Fatalf("replied thread unread = %d, want 1 (the defect: peer reply must be visible without get_thread)", replied.Unread)
+	}
+	if replied.EntryCount != 2 {
+		t.Fatalf("replied thread entry_count = %d, want 2", replied.EntryCount)
+	}
+
+	ownLast := byID[ownLastID]
+	if ownLast.LastFrom != "web" {
+		t.Fatalf("own-last thread last_from = %q, want %q", ownLast.LastFrom, "web")
+	}
+	if ownLast.Unread != 0 {
+		t.Fatalf("own-last thread unread = %d, want 0 (own send must never read as unread)", ownLast.Unread)
+	}
+}
+
+// TestInboxUnreadDropsAfterMarkRead: after MarkRead, a subsequent Inbox call
+// for the same alias must show unread=0 on a thread that previously showed
+// unread=1 — proving the annotation is watermark-relative, not sticky.
+func TestInboxUnreadDropsAfterMarkRead(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.RegisterAgent(Agent{Alias: "web"}); err != nil {
+		t.Fatal(err)
+	}
+	id, err := s.CreateThread(Thread{Kind: "message", FromAgent: "web", ToKind: "agent", ToTarget: "api"}, "req")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AppendEntry(id, "api", "done", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	before, err := s.Inbox("web")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(before) != 1 || before[0].Unread != 1 {
+		t.Fatalf("before mark-read: unread = %+v, want 1", before)
+	}
+
+	if err := s.MarkRead("web"); err != nil {
+		t.Fatal(err)
+	}
+
+	after, err := s.Inbox("web")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != 1 || after[0].Unread != 0 {
+		t.Fatalf("after mark-read: unread = %+v, want 0", after)
 	}
 }

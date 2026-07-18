@@ -41,6 +41,10 @@ usual reason.
 - **label** — a peer's manually-pinned tmux label, resolved **within your project**:
   `send to "frontend"`. A bare label never silently crosses a project boundary.
 - **proj:label** — cross projects explicitly: `send to "timewalk:frontend"`.
+- Handoff documents (plans, progress notes, anything meant to outlive this
+  conversation) must reference **aliases**, not labels — a label drifts with
+  whatever the session is currently working on, so a label written down today
+  may point at someone else's topic (or nobody's) by the time it's read.
 
 ## The wake model (how peers notice each other)
 

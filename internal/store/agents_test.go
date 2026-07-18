@@ -1,6 +1,11 @@
 package store
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+
+	"github.com/schuettc/muster/internal/clock"
+)
 
 func TestRegisterAgentUpsertAndList(t *testing.T) {
 	s := newTestStore(t)
@@ -96,5 +101,330 @@ func TestAgentLabelAndDelete(t *testing.T) {
 	}
 	if err := s.DeleteAgent("nonexistent"); err != nil {
 		t.Fatalf("DeleteAgent of unknown alias must be a no-op, got %v", err)
+	}
+}
+
+// TestDepartAgentTombstonesPreservingFields covers the deregistration
+// tombstone (spec: departed history must survive so it stays drillable): after
+// DepartAgent, the row still exists (ListAgents/GetAgent both still find it),
+// Departed is true, and every other field — project, label, label_manual, the
+// read watermark — is untouched. A subsequent RegisterAgent for the same
+// alias revives it (Departed back to false) without needing any of those
+// fields re-supplied by the caller for them to still be present (RegisterAgent
+// preserves them exactly like a plain restart-upsert already does).
+func TestDepartAgentTombstonesPreservingFields(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.RegisterAgent(Agent{
+		Alias: "muster-2", Role: "peer", ModelType: "codex",
+		SocketPath: "/s", SessionID: "$1",
+		Project: "muster", Label: "frontend", LabelManual: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateThread(Thread{Kind: "message", FromAgent: "x", ToKind: "agent", ToTarget: "muster-2"}, "hi"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.MarkRead("muster-2"); err != nil {
+		t.Fatal(err)
+	}
+	before, ok, err := s.GetAgent("muster-2")
+	if err != nil || !ok {
+		t.Fatalf("get before depart: ok=%v err=%v", ok, err)
+	}
+	if before.LastReadEntryID == 0 {
+		t.Fatalf("setup: expected a non-zero read watermark, got %+v", before)
+	}
+
+	if err := s.DepartAgent("muster-2"); err != nil {
+		t.Fatal(err)
+	}
+	after, ok, err := s.GetAgent("muster-2")
+	if err != nil || !ok {
+		t.Fatalf("expected the row to SURVIVE DepartAgent, got ok=%v err=%v", ok, err)
+	}
+	if !after.Departed {
+		t.Fatalf("expected Departed=true after DepartAgent, got %+v", after)
+	}
+	if after.Project != "muster" || after.Label != "frontend" || !after.LabelManual {
+		t.Fatalf("DepartAgent must preserve project/label/label_manual, got %+v", after)
+	}
+	if after.LastReadEntryID != before.LastReadEntryID {
+		t.Fatalf("DepartAgent must preserve the read watermark: before=%d after=%d", before.LastReadEntryID, after.LastReadEntryID)
+	}
+
+	list, err := s.ListAgents()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 || !list[0].Departed {
+		t.Fatalf("ListAgents must still include the departed row, got %+v", list)
+	}
+
+	// DepartAgent on an unknown alias is a no-op, no error.
+	if err := s.DepartAgent("nonexistent"); err != nil {
+		t.Fatalf("DepartAgent of unknown alias must be a no-op, got %v", err)
+	}
+
+	// A returning session revives it: RegisterAgent resets Departed to false.
+	if err := s.RegisterAgent(Agent{
+		Alias: "muster-2", Role: "peer", ModelType: "codex",
+		SocketPath: "/s", SessionID: "$1",
+		Project: "muster", Label: "frontend", LabelManual: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	revived, ok, err := s.GetAgent("muster-2")
+	if err != nil || !ok {
+		t.Fatalf("get after revive: ok=%v err=%v", ok, err)
+	}
+	if revived.Departed {
+		t.Fatalf("re-registering a departed alias must revive it (Departed=false), got %+v", revived)
+	}
+	if revived.LastReadEntryID != before.LastReadEntryID {
+		t.Fatalf("revival must not disturb the read watermark: before=%d after=%d", before.LastReadEntryID, revived.LastReadEntryID)
+	}
+}
+
+// TestMarkReadRecordsEntryWatermark: no incrementing fake clock needed — the
+// wall clock is frozen at one instant so every entry genuinely lands in the
+// same millisecond, and the entry-ID watermark (not created_at) still tells
+// them apart correctly.
+func TestMarkReadRecordsEntryWatermark(t *testing.T) {
+	clock.SetForTesting(func() int64 { return 1000 })
+	t.Cleanup(clock.ResetForTesting)
+
+	s := newTestStore(t)
+	if err := s.RegisterAgent(Agent{Alias: "a"}); err != nil {
+		t.Fatal(err)
+	}
+	id, err := s.CreateThread(Thread{Kind: "message", FromAgent: "x", ToKind: "agent", ToTarget: "a"}, "one")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.MarkRead("a"); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := s.UnreadCount("a"); err != nil || n != 0 {
+		t.Fatalf("unread right after MarkRead = %d (%v), want 0", n, err)
+	}
+	got, ok, err := s.GetAgent("a")
+	if err != nil || !ok {
+		t.Fatalf("GetAgent: ok=%v err=%v", ok, err)
+	}
+	if got.LastReadEntryID == 0 {
+		t.Fatalf("MarkRead should have recorded a non-zero entry watermark, got %+v", got)
+	}
+
+	// A new entry, same frozen millisecond, but a higher entry id — must be
+	// unread despite created_at being identical to the watermark snapshot.
+	if _, err := s.AppendEntry(id, "x", "two", ""); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := s.UnreadCount("a"); err != nil || n != 1 {
+		t.Fatalf("same-millisecond entry after MarkRead unread = %d (%v), want 1", n, err)
+	}
+}
+
+// TestSessionUnreadCountsDistinctThreads: a broadcast concerning both aliases
+// of one session (split-alias identity) must count once, never twice — no
+// summing of per-alias counts.
+func TestSessionUnreadCountsDistinctThreads(t *testing.T) {
+	s := newTestStore(t)
+	for _, alias := range []string{"session-name", "chosen-alias"} {
+		if err := s.RegisterAgent(Agent{Alias: alias, SocketPath: "/s", SessionID: "$1"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.CreateThread(Thread{Kind: "message", FromAgent: "peer", ToKind: "broadcast"}, "hi all"); err != nil {
+		t.Fatal(err)
+	}
+	total, action, err := s.SessionUnread("/s", "$1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 1 {
+		t.Fatalf("broadcast concerning both sibling aliases counted total=%d, want 1", total)
+	}
+	if action != 0 {
+		t.Fatalf("plain message counted action=%d, want 0", action)
+	}
+}
+
+// TestSessionUnreadExcludesSiblingAuthors: alias A (a session member) writes
+// a thread; sibling alias B must not see it as unread — actor exclusion is
+// session-based, not per-alias.
+func TestSessionUnreadExcludesSiblingAuthors(t *testing.T) {
+	s := newTestStore(t)
+	for _, alias := range []string{"a1", "a2"} {
+		if err := s.RegisterAgent(Agent{Alias: alias, SocketPath: "/s", SessionID: "$1"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.CreateThread(Thread{Kind: "message", FromAgent: "a1", ToKind: "agent", ToTarget: "outsider"}, "hello"); err != nil {
+		t.Fatal(err)
+	}
+	total, action, err := s.SessionUnread("/s", "$1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 0 || action != 0 {
+		t.Fatalf("a session's own write must not flag its own thread unread, got total=%d action=%d", total, action)
+	}
+}
+
+// TestSessionUnreadActionCount: a task thread (effective intent
+// action-requested) addressed to a session alias, unread, counts in action.
+func TestSessionUnreadActionCount(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.RegisterAgent(Agent{Alias: "worker", SocketPath: "/s", SessionID: "$1"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateThread(Thread{Kind: "task", FromAgent: "backend", ToKind: "agent", ToTarget: "worker", Status: "open"}, "please do X"); err != nil {
+		t.Fatal(err)
+	}
+	total, action, err := s.SessionUnread("/s", "$1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 1 || action != 1 {
+		t.Fatalf("task addressed to session alias: total=%d action=%d, want 1,1", total, action)
+	}
+}
+
+// TestSessionUnreadEmptyTupleNeverGroups: an agent registered without a live
+// tmux identity (empty socket/session) is its own singleton — SessionUnread
+// must never treat the empty tuple as a group to aggregate over.
+func TestSessionUnreadEmptyTupleNeverGroups(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.RegisterAgent(Agent{Alias: "solo"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateThread(Thread{Kind: "message", FromAgent: "x", ToKind: "agent", ToTarget: "solo"}, "hi"); err != nil {
+		t.Fatal(err)
+	}
+	total, action, err := s.SessionUnread("", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 0 || action != 0 {
+		t.Fatalf("empty socket/session tuple must never group, got total=%d action=%d", total, action)
+	}
+}
+
+// TestThreadConcernsSessionJoinEquivalence: threadConcernsJoin (the JOIN form
+// used by SessionUnread) must agree with threadConcerns (the literal-bind
+// form used by Inbox/UnreadCount) across a fixture matrix of thread shapes
+// and aliases — the "one canonical predicate" rule surviving a join.
+func TestThreadConcernsSessionJoinEquivalence(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.RegisterAgent(Agent{Alias: "rev1", Role: "reviewer"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RegisterAgent(Agent{Alias: "rev2", Role: "reviewer"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RegisterAgent(Agent{Alias: "other", Role: "producer"}); err != nil {
+		t.Fatal(err)
+	}
+
+	mk := func(kind, fromAgent, toKind, toTarget string) {
+		if _, err := s.CreateThread(Thread{Kind: kind, FromAgent: fromAgent, ToKind: toKind, ToTarget: toTarget}, "body"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mk("message", "backend", "agent", "rev1")
+	mk("message", "backend", "role", "reviewer")
+	mk("message", "backend", "broadcast", "")
+	mk("message", "rev2", "agent", "someone-else")
+	mk("task", "other", "agent", "rev1")
+
+	idsMatching := func(query string, args ...any) []int64 {
+		t.Helper()
+		rows, err := s.DB().Query(query, args...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = rows.Close() }()
+		var out []int64
+		for rows.Next() {
+			var id int64
+			if err := rows.Scan(&id); err != nil {
+				t.Fatal(err)
+			}
+			out = append(out, id)
+		}
+		return out
+	}
+
+	for _, alias := range []string{"rev1", "rev2", "other", "nobody"} {
+		want := idsMatching(`SELECT id FROM threads WHERE `+threadConcerns+` ORDER BY id`, alias, alias, alias)
+		got := idsMatching(`WITH sess AS (SELECT ? AS alias) SELECT threads.id FROM threads JOIN sess ON `+threadConcernsJoin+` ORDER BY threads.id`, alias)
+		if !reflect.DeepEqual(want, got) {
+			t.Fatalf("alias=%q: threadConcerns=%v threadConcernsJoin=%v disagree", alias, want, got)
+		}
+	}
+}
+
+// TestSessionUnreadPerAliasWatermarks: two aliases in one session tuple must
+// each respect their own last_read_entry_id watermark — alias A's read
+// position must not suppress unread threads concerning alias B within the
+// same session, and vice versa. SessionUnread evaluates each alias's
+// watermark independently when building the set of unread threads.
+func TestSessionUnreadPerAliasWatermarks(t *testing.T) {
+	s := newTestStore(t)
+	// Register two aliases sharing the same (socket_path, session_id) tuple.
+	if err := s.RegisterAgent(Agent{Alias: "aliasA", SocketPath: "/s", SessionID: "$1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RegisterAgent(Agent{Alias: "aliasB", SocketPath: "/s", SessionID: "$1"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a thread addressed to A, from an outsider.
+	if _, err := s.CreateThread(Thread{Kind: "message", FromAgent: "outsider", ToKind: "agent", ToTarget: "aliasA"}, "msg for A"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a thread addressed to B, from an outsider.
+	if _, err := s.CreateThread(Thread{Kind: "message", FromAgent: "outsider", ToKind: "agent", ToTarget: "aliasB"}, "msg for B"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Before any MarkRead, both threads unread.
+	total, _, err := s.SessionUnread("/s", "$1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 2 {
+		t.Fatalf("before MarkRead: expected 2 unread, got %d", total)
+	}
+
+	// Mark A as read — advances A's watermark past all existing entries.
+	if err := s.MarkRead("aliasA"); err != nil {
+		t.Fatal(err)
+	}
+
+	// SessionUnread should still see B's thread as unread (total=1).
+	// A's read watermark must not suppress B's threads.
+	total, _, err = s.SessionUnread("/s", "$1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 1 {
+		t.Fatalf("after MarkRead(aliasA): expected 1 unread, got %d", total)
+	}
+
+	// Now mark B as read.
+	if err := s.MarkRead("aliasB"); err != nil {
+		t.Fatal(err)
+	}
+
+	// SessionUnread should return total=0.
+	total, _, err = s.SessionUnread("/s", "$1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 0 {
+		t.Fatalf("after MarkRead(aliasB): expected 0 unread, got %d", total)
 	}
 }

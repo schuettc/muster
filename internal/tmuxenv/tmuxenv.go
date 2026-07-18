@@ -83,6 +83,33 @@ func IsSessionAlive(socket, sessionID string) bool {
 	return err == nil
 }
 
+// SessionAttached reports whether at least one human tmux client is
+// currently attached to the session (station spec iteration-5 Tier 1: the
+// attach marker) — via the same query seam as IsSessionAlive/SessionLabel
+// (display-message -p -t <session> '#{session_attached}'), which reports the
+// session's attached-client count as a decimal string. Any non-empty,
+// non-"0" result counts as attached; an empty socket/session or a query
+// failure (dead session, no such socket) reads as not attached, exactly like
+// query's other callers.
+func SessionAttached(socket, sessionID string) bool {
+	out := query(socket, sessionID, "#{session_attached}")
+	return out != "" && out != "0"
+}
+
+// SessionName reads the LIVE session name for target (a pane or session ID)
+// on socket, via the same query seam as SessionAttached/SessionLabel. Session
+// names are mutable — tmux lets an operator rename a session at any time —
+// so a value captured at register_agent time (store.Agent.SessionName) goes
+// stale the moment that happens. Callers that need the name to reflect
+// reality right now (e.g. `muster nudge`'s "nudging X → session Y" line)
+// should call this instead of trusting the stored snapshot, falling back to
+// it (or further, to the alias) only when this returns "" — an empty socket
+// or target, an unreachable tmux, or a session that no longer exists all
+// read as "" here, exactly like query's other callers.
+func SessionName(socket, target string) string {
+	return query(socket, target, "#{session_name}")
+}
+
 // SessionLabel reads the label option and its manual flag for target (a pane or
 // session) on socket. manual is true only when <option>_manual == "1".
 func SessionLabel(socket, target string) (string, bool) {
@@ -113,6 +140,19 @@ func CurrentSessionOption(name string) string {
 // tmux isn't reachable (e.g. not running inside tmux).
 func CurrentSessionName() string {
 	out, err := Run("display-message", "-p", "#{session_name}")
+	if err != nil {
+		return ""
+	}
+	return out
+}
+
+// CurrentSessionID returns the ambient session's tmux session_id (e.g. "$3"),
+// the stable identity half of the (socket_path, session_id) tuple used to
+// group sibling aliases (spec §3) — no -S/-t, relying on $TMUX in the process
+// environment. Returns "" if tmux isn't reachable (e.g. not running inside
+// tmux).
+func CurrentSessionID() string {
+	out, err := Run("display-message", "-p", "#{session_id}")
 	if err != nil {
 		return ""
 	}

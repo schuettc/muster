@@ -426,7 +426,7 @@ api-2   reply  <span class="c-sig">"fixed — createdAt added"</span>
     <div class="modes">
       <div class="mode"><p class="t">daemon</p><p>A background process that holds the agents, messages, and tasks, listening on a <b>unix socket</b>. It starts automatically the first time anything uses the bus.</p></div>
       <div class="mode"><p class="t">MCP server</p><p><code style="font-family:var(--mono)">muster mcp</code> serves the bus over stdio. Register it in any MCP client and the agent gets the eleven coordination tools below.</p></div>
-      <div class="mode"><p class="t">CLI</p><p>You can use the CLI from any shell to watch and drive the bus — <code style="font-family:var(--mono)">muster agents</code> lists who's connected, <code style="font-family:var(--mono)">muster send</code> and <code style="font-family:var(--mono)">muster nudge</code> reach an agent, and <code style="font-family:var(--mono)">muster label</code> names a session. Session hooks call the CLI as well.</p></div>
+      <div class="mode"><p class="t">CLI</p><p>You can use the CLI from any shell to watch and drive the bus — <code style="font-family:var(--mono)">muster agents</code> lists who's connected, <code style="font-family:var(--mono)">muster send</code> and <code style="font-family:var(--mono)">muster nudge</code> reach an agent, and <code style="font-family:var(--mono)">muster label</code> names a session. Session hooks call the CLI as well. <code style="font-family:var(--mono)">muster station</code> is a full-screen operator view of the same bus — drill down from projects to agents to threads and read the conversation, with send, reply, and nudge built in.</p></div>
     </div>
   </div>
 </section>

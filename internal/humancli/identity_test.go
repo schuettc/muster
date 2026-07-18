@@ -94,6 +94,9 @@ func TestRegisterUsesAliasPrecedenceAndCaptures(t *testing.T) {
 	}
 }
 
+// TestDeregisterUsesAliasPrecedence covers the deregistration tombstone: the
+// row must SURVIVE (spec: departed history stays drillable), marked Departed,
+// not vanish.
 func TestDeregisterUsesAliasPrecedence(t *testing.T) {
 	sock := startCLITestDaemon(t)
 	registerViaDaemon(t, sock, "gone", "/s", "$1")
@@ -103,12 +106,15 @@ func TestDeregisterUsesAliasPrecedence(t *testing.T) {
 		t.Fatal(err)
 	}
 	agents := listAgentsForTest(t, sock)
-	if len(agents) != 0 {
-		t.Fatalf("expected no agents after deregister, got %+v", agents)
+	if len(agents) != 1 || agents[0].Alias != "gone" || !agents[0].Departed {
+		t.Fatalf("expected 'gone' to survive deregister, tombstoned, got %+v", agents)
 	}
 }
 
-func TestGCReapsOnlyDeadAgents(t *testing.T) {
+// TestGCTombstonesOnlyDeadAgents covers gc's new default behavior (spec: "gc's
+// agent-reaping no longer deletes ANY rows by default"): the dead agent's row
+// survives, marked Departed, while the alive one is untouched.
+func TestGCTombstonesOnlyDeadAgents(t *testing.T) {
 	sock := startCLITestDaemon(t)
 	// register two agents directly via the daemon: one "alive", one "dead"
 	registerViaDaemon(t, sock, "alive", "/s", "$ALIVE")
@@ -130,9 +136,69 @@ func TestGCReapsOnlyDeadAgents(t *testing.T) {
 	if err := cmdGC(nil, &buf); err != nil {
 		t.Fatal(err)
 	}
+	if !strings.Contains(buf.String(), "gc: tombstoned 1 agent(s)") {
+		t.Fatalf("expected gc output to report tombstoning 1 agent, got %q", buf.String())
+	}
+	agents := listAgentsForTest(t, sock)
+	if len(agents) != 2 {
+		t.Fatalf("expected BOTH rows to survive gc's default reap, got %+v", agents)
+	}
+	byAlias := map[string]agentRow{}
+	for _, a := range agents {
+		byAlias[a.Alias] = a
+	}
+	if byAlias["alive"].Departed {
+		t.Fatalf("the still-alive agent must not be tombstoned, got %+v", byAlias["alive"])
+	}
+	if !byAlias["dead"].Departed {
+		t.Fatalf("the dead agent must be tombstoned, got %+v", byAlias["dead"])
+	}
+
+	// Running gc again must be idempotent: nothing new to tombstone.
+	buf.Reset()
+	if err := cmdGC(nil, &buf); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(buf.String(), "gc: tombstoned 0 agent(s)") {
+		t.Fatalf("expected a second gc run to tombstone 0 (already departed/still alive), got %q", buf.String())
+	}
+}
+
+// TestGCPurgeAgentsHardDeletes covers `muster gc --purge-agents`: the old
+// hard-delete behavior, now explicit — a departed row (from a prior plain
+// gc/deregister) and a currently-dead-but-never-deregistered row are BOTH
+// removed for good; a live agent is left alone.
+func TestGCPurgeAgentsHardDeletes(t *testing.T) {
+	sock := startCLITestDaemon(t)
+	registerViaDaemon(t, sock, "alive", "/s", "$ALIVE")
+	registerViaDaemon(t, sock, "already-departed", "/s", "$OLD")
+	registerViaDaemon(t, sock, "freshly-dead", "/s", "$DEAD")
+	prev := tmuxenv.Run
+	tmuxenv.Run = func(args ...string) (string, error) {
+		if len(args) >= 5 && args[2] == "has-session" && args[4] == "$ALIVE" {
+			return "", nil
+		}
+		if len(args) >= 3 && args[2] == "has-session" {
+			return "", fmt.Errorf("dead")
+		}
+		return "", nil
+	}
+	t.Cleanup(func() { tmuxenv.Run = prev })
+
+	if _, err := callData("deregister_agent", map[string]any{"alias": "already-departed"}); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	if err := cmdGC([]string{"--purge-agents"}, &buf); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(buf.String(), "gc: purged 2 agent(s)") {
+		t.Fatalf("expected gc --purge-agents to report purging 2 agents, got %q", buf.String())
+	}
 	agents := listAgentsForTest(t, sock)
 	if len(agents) != 1 || agents[0].Alias != "alive" {
-		t.Fatalf("after gc=%+v (want only 'alive')", agents)
+		t.Fatalf("after --purge-agents=%+v (want only 'alive' left)", agents)
 	}
 }
 
