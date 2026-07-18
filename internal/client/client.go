@@ -42,8 +42,18 @@ func Call(socketPath string, req proto.Request) (proto.Response, error) {
 }
 
 func dialOrSpawn(socketPath string) (net.Conn, error) {
-	if c, err := net.Dial("unix", socketPath); err == nil {
+	c, dialErr := net.Dial("unix", socketPath)
+	if dialErr == nil {
 		return c, nil
+	}
+	if os.Getenv("MUSTER_NO_AUTOSPAWN") != "" {
+		// Test/debug escape hatch: os.Executable() resolves to whatever binary
+		// is currently running, which under `go test` is the compiled test
+		// binary, not `muster`. Spawning that with "serve" recursively re-runs
+		// the whole test suite as a detached child (a real fork bomb observed
+		// in CI) — any test that exercises a genuinely-unreachable daemon must
+		// set this to skip the spawn and just surface the dial failure.
+		return nil, dialErr
 	}
 	// Socket dead: spawn the daemon and wait for it to bind.
 	exe, err := os.Executable()

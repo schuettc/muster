@@ -31,6 +31,10 @@ type agentFull struct {
 	PaneID      string `json:"pane_id"`
 	SessionID   string `json:"session_id"`
 	SessionName string `json:"session_name"`
+	// Departed mirrors store.Agent.Departed (see agentRow's own copy above):
+	// get_agent returns tombstoned rows with found=true, so hook gates must
+	// decode this to tell a live owner from a dead one.
+	Departed bool `json:"departed"`
 }
 
 type agentRow struct {
