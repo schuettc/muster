@@ -18,21 +18,25 @@ and cross-reference sessions by hand.
 
 A per-session tmux user option, `@muster_agent`, holding the comma-joined
 alias list for that tmux session, pushed by the daemon on every registration
-change. The operator's status bar renders it as a **dimmed** `📬 <alias>`
-badge — visually the quiet sibling of the existing bright `📬N` unread badge,
-occupying the same conceptual slot:
+change. The operator's status bar renders it as a **dim** `@<alias>` badge —
+visually the quiet sibling of the existing bright `📬N` unread badge,
+occupying the same conceptual slot. (Live-demo revision: the original design
+used a dimmed 📬 glyph, but emoji ignore dim foreground colors and read as
+loud as the lit state — so the idle state drops the glyph entirely and 📬
+exclusively means unread. The alias is the bus's canonical mailbox address;
+`proj:label` and bare labels merely resolve to it.)
 
-| status bar shows        | meaning                                   |
-|-------------------------|-------------------------------------------|
-| (nothing)               | no registered agent in this session       |
-| dimmed `📬 backend`     | registered as `backend`, inbox drained    |
-| dimmed `📬 backend,api` | split-identity session, two aliases       |
-| bright `📬3`            | unread mail (existing behavior, unchanged)|
+| status bar shows      | meaning                                   |
+|-----------------------|-------------------------------------------|
+| (nothing)             | no registered agent in this session       |
+| dim `@backend`        | registered as `backend`, inbox drained    |
+| dim `@api,backend`    | split-identity session, two aliases       |
+| bright `📬3`          | unread mail (existing behavior, unchanged)|
 
 Because the daemon sets the option only **after** the store write commits, the
 badge's presence is itself verification that the bus accepted the
-registration. The alias is plain text in the status bar, so the operator can
-mouse-select it to copy.
+registration. The status bar isn't mouse-selectable under tmux mouse mode, so
+the dotfiles side binds `prefix @` to copy the alias list to the clipboard.
 
 ## Architecture (muster side)
 
@@ -75,10 +79,12 @@ with it.
 
 - `status-left`: unread badge wins the slot. When `@muster_inbox` is set,
   render the bright `📬N` exactly as today; otherwise, when `@muster_agent`
-  is set, render dimmed `📬 #{@muster_agent}` (Catppuccin overlay-gray
-  foreground, no background block).
+  is set, render `@#{@muster_agent}` (Catppuccin overlay-gray foreground, no
+  background block, no glyph — see the live-demo revision above).
 - `set-titles-string`: same conditional so the terminal-tab title carries the
   alias too.
+- `prefix @`: pipes `@muster_agent` to the system clipboard (status bar text
+  isn't mouse-selectable under tmux mouse mode).
 
 ## Testing
 
