@@ -9,7 +9,12 @@ import (
 	"time"
 )
 
-const message = "📬 check your muster inbox (call get_inbox)"
+// message is the nudge's typed line. It carries the full drain-and-act
+// instruction, not just "check your inbox" (spec §3b): a live incident
+// (2026-07-16, thread 27) showed a nudged agent list a new thread and then
+// idle — checking the inbox satisfied the old wording, and by then its own
+// get_inbox had already cleared the flag, so the Stop hook never escalated.
+const message = "📬 check your muster inbox: call get_inbox, read each new thread with get_thread, handle the request, and reply on the thread — act autonomously."
 
 // codexSubmitDelay is the pause between typing the nudge text and sending a
 // standalone Enter for codex. codex's TUI treats an Enter that is bundled with

@@ -37,7 +37,11 @@ type EventQuery struct {
 	Backlog  bool   // true: newest-first LIMIT; false: follow mode
 }
 
-// Events runs q against the journal (see EventQuery for mode semantics).
+// Events runs q against the journal (see EventQuery for mode semantics). Each
+// row's Subject and Intent are joined from the event's thread at query time
+// (both "" for thread-less events) — Intent is the thread's EFFECTIVE intent
+// (effectiveIntent in threads.go), the same value Threads/GetThread/Inbox
+// return, so the renderer's intent tag agrees with every other surface.
 func (s *Store) Events(q EventQuery) ([]Event, error) {
 	if q.AfterID < 0 || q.ThreadID < 0 {
 		return nil, fmt.Errorf("negative id in event query")
@@ -77,7 +81,8 @@ func (s *Store) Events(q EventQuery) ([]Event, error) {
 	rows, err := s.db.Query(`
 SELECT events.id, events.ts, events.kind, events.agent, events.target,
        events.thread_id, events.count, events.detail,
-       COALESCE(threads.subject, '')
+       COALESCE(threads.subject, ''),
+       `+effectiveIntent+` AS intent
 FROM events LEFT JOIN threads ON threads.id = events.thread_id
 WHERE `+strings.Join(where, " AND ")+`
 ORDER BY `+order+` LIMIT ?`, args...)
@@ -88,7 +93,7 @@ ORDER BY `+order+` LIMIT ?`, args...)
 	var out []Event
 	for rows.Next() {
 		var e Event
-		if err := rows.Scan(&e.ID, &e.TS, &e.Kind, &e.Agent, &e.Target, &e.ThreadID, &e.Count, &e.Detail, &e.Subject); err != nil {
+		if err := rows.Scan(&e.ID, &e.TS, &e.Kind, &e.Agent, &e.Target, &e.ThreadID, &e.Count, &e.Detail, &e.Subject, &e.Intent); err != nil {
 			return nil, err
 		}
 		out = append(out, e)

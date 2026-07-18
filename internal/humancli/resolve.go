@@ -2,10 +2,8 @@ package humancli
 
 import (
 	"encoding/json"
-	"fmt"
-	"sort"
-	"strings"
 
+	"github.com/schuettc/muster/internal/resolve"
 	"github.com/schuettc/muster/internal/tmuxenv"
 )
 
@@ -38,64 +36,23 @@ func callerProject() string {
 	return tmuxenv.ProjectFromSocket(tmuxenv.SocketFromEnv())
 }
 
-// ResolveTarget maps a user-supplied target to a unique agent alias, scoped to
-// caller's project. Rules (in order): exact alias; qualified proj:label; bare
-// addressable label within callerProject. Never silently crosses projects.
+// ResolveTarget maps a user-supplied target to a unique agent alias, scoped
+// to caller's project. This is a thin CLI-side wrapper over
+// internal/resolve.Target — the ONE canonical resolver, shared with the
+// daemon's own send_message/task_create validation (see that package's doc
+// comment for the full precedence rules and the black-hole incident it
+// closes). agents carries live tmux-refreshed labels (enrichAgents); a
+// departed row still resolves by exact alias but never by label, exactly
+// like the daemon's roster check.
 func ResolveTarget(agents []enrichedAgent, given, caller string) (string, error) {
-	// 1. exact alias (globally unique)
-	for _, a := range agents {
-		if a.Alias == given {
-			return a.Alias, nil
+	candidates := make([]resolve.Candidate, len(agents))
+	for i, a := range agents {
+		candidates[i] = resolve.Candidate{
+			Alias: a.Alias, Project: a.Project,
+			Label: a.EffLabel, LabelManual: a.EffManual, Departed: a.Departed,
 		}
 	}
-	// 2. qualified proj:label
-	if proj, label, ok := strings.Cut(given, ":"); ok {
-		var hits []string
-		for _, a := range agents {
-			if a.Project == proj && a.EffManual && a.EffLabel == label {
-				hits = append(hits, a.Alias)
-			}
-		}
-		return uniqueOrErr(hits, given)
-	}
-	// 3. bare label — restrict to caller's project
-	var inProject, elsewhere []string
-	for _, a := range agents {
-		if a.EffManual && a.EffLabel == given {
-			if a.Project == caller {
-				inProject = append(inProject, a.Alias)
-			} else {
-				elsewhere = append(elsewhere, qualify(a.Project, given))
-			}
-		}
-	}
-	if len(inProject) > 0 {
-		return uniqueOrErr(inProject, given)
-	}
-	if len(elsewhere) > 0 {
-		sort.Strings(elsewhere)
-		return "", fmt.Errorf("label %q is not in your project; qualify it: %s", given, strings.Join(elsewhere, ", "))
-	}
-	return "", fmt.Errorf("unknown agent %q", given)
-}
-
-func uniqueOrErr(hits []string, given string) (string, error) {
-	switch len(hits) {
-	case 1:
-		return hits[0], nil
-	case 0:
-		return "", fmt.Errorf("unknown agent %q", given)
-	default:
-		sort.Strings(hits)
-		return "", fmt.Errorf("%q is ambiguous: %s", given, strings.Join(hits, ", "))
-	}
-}
-
-func qualify(project, label string) string {
-	if project == "" {
-		return label
-	}
-	return project + ":" + label
+	return resolve.Target(candidates, given, caller)
 }
 
 // resolveVia lists agents, enriches them, and resolves given to an alias.

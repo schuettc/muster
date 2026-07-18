@@ -51,6 +51,28 @@ func TestSessionLabelManualVsAuto(t *testing.T) {
 	}
 }
 
+func TestSessionAttached(t *testing.T) {
+	withRun(t, func(_ ...string) (string, error) { return "1", nil })
+	if !SessionAttached("/s", "$1") {
+		t.Fatal("want attached when #{session_attached} reports 1")
+	}
+	withRun(t, func(_ ...string) (string, error) { return "2", nil })
+	if !SessionAttached("/s", "$1") {
+		t.Fatal("want attached when #{session_attached} reports 2 (multiple clients)")
+	}
+	withRun(t, func(_ ...string) (string, error) { return "0", nil })
+	if SessionAttached("/s", "$1") {
+		t.Fatal("want not-attached when #{session_attached} reports 0")
+	}
+	withRun(t, func(_ ...string) (string, error) { return "", fmt.Errorf("no such session") })
+	if SessionAttached("/s", "$1") {
+		t.Fatal("want not-attached when the query fails (e.g. dead session)")
+	}
+	if SessionAttached("", "$1") || SessionAttached("/s", "") {
+		t.Fatal("empty socket/session must never report attached")
+	}
+}
+
 func TestCaptureEnvNoTmux(t *testing.T) {
 	t.Setenv("TMUX", "")
 	t.Setenv("TMUX_PANE", "")

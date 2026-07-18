@@ -54,14 +54,6 @@ jobs:
       - name: Checkout the tag (dispatch mode)
         if: steps.rel.outputs.skip == 'false' && steps.rel.outputs.create == 'false'
         run: git fetch --tags && git checkout "${{ steps.rel.outputs.tag }}"
-      - name: Create the release
-        if: steps.rel.outputs.create == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release create "${{ steps.rel.outputs.tag }}" \
-            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
-            --title "muster ${{ steps.rel.outputs.tag }}" --generate-notes
       - name: Build and package all targets
         if: steps.rel.outputs.skip == 'false'
         run: |
@@ -75,6 +67,14 @@ jobs:
             tar -C "dist/${out}" -czf "dist/${out}.tar.gz" muster
           done
           (cd dist && shasum -a 256 *.tar.gz > checksums.txt)
+      - name: Create the release
+        if: steps.rel.outputs.create == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ steps.rel.outputs.tag }}" \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "muster ${{ steps.rel.outputs.tag }}" --generate-notes
       - name: Upload assets
         if: steps.rel.outputs.skip == 'false'
         env:

@@ -47,9 +47,9 @@ func cmdWatch(args []string, out io.Writer, o watchOpts) error {
 		return err
 	}
 	r := newRenderer(page.Events, loadLabels(), *aliases, *fullTime, *width)
-	r.header(out)
+	r.Header(out)
 	for i := len(page.Events) - 1; i >= 0; i-- { // newest-first → print oldest-first
-		r.line(out, page.Events[i])
+		r.Line(out, page.Events[i])
 	}
 	cursor := page.MaxID
 
@@ -68,14 +68,14 @@ func cmdWatch(args []string, out io.Writer, o watchOpts) error {
 			continue
 		}
 		for _, e := range page.Events { // follow mode is oldest-first
-			if !*aliases && r.labels[e.Agent] == "" && e.Agent != "" {
+			if !*aliases && !r.HasLabel(e.Agent) && e.Agent != "" {
 				// A newly-seen agent may have registered since the map was
 				// loaded — refresh once so its label renders. Best-effort.
 				if m := loadLabels(); m != nil {
-					r.labels = m
+					r.SetLabels(m)
 				}
 			}
-			r.line(out, e)
+			r.Line(out, e)
 		}
 		cursor = page.MaxID
 	}

@@ -90,6 +90,27 @@ func TestNudgeCodexNoSubmitTypesOnly(t *testing.T) {
 	}
 }
 
+// TestNudgeMessageCarriesDrainAndActInstruction: the typed line must be the
+// full drain-and-act instruction (spec §3b), not the old bare "check your
+// inbox" — a nudged agent that only lists its inbox and idles must instead be
+// told to read each thread, handle it, and reply, autonomously.
+func TestNudgeMessageCarriesDrainAndActInstruction(t *testing.T) {
+	calls, run := recorder()
+	n := TmuxNudger{Run: run}
+	if _, err := n.Nudge("/s", "%1", "claude", false); err != nil {
+		t.Fatalf("nudge: %v", err)
+	}
+	joined := joinCalls(*calls)
+	for _, want := range []string{"get_inbox", "get_thread", "handle the request", "reply on the thread", "autonomously"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("typed nudge text missing %q:\n%s", want, joined)
+		}
+	}
+	if strings.Contains(joined, "check your muster inbox (call get_inbox)") {
+		t.Fatalf("old bare check-your-inbox wording must be gone:\n%s", joined)
+	}
+}
+
 func TestNudgeUnknownModelTypedOnly(t *testing.T) {
 	calls, run := recorder()
 	n := TmuxNudger{Run: run}

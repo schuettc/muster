@@ -74,14 +74,19 @@ func cmdDeregister(args []string, out io.Writer) error {
 	return err
 }
 
-// cmdGC deregisters every agent whose tmux session is no longer alive, then
-// prunes journal events older than --events-keep (default 720h = 30 days).
-// The reap and prune phases are independent: a prune error is reported on the
-// same writer but never masks the reap summary already printed.
+// cmdGC tombstones every agent whose tmux session is no longer alive (spec:
+// deregistration is a soft delete now — departed=1, row and read-state kept
+// as history), then prunes journal events older than --events-keep (default
+// 720h = 30 days). --purge-agents instead hard-deletes every departed OR
+// currently-dead agent row (the pre-tombstone behavior, now explicit and
+// irreversible). The agent phase and the event-prune phase are independent: a
+// prune error is reported on the same writer but never masks the agent-phase
+// summary already printed.
 func cmdGC(args []string, out io.Writer) error {
 	fs := flag.NewFlagSet("gc", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	eventsKeep := fs.Duration("events-keep", 720*time.Hour, "prune journal events older than this")
+	purgeAgents := fs.Bool("purge-agents", false, "hard-delete departed and tmux-dead agent rows instead of tombstoning them (irreversible: identity, project, label, and read-state are all gone)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -97,21 +102,41 @@ func cmdGC(args []string, out io.Writer) error {
 	if err := json.Unmarshal(raw, &agents); err != nil {
 		return err
 	}
-	reaped := 0
-	for _, a := range agents {
-		if tmuxenv.IsSessionAlive(a.SocketPath, a.SessionID) {
-			continue
+
+	if *purgeAgents {
+		purged := 0
+		for _, a := range agents {
+			if !a.Departed && tmuxenv.IsSessionAlive(a.SocketPath, a.SessionID) {
+				continue // still live and never departed: nothing to purge
+			}
+			if _, err := callData("purge_agent", map[string]any{"alias": a.Alias}); err != nil {
+				return err
+			}
+			if _, err := fmt.Fprintf(out, "purged %s\n", a.Alias); err != nil {
+				return err
+			}
+			purged++
 		}
-		if _, err := callData("deregister_agent", map[string]any{"alias": a.Alias}); err != nil {
+		if _, err := fmt.Fprintf(out, "gc: purged %d agent(s)\n", purged); err != nil {
 			return err
 		}
-		if _, err := fmt.Fprintf(out, "reaped %s (dead session)\n", a.Alias); err != nil {
+	} else {
+		tombstoned := 0
+		for _, a := range agents {
+			if a.Departed || tmuxenv.IsSessionAlive(a.SocketPath, a.SessionID) {
+				continue // already history, or still alive: nothing to do
+			}
+			if _, err := callData("deregister_agent", map[string]any{"alias": a.Alias}); err != nil {
+				return err
+			}
+			if _, err := fmt.Fprintf(out, "tombstoned %s (dead session)\n", a.Alias); err != nil {
+				return err
+			}
+			tombstoned++
+		}
+		if _, err := fmt.Fprintf(out, "gc: tombstoned %d agent(s) (history kept; muster gc --purge-agents deletes departed/dead rows)\n", tombstoned); err != nil {
 			return err
 		}
-		reaped++
-	}
-	if _, err := fmt.Fprintf(out, "gc: reaped %d\n", reaped); err != nil {
-		return err
 	}
 
 	cutoff := strconv.FormatInt(clock.NowMillis()-eventsKeep.Milliseconds(), 10)
