@@ -85,6 +85,9 @@ func hookMayClaimIdentity(c tmuxenv.Capture) bool {
 	if !found {
 		return true
 	}
+	if ag.Departed {
+		return true // a tombstone never owns the identity
+	}
 	if ag.SocketPath != c.SocketPath || ag.SessionID != c.SessionID {
 		return true // cross-session takeover: a renamed/recreated session reclaims its name
 	}
@@ -97,9 +100,17 @@ func hookMayClaimIdentity(c tmuxenv.Capture) bool {
 // hookOwnsIdentity is the SessionEnd gate: deregister only what this pane
 // owns — a dying sibling (subagent) must not tombstone the primary.
 func hookOwnsIdentity(c tmuxenv.Capture) bool {
+	if hookAlias(c) == "" {
+		// No resolvable identity (global hooks, non-tmux sessions): nothing to
+		// deregister, and never dial the daemon from an identity-less hook.
+		return false
+	}
 	ag, found := hookGetAgent(hookAlias(c))
 	if !found {
 		return false
+	}
+	if ag.Departed {
+		return false // a tombstone is already gone: nothing live to deregister
 	}
 	if ag.SocketPath != c.SocketPath || ag.SessionID != c.SessionID {
 		return false
@@ -230,8 +241,8 @@ func hookStopOwnsAnyAlias(aliases []string) bool {
 	sawNamedOwner := false
 	for _, alias := range aliases {
 		ag, found := hookGetAgent(alias)
-		if !found || ag.PaneID == "" {
-			continue
+		if !found || ag.Departed || ag.PaneID == "" {
+			continue // a tombstoned row neither grants nor denies ownership
 		}
 		if ag.PaneID == myPane {
 			return true
