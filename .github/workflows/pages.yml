@@ -1,10 +1,10 @@
 name: deploy-site
 
 # Deploys muster.tools from the repo: the landing page (site/index.html), the
-# docs page (site/docs/index.html), their shared style.css/site.js, and the
-# root install.sh (served at https://muster.tools/install.sh). Runs on every
-# merge to main that touches the site or the installer — no manual deploy
-# steps.
+# docs page (site/docs/index.html), their shared style.css/site.js, the
+# llms.txt summary for LLM tooling, and the root install.sh (served at
+# https://muster.tools/install.sh). Runs on every merge to main that touches
+# the site or the installer — no manual deploy steps.
 on:
   push:
     branches: [main]
@@ -35,6 +35,7 @@ jobs:
           cp site/style.css dist/
           cp site/site.js dist/
           cp site/docs/index.html dist/docs/
+          cp site/llms.txt dist/
           cp install.sh dist/
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3

@@ -1,0 +1,55 @@
+# muster
+
+> muster is a local coordination bus for coding agents: independent coding-agent
+> sessions (Claude Code, Codex, and any other MCP client) register on a shared bus
+> and send messages or hand off tasks to each other. It ships as a single static
+> Go binary running in three modes — a daemon over a unix socket, a stdio MCP
+> server, and a human CLI — is tmux-native for agent identity, liveness, and mail
+> notification, and never calls a model itself; it only routes between agent
+> sessions that are already running on their own.
+
+## Docs
+
+- [muster.tools](https://muster.tools/): landing page — the pitch, the message-flow walkthrough, and the MCP tool groups.
+- [muster.tools/docs/](https://muster.tools/docs/): full reference — every CLI command with its flags, the tmux mailbox, session hooks, and the three ways an agent notices mail.
+- [github.com/schuettc/muster](https://github.com/schuettc/muster): source repository.
+- [README.md](https://raw.githubusercontent.com/schuettc/muster/main/README.md): project README, raw Markdown.
+- [install.sh](https://muster.tools/install.sh): shell installer for the prebuilt binary.
+
+## CLI
+
+Talk:
+- `send` — send a message to an agent, role, or everyone.
+- `nudge` — type a check-inbox nudge into an agent's tmux pane.
+
+Watch:
+- `agents` — list registered agents, grouped by project, with live status.
+- `inbox` — show an agent's threads.
+- `tasks` — show an agent's task threads.
+- `events` — print the bus journal, oldest first.
+- `watch` — tail the bus journal live.
+- `station` — full-screen operator TUI for the bus.
+
+Identity:
+- `register` — register the current tmux session as an agent.
+- `deregister` — remove an agent's registration.
+- `label` — name or clear the current tmux session's label.
+- `gc` — reap dead agents and prune old journal events.
+
+Plumbing:
+- `serve` — run the daemon (lazy unix-socket API server).
+- `mcp` — run the MCP stdio server for coding-agent tool use.
+- `hook` — session-lifecycle hook entry point for agent harness configs.
+- `debug` — send a raw op to the daemon (dev tool).
+
+## Setup
+
+Install the binary — either `curl -fsSL https://muster.tools/install.sh | sh` for a
+prebuilt binary, or `go install github.com/schuettc/muster/cmd/muster@latest` from
+source. Then register the MCP server with each agent: `claude mcp add muster -s
+user -- muster mcp` for Claude Code, `codex mcp add muster -- muster mcp` for
+Codex, or point any other MCP client at `muster mcp` over stdio. Finally, in each
+tmux session, get the agent onto the bus — ask it once to register (it calls its
+`register_agent` tool), or install the `SessionStart`/`Stop`/`SessionEnd` hooks
+described in the docs so it registers automatically and handles its own mail at
+turn end.
