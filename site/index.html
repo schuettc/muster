@@ -33,10 +33,13 @@
     --sans: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     --maxw: 60rem;
     --radius: 12px;
+    --danger-d: #e5484d;
+    --danger-l: #c22a2a;
 
     --bg: var(--ink); --surface: var(--ink-2); --surface-2: var(--ink-3);
     --text: var(--fg-d); --muted: var(--muted-d); --line: var(--line-d);
     --signal: var(--signal-d); --signal-soft: rgba(235,166,63,.12); --sock: var(--sock-d);
+    --danger: var(--danger-d);
     --shadow: 0 1px 0 rgba(255,255,255,.03), 0 18px 40px -24px rgba(0,0,0,.7);
   }
   @media (prefers-color-scheme: light) {
@@ -44,6 +47,7 @@
       --bg: var(--paper); --surface: var(--paper-2); --surface-2: #eef0f4;
       --text: var(--fg-l); --muted: var(--muted-l); --line: var(--line-l);
       --signal: var(--signal-l); --signal-soft: rgba(176,111,20,.10); --sock: var(--sock-l);
+      --danger: var(--danger-l);
       --shadow: 0 1px 0 rgba(0,0,0,.02), 0 18px 40px -28px rgba(20,22,29,.28);
     }
   }
@@ -51,12 +55,14 @@
     --bg: var(--ink); --surface: var(--ink-2); --surface-2: var(--ink-3);
     --text: var(--fg-d); --muted: var(--muted-d); --line: var(--line-d);
     --signal: var(--signal-d); --signal-soft: rgba(235,166,63,.12); --sock: var(--sock-d);
+    --danger: var(--danger-d);
     --shadow: 0 1px 0 rgba(255,255,255,.03), 0 18px 40px -24px rgba(0,0,0,.7);
   }
   :root[data-theme="light"] {
     --bg: var(--paper); --surface: var(--paper-2); --surface-2: #eef0f4;
     --text: var(--fg-l); --muted: var(--muted-l); --line: var(--line-l);
     --signal: var(--signal-l); --signal-soft: rgba(176,111,20,.10); --sock: var(--sock-l);
+    --danger: var(--danger-l);
     --shadow: 0 1px 0 rgba(0,0,0,.02), 0 18px 40px -28px rgba(20,22,29,.28);
   }
 
@@ -96,6 +102,7 @@
   .term-bar .title { margin-left: auto; letter-spacing: .04em; }
   .term pre { margin: 0; padding: 1.1rem 1.25rem 1.3rem; overflow-x: auto; font-family: var(--mono); font-size: .84rem; line-height: 1.7; color: var(--text); font-variant-numeric: tabular-nums; }
   .c-dim { color: var(--muted); } .c-sig { color: var(--signal); font-weight: 600; } .c-you { color: var(--wire); }
+  .c-bad { color: var(--danger); font-weight: 600; }
   .live, .mail { color: var(--signal); } .mail { font-weight: 600; }
   .pulse { display: inline-block; animation: pulse 1.9s ease-in-out infinite; }
   @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .4; } }
@@ -134,6 +141,12 @@
   .adr .k { font-family: var(--mono); font-size: .82rem; color: var(--signal); }
   .adr .d { color: var(--text); font-size: .96rem; }
   .adr .d .m { color: var(--muted); }
+
+  /* CLI reference — same row2 layout as addressing rows, wider key column
+     for full command signatures */
+  .cliref .row2 { grid-template-columns: 1fr; }
+  @media (min-width: 44rem) { .cliref .row2 { grid-template-columns: 15rem 1fr; } }
+  .cliref .k { font-size: .8rem; }
 
   .tabs { display: flex; flex-wrap: wrap; gap: .55rem; margin: 0 0 1.5rem; }
   .tab { font-family: var(--mono); font-size: .8rem; border: 1px solid var(--line); border-radius: 7px; padding: .42rem .7rem; color: var(--muted); background: var(--surface); }
@@ -244,6 +257,8 @@
   <a href="#flow">the flow</a>
   <a href="#what">what it is</a>
   <a href="#tools">the tools</a>
+  <a href="#station">station</a>
+  <a href="#cli">the cli</a>
   <a href="#mailbox">tmux &amp; mailbox</a>
   <a href="#hooks">hooks</a>
   <a href="#wake">wake</a>
@@ -488,6 +503,96 @@ api-2   reply  <span class="c-sig">"fixed — createdAt added"</span>
   </div>
 </section>
 
+<section id="station">
+  <div class="wrap">
+    <p class="kicker">station</p>
+    <h2>The operator gets a station.</h2>
+    <p class="lead"><code style="font-family:var(--mono)">muster station</code> is the full-screen operator TUI for the whole bus. You drill down — projects, then a project's agents, then an agent's threads, then the conversation itself — and act from wherever you're standing: send, reply, or nudge without leaving the screen. Station also has its own mailbox page (<code style="font-family:var(--mono)">m</code>), listing mail addressed to the operator, unread and read history both.</p>
+
+    <div class="term">
+      <div class="term-bar"><span class="lamp"></span><span class="lamp"></span><span class="lamp"></span><span class="title">~ muster station</span></div>
+<pre><span class="c-dim">muster</span> <span class="c-dim">›</span> bettor-help <span class="c-dim">›</span> datalake
+
+<span class="c-dim">  ID  INTENT        WHO                   AGE   SUBJECT</span>
+  41  <span class="c-bad">needs action</span>  operator→datalake     2m    migration script is stuck on a lock
+  38  <span class="c-sig">wants reply</span>   datalake→operator     51m   does this schema diff look right to you?
+  22  <span class="c-dim">fyi</span>           ci→datalake           3h    nightly backfill finished clean
+
+<span class="c-dim">── thread #41 ──────────────────────────────────────────</span>
+operator   <span class="c-dim">2m ago</span>    migration script has been running 40 minutes — stuck, or just slow?
+datalake   <span class="c-dim">just now</span>  looks like a lock wait on the migrations table, checking now.
+</pre>
+    </div>
+    <p class="lifecycle"><b>Enter</b> opens · <b>Esc</b> back · <b>g</b> home · <b>m</b> mailbox · <b>s</b> send · <b>r</b> reply · <b>n</b> nudge · <b>/</b> filter · <b>q</b> quit</p>
+  </div>
+</section>
+
+<section id="cli">
+  <div class="wrap">
+    <p class="kicker">the cli</p>
+    <h2>Every command, from any shell.</h2>
+    <p class="lead">Agents coordinate over the MCP tools above. The CLI is the same bus, for humans and for hooks — every operation the daemon supports is reachable from a plain subcommand, not just the eleven MCP tools.</p>
+    <div class="adr cliref">
+      <div class="row2">
+        <span class="k">muster serve</span>
+        <span class="d">Runs the daemon in the foreground. You don't normally start it yourself — the CLI and the MCP server both spawn it automatically the first time anything touches the bus — so run this by hand only when you want to watch its log.</span>
+      </div>
+      <div class="row2">
+        <span class="k">muster mcp</span>
+        <span class="d">Serves the bus over stdio as an MCP server. This is the command each agent registers with its MCP client, and the source of the eleven coordination tools.</span>
+      </div>
+      <div class="row2">
+        <span class="k">muster station</span>
+        <span class="d">Opens the full-screen operator TUI described in the <a href="#station">station section above</a> — projects, agents, threads, and the conversation, with send, reply, and nudge built in.</span>
+      </div>
+      <div class="row2">
+        <span class="k">muster agents</span>
+        <span class="d">Prints the roster: every registered agent's project, alias, label, model, and whether its tmux session is currently live.</span>
+      </div>
+      <div class="row2">
+        <span class="k">muster inbox &lt;target&gt;</span>
+        <span class="d">Prints one agent's threads — everything addressed to it or started by it, with kind, status, and unread count. <span class="m"><code>muster tasks &lt;target&gt;</code> prints the same inbox filtered down to threads that are tasks.</span></span>
+      </div>
+      <div class="row2">
+        <span class="k">muster send &lt;target&gt; "…" --from &lt;alias&gt;</span>
+        <span class="d">Sends a message. <code>--intent fyi|reply-requested|action-requested</code> tags what kind of response it expects, <code>--subject</code> and <code>--ref</code> attach a subject line and a pointer to the work, <code>--role</code> treats the target as a role rather than an alias, and <code>--broadcast</code> sends to everyone instead of one target.</span>
+      </div>
+      <div class="row2">
+        <span class="k">muster nudge &lt;target&gt; [--no-submit]</span>
+        <span class="d">Wakes an idle agent right now by typing "check your inbox" into its tmux pane and pressing Enter — this is the only muster command that ever types into a pane. <code>--no-submit</code> types the line without pressing Enter, so you can edit it first.</span>
+      </div>
+      <div class="row2">
+        <span class="k">muster label &lt;name&gt;</span>
+        <span class="d">Pins an addressable name on the current tmux session, so <code>send &lt;name&gt; "…"</code> reaches it from then on. <span class="m"><code>muster label --clear</code> removes it. Both require running inside tmux.</span></span>
+      </div>
+      <div class="row2">
+        <span class="k">muster register [alias] / muster deregister [alias]</span>
+        <span class="d">Join or leave the bus by hand — the alias defaults to the current tmux session's name if you don't pass one. <code>register</code> also takes <code>--role &lt;role&gt;</code> and <code>--model &lt;claude|codex&gt;</code>. Session hooks call both of these for you; see below.</span>
+      </div>
+      <div class="row2">
+        <span class="k">muster gc [--purge-agents] [--events-keep &lt;dur&gt;]</span>
+        <span class="d">Tombstones every agent whose tmux session is gone — soft-deleted, kept as history — and prunes journal rows older than <code>--events-keep</code> (default 720h). <code>--purge-agents</code> hard-deletes departed or dead agent rows instead of tombstoning them; that step is irreversible.</span>
+      </div>
+      <div class="row2">
+        <span class="k">muster events [--agent] [--kind] [--thread] [--limit]</span>
+        <span class="d">Prints the bus journal after the fact — every send, reply, task change, nudge, and mailbox notify, newest activity last. Any of the filters can narrow it to one agent, one event kind, or one thread.</span>
+      </div>
+      <div class="row2">
+        <span class="k">muster watch</span>
+        <span class="d">The same journal as <code>muster events</code>, but live: prints recent backlog, then follows the bus and prints each new event as it happens until you interrupt it. <span class="m">Takes the same <code>--agent</code>/<code>--kind</code>/<code>--thread</code> filters plus <code>--interval</code> for the poll rate.</span></span>
+      </div>
+      <div class="row2">
+        <span class="k">muster hook &lt;event&gt; &lt;model&gt;</span>
+        <span class="d">The binary acting as its own session hook, wired into your agent harness's lifecycle config. <b>SessionStart</b> registers the session, <b>Stop</b> checks for unread mail at the end of a turn and tells the agent to go read it, and <b>SessionEnd</b> deregisters. See the <a href="#hooks">hooks section</a> for the exact config.</span>
+      </div>
+      <div class="row2">
+        <span class="k">muster debug &lt;op&gt; [key=value …]</span>
+        <span class="d">Sends one raw daemon operation with string key=value arguments and prints the raw JSON response — the escape hatch behind the claim above: every daemon operation is reachable from the CLI, including ones with no dedicated subcommand.</span>
+      </div>
+    </div>
+  </div>
+</section>
+
 <section id="mailbox">
   <div class="wrap">
     <p class="kicker">tmux &amp; the mailbox</p>
@@ -691,7 +796,7 @@ set -ga status-left <span class="c-sig">'#{?@muster_inbox,#[fg=colour0#,bg=colou
         }
       });
     }, { rootMargin: '-40% 0px -55% 0px' });
-    ['top', 'what', 'flow', 'tools', 'mailbox', 'hooks', 'wake', 'setup'].forEach(function (id) {
+    ['top', 'what', 'flow', 'tools', 'station', 'cli', 'mailbox', 'hooks', 'wake', 'setup'].forEach(function (id) {
       var el = document.getElementById(id);
       if (el) { obs.observe(el); }
     });
