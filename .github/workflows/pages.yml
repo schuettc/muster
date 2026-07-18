@@ -1,8 +1,10 @@
 name: deploy-site
 
-# Deploys muster.tools from the repo: site/index.html plus the root install.sh
-# (served at https://muster.tools/install.sh). Runs on every merge to main that
-# touches the site or the installer — no manual deploy steps.
+# Deploys muster.tools from the repo: the landing page (site/index.html), the
+# docs page (site/docs/index.html), their shared style.css/site.js, and the
+# root install.sh (served at https://muster.tools/install.sh). Runs on every
+# merge to main that touches the site or the installer — no manual deploy
+# steps.
 on:
   push:
     branches: [main]
@@ -28,8 +30,11 @@ jobs:
       - uses: actions/checkout@v4
       - name: Assemble the site
         run: |
-          mkdir dist
+          mkdir -p dist/docs
           cp site/index.html dist/
+          cp site/style.css dist/
+          cp site/site.js dist/
+          cp site/docs/index.html dist/docs/
           cp install.sh dist/
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
