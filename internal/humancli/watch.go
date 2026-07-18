@@ -1,6 +1,7 @@
 package humancli
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -18,23 +19,52 @@ type watchOpts struct {
 	errw     io.Writer // stderr for retry/reset notes; nil = os.Stderr
 }
 
+// watchFlagVals holds cmdWatch's parsed flag pointers.
+type watchFlagVals struct {
+	agent, kind       *string
+	thread            *int64
+	interval          *time.Duration
+	backlog, width    *int
+	aliases, fullTime *bool
+}
+
+// newWatchFlagsWithVals declares watch's flags and returns typed access to
+// their values — shared by cmdWatch (real parsing) and newWatchFlags
+// (registry help/man rendering).
+func newWatchFlagsWithVals() (*flag.FlagSet, watchFlagVals) {
+	fs := flag.NewFlagSet("watch", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	var v watchFlagVals
+	v.agent = fs.String("agent", "", "only events concerning this alias")
+	v.kind = fs.String("kind", "", "only this event kind")
+	v.thread = fs.Int64("thread", 0, "only this thread")
+	v.interval = fs.Duration("interval", time.Second, "poll interval")
+	v.backlog = fs.Int("backlog", 10, "history lines to print before following (0 = none)")
+	v.aliases = fs.Bool("aliases", false, "show raw aliases instead of current labels")
+	v.fullTime = fs.Bool("full-time", false, "show dates, not just times")
+	v.width = fs.Int("width", 0, "line budget in columns (default $COLUMNS or 120)")
+	return fs, v
+}
+
+// newWatchFlags builds watch's flag.FlagSet for registry-driven help/man
+// rendering.
+func newWatchFlags() *flag.FlagSet {
+	fs, _ := newWatchFlagsWithVals()
+	return fs
+}
+
 // cmdWatch tails the bus journal: prints the last --backlog matching events,
 // then polls list_events with the max_id cursor every --interval until
 // interrupted. Side-effect-free: never marks anything read.
 func cmdWatch(args []string, out io.Writer, o watchOpts) error {
-	fs := flag.NewFlagSet("watch", flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
-	agent := fs.String("agent", "", "only events concerning this alias")
-	kind := fs.String("kind", "", "only this event kind")
-	thread := fs.Int64("thread", 0, "only this thread")
-	interval := fs.Duration("interval", time.Second, "poll interval")
-	backlog := fs.Int("backlog", 10, "history lines to print before following (0 = none)")
-	aliases := fs.Bool("aliases", false, "show raw aliases instead of current labels")
-	fullTime := fs.Bool("full-time", false, "show dates, not just times")
-	width := fs.Int("width", 0, "line budget in columns (default $COLUMNS or 120)")
+	fs, v := newWatchFlagsWithVals()
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return HelpFor("watch", out)
+		}
 		return fmt.Errorf("usage: muster watch [--agent <alias>] [--thread <id>] [--kind <k>] [--interval <dur>] [--backlog <n>] [--aliases] [--full-time] [--width <cols>]")
 	}
+	agent, kind, thread, interval, backlog, aliases, fullTime, width := v.agent, v.kind, v.thread, v.interval, v.backlog, v.aliases, v.fullTime, v.width
 	if o.errw == nil {
 		o.errw = os.Stderr
 	}
