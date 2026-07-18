@@ -4,10 +4,10 @@ package humancli
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
-	"os"
 	"sort"
 	"strings"
 	"text/tabwriter"
@@ -16,8 +16,8 @@ import (
 	"github.com/schuettc/muster/internal/nudge"
 	"github.com/schuettc/muster/internal/paths"
 	"github.com/schuettc/muster/internal/proto"
-	"github.com/schuettc/muster/internal/station"
 	"github.com/schuettc/muster/internal/tmuxenv"
+	"github.com/schuettc/muster/internal/version"
 )
 
 // nudgeRun lets tests intercept the tmux command executor for nudges.
@@ -84,40 +84,30 @@ func callData(op string, args map[string]any) (json.RawMessage, error) {
 }
 
 // Dispatch routes an operator subcommand. args[0] is the subcommand name.
+// It also owns muster's help/version surface (`help`, `-h`, `--help`,
+// `version`, `--version`) — cmd/muster's main() routes anything that isn't
+// serve/mcp/debug here, and those three special-case help themselves before
+// ever reaching Dispatch (see cmd/muster/main.go), so this is the one place
+// that needs to recognize them.
 func Dispatch(args []string, out io.Writer) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: muster <agents|inbox|send|tasks|events|watch|station|nudge|register|deregister|gc|hook|label> [args]")
+		return fmt.Errorf("usage: muster <command> [args] (see 'muster help')")
 	}
 	switch args[0] {
-	case "agents":
-		return cmdAgents(out)
-	case "station":
-		return station.Run(args[1:])
-	case "send":
-		return cmdSend(args[1:], out)
-	case "inbox":
-		return cmdInbox(args[1:], out)
-	case "tasks":
-		return cmdTasks(args[1:], out)
-	case "events":
-		return cmdEvents(args[1:], out)
-	case "watch":
-		return cmdWatch(args[1:], out, watchOpts{})
-	case "nudge":
-		return cmdNudge(args[1:], out)
-	case "register":
-		return cmdRegister(args[1:], out)
-	case "deregister":
-		return cmdDeregister(args[1:], out)
-	case "gc":
-		return cmdGC(args[1:], out)
-	case "hook":
-		return cmdHook(args[1:], os.Stdin, out)
-	case "label":
-		return cmdLabel(args[1:], out)
-	default:
-		return fmt.Errorf("unknown command %q", args[0])
+	case "help":
+		return dispatchHelp(args[1:], out)
+	case "-h", "--help":
+		Usage(out)
+		return nil
+	case "version", "--version":
+		_, err := fmt.Fprintln(out, version.Line())
+		return err
 	}
+	cmd, ok := lookup(args[0])
+	if !ok || cmd.Run == nil {
+		return usageErrorf("unknown command %q (see 'muster help')", args[0])
+	}
+	return cmd.Run(args[1:], out)
 }
 
 // cmdAgents lists registered agents grouped by project, showing each
@@ -183,33 +173,60 @@ func validateIntent(intent string) error {
 	return nil
 }
 
+// sendFlagVals holds cmdSend's parsed flag pointers.
+type sendFlagVals struct {
+	from, subject, ref, intent *string
+	role, broadcast            *bool
+}
+
+// newSendFlagsWithVals declares send's flags and returns both the FlagSet
+// and typed access to its values — the one declaration cmdSend (real
+// parsing) and newSendFlags (registry help/man rendering) both build on, so
+// the two can't drift apart.
+func newSendFlagsWithVals() (*flag.FlagSet, sendFlagVals) {
+	fs := flag.NewFlagSet("send", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	var v sendFlagVals
+	v.from = fs.String("from", "human", "sending agent alias")
+	v.subject = fs.String("subject", "", "message subject")
+	v.ref = fs.String("ref", "", "pointer to the work")
+	v.role = fs.Bool("role", false, "treat target as a role")
+	v.broadcast = fs.Bool("broadcast", false, "send to everyone")
+	v.intent = fs.String("intent", "", "message intent: fyi, reply-requested, or action-requested")
+	return fs, v
+}
+
+// newSendFlags builds send's flag.FlagSet for registry-driven help/man
+// rendering (Command.NewFlags); its values are unused, only the declared
+// flags (names, defaults, usage strings) matter here.
+func newSendFlags() *flag.FlagSet {
+	fs, _ := newSendFlagsWithVals()
+	return fs
+}
+
 // cmdSend sends a message to an agent, role, or broadcast target and prints
 // the resulting thread ID.
 func cmdSend(args []string, out io.Writer) error {
-	fs := flag.NewFlagSet("send", flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
-	from := fs.String("from", "human", "sending agent alias")
-	subject := fs.String("subject", "", "message subject")
-	ref := fs.String("ref", "", "pointer to the work")
-	role := fs.Bool("role", false, "treat target as a role")
-	broadcast := fs.Bool("broadcast", false, "send to everyone")
-	intent := fs.String("intent", "", "message intent: fyi, reply-requested, or action-requested")
+	fs, v := newSendFlagsWithVals()
 	flagArgs, rest := splitFlagsAndPositional(args)
 	if err := fs.Parse(flagArgs); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return HelpFor("send", out)
+		}
 		return err
 	}
-	if err := validateIntent(*intent); err != nil {
+	if err := validateIntent(*v.intent); err != nil {
 		return err
 	}
 	toKind, toTarget := "agent", ""
 	switch {
-	case *broadcast:
+	case *v.broadcast:
 		toKind = "broadcast"
-	case *role:
+	case *v.role:
 		toKind = "role"
 	}
 	var body string
-	if *broadcast {
+	if *v.broadcast {
 		if len(rest) < 1 {
 			return fmt.Errorf("usage: muster send --broadcast <body> [--intent fyi|reply-requested|action-requested]")
 		}
@@ -229,8 +246,8 @@ func cmdSend(args []string, out io.Writer) error {
 		body = strings.Join(rest[1:], " ")
 	}
 	raw, err := callData("send_message", map[string]any{
-		"from": *from, "to_kind": toKind, "to_target": toTarget,
-		"subject": *subject, "ref": *ref, "body": body, "intent": *intent,
+		"from": *v.from, "to_kind": toKind, "to_target": toTarget,
+		"subject": *v.subject, "ref": *v.ref, "body": body, "intent": *v.intent,
 	})
 	if err != nil {
 		return err
@@ -306,7 +323,13 @@ func splitFlagsAndPositional(args []string, boolFlags ...map[string]bool) (flagA
 		if hasValue {
 			name = name[:idx]
 		}
-		if hasValue || bf[name] {
+		// "h"/"help" are always boolean, regardless of the caller's bf map:
+		// the flag package itself never consumes a value for them (an
+		// unrecognized -h/-help short-circuits to flag.ErrHelp before value
+		// consumption is even considered), so treating them as a value flag
+		// here would wrongly swallow the next token — e.g. `send -h alice
+		// hello` must NOT bind "alice" to -h as its value.
+		if hasValue || bf[name] || name == "h" || name == "help" {
 			flagArgs = append(flagArgs, a)
 			continue
 		}
@@ -331,6 +354,9 @@ func splitFlagsAndPositional(args []string, boolFlags ...map[string]bool) (flagA
 
 // cmdInbox prints the given alias's threads.
 func cmdInbox(args []string, out io.Writer) error {
+	if helpRequested(args) {
+		return HelpFor("inbox", out)
+	}
 	if len(args) < 1 {
 		return fmt.Errorf("usage: muster inbox <alias|label|proj:label>")
 	}
@@ -343,6 +369,9 @@ func cmdInbox(args []string, out io.Writer) error {
 
 // cmdTasks prints the given alias's inbox filtered to kind=task threads.
 func cmdTasks(args []string, out io.Writer) error {
+	if helpRequested(args) {
+		return HelpFor("tasks", out)
+	}
 	if len(args) < 1 {
 		return fmt.Errorf("usage: muster tasks <alias|label|proj:label>")
 	}
@@ -383,13 +412,30 @@ func printThreads(out io.Writer, alias string, tasksOnly bool) error {
 	return tw.Flush()
 }
 
+// newNudgeFlagsWithVals declares nudge's flags and returns typed access to
+// their values, mirroring newSendFlagsWithVals.
+func newNudgeFlagsWithVals() (fs *flag.FlagSet, noSubmit *bool) {
+	fs = flag.NewFlagSet("nudge", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	noSubmit = fs.Bool("no-submit", false, "type the nudge but do not press Enter")
+	return fs, noSubmit
+}
+
+// newNudgeFlags builds nudge's flag.FlagSet for registry-driven help/man
+// rendering.
+func newNudgeFlags() *flag.FlagSet {
+	fs, _ := newNudgeFlagsWithVals()
+	return fs
+}
+
 // cmdNudge resolves alias to its registered tmux pane and types the
 // check-inbox line into it, auto-submitting when the model type accepts it.
 func cmdNudge(args []string, out io.Writer) error {
-	fs := flag.NewFlagSet("nudge", flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
-	noSubmit := fs.Bool("no-submit", false, "type the nudge but do not press Enter")
+	fs, noSubmit := newNudgeFlagsWithVals()
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return HelpFor("nudge", out)
+		}
 		return err
 	}
 	rest := fs.Args()

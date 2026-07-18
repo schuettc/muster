@@ -3,9 +3,11 @@ name: release
 # Merge to main = release. The VERSION file is the knob: when a merge lands on
 # main and no tag v<VERSION> exists yet, this workflow tags it, creates the
 # GitHub release (auto-generated notes), and attaches cross-compiled binaries
-# (cgo-free: darwin/linux × arm64/amd64) with sha256 checksums. A merge that
-# doesn't bump VERSION releases nothing. macOS binaries are re-signed and
-# notarized locally afterwards via contrib/release-sign.sh <tag>.
+# (cgo-free: darwin/linux × arm64/amd64) with sha256 checksums. Every binary
+# is stamped with this release's version/commit via -ldflags -X into
+# internal/version. A merge that doesn't bump VERSION releases nothing.
+# macOS binaries are re-signed and notarized locally afterwards via
+# contrib/release-sign.sh <tag>.
 #
 # workflow_dispatch rebuilds assets for an existing release (backfill/repair).
 on:
@@ -59,11 +61,14 @@ jobs:
         run: |
           set -euo pipefail
           tag="${{ steps.rel.outputs.tag }}"
+          version="${tag#v}"
+          commit="$(git rev-parse --short HEAD)"
+          ldflags="-s -w -X github.com/schuettc/muster/internal/version.version=${version} -X github.com/schuettc/muster/internal/version.commit=${commit}"
           for target in darwin/arm64 darwin/amd64 linux/amd64 linux/arm64; do
             goos="${target%/*}"; goarch="${target#*/}"
             out="muster_${goos}_${goarch}"
             CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
-              go build -trimpath -ldflags "-s -w" -o "dist/${out}/muster" ./cmd/muster
+              go build -trimpath -ldflags "$ldflags" -o "dist/${out}/muster" ./cmd/muster
             tar -C "dist/${out}" -czf "dist/${out}.tar.gz" muster
           done
           (cd dist && shasum -a 256 *.tar.gz > checksums.txt)

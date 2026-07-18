@@ -1,6 +1,7 @@
 package humancli
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -9,15 +10,33 @@ import (
 	"github.com/schuettc/muster/internal/tmuxenv"
 )
 
+// newLabelFlagsWithVals declares label's flags and returns typed access to
+// their values — shared by cmdLabel (real parsing) and newLabelFlags
+// (registry help/man rendering).
+func newLabelFlagsWithVals() (fs *flag.FlagSet, clearFlag *bool) {
+	fs = flag.NewFlagSet("label", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	clearFlag = fs.Bool("clear", false, "clear this session's label")
+	return fs, clearFlag
+}
+
+// newLabelFlags builds label's flag.FlagSet for registry-driven help/man
+// rendering.
+func newLabelFlags() *flag.FlagSet {
+	fs, _ := newLabelFlagsWithVals()
+	return fs
+}
+
 // cmdLabel implements "muster label <name>" / "muster label --clear": naming
 // (or clearing) the current tmux session's label in one command, in place of
 // the two tmux set-option incantations an operator would otherwise type by
 // hand. It requires $TMUX (there is no "current session" outside tmux).
 func cmdLabel(args []string, out io.Writer) error {
-	fs := flag.NewFlagSet("label", flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
-	clearFlag := fs.Bool("clear", false, "clear this session's label")
+	fs, clearFlag := newLabelFlagsWithVals()
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return HelpFor("label", out)
+		}
 		return err
 	}
 	rest := fs.Args()

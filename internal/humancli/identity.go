@@ -2,6 +2,7 @@ package humancli
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -13,18 +14,36 @@ import (
 	"github.com/schuettc/muster/internal/tmuxenv"
 )
 
+// newRegisterFlagsWithVals declares register's flags and returns typed
+// access to their values — shared by cmdRegister (real parsing) and
+// newRegisterFlags (registry help/man rendering).
+func newRegisterFlagsWithVals() (fs *flag.FlagSet, role, model *string) {
+	fs = flag.NewFlagSet("register", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	role = fs.String("role", "", "this agent's role")
+	model = fs.String("model", "claude", "model backing this agent: claude or codex")
+	return fs, role, model
+}
+
+// newRegisterFlags builds register's flag.FlagSet for registry-driven
+// help/man rendering.
+func newRegisterFlags() *flag.FlagSet {
+	fs, _, _ := newRegisterFlagsWithVals()
+	return fs
+}
+
 // cmdRegister registers the current tmux session as an agent. Alias precedence:
 // explicit positional arg → $MUSTER_ALIAS → tmux session name.
 func cmdRegister(args []string, out io.Writer) error {
-	fs := flag.NewFlagSet("register", flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
-	role := fs.String("role", "", "this agent's role")
-	model := fs.String("model", "claude", "model backing this agent: claude or codex")
+	fs, role, model := newRegisterFlagsWithVals()
 	// register has no boolean flags: --role and --model both take values, so
 	// pass an empty bool-flags set (an implicit default would wrongly reuse
 	// send's --role, which IS boolean there).
 	flagArgs, rest := splitFlagsAndPositional(args, map[string]bool{})
 	if err := fs.Parse(flagArgs); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return HelpFor("register", out)
+		}
 		return err
 	}
 	c := tmuxenv.CaptureEnv()
@@ -55,6 +74,9 @@ func cmdRegister(args []string, out io.Writer) error {
 // cmdDeregister removes an agent's registration. Alias precedence mirrors
 // register: explicit arg → $MUSTER_ALIAS → tmux session name.
 func cmdDeregister(args []string, out io.Writer) error {
+	if helpRequested(args) {
+		return HelpFor("deregister", out)
+	}
 	alias := ""
 	switch {
 	case len(args) > 0:
@@ -74,6 +96,24 @@ func cmdDeregister(args []string, out io.Writer) error {
 	return err
 }
 
+// newGCFlagsWithVals declares gc's flags and returns typed access to their
+// values — shared by cmdGC (real parsing) and newGCFlags (registry help/man
+// rendering).
+func newGCFlagsWithVals() (fs *flag.FlagSet, eventsKeep *time.Duration, purgeAgents *bool) {
+	fs = flag.NewFlagSet("gc", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	eventsKeep = fs.Duration("events-keep", 720*time.Hour, "prune journal events older than this")
+	purgeAgents = fs.Bool("purge-agents", false, "hard-delete departed and tmux-dead agent rows instead of tombstoning them (irreversible: identity, project, label, and read-state are all gone)")
+	return fs, eventsKeep, purgeAgents
+}
+
+// newGCFlags builds gc's flag.FlagSet for registry-driven help/man
+// rendering.
+func newGCFlags() *flag.FlagSet {
+	fs, _, _ := newGCFlagsWithVals()
+	return fs
+}
+
 // cmdGC tombstones every agent whose tmux session is no longer alive (spec:
 // deregistration is a soft delete now — departed=1, row and read-state kept
 // as history), then prunes journal events older than --events-keep (default
@@ -83,11 +123,11 @@ func cmdDeregister(args []string, out io.Writer) error {
 // prune error is reported on the same writer but never masks the agent-phase
 // summary already printed.
 func cmdGC(args []string, out io.Writer) error {
-	fs := flag.NewFlagSet("gc", flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
-	eventsKeep := fs.Duration("events-keep", 720*time.Hour, "prune journal events older than this")
-	purgeAgents := fs.Bool("purge-agents", false, "hard-delete departed and tmux-dead agent rows instead of tombstoning them (irreversible: identity, project, label, and read-state are all gone)")
+	fs, eventsKeep, purgeAgents := newGCFlagsWithVals()
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return HelpFor("gc", out)
+		}
 		return err
 	}
 	if *eventsKeep <= 0 {

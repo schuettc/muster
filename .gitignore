@@ -1,5 +1,8 @@
 /bin/
 
+# generated man page (just man / release.yml render it fresh — never committed)
+/contrib/muster.1
+
 # runtime state (the local daemon's SQLite DB + WAL)
 bus.db
 bus.db-shm
