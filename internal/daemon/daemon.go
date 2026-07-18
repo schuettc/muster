@@ -262,14 +262,53 @@ func (d *Daemon) setSessionBadge(socketPath, sessionID string) (total int, err e
 }
 
 // reconcileBadge is setSessionBadge for identity-change call sites
-// (register/deregister) that don't have a thread/journal-row shape to
+// (register/deregister/purge) that don't have a thread/journal-row shape to
 // produce: best-effort, silent on an empty tuple or a nil notifier (there is
-// no tmux badge to reconcile in either case).
+// no tmux badge to reconcile in either case). Identity changes are also the
+// only moments a session's alias list can change, so this additionally
+// pushes the agent badge (@muster_agent) — the operator's ambient
+// "registered as X" indicator.
 func (d *Daemon) reconcileBadge(socketPath, sessionID string) {
 	if d.n == nil || socketPath == "" || sessionID == "" {
 		return
 	}
 	_, _ = d.setSessionBadge(socketPath, sessionID)
+	d.pushSessionAgents(socketPath, sessionID)
+}
+
+// sessionAliasesFor returns the sorted, deduplicated LIVE alias list for a
+// session tuple — departed (tombstoned) agents excluded, since the agent
+// badge advertises who is currently addressable there. Distinct from the
+// session_aliases op, which includes departed aliases on purpose (their
+// unread mail still needs draining).
+func (d *Daemon) sessionAliasesFor(socketPath, sessionID string) ([]string, error) {
+	agents, err := d.s.ListAgents()
+	if err != nil {
+		return nil, err
+	}
+	aliases := []string{}
+	for _, ag := range agents {
+		if ag.SocketPath == socketPath && ag.SessionID == sessionID && !ag.Departed {
+			aliases = append(aliases, ag.Alias)
+		}
+	}
+	sort.Strings(aliases)
+	return compactStrings(aliases), nil
+}
+
+// pushSessionAgents recomputes and pushes the agent badge under the session's
+// lock (same serialization contract as setSessionBadge: last recompute wins,
+// no stale interleaved write). Best-effort: a store or tmux error leaves the
+// previous badge in place — the roster stays authoritative.
+func (d *Daemon) pushSessionAgents(socketPath, sessionID string) {
+	mu := d.sessionLock(socketPath, sessionID)
+	mu.Lock()
+	defer mu.Unlock()
+	aliases, err := d.sessionAliasesFor(socketPath, sessionID)
+	if err != nil {
+		return
+	}
+	_ = d.n.SetAgents(socketPath, sessionID, aliases)
 }
 
 // notifyForThread flags every SESSION affected by activity on threadID — the
