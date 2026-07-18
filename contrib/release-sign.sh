@@ -23,11 +23,16 @@ echo "signing as: $identity"
 # rebuild the darwin binaries from the tag so we sign exactly the released code
 src="$work/src"
 git clone --quiet --depth 1 --branch "$tag" "https://github.com/$repo" "$src"
+# stamp version/commit exactly as release.yml does, so signed binaries don't
+# regress `muster version` to "dev (none)"
+version="${tag#v}"
+commit="$(cd "$src" && git rev-parse --short HEAD)"
+ldflags="-s -w -X github.com/schuettc/muster/internal/version.version=${version} -X github.com/schuettc/muster/internal/version.commit=${commit}"
 for arch in arm64 amd64; do
   dir="$work/muster_darwin_${arch}"
   mkdir -p "$dir"
   (cd "$src" && CGO_ENABLED=0 GOOS=darwin GOARCH="$arch" \
-    go build -trimpath -ldflags "-s -w" -o "$dir/muster" ./cmd/muster)
+    go build -trimpath -ldflags "$ldflags" -o "$dir/muster" ./cmd/muster)
   codesign --sign "$identity" --options runtime --timestamp --force "$dir/muster"
   ditto -c -k --keepParent "$dir/muster" "$work/notarize_${arch}.zip"
   xcrun notarytool submit "$work/notarize_${arch}.zip" \
