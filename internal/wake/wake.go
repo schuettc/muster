@@ -7,8 +7,13 @@ import (
 	"context"
 	"os/exec"
 	"strconv"
+	"strings"
 	"time"
 )
+
+// DefaultAgentOption is the tmux user option carrying a session's registered
+// alias list when TmuxNotifier.AgentOption is unset.
+const DefaultAgentOption = "@muster_agent"
 
 // Notifier flags (or clears) a recipient's tmux session so the operator is
 // notified of bus activity. Best-effort: errors mean the signal couldn't be
@@ -16,14 +21,20 @@ import (
 type Notifier interface {
 	Notify(socketPath, sessionID string, count int) error
 	Clear(socketPath, sessionID string) error
+	// SetAgents writes the session's registered-alias list into the agent
+	// badge option (comma-joined), unsetting it when the list is empty — the
+	// operator's ambient "registered as X" indicator. Best-effort like
+	// Notify/Clear.
+	SetAgents(socketPath, sessionID string, aliases []string) error
 }
 
 // TmuxNotifier sets/clears a tmux user-option on a session, socket-aware, each
 // call bounded by Timeout. Run is the command executor (nil → real tmux).
 type TmuxNotifier struct {
-	Option  string        // e.g. "@claude_attn"
-	Timeout time.Duration // per tmux subprocess
-	Run     func(ctx context.Context, args ...string) error
+	Option      string        // e.g. "@claude_attn"
+	AgentOption string        // agent-badge option; "" → DefaultAgentOption
+	Timeout     time.Duration // per tmux subprocess
+	Run         func(ctx context.Context, args ...string) error
 }
 
 // NewTmuxNotifier returns a TmuxNotifier backed by the real tmux binary.
@@ -67,6 +78,27 @@ func (n TmuxNotifier) Notify(socketPath, sessionID string, count int) error {
 // Clear unsets the option on the session.
 func (n TmuxNotifier) Clear(socketPath, sessionID string) error {
 	return n.run("-S", socketPath, "set-option", "-t", sessionID, "-u", n.Option)
+}
+
+// SetAgents sets the agent-badge option to the comma-joined alias list
+// (unsetting it when the list is empty), then repaints the session's clients.
+// Aliases are joined verbatim — callers pass them sorted and deduplicated.
+func (n TmuxNotifier) SetAgents(socketPath, sessionID string, aliases []string) error {
+	opt := n.AgentOption
+	if opt == "" {
+		opt = DefaultAgentOption
+	}
+	var err error
+	if len(aliases) == 0 {
+		err = n.run("-S", socketPath, "set-option", "-t", sessionID, "-u", opt)
+	} else {
+		err = n.run("-S", socketPath, "set-option", "-t", sessionID, opt, strings.Join(aliases, ","))
+	}
+	if err != nil {
+		return err
+	}
+	_ = n.refreshSessionClients(socketPath, sessionID)
+	return nil
 }
 
 func (n TmuxNotifier) refreshSessionClients(socketPath, sessionID string) error {

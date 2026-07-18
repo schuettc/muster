@@ -37,12 +37,20 @@ type notifierCall struct {
 	count   int // only populated for Notify
 }
 
+// agentSet records one SetAgents push: which session, with which alias list
+// (nil/empty = unset).
+type agentSet struct {
+	session string
+	aliases []string
+}
+
 type fakeNotifier struct {
-	mu       sync.Mutex
-	notified []string       // session IDs Notify'd
-	counts   []int          // unread counts carried, aligned with notified
-	cleared  []string       // session IDs Clear'd
-	log      []notifierCall // combined ordered log of all Notify/Clear calls
+	mu        sync.Mutex
+	notified  []string       // session IDs Notify'd
+	counts    []int          // unread counts carried, aligned with notified
+	cleared   []string       // session IDs Clear'd
+	log       []notifierCall // combined ordered log of all Notify/Clear calls
+	agentSets []agentSet     // recorded SetAgents pushes
 }
 
 func (f *fakeNotifier) Notify(_, sessionID string, count int) error {
@@ -62,6 +70,13 @@ func (f *fakeNotifier) Clear(_, sessionID string) error {
 	return nil
 }
 
+func (f *fakeNotifier) SetAgents(_, sessionID string, aliases []string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.agentSets = append(f.agentSets, agentSet{session: sessionID, aliases: append([]string(nil), aliases...)})
+	return nil
+}
+
 func (f *fakeNotifier) snap(which *[]string) []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -75,6 +90,14 @@ func (f *fakeNotifier) snapLog() []notifierCall {
 	defer f.mu.Unlock()
 	out := make([]notifierCall, len(f.log))
 	copy(out, f.log)
+	return out
+}
+
+func (f *fakeNotifier) snapAgentSets() []agentSet {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]agentSet, len(f.agentSets))
+	copy(out, f.agentSets)
 	return out
 }
 
@@ -711,5 +734,92 @@ func TestReRegisterReconcilesOldSessionBadge(t *testing.T) {
 	cleared := n.snap(&n.cleared)
 	if !slices.Contains(cleared, "$1") {
 		t.Fatalf("re-register must reconcile the OLD session $1's badge (Clear, no agents left there), cleared=%v", cleared)
+	}
+}
+
+// lastAgentSetFor returns the most recent SetAgents push for session, or nil.
+func lastAgentSetFor(sets []agentSet, session string) *agentSet {
+	for i := len(sets) - 1; i >= 0; i-- {
+		if sets[i].session == session {
+			return &sets[i]
+		}
+	}
+	return nil
+}
+
+// TestRegisterPushesAgentBadge: registering pushes the session's sorted alias
+// list; a sibling alias on the same tuple re-pushes the combined list.
+func TestRegisterPushesAgentBadge(t *testing.T) {
+	n := &fakeNotifier{}
+	sock := startWithNotifier(t, n)
+	call(t, sock, "register_agent", map[string]any{"alias": "solo", "role": "peer", "model_type": "claude", "socket_path": "/s", "session_id": "$9"})
+	got := lastAgentSetFor(n.snapAgentSets(), "$9")
+	if got == nil || !slices.Equal(got.aliases, []string{"solo"}) {
+		t.Fatalf("register must push [solo] to $9, got %+v", got)
+	}
+	call(t, sock, "register_agent", map[string]any{"alias": "chosen", "role": "peer", "model_type": "claude", "socket_path": "/s", "session_id": "$9"})
+	got = lastAgentSetFor(n.snapAgentSets(), "$9")
+	if got == nil || !slices.Equal(got.aliases, []string{"chosen", "solo"}) {
+		t.Fatalf("sibling register must push sorted [chosen solo] to $9, got %+v", got)
+	}
+}
+
+// TestDeregisterUnsetsAgentBadgeWhenLastAliasLeaves: tombstoning the last
+// alias pushes an empty list (unset); a surviving sibling keeps the badge
+// with the remainder.
+func TestDeregisterUnsetsAgentBadgeWhenLastAliasLeaves(t *testing.T) {
+	n := &fakeNotifier{}
+	sock := startWithNotifier(t, n)
+	call(t, sock, "register_agent", map[string]any{"alias": "solo", "role": "peer", "model_type": "claude", "socket_path": "/s", "session_id": "$9"})
+	call(t, sock, "register_agent", map[string]any{"alias": "twin", "role": "peer", "model_type": "claude", "socket_path": "/s", "session_id": "$9"})
+	call(t, sock, "deregister_agent", map[string]any{"alias": "twin"})
+	got := lastAgentSetFor(n.snapAgentSets(), "$9")
+	if got == nil || !slices.Equal(got.aliases, []string{"solo"}) {
+		t.Fatalf("deregister of one sibling must push remainder [solo], got %+v", got)
+	}
+	call(t, sock, "deregister_agent", map[string]any{"alias": "solo"})
+	got = lastAgentSetFor(n.snapAgentSets(), "$9")
+	if got == nil || len(got.aliases) != 0 {
+		t.Fatalf("deregister of the last alias must push empty (unset), got %+v", got)
+	}
+}
+
+// TestPurgeAgentUpdatesAgentBadge: hard-delete reconciles the badge exactly
+// like deregister.
+func TestPurgeAgentUpdatesAgentBadge(t *testing.T) {
+	n := &fakeNotifier{}
+	sock := startWithNotifier(t, n)
+	call(t, sock, "register_agent", map[string]any{"alias": "gone", "role": "peer", "model_type": "claude", "socket_path": "/s", "session_id": "$4"})
+	call(t, sock, "purge_agent", map[string]any{"alias": "gone"})
+	got := lastAgentSetFor(n.snapAgentSets(), "$4")
+	if got == nil || len(got.aliases) != 0 {
+		t.Fatalf("purge of the last alias must push empty (unset), got %+v", got)
+	}
+}
+
+// TestReRegisterMovesAgentBadgeBetweenSessions: an alias moving to a new
+// tuple updates BOTH sessions' badges — the old one loses it, the new one
+// gains it.
+func TestReRegisterMovesAgentBadgeBetweenSessions(t *testing.T) {
+	n := &fakeNotifier{}
+	sock := startWithNotifier(t, n)
+	call(t, sock, "register_agent", map[string]any{"alias": "roamer", "role": "peer", "model_type": "claude", "socket_path": "/s", "session_id": "$1"})
+	call(t, sock, "register_agent", map[string]any{"alias": "roamer", "role": "peer", "model_type": "claude", "socket_path": "/s", "session_id": "$9"})
+	sets := n.snapAgentSets()
+	if got := lastAgentSetFor(sets, "$1"); got == nil || len(got.aliases) != 0 {
+		t.Fatalf("old session $1 must end empty after the move, got %+v", got)
+	}
+	if got := lastAgentSetFor(sets, "$9"); got == nil || !slices.Equal(got.aliases, []string{"roamer"}) {
+		t.Fatalf("new session $9 must end with [roamer], got %+v", got)
+	}
+}
+
+// TestRegisterWithoutTmuxTuplePushesNoAgentBadge: no tuple → nothing to push.
+func TestRegisterWithoutTmuxTuplePushesNoAgentBadge(t *testing.T) {
+	n := &fakeNotifier{}
+	sock := startWithNotifier(t, n)
+	call(t, sock, "register_agent", map[string]any{"alias": "headless", "role": "peer", "model_type": "claude"})
+	if sets := n.snapAgentSets(); len(sets) != 0 {
+		t.Fatalf("tuple-less register must push no agent badge, got %+v", sets)
 	}
 }

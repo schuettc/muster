@@ -62,3 +62,53 @@ func TestTmuxNotifierClearUnsetsOption(t *testing.T) {
 		t.Fatalf("Clear not a socket-aware unset: %v", calls[0])
 	}
 }
+
+func TestSetAgentsSetsCommaJoinedOptionAndRefreshes(t *testing.T) {
+	var calls [][]string
+	n := TmuxNotifier{Option: "@muster_inbox", Timeout: time.Second, Run: func(_ context.Context, args ...string) error {
+		calls = append(calls, args)
+		return nil
+	}}
+	if err := n.SetAgents("/sock", "$3", []string{"backend", "api"}); err != nil {
+		t.Fatalf("SetAgents: %v", err)
+	}
+	if len(calls) == 0 {
+		t.Fatal("no tmux calls")
+	}
+	set := strings.Join(calls[0], " ")
+	if !strings.Contains(set, "-S /sock") || !strings.Contains(set, "set-option") || !strings.Contains(set, "-t $3") || !strings.Contains(set, "@muster_agent backend,api") {
+		t.Fatalf("first call not a socket-aware @muster_agent set: %v", calls[0])
+	}
+	for _, c := range calls {
+		if strings.Contains(strings.Join(c, " "), "send-keys") {
+			t.Fatalf("SetAgents must NEVER send-keys, got: %v", c)
+		}
+	}
+}
+
+func TestSetAgentsEmptyUnsetsOption(t *testing.T) {
+	var calls [][]string
+	n := TmuxNotifier{Run: func(_ context.Context, args ...string) error {
+		calls = append(calls, args)
+		return nil
+	}}
+	if err := n.SetAgents("/sock", "$3", nil); err != nil {
+		t.Fatalf("SetAgents(empty): %v", err)
+	}
+	got := strings.Join(calls[0], " ")
+	if !strings.Contains(got, "-u") || !strings.Contains(got, "@muster_agent") || !strings.Contains(got, "-t $3") {
+		t.Fatalf("empty aliases must unset @muster_agent: %v", calls[0])
+	}
+}
+
+func TestSetAgentsHonorsAgentOptionOverride(t *testing.T) {
+	var calls [][]string
+	n := TmuxNotifier{AgentOption: "@custom_agent", Run: func(_ context.Context, args ...string) error {
+		calls = append(calls, args)
+		return nil
+	}}
+	_ = n.SetAgents("/sock", "$3", []string{"x"})
+	if got := strings.Join(calls[0], " "); !strings.Contains(got, "@custom_agent x") {
+		t.Fatalf("AgentOption override ignored: %v", calls[0])
+	}
+}
