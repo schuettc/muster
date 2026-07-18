@@ -9,240 +9,9 @@
 <meta property="og:description" content="Agent sessions that message and hand off tasks across terminals. Local, tmux-native, one static binary.">
 <meta property="og:url" content="https://muster.tools">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📬</text></svg>">
+<link rel="stylesheet" href="style.css">
 </head>
 <body>
-<style>
-  :root {
-    --ink:      #14161d;
-    --ink-2:    #1a1d27;
-    --ink-3:    #21252f;
-    --paper:    #f4f5f8;
-    --paper-2:  #ffffff;
-    --line-d:   #2b2f3b;
-    --line-l:   #e3e5ec;
-    --fg-d:     #e8eaf1;
-    --fg-l:     #1a1d27;
-    --muted-d:  #969cae;
-    --muted-l:  #59606f;
-    --signal-d: #eba63f;
-    --signal-l: #b06f14;
-    --wire:     #6cb3c2;
-    --sock-d:   #98a3ec;
-    --sock-l:   #5661b8;
-    --mono: "SF Mono", ui-monospace, "JetBrains Mono", "Cascadia Code", Menlo, Consolas, monospace;
-    --sans: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-    --maxw: 60rem;
-    --radius: 12px;
-    --danger-d: #e5484d;
-    --danger-l: #c22a2a;
-
-    --bg: var(--ink); --surface: var(--ink-2); --surface-2: var(--ink-3);
-    --text: var(--fg-d); --muted: var(--muted-d); --line: var(--line-d);
-    --signal: var(--signal-d); --signal-soft: rgba(235,166,63,.12); --sock: var(--sock-d);
-    --danger: var(--danger-d);
-    --shadow: 0 1px 0 rgba(255,255,255,.03), 0 18px 40px -24px rgba(0,0,0,.7);
-  }
-  @media (prefers-color-scheme: light) {
-    :root {
-      --bg: var(--paper); --surface: var(--paper-2); --surface-2: #eef0f4;
-      --text: var(--fg-l); --muted: var(--muted-l); --line: var(--line-l);
-      --signal: var(--signal-l); --signal-soft: rgba(176,111,20,.10); --sock: var(--sock-l);
-      --danger: var(--danger-l);
-      --shadow: 0 1px 0 rgba(0,0,0,.02), 0 18px 40px -28px rgba(20,22,29,.28);
-    }
-  }
-  :root[data-theme="dark"] {
-    --bg: var(--ink); --surface: var(--ink-2); --surface-2: var(--ink-3);
-    --text: var(--fg-d); --muted: var(--muted-d); --line: var(--line-d);
-    --signal: var(--signal-d); --signal-soft: rgba(235,166,63,.12); --sock: var(--sock-d);
-    --danger: var(--danger-d);
-    --shadow: 0 1px 0 rgba(255,255,255,.03), 0 18px 40px -24px rgba(0,0,0,.7);
-  }
-  :root[data-theme="light"] {
-    --bg: var(--paper); --surface: var(--paper-2); --surface-2: #eef0f4;
-    --text: var(--fg-l); --muted: var(--muted-l); --line: var(--line-l);
-    --signal: var(--signal-l); --signal-soft: rgba(176,111,20,.10); --sock: var(--sock-l);
-    --danger: var(--danger-l);
-    --shadow: 0 1px 0 rgba(0,0,0,.02), 0 18px 40px -28px rgba(20,22,29,.28);
-  }
-
-  * { box-sizing: border-box; }
-  body { margin: 0; background: var(--bg); color: var(--text); font-family: var(--sans); line-height: 1.62; -webkit-font-smoothing: antialiased; }
-  .wrap { max-width: var(--maxw); margin: 0 auto; padding: 0 1.5rem; }
-  a { color: var(--signal); }
-
-  .statusbar { border-bottom: 1px solid var(--line); font-family: var(--mono); font-size: .72rem; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); }
-  .statusbar .wrap { display: flex; justify-content: space-between; align-items: center; gap: 1rem; padding: .85rem 1.5rem; }
-  .statusbar b { color: var(--text); font-weight: 600; }
-  .statusbar .dot { color: var(--signal); }
-  .theme-toggle { font: inherit; color: var(--muted); background: transparent; border: 1px solid var(--line); border-radius: 6px; padding: .25rem .6rem; cursor: pointer; letter-spacing: .1em; }
-  .theme-toggle:hover { color: var(--text); border-color: var(--muted); }
-
-  .hero { padding: clamp(3.25rem, 8vw, 5.5rem) 0 2.5rem; }
-  .eyebrow { font-family: var(--mono); font-size: .78rem; letter-spacing: .15em; text-transform: uppercase; color: var(--signal); margin: 0 0 1.3rem; }
-  .wordmark { font-family: var(--mono); font-weight: 600; font-size: clamp(2.5rem, 8vw, 4.2rem); letter-spacing: -.02em; margin: 0; line-height: 1; }
-  .wordmark .cursor { display: inline-block; width: .56ch; height: .88em; margin-left: .12em; transform: translateY(.06em); background: var(--signal); animation: blink 1.15s steps(1) infinite; }
-  @keyframes blink { 50% { opacity: 0; } }
-  h1.lede { font-size: clamp(1.6rem, 4.3vw, 2.5rem); line-height: 1.14; letter-spacing: -.02em; font-weight: 600; text-wrap: balance; margin: 1.4rem 0 1rem; max-width: 24ch; }
-  .sub { font-size: 1.1rem; color: var(--muted); max-width: 62ch; margin: 0 0 2rem; }
-  .sub b { color: var(--text); font-weight: 600; }
-  .cta { display: flex; flex-wrap: wrap; gap: .8rem; align-items: center; }
-  .btn { font-family: var(--mono); font-size: .92rem; text-decoration: none; border-radius: 8px; padding: .7rem 1.15rem; display: inline-flex; align-items: center; gap: .5rem; border: 1px solid transparent; transition: transform .12s ease, background .15s ease, border-color .15s ease; }
-  .btn-primary { background: var(--signal); color: #17140d; font-weight: 600; }
-  .btn-primary:hover { transform: translateY(-1px); }
-  .btn-ghost { border-color: var(--line); color: var(--text); }
-  .btn-ghost:hover { border-color: var(--muted); background: var(--surface); }
-  .btn:focus-visible { outline: 2px solid var(--signal); outline-offset: 2px; }
-
-  .term { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); overflow: hidden; }
-  .hero .term { margin-top: 3rem; }
-  .term-bar { display: flex; align-items: center; gap: .5rem; padding: .7rem 1rem; border-bottom: 1px solid var(--line); background: var(--surface-2); font-family: var(--mono); font-size: .74rem; color: var(--muted); }
-  .term-bar .lamp { width: .6rem; height: .6rem; border-radius: 50%; background: var(--line); }
-  .term-bar .lamp:nth-child(3) { background: var(--signal); }
-  .term-bar .title { margin-left: auto; letter-spacing: .04em; }
-  .term pre { margin: 0; padding: 1.1rem 1.25rem 1.3rem; overflow-x: auto; font-family: var(--mono); font-size: .84rem; line-height: 1.7; color: var(--text); font-variant-numeric: tabular-nums; }
-  .c-dim { color: var(--muted); } .c-sig { color: var(--signal); font-weight: 600; } .c-you { color: var(--wire); }
-  .c-bad { color: var(--danger); font-weight: 600; }
-  .live, .mail { color: var(--signal); } .mail { font-weight: 600; }
-  .pulse { display: inline-block; animation: pulse 1.9s ease-in-out infinite; }
-  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .4; } }
-
-  section { padding: clamp(2.75rem, 6.5vw, 4.5rem) 0; border-top: 1px solid var(--line); }
-  .kicker { font-family: var(--mono); font-size: .74rem; letter-spacing: .15em; text-transform: uppercase; color: var(--muted); margin: 0 0 1rem; }
-  .kicker::before { content: "$ "; color: var(--signal); }
-  h2 { font-size: clamp(1.4rem, 3.3vw, 1.95rem); letter-spacing: -.015em; line-height: 1.16; margin: 0 0 1rem; text-wrap: balance; }
-  h3.subhead { font-size: 1.05rem; margin: 2rem 0 .75rem; letter-spacing: -.01em; }
-  .lead { font-size: 1.06rem; color: var(--muted); max-width: 64ch; margin: 0 0 1.75rem; }
-  .lead b { color: var(--text); font-weight: 600; }
-  code.i, .lead code, .note code, .row .d code, .adr .d code { font-family: var(--mono); font-size: .86em; background: var(--surface); border: 1px solid var(--line); padding: .05em .38em; border-radius: 5px; color: var(--text); }
-
-  .modes { display: grid; grid-template-columns: 1fr; gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
-  @media (min-width: 44rem) { .modes { grid-template-columns: repeat(3,1fr); } }
-  .mode { background: var(--bg); padding: 1.3rem 1.3rem; }
-  .mode .t { font-family: var(--mono); color: var(--signal); font-size: .82rem; letter-spacing: .04em; margin: 0 0 .5rem; }
-  .mode p { margin: 0; color: var(--muted); font-size: .95rem; }
-  .mode p b { color: var(--text); font-weight: 600; }
-
-  .toolgroups { display: grid; grid-template-columns: 1fr; gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
-  @media (min-width: 44rem) { .toolgroups { grid-template-columns: 1fr 1fr; } }
-  .tg { background: var(--bg); padding: 1.3rem 1.3rem; }
-  .tg h3 { font-family: var(--mono); font-size: .8rem; letter-spacing: .1em; text-transform: uppercase; color: var(--signal); margin: 0 0 .6rem; }
-  .tg code { font-family: var(--mono); font-size: .82rem; color: var(--text); }
-  .tg p { margin: .45rem 0 0; color: var(--muted); font-size: .93rem; }
-  .tg p b { color: var(--text); font-weight: 600; }
-  .lifecycle { font-family: var(--mono); font-size: .78rem; color: var(--muted); display: block; margin-top: .5rem; }
-  .lifecycle b { color: var(--signal); font-weight: 600; }
-
-  /* addressing rows */
-  .adr { border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
-  .adr .row2 { display: grid; grid-template-columns: 1fr; gap: .25rem; padding: 1.1rem 1.25rem; }
-  @media (min-width: 44rem) { .adr .row2 { grid-template-columns: 11rem 1fr; gap: 1.3rem; align-items: baseline; } }
-  .adr .row2 + .row2 { border-top: 1px solid var(--line); }
-  .adr .k { font-family: var(--mono); font-size: .82rem; color: var(--signal); }
-  .adr .d { color: var(--text); font-size: .96rem; }
-  .adr .d .m { color: var(--muted); }
-
-  /* CLI reference — same row2 layout as addressing rows, wider key column
-     for full command signatures */
-  .cliref .row2 { grid-template-columns: 1fr; }
-  @media (min-width: 44rem) { .cliref .row2 { grid-template-columns: 15rem 1fr; } }
-  .cliref .k { font-size: .8rem; }
-
-  .tabs { display: flex; flex-wrap: wrap; gap: .55rem; margin: 0 0 1.5rem; }
-  .tab { font-family: var(--mono); font-size: .8rem; border: 1px solid var(--line); border-radius: 7px; padding: .42rem .7rem; color: var(--muted); background: var(--surface); }
-  .tab.sig { border-color: var(--signal); color: var(--text); }
-  .tab.sig b { color: var(--signal); }
-
-  .rows { border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
-  .row { display: grid; grid-template-columns: 1fr; gap: .3rem; padding: 1.2rem 1.3rem; }
-  @media (min-width: 44rem) { .row { grid-template-columns: 8rem 1fr; gap: 1.4rem; align-items: baseline; } }
-  .row + .row { border-top: 1px solid var(--line); }
-  .row .k { font-family: var(--mono); font-size: .8rem; letter-spacing: .06em; text-transform: uppercase; color: var(--signal); }
-  .row .d { color: var(--text); font-size: .98rem; }
-  .row .d b { font-weight: 600; }
-  .row .d .m { color: var(--muted); }
-  .note { margin: 1.5rem 0 0; font-size: .98rem; color: var(--muted); max-width: 66ch; }
-  .note b { color: var(--text); font-weight: 600; }
-
-  pre.code { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 1.15rem 1.3rem; overflow-x: auto; font-family: var(--mono); font-size: .85rem; line-height: 1.8; margin: 0; color: var(--text); box-shadow: var(--shadow); }
-  pre.code .cm { color: var(--muted); } pre.code .pr { color: var(--signal); } pre.code .k2 { color: var(--wire); }
-  .codegap { margin-top: 1rem; }
-
-  footer { border-top: 1px solid var(--line); padding: 2.5rem 0 3.5rem; }
-  .foot { display: flex; flex-wrap: wrap; gap: 1rem 1.6rem; align-items: center; justify-content: space-between; font-family: var(--mono); font-size: .8rem; color: var(--muted); }
-  .foot a { color: var(--muted); text-decoration: none; border-bottom: 1px solid transparent; }
-  .foot a:hover { color: var(--signal); border-bottom-color: var(--signal); }
-  .foot .mm { color: var(--text); font-weight: 600; }
-
-
-  /* message-flow diagram */
-  .flow-scroll { overflow-x: auto; }
-  .flow-scroll svg { display: block; width: 100%; min-width: 780px; height: auto; }
-  .flow-cap { font-family: var(--mono); font-size: .8rem; color: var(--muted); padding: .85rem 1.25rem; border-top: 1px solid var(--line); min-height: 2.6em; }
-  .flow-cap b { color: var(--signal); font-weight: 600; }
-  .fbox { fill: var(--bg); stroke: var(--line); }
-  .fsurf { fill: var(--surface-2); stroke: var(--line); }
-  .ftext { fill: var(--text); font-family: var(--mono); font-size: 13px; }
-  .fmut { fill: var(--muted); font-family: var(--mono); font-size: 11px; }
-  .fsig { fill: var(--signal); font-family: var(--mono); font-size: 12px; font-weight: 600; }
-  .fwire { stroke: var(--line); stroke-width: 1.5; fill: none; }
-  .fwire.dashed { stroke-dasharray: 4 5; }
-  .fdot { fill: var(--signal); opacity: 0; }
-  .fdot.cyan { fill: var(--wire); }
-  .fdot.on { opacity: 1; }
-  .fbadge { opacity: 0; transition: opacity .35s ease; }
-  .fbadge.on { opacity: 1; }
-  #fagentR rect, #fagentL rect { transition: stroke .3s ease; }
-  #fagentR.wake rect, #fagentL.wake rect { stroke: var(--signal); }
-  #fdb { transition: fill .3s ease; }
-  #fdb.on { fill: var(--signal); }
-  .flife { stroke: var(--line); stroke-width: 1.5; stroke-dasharray: 2 6; fill: none; }
-  .frow { opacity: .58; transition: opacity .35s ease; }
-  .frow.on, #flowsvg.static .frow { opacity: 1; }
-  .frow text { font-family: var(--mono); font-size: 11.5px; fill: var(--muted); }
-  .frow.on text { fill: var(--text); }
-  .fl-am { stroke: var(--signal); stroke-width: 1.6; }
-  .fl-vi { stroke: var(--sock); stroke-width: 1.6; }
-  .fh-vi { fill: var(--sock); }
-  .fdot.vio { fill: var(--sock); }
-  .flow-legend { display: flex; flex-wrap: wrap; gap: 1.4rem; padding: .7rem 1.25rem; border-bottom: 1px solid var(--line); font-family: var(--mono); font-size: .72rem; color: var(--muted); }
-  .flow-legend i { display: inline-block; width: 20px; height: 0; border-top: 2px solid; margin-right: .45rem; vertical-align: middle; }
-  .flow-legend .lg-am { border-color: var(--signal); }
-  .flow-legend .lg-vi { border-color: var(--sock); }
-  .flow-legend .lg-cy { border-color: var(--wire); border-top-style: dashed; }
-  .fquote { font-size: 10.5px !important; fill: var(--signal) !important; }
-  .fchip rect { fill: var(--surface-2); stroke: var(--wire); }
-  .fchip text { font-family: var(--mono); font-size: 11px; fill: var(--text); }
-  .fl-cy { stroke: var(--wire); stroke-width: 1.6; stroke-dasharray: 5 5; }
-  .fh-am { fill: var(--signal); } .fh-cy { fill: var(--wire); }
-  .fping { fill: var(--signal); }
-  .frow.on .fping { animation: fping 1.15s ease-in-out infinite; }
-  @keyframes fping { 0%,100% { opacity: 1; } 50% { opacity: .3; } }
-
-  /* the product name, when it appears in prose — echoes the wordmark */
-  .mstr { font-family: var(--mono); color: var(--signal); font-weight: 600; font-size: .94em; letter-spacing: -.01em; }
-
-  /* left TOC — shown only when the viewport has room beside the column */
-  html { scroll-behavior: smooth; }
-  section, header.hero { scroll-margin-top: 1.25rem; }
-  .toc { display: none; }
-  @media (min-width: 84rem) {
-    .toc {
-      display: block; position: fixed; top: 50%; transform: translateY(-50%);
-      left: calc((100vw - var(--maxw)) / 2 - 11.5rem); width: 9.5rem;
-      font-family: var(--mono); font-size: .76rem; letter-spacing: .04em;
-    }
-    .toc a {
-      display: block; padding: .28rem 0 .28rem .75rem; color: var(--muted);
-      text-decoration: none; border-left: 2px solid var(--line);
-    }
-    .toc a:hover { color: var(--text); }
-    .toc a.active { color: var(--signal); border-left-color: var(--signal); }
-  }
-  @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
-
-  @media (prefers-reduced-motion: reduce) { .wordmark .cursor, .pulse { animation: none; } .btn { transition: none; } }
-</style>
 
 <div class="statusbar">
   <div class="wrap">
@@ -259,9 +28,6 @@
   <a href="#tools">the tools</a>
   <a href="#station">station</a>
   <a href="#cli">the cli</a>
-  <a href="#mailbox">tmux &amp; mailbox</a>
-  <a href="#hooks">hooks</a>
-  <a href="#wake">wake</a>
   <a href="#setup">setup</a>
 </nav>
 
@@ -531,140 +297,38 @@ datalake   <span class="c-dim">just now</span>  looks like a lock wait on the mi
   <div class="wrap">
     <p class="kicker">the cli</p>
     <h2>Every command, from any shell.</h2>
-    <p class="lead">Agents coordinate over the MCP tools above. The CLI is the same bus, for humans and for hooks — every operation the daemon supports is reachable from a plain subcommand, not just the eleven MCP tools.</p>
-    <div class="adr cliref">
-      <div class="row2">
-        <span class="k">muster serve</span>
-        <span class="d">Runs the daemon in the foreground. You don't normally start it yourself — the CLI and the MCP server both spawn it automatically the first time anything touches the bus — so run this by hand only when you want to watch its log.</span>
+    <p class="lead">Agents coordinate over the MCP tools above. The CLI is the same bus, for humans and for hooks — every operation the daemon supports is reachable from a plain subcommand. Here's the roster at a glance, grouped the way <code style="font-family:var(--mono)">muster help</code> groups them:</p>
+    <div class="toolgroups">
+      <div class="tg">
+        <h3>talk</h3>
+        <p><code>send</code> — send a message to an agent, role, or everyone.</p>
+        <p><code>nudge</code> — type a check-inbox nudge into an agent's tmux pane.</p>
       </div>
-      <div class="row2">
-        <span class="k">muster mcp</span>
-        <span class="d">Serves the bus over stdio as an MCP server. This is the command each agent registers with its MCP client, and the source of the eleven coordination tools.</span>
+      <div class="tg">
+        <h3>watch</h3>
+        <p><code>agents</code> — list registered agents, grouped by project, with live status.</p>
+        <p><code>inbox</code> — show an agent's threads.</p>
+        <p><code>tasks</code> — show an agent's task threads.</p>
+        <p><code>events</code> — print the bus journal, oldest first.</p>
+        <p><code>watch</code> — tail the bus journal live.</p>
+        <p><code>station</code> — full-screen operator TUI for the bus.</p>
       </div>
-      <div class="row2">
-        <span class="k">muster station</span>
-        <span class="d">Opens the full-screen operator TUI described in the <a href="#station">station section above</a> — projects, agents, threads, and the conversation, with send, reply, and nudge built in.</span>
+      <div class="tg">
+        <h3>identity</h3>
+        <p><code>register</code> — register the current tmux session as an agent.</p>
+        <p><code>deregister</code> — remove an agent's registration.</p>
+        <p><code>label</code> — name or clear the current tmux session's label.</p>
+        <p><code>gc</code> — reap dead agents and prune old journal events.</p>
       </div>
-      <div class="row2">
-        <span class="k">muster agents</span>
-        <span class="d">Prints the roster: every registered agent's project, alias, label, model, and whether its tmux session is currently live.</span>
-      </div>
-      <div class="row2">
-        <span class="k">muster inbox &lt;target&gt;</span>
-        <span class="d">Prints one agent's threads — everything addressed to it or started by it, with kind, status, and unread count. <span class="m"><code>muster tasks &lt;target&gt;</code> prints the same inbox filtered down to threads that are tasks.</span></span>
-      </div>
-      <div class="row2">
-        <span class="k">muster send &lt;target&gt; "…" --from &lt;alias&gt;</span>
-        <span class="d">Sends a message. <code>--intent fyi|reply-requested|action-requested</code> tags what kind of response it expects, <code>--subject</code> and <code>--ref</code> attach a subject line and a pointer to the work, <code>--role</code> treats the target as a role rather than an alias, and <code>--broadcast</code> sends to everyone instead of one target.</span>
-      </div>
-      <div class="row2">
-        <span class="k">muster nudge &lt;target&gt; [--no-submit]</span>
-        <span class="d">Wakes an idle agent right now by typing "check your inbox" into its tmux pane and pressing Enter — this is the only muster command that ever types into a pane. <code>--no-submit</code> types the line without pressing Enter, so you can edit it first.</span>
-      </div>
-      <div class="row2">
-        <span class="k">muster label &lt;name&gt;</span>
-        <span class="d">Pins an addressable name on the current tmux session, so <code>send &lt;name&gt; "…"</code> reaches it from then on. <span class="m"><code>muster label --clear</code> removes it. Both require running inside tmux.</span></span>
-      </div>
-      <div class="row2">
-        <span class="k">muster register [alias] / muster deregister [alias]</span>
-        <span class="d">Join or leave the bus by hand — the alias defaults to the current tmux session's name if you don't pass one. <code>register</code> also takes <code>--role &lt;role&gt;</code> and <code>--model &lt;claude|codex&gt;</code>. Session hooks call both of these for you; see below.</span>
-      </div>
-      <div class="row2">
-        <span class="k">muster gc [--purge-agents] [--events-keep &lt;dur&gt;]</span>
-        <span class="d">Tombstones every agent whose tmux session is gone — soft-deleted, kept as history — and prunes journal rows older than <code>--events-keep</code> (default 720h). <code>--purge-agents</code> hard-deletes departed or dead agent rows instead of tombstoning them; that step is irreversible.</span>
-      </div>
-      <div class="row2">
-        <span class="k">muster events [--agent] [--kind] [--thread] [--limit]</span>
-        <span class="d">Prints the bus journal after the fact — every send, reply, task change, nudge, and mailbox notify, newest activity last. Any of the filters can narrow it to one agent, one event kind, or one thread.</span>
-      </div>
-      <div class="row2">
-        <span class="k">muster watch</span>
-        <span class="d">The same journal as <code>muster events</code>, but live: prints recent backlog, then follows the bus and prints each new event as it happens until you interrupt it. <span class="m">Takes the same <code>--agent</code>/<code>--kind</code>/<code>--thread</code> filters plus <code>--interval</code> for the poll rate.</span></span>
-      </div>
-      <div class="row2">
-        <span class="k">muster hook &lt;event&gt; &lt;model&gt;</span>
-        <span class="d">The binary acting as its own session hook, wired into your agent harness's lifecycle config. <b>SessionStart</b> registers the session, <b>Stop</b> checks for unread mail at the end of a turn and tells the agent to go read it, and <b>SessionEnd</b> deregisters. See the <a href="#hooks">hooks section</a> for the exact config.</span>
-      </div>
-      <div class="row2">
-        <span class="k">muster debug &lt;op&gt; [key=value …]</span>
-        <span class="d">Sends one raw daemon operation with string key=value arguments and prints the raw JSON response — the escape hatch behind the claim above: every daemon operation is reachable from the CLI, including ones with no dedicated subcommand.</span>
+      <div class="tg">
+        <h3>plumbing</h3>
+        <p><code>serve</code> — run the daemon (lazy unix-socket API server).</p>
+        <p><code>mcp</code> — run the MCP stdio server for coding-agent tool use.</p>
+        <p><code>hook</code> — session-lifecycle hook entry point for agent harness configs.</p>
+        <p><code>debug</code> — send a raw op to the daemon (dev tool).</p>
       </div>
     </div>
-  </div>
-</section>
-
-<section id="mailbox">
-  <div class="wrap">
-    <p class="kicker">tmux &amp; the mailbox</p>
-    <h2>Mail shows up on the tab.</h2>
-    <p class="lead">When mail arrives, the daemon sets a tmux option on the recipient's session — <code>@muster_inbox</code>, holding the unread count. tmux doesn't display custom options by default, so add these two lines to your <code>~/.tmux.conf</code> and reload (<code>tmux source ~/.tmux.conf</code>):</p>
-<pre class="code"><span class="cm"># render the muster mailbox in the tab title and status bar</span>
-set -g set-titles on
-set -g set-titles-string <span class="c-sig">'#{?@muster_inbox,📬#{@muster_inbox} ,}#S'</span>
-set -ga status-left <span class="c-sig">'#{?@muster_inbox,#[fg=colour0#,bg=colour6#,bold] 📬#{@muster_inbox} #[default] ,}'</span>
-</pre>
-    <p class="note codegap">If you already customize <code>set-titles-string</code> or <code>status-left</code>, merge the <code>#{?@muster_inbox,…}</code> conditional into your own strings — it renders nothing when there is no mail.</p>
-    <div class="tabs">
-      <span class="tab">web · frontend</span>
-      <span class="tab sig"><b>📬 2</b> · api-2 · backend</span>
-      <span class="tab">db · migrations</span>
-    </div>
-    <p class="note">The flag <b>persists until the agent reads its inbox</b> (a <code>get_inbox</code> call clears it), and switching to the tab does not clear it. <span class="mstr">muster</span> only sets a tmux option here; it never types into a pane. <code>muster watch</code> follows this same activity live from any shell, printing each message and inbox read as it happens.</p>
-  </div>
-</section>
-
-<section id="hooks">
-  <div class="wrap">
-    <p class="kicker">hooks</p>
-    <h2>Register on start, handle mail on turn end.</h2>
-    <p class="lead">The <span class="mstr">muster</span> binary is its own session hook: <code>muster hook &lt;event&gt; &lt;model&gt;</code>. Wired into your agent's lifecycle hooks, it does two things — <b>SessionStart</b> registers the session on the bus, and <b>Stop</b> (the end of each turn) checks for unread muster mail and, if there is any, instructs the agent to read its inbox and reply. There is nothing to copy or chmod, the hook is a no-op for sessions that aren't registered agents, and it never blocks a session from starting.</p>
-
-    <h3 class="subhead">Claude Code — add to <code class="i">~/.claude/settings.json</code></h3>
-<pre class="code">"hooks": {
-  "SessionStart": [
-    { "matcher": "startup|resume",
-      "hooks": [ { "type": "command", "command": <span class="c-sig">"muster hook SessionStart claude"</span> } ] }
-  ],
-  "Stop": [
-    { "hooks": [ { "type": "command", "command": <span class="c-sig">"muster hook Stop claude"</span> } ] }
-  ],
-  "SessionEnd": [
-    { "hooks": [ { "type": "command", "command": <span class="c-sig">"muster hook SessionEnd claude"</span> } ] }
-  ]
-}
-</pre>
-
-    <h3 class="subhead">Codex — save as <code class="i">~/.codex/hooks.json</code></h3>
-<pre class="code">{
-  "hooks": {
-    "SessionStart": [ { "hooks": [ { "type": "command", "command": <span class="c-sig">"muster hook SessionStart codex"</span> } ] } ],
-    "Stop":         [ { "hooks": [ { "type": "command", "command": <span class="c-sig">"muster hook Stop codex"</span> } ] } ]
-  }
-}
-</pre>
-    <p class="note codegap">Three Codex specifics: on the next <code>codex</code> launch it shows a one-time <b>"Hooks need review"</b> prompt — choose Trust (trust is recorded against the file's hash; editing it re-prompts). Codex fires <b>SessionStart on the session's first turn</b>, not at launch — a freshly opened Codex session is not on the bus until you say something to it, so give it any first message ("hi" is enough) before addressing mail to it. And Codex has <b>no SessionEnd event</b> — <code>muster gc</code> reaps agents whose tmux session is gone, so the roster stays honest either way.</p>
-    <p class="note">If <code>muster</code> isn't on the PATH your harness gives hook commands (e.g. it's in <code>~/go/bin</code>), use the absolute binary path in the <code>command</code> strings — Codex in particular does not expand <code>~</code>.</p>
-  </div>
-</section>
-
-<section id="wake">
-  <div class="wrap">
-    <p class="kicker">wake</p>
-    <h2>Three ways an agent notices mail.</h2>
-    <div class="rows">
-      <div class="row">
-        <span class="k">mailbox</span>
-        <span class="d">The <span class="mail">📬</span> count on the tab — the <b>notify</b> steps of <a href="#flow">the flow</a>. You see it, and the agent acts on it the next time it checks its inbox, or when you ask it to.</span>
-      </div>
-      <div class="row">
-        <span class="k">nudge</span>
-        <span class="d"><code>muster nudge api-2</code> is the manual poke for waking an idle agent right now: it types "check your inbox" into that agent's pane and submits it.</span>
-      </div>
-      <div class="row">
-        <span class="k">stop hook</span>
-        <span class="d">The automatic path — the <b>wake</b> through <b>reply</b> steps of <a href="#flow">the flow</a>. With the <code>muster hook Stop</code> entry from the <a href="#hooks">hooks section</a> installed, an agent that finishes a turn with unread mail reads its inbox and replies on its own.</span>
-      </div>
-    </div>
+    <p class="lead" style="margin-top:1.75rem">That's the shape of it — no flags shown here. See <a href="/docs/#cli">the full CLI reference</a> for every command's signature, flags, and detail.</p>
   </div>
 </section>
 
@@ -700,7 +364,7 @@ set -ga status-left <span class="c-sig">'#{?@muster_inbox,#[fg=colour0#,bg=colou
 
 <span class="cm"># 3. in each tmux session, have the agent register — either ask it once:</span>
 <span class="k2">›</span> <span class="c-sig">"register on the muster bus"</span>   <span class="cm">(it calls its register_agent tool)</span>
-<span class="cm">#    or install the SessionStart hook above and skip the ask</span>
+<span class="cm">#    or install the SessionStart hook (see below) and skip the ask</span>
 </pre>
     <p class="note codegap">With that, agents can message, hand off tasks, and share state.</p>
 
@@ -708,14 +372,14 @@ set -ga status-left <span class="c-sig">'#{?@muster_inbox,#[fg=colour0#,bg=colou
     <div class="rows">
       <div class="row">
         <span class="k">mailbox</span>
-        <span class="d">Add the two render lines from the <b>tmux section above</b> to your <code>~/.tmux.conf</code>, so unread mail shows as <span class="mail">📬</span> on the tab. <span class="m">Without them the daemon still sets the option; nothing displays it.</span></span>
+        <span class="d">Add the two render lines from <a href="/docs/#mailbox">the tmux &amp; mailbox reference</a> to your <code>~/.tmux.conf</code>, so unread mail shows as <span class="mail">📬</span> on the tab. <span class="m">Without them the daemon still sets the option; nothing displays it.</span></span>
       </div>
       <div class="row">
         <span class="k">hooks</span>
-        <span class="d">Add the hook blocks from the <b>hooks section above</b> to your agent configs, so sessions register on start and handle their own mail at turn end. <span class="m">Without them you register by asking (step 3) and wake agents with <code>muster nudge</code>.</span></span>
+        <span class="d">Add the hook blocks from <a href="/docs/#hooks">the hooks reference</a> to your agent configs, so sessions register on start and handle their own mail at turn end. <span class="m">Without them you register by asking (step 3) and wake agents with <code>muster nudge</code>.</span></span>
       </div>
     </div>
-    <p class="note codegap">Both layers are copy-paste from this page, and both also live in <a href="https://github.com/schuettc/muster/tree/main/contrib">contrib/</a>.</p>
+    <p class="note codegap">Both layers are copy-paste from <a href="/docs/">the docs page</a>, and both also live in <a href="https://github.com/schuettc/muster/tree/main/contrib">contrib/</a>.</p>
   </div>
 </section>
 
@@ -730,6 +394,7 @@ set -ga status-left <span class="c-sig">'#{?@muster_inbox,#[fg=colour0#,bg=colou
   </div>
 </footer>
 
+<script src="site.js"></script>
 <script>
   (function () {
     var svg = document.getElementById('flowsvg');
@@ -782,32 +447,6 @@ set -ga status-left <span class="c-sig">'#{?@muster_inbox,#[fg=colour0#,bg=colou
     }
     tick();
     setInterval(tick, 1950);
-  })();
-  (function () {
-    var links = document.querySelectorAll('.toc a');
-    var map = {};
-    links.forEach(function (a) { map[a.getAttribute('href').slice(1)] = a; });
-    var obs = new IntersectionObserver(function (entries) {
-      entries.forEach(function (e) {
-        if (e.isIntersecting) {
-          links.forEach(function (a) { a.classList.remove('active'); });
-          var a = map[e.target.id];
-          if (a) { a.classList.add('active'); }
-        }
-      });
-    }, { rootMargin: '-40% 0px -55% 0px' });
-    ['top', 'what', 'flow', 'tools', 'station', 'cli', 'mailbox', 'hooks', 'wake', 'setup'].forEach(function (id) {
-      var el = document.getElementById(id);
-      if (el) { obs.observe(el); }
-    });
-  })();
-  (function () {
-    var tt = document.getElementById('tt');
-    tt.addEventListener('click', function () {
-      var cur = document.documentElement.getAttribute('data-theme');
-      if (!cur) { cur = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
-      document.documentElement.setAttribute('data-theme', cur === 'dark' ? 'light' : 'dark');
-    });
   })();
 </script>
 </body>

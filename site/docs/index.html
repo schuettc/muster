@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>muster — docs</title>
+<meta name="description" content="The full muster CLI reference, the tmux mailbox, session hooks, and the three ways an agent notices mail.">
+<meta property="og:title" content="muster — docs">
+<meta property="og:description" content="The full CLI reference, the tmux mailbox, session hooks, and the three ways an agent notices mail.">
+<meta property="og:url" content="https://muster.tools/docs/">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📬</text></svg>">
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+
+<div class="statusbar">
+  <div class="wrap">
+    <span><span class="dot">●</span> <a href="/"><b>muster</b></a> &nbsp;·&nbsp; docs</span>
+    <span>local <span class="dot">·</span> MIT
+      &nbsp; <button class="theme-toggle" id="tt" aria-label="Toggle color theme">theme</button></span>
+  </div>
+</div>
+
+<nav class="toc" aria-label="Sections">
+  <a href="#top">docs</a>
+  <a href="#cli">the cli</a>
+  <a href="#mailbox">tmux &amp; mailbox</a>
+  <a href="#hooks">hooks</a>
+  <a href="#wake">wake</a>
+</nav>
+
+<header class="hero" id="top">
+  <div class="wrap">
+    <p class="eyebrow">Reference</p>
+    <h1 class="lede" style="max-width:34ch">The full command reference, the mailbox, hooks, and wake.</h1>
+    <p class="sub">This is the lookup page: every CLI command with its signature and flags, how the tmux mailbox is wired, the session-lifecycle hooks, and the three ways an agent notices mail. For the pitch and the message-flow walkthrough, see <a href="/">the landing page</a>.</p>
+  </div>
+</header>
+
+<section id="cli">
+  <div class="wrap">
+    <p class="kicker">the cli</p>
+    <h2>Every command, from any shell.</h2>
+    <p class="lead">Agents coordinate over the MCP tools described on <a href="/#tools">the landing page</a>. The CLI is the same bus, for humans and for hooks — every operation the daemon supports is reachable from a plain subcommand, not just the eleven MCP tools.</p>
+    <div class="adr cliref">
+      <div class="row2">
+        <span class="k">muster serve</span>
+        <span class="d">Runs the daemon in the foreground. You don't normally start it yourself — the CLI and the MCP server both spawn it automatically the first time anything touches the bus — so run this by hand only when you want to watch its log.</span>
+      </div>
+      <div class="row2">
+        <span class="k">muster mcp</span>
+        <span class="d">Serves the bus over stdio as an MCP server. This is the command each agent registers with its MCP client, and the source of the eleven coordination tools.</span>
+      </div>
+      <div class="row2">
+        <span class="k">muster station</span>
+        <span class="d">Opens the full-screen operator TUI described in <a href="/#station">the station section on the landing page</a> — projects, agents, threads, and the conversation, with send, reply, and nudge built in.</span>
+      </div>
+      <div class="row2">
+        <span class="k">muster agents</span>
+        <span class="d">Prints the roster: every registered agent's project, alias, label, model, and whether its tmux session is currently live.</span>
+      </div>
+      <div class="row2">
+        <span class="k">muster inbox &lt;target&gt;</span>
+        <span class="d">Prints one agent's threads — everything addressed to it or started by it, with kind, status, and unread count. <span class="m"><code>muster tasks &lt;target&gt;</code> prints the same inbox filtered down to threads that are tasks.</span></span>
+      </div>
+      <div class="row2">
+        <span class="k">muster send &lt;target&gt; "…" --from &lt;alias&gt;</span>
+        <span class="d">Sends a message. <code>--intent fyi|reply-requested|action-requested</code> tags what kind of response it expects, <code>--subject</code> and <code>--ref</code> attach a subject line and a pointer to the work, <code>--role</code> treats the target as a role rather than an alias, and <code>--broadcast</code> sends to everyone instead of one target.</span>
+      </div>
+      <div class="row2">
+        <span class="k">muster nudge &lt;target&gt; [--no-submit]</span>
+        <span class="d">Wakes an idle agent right now by typing "check your inbox" into its tmux pane and pressing Enter — this is the only muster command that ever types into a pane. <code>--no-submit</code> types the line without pressing Enter, so you can edit it first.</span>
+      </div>
+      <div class="row2">
+        <span class="k">muster label &lt;name&gt;</span>
+        <span class="d">Pins an addressable name on the current tmux session, so <code>send &lt;name&gt; "…"</code> reaches it from then on. <span class="m"><code>muster label --clear</code> removes it. Both require running inside tmux.</span></span>
+      </div>
+      <div class="row2">
+        <span class="k">muster register [alias] / muster deregister [alias]</span>
+        <span class="d">Join or leave the bus by hand — the alias defaults to the current tmux session's name if you don't pass one. <code>register</code> also takes <code>--role &lt;role&gt;</code> and <code>--model &lt;claude|codex&gt;</code>. Session hooks call both of these for you; see below.</span>
+      </div>
+      <div class="row2">
+        <span class="k">muster gc [--purge-agents] [--events-keep &lt;dur&gt;]</span>
+        <span class="d">Tombstones every agent whose tmux session is gone — soft-deleted, kept as history — and prunes journal rows older than <code>--events-keep</code> (default 720h). <code>--purge-agents</code> hard-deletes departed or dead agent rows instead of tombstoning them; that step is irreversible.</span>
+      </div>
+      <div class="row2">
+        <span class="k">muster events [--agent] [--kind] [--thread] [--limit]</span>
+        <span class="d">Prints the bus journal after the fact — every send, reply, task change, nudge, and mailbox notify, newest activity last. Any of the filters can narrow it to one agent, one event kind, or one thread.</span>
+      </div>
+      <div class="row2">
+        <span class="k">muster watch</span>
+        <span class="d">The same journal as <code>muster events</code>, but live: prints recent backlog, then follows the bus and prints each new event as it happens until you interrupt it. <span class="m">Takes the same <code>--agent</code>/<code>--kind</code>/<code>--thread</code> filters plus <code>--interval</code> for the poll rate.</span></span>
+      </div>
+      <div class="row2">
+        <span class="k">muster hook &lt;event&gt; &lt;model&gt;</span>
+        <span class="d">The binary acting as its own session hook, wired into your agent harness's lifecycle config. <b>SessionStart</b> registers the session, <b>Stop</b> checks for unread mail at the end of a turn and tells the agent to go read it, and <b>SessionEnd</b> deregisters. See the <a href="#hooks">hooks section</a> for the exact config.</span>
+      </div>
+      <div class="row2">
+        <span class="k">muster debug &lt;op&gt; [key=value …]</span>
+        <span class="d">Sends one raw daemon operation with string key=value arguments and prints the raw JSON response — the escape hatch behind the claim above: every daemon operation is reachable from the CLI, including ones with no dedicated subcommand.</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="mailbox">
+  <div class="wrap">
+    <p class="kicker">tmux &amp; the mailbox</p>
+    <h2>Mail shows up on the tab.</h2>
+    <p class="lead">When mail arrives, the daemon sets a tmux option on the recipient's session — <code>@muster_inbox</code>, holding the unread count. tmux doesn't display custom options by default, so add these two lines to your <code>~/.tmux.conf</code> and reload (<code>tmux source ~/.tmux.conf</code>):</p>
+<pre class="code"><span class="cm"># render the muster mailbox in the tab title and status bar</span>
+set -g set-titles on
+set -g set-titles-string <span class="c-sig">'#{?@muster_inbox,📬#{@muster_inbox} ,}#S'</span>
+set -ga status-left <span class="c-sig">'#{?@muster_inbox,#[fg=colour0#,bg=colour6#,bold] 📬#{@muster_inbox} #[default] ,}'</span>
+</pre>
+    <p class="note codegap">If you already customize <code>set-titles-string</code> or <code>status-left</code>, merge the <code>#{?@muster_inbox,…}</code> conditional into your own strings — it renders nothing when there is no mail.</p>
+    <div class="tabs">
+      <span class="tab">web · frontend</span>
+      <span class="tab sig"><b>📬 2</b> · api-2 · backend</span>
+      <span class="tab">db · migrations</span>
+    </div>
+    <p class="note">The flag <b>persists until the agent reads its inbox</b> (a <code>get_inbox</code> call clears it), and switching to the tab does not clear it. <span class="mstr">muster</span> only sets a tmux option here; it never types into a pane. <code>muster watch</code> follows this same activity live from any shell, printing each message and inbox read as it happens.</p>
+  </div>
+</section>
+
+<section id="hooks">
+  <div class="wrap">
+    <p class="kicker">hooks</p>
+    <h2>Register on start, handle mail on turn end.</h2>
+    <p class="lead">The <span class="mstr">muster</span> binary is its own session hook: <code>muster hook &lt;event&gt; &lt;model&gt;</code>. Wired into your agent's lifecycle hooks, it does two things — <b>SessionStart</b> registers the session on the bus, and <b>Stop</b> (the end of each turn) checks for unread muster mail and, if there is any, instructs the agent to read its inbox and reply. There is nothing to copy or chmod, the hook is a no-op for sessions that aren't registered agents, and it never blocks a session from starting.</p>
+
+    <h3 class="subhead">Claude Code — add to <code class="i">~/.claude/settings.json</code></h3>
+<pre class="code">"hooks": {
+  "SessionStart": [
+    { "matcher": "startup|resume",
+      "hooks": [ { "type": "command", "command": <span class="c-sig">"muster hook SessionStart claude"</span> } ] }
+  ],
+  "Stop": [
+    { "hooks": [ { "type": "command", "command": <span class="c-sig">"muster hook Stop claude"</span> } ] }
+  ],
+  "SessionEnd": [
+    { "hooks": [ { "type": "command", "command": <span class="c-sig">"muster hook SessionEnd claude"</span> } ] }
+  ]
+}
+</pre>
+
+    <h3 class="subhead">Codex — save as <code class="i">~/.codex/hooks.json</code></h3>
+<pre class="code">{
+  "hooks": {
+    "SessionStart": [ { "hooks": [ { "type": "command", "command": <span class="c-sig">"muster hook SessionStart codex"</span> } ] } ],
+    "Stop":         [ { "hooks": [ { "type": "command", "command": <span class="c-sig">"muster hook Stop codex"</span> } ] } ]
+  }
+}
+</pre>
+    <p class="note codegap">Three Codex specifics: on the next <code>codex</code> launch it shows a one-time <b>"Hooks need review"</b> prompt — choose Trust (trust is recorded against the file's hash; editing it re-prompts). Codex fires <b>SessionStart on the session's first turn</b>, not at launch — a freshly opened Codex session is not on the bus until you say something to it, so give it any first message ("hi" is enough) before addressing mail to it. And Codex has <b>no SessionEnd event</b> — <code>muster gc</code> reaps agents whose tmux session is gone, so the roster stays honest either way.</p>
+    <p class="note">If <code>muster</code> isn't on the PATH your harness gives hook commands (e.g. it's in <code>~/go/bin</code>), use the absolute binary path in the <code>command</code> strings — Codex in particular does not expand <code>~</code>.</p>
+  </div>
+</section>
+
+<section id="wake">
+  <div class="wrap">
+    <p class="kicker">wake</p>
+    <h2>Three ways an agent notices mail.</h2>
+    <div class="rows">
+      <div class="row">
+        <span class="k">mailbox</span>
+        <span class="d">The <span class="mail">📬</span> count on the tab — the <b>notify</b> steps of <a href="/#flow">the flow</a>. You see it, and the agent acts on it the next time it checks its inbox, or when you ask it to.</span>
+      </div>
+      <div class="row">
+        <span class="k">nudge</span>
+        <span class="d"><code>muster nudge api-2</code> is the manual poke for waking an idle agent right now: it types "check your inbox" into that agent's pane and submits it.</span>
+      </div>
+      <div class="row">
+        <span class="k">stop hook</span>
+        <span class="d">The automatic path — the <b>wake</b> through <b>reply</b> steps of <a href="/#flow">the flow</a>. With the <code>muster hook Stop</code> entry from <a href="#hooks">the hooks section above</a> installed, an agent that finishes a turn with unread mail reads its inbox and replies on its own.</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap foot">
+    <span><span class="mm">muster</span> · docs — <a href="/">back to the landing page</a></span>
+    <span>
+      <a href="https://github.com/schuettc/muster">GitHub</a> &nbsp;·&nbsp;
+      <a href="https://github.com/schuettc/muster/releases">Releases</a> &nbsp;·&nbsp;
+      <a href="https://github.com/schuettc/muster/blob/main/LICENSE">MIT</a>
+    </span>
+  </div>
+</footer>
+
+<script src="../site.js"></script>
+</body>
+</html>
