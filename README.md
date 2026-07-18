@@ -19,10 +19,18 @@ Landing page: **muster.tools**
 
 ## Status
 
-**v0.2.2** — session identity (project-scoped agents, addressable labels,
-tmux-verified liveness), the `@muster_inbox` mailbox, and Codex autonomy on top of
-the v0.1.0 core (SQLite store, lazy daemon, MCP server, human CLI, notify/nudge
-wake). See [releases](https://github.com/schuettc/muster/releases) for the changelog.
+**v0.6.0** — `muster station`, the full-screen operator TUI, as a pure drill-down
+(projects → agents → threads → messages) with its own mailbox page; messages and
+tasks carry an intent (`fyi`, `reply-requested`, `action-requested`) that renders
+as a plain word everywhere, not a code; deregistration now tombstones an agent
+instead of deleting it, so a departed agent's thread history stays visible and
+re-registering the same alias revives it cleanly; and target resolution is
+canonical — an unknown `send`/`task_create` target (CLI or MCP) fails loudly
+instead of silently creating a thread addressed to nobody. Builds on the v0.5.x
+bus journal and `muster watch` live tail, and the v0.2.2 identity/addressing core
+(project-scoped agents, addressable labels, tmux-verified liveness) on top of the
+v0.1.0 base (SQLite store, lazy daemon, MCP server, human CLI, notify/nudge wake).
+See [releases](https://github.com/schuettc/muster/releases) for the changelog.
 
 ## Setup
 
@@ -86,7 +94,7 @@ muster inbox <alias>                       # an agent's threads — addressed to
 muster tasks <alias>                       # just the tasks for an agent
 muster events                              # the bus event log: every mailbox notify and inbox read
 muster watch                               # follow the bus live — every message, task, wake and read as it happens
-muster station                             # the full-screen operator TUI — roster, live feed, threads, compose
+muster station                             # the full-screen operator TUI — projects, agents, threads, compose
 muster send <alias> "message"  --from me   # send a directed message
 muster send <alias> "message"  --from me --intent action-requested  # mark it as needing a reply
 muster send --role reviewer "please look"  --from me   # to a role
@@ -143,24 +151,32 @@ accepts a target of the form `<alias|label|proj:label>`:
 - a **qualified label** to cross projects: `muster send timewalk:frontend "…"`
 
 A bare label never silently crosses projects; if it's ambiguous or only exists
-elsewhere, muster errors and lists the `proj:label` candidates.
+elsewhere, muster errors and lists the `proj:label` candidates. Resolution is
+canonical on the daemon side, not just the CLI: an unresolvable target fails
+with an error and never creates a thread, whether the call came from `muster
+send`/`muster nudge` or an MCP tool like `send_message`/`task_create`.
 
 ### `muster station`
 
 `muster station` is the operator's station — the full-screen TUI where
-everyone reports in. It shows the roster (projects, live dots, labels, and
-each session's unread count), the live journal feed, and threads grouped by
-intent (`action-requested` pinned on top) in one view, and lets you act
-without leaving it: open a thread to read it, compose a send or reply, and
-nudge an agent, all from the keyboard.
+everyone reports in. It's a pure drill-down chain: projects → agents →
+threads → messages. Projects and their agents browse two columns wide (a
+list on the left, a preview of the selected row on the right); open an
+agent and its threads open into a full-width table; open a thread and it
+reads full-width.
 
-Keys: `Tab` cycles focus between panes · `j`/`k` or the arrow keys move ·
-`Enter` opens the selected agent's thread or roster entry · `Esc` backs out
-· `s` opens the composer to send (with a target picker and an intent
-cycle) · `r` replies on the open thread · `n` nudges the selected agent
-(with a confirmation prompt) · `/` filters the focused pane · `a` toggles
-aliases vs. labels · `End` or `G` snaps the feed or thread view back to
-live · `q` quits.
+Keys: `Enter` opens the selected item · `Esc` goes back one level · `g`
+jumps home from anywhere · `m` toggles the mailbox page — station's own
+mail, unread and read history; the header always shows a 📬 badge with the
+current unread count, on every screen · `s` opens the composer to send
+(with a target picker and an intent cycle) · `r` replies on the open
+thread · `n` nudges the selected agent (with a confirmation prompt) · `/`
+filters the current list · `a` toggles aliases vs. labels · `q` quits.
+
+Intents render as plain words, not the CLI's bracket shorthand — "needs
+action", "wants reply", "fyi". An agent that exits cleanly doesn't vanish
+from its project: it stays listed below a divider, dimmed, with its thread
+history intact (a tombstone).
 
 Station registers on the bus itself, as agent `station` — `muster send
 station "…"` and `muster nudge station` reach it like any other agent. If
