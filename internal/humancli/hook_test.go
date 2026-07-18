@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/schuettc/muster/internal/mustertest"
 	"github.com/schuettc/muster/internal/tmuxenv"
 )
 
@@ -664,6 +665,23 @@ func TestHookSessionStartBestEffortWhenDaemonUnreachable(t *testing.T) {
 	// No test daemon started, and no tmux identity to fall back on: cmdRegister
 	// will fail (can't determine alias / can't reach daemon), but the hook must
 	// swallow that and still return nil — a hook must never block a session.
+	//
+	// MUSTER_HOME must be isolated here (a dead socket path with nothing
+	// listening): left unset, paths.SocketPath() falls back to the real
+	// ~/.local/share/muster/sock, which on a dev machine running the live
+	// muster daemon would silently dial IT instead of exercising the
+	// unreachable-daemon branch this test is named for. MUSTER_NO_AUTOSPAWN
+	// skips client.dialOrSpawn's auto-start fallback — under `go test`,
+	// os.Executable() resolves to the test binary itself, so that fallback
+	// would otherwise re-exec the whole suite as a detached child (a fork
+	// bomb reproduced in CI) instead of a real `muster serve`.
+	dir, cleanup, err := mustertest.ShortHome()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(cleanup)
+	t.Setenv("MUSTER_HOME", dir)
+	t.Setenv("MUSTER_NO_AUTOSPAWN", "1")
 	t.Setenv("TMUX", "")
 	t.Setenv("TMUX_PANE", "")
 	t.Setenv("MUSTER_ALIAS", "")
