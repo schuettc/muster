@@ -71,11 +71,12 @@ func FetchEvents(c Caller, agent, kind string, threadID, afterID int64, limit in
 
 // labelRow decodes just the list_agents fields LoadLabels needs.
 type labelRow struct {
-	Alias       string `json:"alias"`
-	Label       string `json:"label"`
-	LabelManual bool   `json:"label_manual"`
-	SocketPath  string `json:"socket_path"`
-	SessionID   string `json:"session_id"`
+	Alias          string `json:"alias"`
+	Label          string `json:"label"`
+	LabelManual    bool   `json:"label_manual"`
+	SocketPath     string `json:"socket_path"`
+	SessionID      string `json:"session_id"`
+	SessionCreated int64  `json:"session_created"`
 }
 
 // LoadLabels fetches the current alias→label map, best-effort: on any error
@@ -94,7 +95,7 @@ func LoadLabels(c Caller) map[string]string {
 	m := make(map[string]string, len(rows))
 	for _, a := range rows {
 		label := a.Label
-		if tmuxenv.IsSessionAlive(a.SocketPath, a.SessionID) {
+		if tmuxenv.IsSessionAlive(a.SocketPath, a.SessionID, a.SessionCreated) {
 			label, _ = tmuxenv.SessionLabel(a.SocketPath, a.SessionID)
 		}
 		m[a.Alias] = label

@@ -38,16 +38,19 @@ type agentFull struct {
 }
 
 type agentRow struct {
-	Alias       string `json:"alias"`
-	Role        string `json:"role"`
-	ModelType   string `json:"model_type"`
-	SocketPath  string `json:"socket_path"`
-	SessionID   string `json:"session_id"`
-	SessionName string `json:"session_name"`
-	Project     string `json:"project"`
-	Label       string `json:"label"`
-	LabelManual bool   `json:"label_manual"`
-	LastSeen    int64  `json:"last_seen"`
+	Alias      string `json:"alias"`
+	Role       string `json:"role"`
+	ModelType  string `json:"model_type"`
+	SocketPath string `json:"socket_path"`
+	SessionID  string `json:"session_id"`
+	// SessionCreated feeds tmuxenv.IsSessionAlive's recycled-session-ID
+	// discrimination (see store.Agent.SessionCreated).
+	SessionCreated int64  `json:"session_created"`
+	SessionName    string `json:"session_name"`
+	Project        string `json:"project"`
+	Label          string `json:"label"`
+	LabelManual    bool   `json:"label_manual"`
+	LastSeen       int64  `json:"last_seen"`
 	// Departed is true once the agent has been deregistered (tombstoned, not
 	// deleted — see store.Store.DepartAgent): gc's default reap and
 	// --purge-agents both key off this to decide whether a row still needs

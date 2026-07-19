@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -21,7 +22,8 @@ var Run = func(args ...string) (string, error) {
 }
 
 // Capture holds the identity fields for registering an agent from a tmux pane.
-// Every field is empty (LabelManual false) when not running inside tmux.
+// Every field is empty (LabelManual false, SessionCreated 0) when not running
+// inside tmux.
 type Capture struct {
 	SocketPath  string
 	PaneID      string
@@ -30,6 +32,15 @@ type Capture struct {
 	Project     string
 	Label       string
 	LabelManual bool
+	// SessionCreated is the session's creation time (#{session_created},
+	// unix seconds) — the incarnation half of the identity: tmux recycles
+	// session IDs from $0 whenever a server restarts, so (socket_path,
+	// session_id) alone cannot tell a registration from a dead server
+	// incarnation apart from one on today's session that reused its ID.
+	// Creation time is immutable for a session's lifetime (unlike its
+	// name), so a mismatch is proof of a recycled ID. 0 = unknown (not in
+	// tmux, or a pre-upgrade registration).
+	SessionCreated int64
 }
 
 // SocketFromEnv returns the tmux socket path from $TMUX ("<socket>,<pid>,<idx>").
@@ -74,13 +85,23 @@ func query(socket, target, format string) string {
 	return out
 }
 
-// IsSessionAlive reports whether the tmux session still exists on the socket.
-func IsSessionAlive(socket, sessionID string) bool {
+// IsSessionAlive reports whether the tmux session a registration was captured
+// from still exists on the socket. created is the registration's recorded
+// #{session_created} (store.Agent.SessionCreated): tmux recycles session IDs
+// from $0 across server restarts, so existence of a session with the same ID
+// is not enough — a live session whose creation time differs from the
+// recorded one is a NEW incarnation, and the registration is dead. created ==
+// 0 (a pre-upgrade row, or one captured outside tmux) cannot discriminate and
+// falls back to bare existence, exactly the pre-created behavior.
+func IsSessionAlive(socket, sessionID string, created int64) bool {
 	if socket == "" || sessionID == "" {
 		return false
 	}
-	_, err := Run("-S", socket, "has-session", "-t", sessionID)
-	return err == nil
+	out := query(socket, sessionID, "#{session_created}")
+	if out == "" {
+		return false // session gone (or tmux unreachable): dead either way
+	}
+	return created == 0 || out == strconv.FormatInt(created, 10)
 }
 
 // SessionAttached reports whether at least one human tmux client is
@@ -197,6 +218,7 @@ func CaptureEnv() Capture {
 	}
 	c.SessionID = query(socket, pane, "#{session_id}")
 	c.SessionName = query(socket, pane, "#{session_name}")
+	c.SessionCreated, _ = strconv.ParseInt(query(socket, pane, "#{session_created}"), 10, 64)
 	c.Label, c.LabelManual = SessionLabel(socket, pane)
 	return c
 }

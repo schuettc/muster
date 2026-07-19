@@ -16,9 +16,13 @@ import "github.com/schuettc/muster/internal/resolve"
 //
 // The daemon builds resolve.Candidate from store.Agent's STORED
 // label/label_manual, never a live tmux re-read — internal/daemon is
-// tmux-agnostic by rule (CLAUDE.md), so a label change only takes effect
-// here once the owning agent's next register_agent upsert lands it in the
-// store, exactly as every other daemon-side view of label already works.
+// tmux-agnostic by rule (CLAUDE.md). The stored copy is kept current by the
+// writers: `muster label` pushes its change here via the set_label op in the
+// same command that sets the tmux option (see humancli.syncLabelToBus), and
+// register_agent's upsert re-captures it — so this resolver and the CLI's
+// live-tmux resolver see the same manual labels, not eventually-consistent
+// ones. (A label written by raw tmux set-option, bypassing muster, still
+// only lands at the next register.)
 func (d *Daemon) resolveAgentTarget(from, given string) (string, error) {
 	agents, err := d.s.ListAgents()
 	if err != nil {

@@ -31,6 +31,8 @@ type storeAPI interface {
 	ListAgents() ([]store.Agent, error)
 	GetAgent(alias string) (store.Agent, bool, error)
 	DepartAgent(alias string) error
+	DepartStaleSiblings(socketPath, sessionID string, created int64, keepAlias string) ([]string, error)
+	SetSessionLabel(socketPath, sessionID, label string, manual bool) (int64, error)
 	DeleteAgent(alias string) error
 	CreateThread(t store.Thread, firstBody string) (int64, error)
 	AppendEntry(threadID int64, fromAgent, body, statusChange string) (int64, error)
@@ -205,8 +207,8 @@ func (d *Daemon) handleRegisterAgent(a map[string]any) proto.Response {
 	newAgent := store.Agent{
 		Alias: alias, Role: str(a, "role"), ModelType: str(a, "model_type"),
 		SocketPath: str(a, "socket_path"), PaneID: str(a, "pane_id"), SessionName: str(a, "session_name"),
-		SessionID: str(a, "session_id"),
-		Project:   str(a, "project"), Label: str(a, "label"), LabelManual: boolArg(a, "label_manual"),
+		SessionID: str(a, "session_id"), SessionCreated: i64(a, "session_created"),
+		Project: str(a, "project"), Label: str(a, "label"), LabelManual: boolArg(a, "label_manual"),
 	}
 
 	var mu *sync.Mutex
@@ -224,6 +226,18 @@ func (d *Daemon) handleRegisterAgent(a map[string]any) proto.Response {
 		return fail(fmt.Errorf("register_agent: if_absent conflict: alias %q is already registered to a different session", alias))
 	}
 	if err := d.s.RegisterAgent(newAgent); err != nil {
+		return fail(err)
+	}
+	// Ghost reaping: tombstone sibling aliases claiming this same (socket,
+	// session_id) tuple under a DIFFERENT non-zero session_created — leftovers
+	// from a previous tmux server incarnation whose session ID was recycled
+	// (tmux numbers sessions from $0 again after a server restart). The
+	// registrant just captured session_created from the pane it is live in, so
+	// any sibling recorded under another creation time is provably dead — a
+	// pure stored-data inference, keeping the daemon tmux-agnostic. Must run
+	// before the badge reconciliation below so the pushed alias list never
+	// includes a ghost.
+	if _, err := d.s.DepartStaleSiblings(newAgent.SocketPath, newAgent.SessionID, newAgent.SessionCreated, alias); err != nil {
 		return fail(err)
 	}
 	// Reconciliation (spec §3): rewrite the badge for both the OLD tuple
@@ -648,6 +662,17 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 			d.reconcileBadge(old.SocketPath, old.SessionID)
 		}
 		return ok(nil)
+	case "set_label":
+		// The bus-side half of `muster label` (see store.SetSessionLabel):
+		// the CLI has already written the live tmux option; this lands the
+		// same value in the store so the daemon's resolver (which never
+		// re-reads tmux) agrees with the CLI's live-label resolution
+		// immediately, not at the next register_agent upsert.
+		n, err := d.s.SetSessionLabel(str(a, "socket_path"), str(a, "session_id"), str(a, "label"), boolArg(a, "label_manual"))
+		if err != nil {
+			return fail(err)
+		}
+		return ok(map[string]any{"updated": n})
 	case "purge_agent":
 		// The explicit, irreversible hard-delete: `muster gc --purge-agents`'s
 		// own op, distinct from deregister_agent's tombstone. Identity,

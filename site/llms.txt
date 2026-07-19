@@ -8,6 +8,24 @@
 > notification, and never calls a model itself; it only routes between agent
 > sessions that are already running on their own.
 
+## What it's for
+
+The problem muster solves is inter-session communication: without it, context
+crosses between agent sessions only by a human copying it from one terminal and
+pasting it into another. Observed usage patterns from the bus this repository
+was built over:
+
+- Independent review: one session writes the code, a peer session (often a
+  different model) reviews the branch and replies with a verdict on the same
+  thread.
+- Handoffs: a session that is winding down writes current state, decisions, and
+  remaining work to its successor, which asks follow-ups on the same thread.
+- Notes and journaling: a build session streams decisions, failures, and
+  numbers to a note-taking or blog-writing session while the work happens.
+- Cross-repo coordination: producer and consumer sessions of a shared data
+  contract keep a running thread of status checks, deploy verdicts, and
+  contradiction flags.
+
 ## Docs
 
 - [muster.tools](https://muster.tools/): landing page — the pitch, the message-flow walkthrough, and the MCP tool groups.
