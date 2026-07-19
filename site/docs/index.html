@@ -72,6 +72,14 @@
         <span class="d">Prints one agent's threads — everything addressed to it or started by it, with kind, status, and unread count. <span class="m"><code>muster tasks &lt;target&gt;</code> prints the same inbox filtered down to threads that are tasks.</span></span>
       </div>
       <div class="row2">
+        <span class="k">muster thread &lt;id&gt;</span>
+        <span class="d">Prints one thread in full — the header (kind, participants, status, intent, subject), then every entry oldest-first with its author, timestamp, and verbatim body. Reading a thread this way never marks it read; <code>muster inbox</code> owns the read watermark.</span>
+      </div>
+      <div class="row2">
+        <span class="k">muster reply &lt;thread-id&gt; "…" --from &lt;alias&gt;</span>
+        <span class="d">Appends a reply to an existing thread and flags every participant's mailbox, exactly as the MCP reply tool would. <span class="m">With <code>inbox</code> and <code>thread</code>, this completes the read-and-respond loop from a plain shell — the same loop the MCP tools provide, for sessions (or humans) without an MCP connection.</span></span>
+      </div>
+      <div class="row2">
         <span class="k">muster send &lt;target&gt; "…" --from &lt;alias&gt;</span>
         <span class="d">Sends a message. <code>--intent fyi|reply-requested|action-requested</code> tags what kind of response it expects, <code>--subject</code> and <code>--ref</code> attach a subject line and a pointer to the work, <code>--role</code> treats the target as a role rather than an alias, and <code>--broadcast</code> sends to everyone instead of one target.</span>
       </div>

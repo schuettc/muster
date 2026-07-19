@@ -14,8 +14,8 @@ import (
 // Keep this in sync with CLAUDE.md's package-map/usage line and
 // cmd/muster/main.go's routing comment.
 var wantCommandNames = []string{
-	"send", "nudge",
-	"agents", "inbox", "tasks", "events", "watch", "station",
+	"send", "nudge", "reply",
+	"agents", "inbox", "tasks", "thread", "events", "watch", "station",
 	"register", "deregister", "label", "gc",
 	"serve", "mcp", "hook", "debug",
 }
