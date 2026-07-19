@@ -22,7 +22,7 @@ func enrichAgents(rows []agentRow) []enrichedAgent {
 	out := make([]enrichedAgent, 0, len(rows))
 	for _, a := range rows {
 		e := enrichedAgent{agentRow: a, EffLabel: a.Label, EffManual: a.LabelManual}
-		e.Live = tmuxenv.IsSessionAlive(a.SocketPath, a.SessionID)
+		e.Live = tmuxenv.IsSessionAlive(a.SocketPath, a.SessionID, a.SessionCreated)
 		if e.Live {
 			e.EffLabel, e.EffManual = tmuxenv.SessionLabel(a.SocketPath, a.SessionID)
 		}

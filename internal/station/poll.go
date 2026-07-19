@@ -75,14 +75,15 @@ func fetchBacklogEventsCmd(caller render.Caller, limit int, gen int64) tea.Cmd {
 // the daemon, like humancli (see internal/humancli.agentRow); it decodes its
 // own copy rather than importing internal/humancli or internal/store.
 type agentRow struct {
-	Alias       string `json:"alias"`
-	Role        string `json:"role"`
-	ModelType   string `json:"model_type"`
-	SocketPath  string `json:"socket_path"`
-	SessionID   string `json:"session_id"`
-	Project     string `json:"project"`
-	Label       string `json:"label"`
-	LabelManual bool   `json:"label_manual"`
+	Alias          string `json:"alias"`
+	Role           string `json:"role"`
+	ModelType      string `json:"model_type"`
+	SocketPath     string `json:"socket_path"`
+	SessionID      string `json:"session_id"`
+	SessionCreated int64  `json:"session_created"`
+	Project        string `json:"project"`
+	Label          string `json:"label"`
+	LabelManual    bool   `json:"label_manual"`
 }
 
 func fetchAgentsCmd(caller render.Caller) tea.Cmd {
@@ -118,7 +119,7 @@ func fetchAgents(caller render.Caller) ([]agentEnriched, error) {
 			Label: a.Label, LabelManual: a.LabelManual,
 			SocketPath: a.SocketPath, SessionID: a.SessionID,
 		}
-		e.Live = tmuxenv.IsSessionAlive(a.SocketPath, a.SessionID)
+		e.Live = tmuxenv.IsSessionAlive(a.SocketPath, a.SessionID, a.SessionCreated)
 		if e.Live {
 			e.Label, e.LabelManual = tmuxenv.SessionLabel(a.SocketPath, a.SessionID)
 		}

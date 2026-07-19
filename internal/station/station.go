@@ -133,13 +133,16 @@ func Run(args []string) error {
 // loudly instead of looping forever.
 const maxStationSuffix = 50
 
-// agentTuple is the (socket_path, session_id) half of get_agent's response
-// station needs for collision/ownership comparisons.
+// agentTuple is the (socket_path, session_id, session_created) slice of
+// get_agent's response station needs for collision/ownership comparisons —
+// session_created feeds the liveness check's recycled-session-ID
+// discrimination (see tmuxenv.IsSessionAlive).
 type agentTuple struct {
 	Found bool `json:"found"`
 	Agent struct {
-		SocketPath string `json:"socket_path"`
-		SessionID  string `json:"session_id"`
+		SocketPath     string `json:"socket_path"`
+		SessionID      string `json:"session_id"`
+		SessionCreated int64  `json:"session_created"`
 	} `json:"agent"`
 }
 
@@ -183,13 +186,14 @@ func registerStation(caller render.Caller, alias string, c tmuxenv.Capture) (str
 		}
 		sameTuple := res.Agent.SocketPath == c.SocketPath && res.Agent.SessionID == c.SessionID
 		deadTakeover := res.Found && !sameTuple
-		if deadTakeover && tmuxenv.IsSessionAlive(res.Agent.SocketPath, res.Agent.SessionID) {
+		if deadTakeover && tmuxenv.IsSessionAlive(res.Agent.SocketPath, res.Agent.SessionID, res.Agent.SessionCreated) {
 			continue // LIVE collision with a different tuple: try the next suffix
 		}
 		regArgs := map[string]any{
 			"alias": candidate, "role": "operator", "model_type": "station",
 			"session_name": c.SessionName, "session_id": c.SessionID,
-			"socket_path": c.SocketPath, "pane_id": c.PaneID,
+			"session_created": c.SessionCreated,
+			"socket_path":     c.SocketPath, "pane_id": c.PaneID,
 			"project": c.Project, "label": c.Label, "label_manual": c.LabelManual,
 		}
 		if !deadTakeover {

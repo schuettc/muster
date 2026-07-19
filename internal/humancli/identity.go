@@ -62,7 +62,8 @@ func cmdRegister(args []string, out io.Writer) error {
 	if _, err := callData("register_agent", map[string]any{
 		"alias": alias, "role": *role, "model_type": *model,
 		"session_name": c.SessionName, "session_id": c.SessionID,
-		"socket_path": c.SocketPath, "pane_id": c.PaneID,
+		"session_created": c.SessionCreated,
+		"socket_path":     c.SocketPath, "pane_id": c.PaneID,
 		"project": c.Project, "label": c.Label, "label_manual": c.LabelManual,
 	}); err != nil {
 		return err
@@ -146,7 +147,7 @@ func cmdGC(args []string, out io.Writer) error {
 	if *purgeAgents {
 		purged := 0
 		for _, a := range agents {
-			if !a.Departed && tmuxenv.IsSessionAlive(a.SocketPath, a.SessionID) {
+			if !a.Departed && tmuxenv.IsSessionAlive(a.SocketPath, a.SessionID, a.SessionCreated) {
 				continue // still live and never departed: nothing to purge
 			}
 			if _, err := callData("purge_agent", map[string]any{"alias": a.Alias}); err != nil {
@@ -163,7 +164,7 @@ func cmdGC(args []string, out io.Writer) error {
 	} else {
 		tombstoned := 0
 		for _, a := range agents {
-			if a.Departed || tmuxenv.IsSessionAlive(a.SocketPath, a.SessionID) {
+			if a.Departed || tmuxenv.IsSessionAlive(a.SocketPath, a.SessionID, a.SessionCreated) {
 				continue // already history, or still alive: nothing to do
 			}
 			if _, err := callData("deregister_agent", map[string]any{"alias": a.Alias}); err != nil {

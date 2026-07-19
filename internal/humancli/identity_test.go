@@ -121,11 +121,12 @@ func TestGCTombstonesOnlyDeadAgents(t *testing.T) {
 	registerViaDaemon(t, sock, "dead", "/s", "$DEAD")
 	prev := tmuxenv.Run
 	tmuxenv.Run = func(args ...string) (string, error) {
-		// has-session succeeds only for $ALIVE
-		if len(args) >= 5 && args[2] == "has-session" && args[4] == "$ALIVE" {
-			return "", nil
-		}
-		if len(args) >= 3 && args[2] == "has-session" {
+		// the liveness probe (display-message … '#{session_created}', see
+		// tmuxenv.IsSessionAlive) answers only for $ALIVE
+		if len(args) >= 7 && args[6] == "#{session_created}" {
+			if args[5] == "$ALIVE" {
+				return "1784000000", nil
+			}
 			return "", fmt.Errorf("dead")
 		}
 		return "", nil
@@ -175,10 +176,10 @@ func TestGCPurgeAgentsHardDeletes(t *testing.T) {
 	registerViaDaemon(t, sock, "freshly-dead", "/s", "$DEAD")
 	prev := tmuxenv.Run
 	tmuxenv.Run = func(args ...string) (string, error) {
-		if len(args) >= 5 && args[2] == "has-session" && args[4] == "$ALIVE" {
-			return "", nil
-		}
-		if len(args) >= 3 && args[2] == "has-session" {
+		if len(args) >= 7 && args[6] == "#{session_created}" {
+			if args[5] == "$ALIVE" {
+				return "1784000000", nil
+			}
 			return "", fmt.Errorf("dead")
 		}
 		return "", nil

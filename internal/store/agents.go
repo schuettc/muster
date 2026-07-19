@@ -16,8 +16,8 @@ import (
 func (s *Store) RegisterAgent(a Agent) error {
 	now := clock.NowMillis()
 	_, err := s.db.Exec(`
-INSERT INTO agents (alias, role, model_type, socket_path, pane_id, session_name, session_id, project, label, label_manual, departed, registered_at, last_seen)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+INSERT INTO agents (alias, role, model_type, socket_path, pane_id, session_name, session_id, session_created, project, label, label_manual, departed, registered_at, last_seen)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
 ON CONFLICT(alias) DO UPDATE SET
     role=excluded.role,
     model_type=excluded.model_type,
@@ -25,12 +25,13 @@ ON CONFLICT(alias) DO UPDATE SET
     pane_id=excluded.pane_id,
     session_name=excluded.session_name,
     session_id=excluded.session_id,
+    session_created=excluded.session_created,
     project=excluded.project,
     label=excluded.label,
     label_manual=excluded.label_manual,
     departed=0,
     last_seen=excluded.last_seen`,
-		a.Alias, a.Role, a.ModelType, a.SocketPath, a.PaneID, a.SessionName, a.SessionID,
+		a.Alias, a.Role, a.ModelType, a.SocketPath, a.PaneID, a.SessionName, a.SessionID, a.SessionCreated,
 		a.Project, a.Label, a.LabelManual, now, now)
 	return err
 }
@@ -39,7 +40,7 @@ ON CONFLICT(alias) DO UPDATE SET
 // agents included: their rows are history, not gone (see DepartAgent).
 func (s *Store) ListAgents() ([]Agent, error) {
 	rows, err := s.db.Query(`
-SELECT alias, role, model_type, socket_path, pane_id, session_name, session_id, project, label, label_manual, registered_at, last_seen, last_read_entry_id, departed
+SELECT alias, role, model_type, socket_path, pane_id, session_name, session_id, session_created, project, label, label_manual, registered_at, last_seen, last_read_entry_id, departed
 FROM agents ORDER BY alias`)
 	if err != nil {
 		return nil, err
@@ -48,7 +49,7 @@ FROM agents ORDER BY alias`)
 	var out []Agent
 	for rows.Next() {
 		var a Agent
-		if err := rows.Scan(&a.Alias, &a.Role, &a.ModelType, &a.SocketPath, &a.PaneID, &a.SessionName, &a.SessionID, &a.Project, &a.Label, &a.LabelManual, &a.RegisteredAt, &a.LastSeen, &a.LastReadEntryID, &a.Departed); err != nil {
+		if err := rows.Scan(&a.Alias, &a.Role, &a.ModelType, &a.SocketPath, &a.PaneID, &a.SessionName, &a.SessionID, &a.SessionCreated, &a.Project, &a.Label, &a.LabelManual, &a.RegisteredAt, &a.LastSeen, &a.LastReadEntryID, &a.Departed); err != nil {
 			return nil, err
 		}
 		out = append(out, a)
@@ -62,9 +63,9 @@ FROM agents ORDER BY alias`)
 func (s *Store) GetAgent(alias string) (Agent, bool, error) {
 	var a Agent
 	err := s.db.QueryRow(`
-SELECT alias, role, model_type, socket_path, pane_id, session_name, session_id, project, label, label_manual, registered_at, last_seen, last_read_entry_id, departed
+SELECT alias, role, model_type, socket_path, pane_id, session_name, session_id, session_created, project, label, label_manual, registered_at, last_seen, last_read_entry_id, departed
 FROM agents WHERE alias=?`, alias).
-		Scan(&a.Alias, &a.Role, &a.ModelType, &a.SocketPath, &a.PaneID, &a.SessionName, &a.SessionID, &a.Project, &a.Label, &a.LabelManual, &a.RegisteredAt, &a.LastSeen, &a.LastReadEntryID, &a.Departed)
+		Scan(&a.Alias, &a.Role, &a.ModelType, &a.SocketPath, &a.PaneID, &a.SessionName, &a.SessionID, &a.SessionCreated, &a.Project, &a.Label, &a.LabelManual, &a.RegisteredAt, &a.LastSeen, &a.LastReadEntryID, &a.Departed)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Agent{}, false, nil
 	}
@@ -90,6 +91,51 @@ func (s *Store) TouchAgent(alias string) error {
 func (s *Store) DepartAgent(alias string) error {
 	_, err := s.db.Exec(`UPDATE agents SET departed=1 WHERE alias=?`, alias)
 	return err
+}
+
+// DepartStaleSiblings tombstones every OTHER non-departed alias registered to
+// the same (socketPath, sessionID) tuple whose session_created differs from
+// created — ghosts from a previous tmux server incarnation whose session ID
+// was recycled. The inference needs no tmux access (the daemon stays
+// tmux-agnostic): creation time is immutable for a session's lifetime, so two
+// rows claiming one session ID with different non-zero creation times cannot
+// both be live, and the caller vouches that created is the CURRENT session's
+// (it just captured it from the live pane it is registering from). Rows with
+// session_created 0 are spared — a pre-upgrade registration on the same
+// still-running session is indistinguishable from a ghost, and it self-heals
+// to a real value the next time that agent re-registers. No-op (0, nil) when
+// any tuple component is empty/zero. Returns the tombstoned aliases so the
+// caller can reconcile their badges.
+func (s *Store) DepartStaleSiblings(socketPath, sessionID string, created int64, keepAlias string) ([]string, error) {
+	if socketPath == "" || sessionID == "" || created == 0 {
+		return nil, nil
+	}
+	rows, err := s.db.Query(`
+SELECT alias FROM agents
+WHERE socket_path=? AND session_id=? AND departed=0
+  AND session_created != 0 AND session_created != ? AND alias != ?`,
+		socketPath, sessionID, created, keepAlias)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var stale []string
+	for rows.Next() {
+		var alias string
+		if err := rows.Scan(&alias); err != nil {
+			return nil, err
+		}
+		stale = append(stale, alias)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	for _, alias := range stale {
+		if err := s.DepartAgent(alias); err != nil {
+			return nil, err
+		}
+	}
+	return stale, nil
 }
 
 // DeleteAgent hard-deletes an agent's registration by alias — irreversible:
