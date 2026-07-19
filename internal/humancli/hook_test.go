@@ -119,6 +119,9 @@ func TestHookStopUnreadEmitsBlockDecision(t *testing.T) {
 	if strings.Contains(res.Reason, "needing action") {
 		t.Fatalf("no action-requested thread: reason must not mention action count: %q", res.Reason)
 	}
+	if !strings.Contains(res.Reason, "muster inbox 'backend'") || !strings.Contains(res.Reason, "muster reply") {
+		t.Fatalf("reason must carry the CLI fallback (a dead MCP connection must not strand the agent): %q", res.Reason)
+	}
 }
 
 // TestHookStopMultiAliasListsAllSorted: a session with two sibling aliases
@@ -158,6 +161,9 @@ func TestHookStopMultiAliasListsAllSorted(t *testing.T) {
 	}
 	if !strings.Contains(res.Reason, "For EACH alias call get_inbox") {
 		t.Fatalf("reason must carry the for-each drain instruction: %q", res.Reason)
+	}
+	if !strings.Contains(res.Reason, "muster inbox '<alias>'") {
+		t.Fatalf("reason must carry the CLI fallback with the <alias> placeholder: %q", res.Reason)
 	}
 }
 

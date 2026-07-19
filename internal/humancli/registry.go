@@ -117,6 +117,20 @@ the operator (or the agent) to submit by hand.`,
 			Run:      cmdNudge,
 		},
 		{
+			Name:     "reply",
+			Synopsis: `reply <thread-id> "body" [--from <alias>]`,
+			Summary:  "Append a reply to an existing thread.",
+			Help: `The CLI half of the MCP reply tool: appends an entry to the thread and
+flags every participant's mailbox, exactly as a tool-sent reply would.
+--from is the replying agent's alias (default "human"). Together with
+'muster inbox' and 'muster thread' this completes the read-and-respond
+loop from a plain shell — the fallback when a session has no muster MCP
+connection.`,
+			Group:    GroupTalk,
+			NewFlags: newReplyFlags,
+			Run:      cmdReply,
+		},
+		{
 			Name:     "agents",
 			Synopsis: "agents",
 			Summary:  "List registered agents, grouped by project, with live status.",
@@ -144,6 +158,17 @@ the operator (or the agent) to submit by hand.`,
 			Help:     `Same as 'muster inbox' but filtered to kind=task threads only.`,
 			Group:    GroupWatch,
 			Run:      cmdTasks,
+		},
+		{
+			Name:     "thread",
+			Synopsis: "thread <id>",
+			Summary:  "Show one thread's full conversation.",
+			Help: `Prints the thread header (kind, participants, status, intent, subject)
+then every entry oldest-first with author, timestamp, and the verbatim
+body. The CLI half of the MCP get_thread tool. Side-effect-free: printing
+a thread never marks it read — 'muster inbox' owns the read watermark.`,
+			Group: GroupWatch,
+			Run:   cmdThread,
 		},
 		{
 			Name:     "events",
