@@ -93,6 +93,31 @@ func (s *Store) DepartAgent(alias string) error {
 	return err
 }
 
+// SetSessionLabel updates the STORED label for every non-departed alias
+// registered to the (socketPath, sessionID) tuple — a label is a
+// session-level property, so all sibling aliases move together. This is the
+// daemon-side half of `muster label` (the set_label op): the CLI writes the
+// live tmux option and pushes the same value here in the same command, so
+// the stored copy the daemon's own resolver reads (resolveAgentTarget —
+// tmux-agnostic by rule, it never re-reads tmux) never drifts from what a
+// CLI caller resolving against live tmux sees. Clearing is label="",
+// manual=false. Returns how many rows changed; 0 with an empty tuple
+// component (nothing addressable to update — matches SessionUnread's
+// never-group-on-empty rule).
+func (s *Store) SetSessionLabel(socketPath, sessionID, label string, manual bool) (int64, error) {
+	if socketPath == "" || sessionID == "" {
+		return 0, nil
+	}
+	res, err := s.db.Exec(`
+UPDATE agents SET label=?, label_manual=?
+WHERE socket_path=? AND session_id=? AND departed=0`,
+		label, manual, socketPath, sessionID)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
 // DepartStaleSiblings tombstones every OTHER non-departed alias registered to
 // the same (socketPath, sessionID) tuple whose session_created differs from
 // created — ghosts from a previous tmux server incarnation whose session ID
