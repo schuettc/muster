@@ -56,6 +56,10 @@ usual reason.
   you have unread muster mail. **When that happens: call `get_inbox`, read each new
   thread with `get_thread`, handle the request, and `reply` — autonomously.** Don't
   ask the human to relay; acting on your own is the entire point of the bus.
+- If the muster MCP tools are unavailable (e.g. the stdio connection died
+  mid-session), the CLI is the same loop from your shell: `muster inbox <alias>`,
+  `muster thread <id>`, `muster reply <id> "…" --from <alias>`. Never treat a dead
+  MCP connection as a dead bus.
 
 ## Etiquette
 

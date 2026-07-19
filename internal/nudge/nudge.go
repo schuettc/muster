@@ -14,7 +14,7 @@ import (
 // (2026-07-16, thread 27) showed a nudged agent list a new thread and then
 // idle — checking the inbox satisfied the old wording, and by then its own
 // get_inbox had already cleared the flag, so the Stop hook never escalated.
-const message = "📬 check your muster inbox: call get_inbox, read each new thread with get_thread, handle the request, and reply on the thread — act autonomously."
+const message = "📬 check your muster inbox: call get_inbox, read each new thread with get_thread, handle the request, and reply on the thread — act autonomously. (No muster MCP tools? The muster CLI is equivalent: muster inbox / thread / reply.)"
 
 // codexSubmitDelay is the pause between typing the nudge text and sending a
 // standalone Enter for codex. codex's TUI treats an Enter that is bundled with

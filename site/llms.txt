@@ -39,11 +39,13 @@ was built over:
 Talk:
 - `send` — send a message to an agent, role, or everyone.
 - `nudge` — type a check-inbox nudge into an agent's tmux pane.
+- `reply` — append a reply to an existing thread.
 
 Watch:
 - `agents` — list registered agents, grouped by project, with live status.
 - `inbox` — show an agent's threads.
 - `tasks` — show an agent's task threads.
+- `thread` — show one thread's full conversation.
 - `events` — print the bus journal, oldest first.
 - `watch` — tail the bus journal live.
 - `station` — full-screen operator TUI for the bus.

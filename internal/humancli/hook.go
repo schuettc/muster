@@ -258,7 +258,11 @@ func hookStopOwnsAnyAlias(aliases []string) bool {
 // singular (today's wording, unchanged) for exactly one alias, and a
 // for-each instruction across all of them when the session has more than
 // one — a split-identity session must drain every alias, not just the one
-// the hook happened to observe.
+// the hook happened to observe. Both variants end with the CLI fallback
+// (cliFallback): the MCP tools are the advertised path, but a session whose
+// stdio connection has died (e.g. the binary was replaced under it) must
+// not be stranded following instructions it can no longer execute — the
+// same loop runs from any shell.
 func hookReason(total, action int, aliases []string) string {
 	countLine := fmt.Sprintf("You have %d unread muster thread(s)", total)
 	if action > 0 {
@@ -273,8 +277,9 @@ func hookReason(total, action int, aliases []string) string {
 		return fmt.Sprintf(
 			"%s. Your muster alias is '%s' (this tmux session). "+
 				"Call your muster get_inbox tool now with alias '%s', read each new thread with get_thread, "+
-				"handle the request, and reply with the muster reply tool. Act autonomously — do not ask the user.",
-			countLine, alias, alias,
+				"handle the request, and reply with the muster reply tool. Act autonomously — do not ask the user. "+
+				cliFallback,
+			countLine, alias, alias, alias, alias,
 		)
 	}
 
@@ -285,7 +290,14 @@ func hookReason(total, action int, aliases []string) string {
 	return fmt.Sprintf(
 		"%s. Your muster aliases are %s (this tmux session). "+
 			"For EACH alias call get_inbox, read each new thread with get_thread, handle the request, "+
-			"and reply with the muster reply tool. Act autonomously — do not ask the user.",
-		countLine, strings.Join(quoted, ", "),
+			"and reply with the muster reply tool. Act autonomously — do not ask the user. "+
+			cliFallback,
+		countLine, strings.Join(quoted, ", "), "<alias>", "<alias>",
 	)
 }
+
+// cliFallback is the shell-equivalent loop appended to every hook reason.
+// %s is the alias to drain (the literal placeholder "<alias>" in the
+// multi-alias variant, where the agent substitutes each of its own).
+const cliFallback = "(If the muster MCP tools are unavailable, the muster CLI is equivalent: " +
+	"`muster inbox '%s'`, `muster thread <id>`, `muster reply <id> \"...\" --from '%s'`.)"
