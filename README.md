@@ -247,14 +247,11 @@ The muster binary is its own hook — point your harness at `muster hook <event>
 <model>` (e.g. `muster hook Stop claude`). Copy-paste config for both Claude
 Code and Codex is in [`contrib/`](contrib/README.md).
 
-**Pane ownership.** Harnesses often spawn subagents as sibling panes in the
-same tmux session, running the same hooks. Hook events therefore act only when
-the calling pane owns the session's registered identity — first live claimant
-wins (normally your main conversation); later panes no-op instead of stealing
-the registration, draining the primary's mail, or deregistering it on exit. A
-dead owner's pane is taken over on the next SessionStart (a normal restart),
-and the explicit `muster register` / `muster deregister` commands are never
-gated — typing a command overrides.
+**Pane ownership.** Only the session's primary agent pane acts on these
+hooks — a second Claude in the same tmux session (e.g. a spawned subagent)
+won't register, drain mail, or deregister. To move the identity deliberately,
+run `muster register` from the pane that should own it — the explicit
+commands always override.
 
 ## License
 
