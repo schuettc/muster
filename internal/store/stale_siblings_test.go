@@ -73,3 +73,34 @@ func TestRegisterAgentRoundTripsSessionCreated(t *testing.T) {
 		t.Fatalf("ListAgents = (%+v, %v), want one row with SessionCreated 1784111111", list, err)
 	}
 }
+
+// TestSetSessionLabel: the set_label op's store half updates every
+// non-departed alias on the tuple and nothing else.
+func TestSetSessionLabel(t *testing.T) {
+	s := newTestStore(t)
+	for _, a := range []Agent{
+		{Alias: "a", SocketPath: "/s", SessionID: "$0"},
+		{Alias: "b", SocketPath: "/s", SessionID: "$0"},
+		{Alias: "other", SocketPath: "/s", SessionID: "$1"},
+	} {
+		if err := s.RegisterAgent(a); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.DepartAgent("b"); err != nil {
+		t.Fatal(err)
+	}
+	n, err := s.SetSessionLabel("/s", "$0", "datalake", true)
+	if err != nil || n != 1 {
+		t.Fatalf("SetSessionLabel = (%d, %v), want 1 row (departed sibling and other session spared)", n, err)
+	}
+	for alias, want := range map[string]string{"a": "datalake", "b": "", "other": ""} {
+		got, _, err := s.GetAgent(alias)
+		if err != nil || got.Label != want {
+			t.Errorf("%s: label=%q (err %v), want %q", alias, got.Label, err, want)
+		}
+	}
+	if n, err := s.SetSessionLabel("", "$0", "x", true); err != nil || n != 0 {
+		t.Fatalf("empty socket must be a no-op, got (%d, %v)", n, err)
+	}
+}

@@ -32,6 +32,7 @@ type storeAPI interface {
 	GetAgent(alias string) (store.Agent, bool, error)
 	DepartAgent(alias string) error
 	DepartStaleSiblings(socketPath, sessionID string, created int64, keepAlias string) ([]string, error)
+	SetSessionLabel(socketPath, sessionID, label string, manual bool) (int64, error)
 	DeleteAgent(alias string) error
 	CreateThread(t store.Thread, firstBody string) (int64, error)
 	AppendEntry(threadID int64, fromAgent, body, statusChange string) (int64, error)
@@ -661,6 +662,17 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 			d.reconcileBadge(old.SocketPath, old.SessionID)
 		}
 		return ok(nil)
+	case "set_label":
+		// The bus-side half of `muster label` (see store.SetSessionLabel):
+		// the CLI has already written the live tmux option; this lands the
+		// same value in the store so the daemon's resolver (which never
+		// re-reads tmux) agrees with the CLI's live-label resolution
+		// immediately, not at the next register_agent upsert.
+		n, err := d.s.SetSessionLabel(str(a, "socket_path"), str(a, "session_id"), str(a, "label"), boolArg(a, "label_manual"))
+		if err != nil {
+			return fail(err)
+		}
+		return ok(map[string]any{"updated": n})
 	case "purge_agent":
 		// The explicit, irreversible hard-delete: `muster gc --purge-agents`'s
 		// own op, distinct from deregister_agent's tombstone. Identity,
