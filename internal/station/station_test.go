@@ -60,6 +60,16 @@ func stubTmuxAlive(t *testing.T, aliveSocket, aliveSessionID string) {
 	t.Cleanup(func() { tmuxenv.Run = prev })
 }
 
+// stubTmuxAllAlive makes every has-session probe answer "alive", for tests
+// where any observed collision must be treated as live (defer to it) rather
+// than dead (take it over).
+func stubTmuxAllAlive(t *testing.T) {
+	t.Helper()
+	prev := tmuxenv.Run
+	tmuxenv.Run = func(...string) (string, error) { return "", nil }
+	t.Cleanup(func() { tmuxenv.Run = prev })
+}
+
 var errNoSuchSession = &stationTestError{"can't find session"}
 
 type stationTestError struct{ msg string }
@@ -435,11 +445,15 @@ func TestDepartedAgentSurvivesUnderTheBar(t *testing.T) {
 // TestRegisterStationIfAbsentRaceFailsOverToNextSuffix covers the T7-deferred
 // CAS race directly: two registerStation calls racing onto the SAME fresh
 // alias concurrently must never both believe they won — the loser must fail
-// over to "station-2" via the if_absent conflict path rather than either
-// silently overwriting the other or erroring out.
+// over to "station-2", either via the if_absent conflict path (both probed
+// before either registered) or via the live-collision probe path (one probed
+// after the other registered). Both racers' tuples must read as ALIVE here:
+// with a dead-everything stub, a racer observing the other's fresh
+// registration takes the dead-takeover path and clobbers it by design —
+// that's the flake #54 chased, not a CAS hole.
 func TestRegisterStationIfAbsentRaceFailsOverToNextSuffix(t *testing.T) {
 	startStationTestDaemon(t)
-	stubTmuxAlive(t, "", "") // nothing is alive; irrelevant (both starts see "not found")
+	stubTmuxAllAlive(t) // every tuple alive: collisions defer, never take over
 	caller := daemonCaller{}
 
 	c1 := tmuxenv.Capture{SocketPath: "/s1", SessionID: "$1", SessionName: "sess1", PaneID: "%1"}
