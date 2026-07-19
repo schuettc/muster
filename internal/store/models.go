@@ -10,18 +10,29 @@ const (
 
 // Agent is a registered participant on the bus.
 type Agent struct {
-	Alias        string `json:"alias"`
-	Role         string `json:"role"`
-	ModelType    string `json:"model_type"`
-	SocketPath   string `json:"socket_path"`
-	PaneID       string `json:"pane_id"`
-	SessionName  string `json:"session_name"`
-	SessionID    string `json:"session_id"`
-	Project      string `json:"project"`
-	Label        string `json:"label"`
-	LabelManual  bool   `json:"label_manual"`
-	RegisteredAt int64  `json:"registered_at"`
-	LastSeen     int64  `json:"last_seen"`
+	Alias       string `json:"alias"`
+	Role        string `json:"role"`
+	ModelType   string `json:"model_type"`
+	SocketPath  string `json:"socket_path"`
+	PaneID      string `json:"pane_id"`
+	SessionName string `json:"session_name"`
+	SessionID   string `json:"session_id"`
+	// SessionCreated is the tmux session's creation time (#{session_created},
+	// unix seconds) captured at register time — the incarnation half of the
+	// identity tuple. tmux recycles session IDs from $0 across server
+	// restarts, so (SocketPath, SessionID) alone cannot distinguish a
+	// registration from a dead server incarnation from one on today's session
+	// that reused its ID; creation time is immutable per session (unlike its
+	// name) so a mismatch proves the recorded session is gone. 0 = unknown
+	// (registered outside tmux, or before this column existed) — liveness
+	// then falls back to bare session existence. See tmuxenv.IsSessionAlive
+	// and Store.DepartStaleSiblings.
+	SessionCreated int64  `json:"session_created"`
+	Project        string `json:"project"`
+	Label          string `json:"label"`
+	LabelManual    bool   `json:"label_manual"`
+	RegisteredAt   int64  `json:"registered_at"`
+	LastSeen       int64  `json:"last_seen"`
 	// LastReadEntryID is the entry-ID read watermark (see MarkRead/UnreadCount
 	// in agents.go): the highest entries.id visible the last time this
 	// agent's inbox was read. Supersedes the wall-clock last_read_at for

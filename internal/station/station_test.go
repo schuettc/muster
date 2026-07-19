@@ -38,7 +38,8 @@ func startStationTestDaemon(t *testing.T) {
 	t.Cleanup(func() { _ = d.Close() })
 }
 
-// stubTmuxAlive replaces tmuxenv.Run so has-session reports "alive" only for
+// stubTmuxAlive replaces tmuxenv.Run so the liveness probe (display-message …
+// '#{session_created}', see tmuxenv.IsSessionAlive) reports "alive" only for
 // the given (socket, sessionID) tuple and "dead" (an error) for everything
 // else — station's collision logic shells out to real tmux via
 // tmuxenv.IsSessionAlive, so tests must control that answer directly rather
@@ -48,10 +49,10 @@ func stubTmuxAlive(t *testing.T, aliveSocket, aliveSessionID string) {
 	t.Helper()
 	prev := tmuxenv.Run
 	tmuxenv.Run = func(args ...string) (string, error) {
-		// has-session invocation shape: "-S", socket, "has-session", "-t", sessionID
-		if len(args) >= 5 && args[2] == "has-session" {
-			if args[1] == aliveSocket && args[4] == aliveSessionID {
-				return "", nil
+		// probe shape: "-S", socket, "display-message", "-p", "-t", sessionID, "#{session_created}"
+		if len(args) >= 7 && args[6] == "#{session_created}" {
+			if args[1] == aliveSocket && args[5] == aliveSessionID {
+				return "1784000000", nil
 			}
 			return "", errNoSuchSession
 		}
@@ -60,13 +61,18 @@ func stubTmuxAlive(t *testing.T, aliveSocket, aliveSessionID string) {
 	t.Cleanup(func() { tmuxenv.Run = prev })
 }
 
-// stubTmuxAllAlive makes every has-session probe answer "alive", for tests
+// stubTmuxAllAlive makes every liveness probe answer "alive", for tests
 // where any observed collision must be treated as live (defer to it) rather
 // than dead (take it over).
 func stubTmuxAllAlive(t *testing.T) {
 	t.Helper()
 	prev := tmuxenv.Run
-	tmuxenv.Run = func(...string) (string, error) { return "", nil }
+	tmuxenv.Run = func(args ...string) (string, error) {
+		if len(args) >= 7 && args[6] == "#{session_created}" {
+			return "1784000000", nil
+		}
+		return "", nil
+	}
 	t.Cleanup(func() { tmuxenv.Run = prev })
 }
 

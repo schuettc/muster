@@ -27,15 +27,21 @@ func TestProjectFromSocket(t *testing.T) {
 }
 
 func TestIsSessionAlive(t *testing.T) {
-	withRun(t, func(_ ...string) (string, error) { return "", nil })
-	if !IsSessionAlive("/s", "$1") {
-		t.Fatal("want alive when has-session exits 0")
+	withRun(t, func(_ ...string) (string, error) { return "1784000000", nil })
+	if !IsSessionAlive("/s", "$1", 1784000000) {
+		t.Fatal("want alive when the session exists and its creation time matches")
+	}
+	if !IsSessionAlive("/s", "$1", 0) {
+		t.Fatal("want alive on created=0 (legacy row): bare existence must suffice")
+	}
+	if IsSessionAlive("/s", "$1", 1770000000) {
+		t.Fatal("want dead on a creation-time mismatch: same session ID, but a new server incarnation recycled it")
 	}
 	withRun(t, func(_ ...string) (string, error) { return "", fmt.Errorf("no such session") })
-	if IsSessionAlive("/s", "$1") {
-		t.Fatal("want dead when has-session errors")
+	if IsSessionAlive("/s", "$1", 0) || IsSessionAlive("/s", "$1", 1784000000) {
+		t.Fatal("want dead when the session is gone, whatever the recorded creation time")
 	}
-	if IsSessionAlive("", "$1") || IsSessionAlive("/s", "") {
+	if IsSessionAlive("", "$1", 0) || IsSessionAlive("/s", "", 0) {
 		t.Fatal("empty socket/session must be dead")
 	}
 }
@@ -106,13 +112,15 @@ func TestCaptureEnvPopulated(t *testing.T) {
 			return "$7", nil
 		case "#{session_name}":
 			return "muster-2", nil
+		case "#{session_created}":
+			return "1784000000", nil
 		default: // label format
 			return "backend\x1f1", nil
 		}
 	})
 	c := CaptureEnv()
 	if c.Project != "muster" || c.SessionID != "$7" || c.SessionName != "muster-2" ||
-		c.Label != "backend" || !c.LabelManual {
+		c.SessionCreated != 1784000000 || c.Label != "backend" || !c.LabelManual {
 		t.Fatalf("capture=%+v", c)
 	}
 }

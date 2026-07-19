@@ -39,16 +39,17 @@ func registerAgentHandler(_ context.Context, _ *mcp.CallToolRequest, in Register
 		sessionName = c.SessionName
 	}
 	_, err := callDaemon("register_agent", map[string]any{
-		"alias":        in.Alias,
-		"role":         in.Role,
-		"model_type":   in.ModelType,
-		"session_name": sessionName,
-		"session_id":   c.SessionID,
-		"socket_path":  c.SocketPath,
-		"pane_id":      c.PaneID,
-		"project":      c.Project,
-		"label":        c.Label,
-		"label_manual": c.LabelManual,
+		"alias":           in.Alias,
+		"role":            in.Role,
+		"model_type":      in.ModelType,
+		"session_name":    sessionName,
+		"session_id":      c.SessionID,
+		"session_created": c.SessionCreated,
+		"socket_path":     c.SocketPath,
+		"pane_id":         c.PaneID,
+		"project":         c.Project,
+		"label":           c.Label,
+		"label_manual":    c.LabelManual,
 	})
 	if err != nil {
 		return nil, OKOut{}, err
