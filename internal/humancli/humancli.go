@@ -42,7 +42,10 @@ type agentRow struct {
 	Role       string `json:"role"`
 	ModelType  string `json:"model_type"`
 	SocketPath string `json:"socket_path"`
-	SessionID  string `json:"session_id"`
+	// PaneID feeds hookSessionEnd's per-alias ownership check (a sibling
+	// pane's registration is not the dying pane's to tombstone).
+	PaneID    string `json:"pane_id"`
+	SessionID string `json:"session_id"`
 	// SessionCreated feeds tmuxenv.IsSessionAlive's recycled-session-ID
 	// discrimination (see store.Agent.SessionCreated).
 	SessionCreated int64  `json:"session_created"`
