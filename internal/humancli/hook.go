@@ -36,9 +36,7 @@ func cmdHook(args []string, stdin io.Reader, out io.Writer) error {
 			_ = cmdRegister([]string{"--model", model}, io.Discard)
 		}
 	case "SessionEnd":
-		if hookOwnsIdentity(tmuxenv.CaptureEnv()) {
-			_ = cmdDeregister(nil, io.Discard)
-		}
+		hookSessionEnd(tmuxenv.CaptureEnv())
 	case "Stop":
 		hookStop(stdin, out)
 	}
@@ -97,8 +95,49 @@ func hookMayClaimIdentity(c tmuxenv.Capture) bool {
 	return !tmuxenv.IsPaneAlive(c.SocketPath, ag.PaneID)
 }
 
-// hookOwnsIdentity is the SessionEnd gate: deregister only what this pane
-// owns — a dying sibling (subagent) must not tombstone the primary.
+// hookSessionEnd deregisters EVERY alias the dying pane owns, not just the
+// one hookAlias resolves. A session that registered a custom alias (via the
+// register_agent tool or `muster register <alias>`) on top of its
+// session-name alias used to leave the custom one behind: @muster_agent
+// lives on the tmux session, which outlives the Claude session, so the next
+// agent in that pane silently inherited the leftover identity AND its inbox
+// — the Stop hook then instructed it to act on another agent's mail (the
+// lake-broker incident, thread 85). Ownership is judged per alias with the
+// same predicate hookOwnsIdentity applies to one: same (socket_path,
+// session_id) tuple, not departed, and the row's pane is unset or this pane
+// — so a dying sibling (subagent) pane still cannot tombstone the primary's
+// registrations. Outside tmux there is no tuple to enumerate; the
+// single-identity gate is all there is, exactly as before.
+func hookSessionEnd(c tmuxenv.Capture) {
+	if c.SocketPath == "" || c.SessionID == "" {
+		if hookOwnsIdentity(c) {
+			_ = cmdDeregister(nil, io.Discard)
+		}
+		return
+	}
+	raw, err := callData("list_agents", nil)
+	if err != nil {
+		return // hooks never block a session on a dead daemon
+	}
+	var rows []agentRow
+	if json.Unmarshal(raw, &rows) != nil {
+		return
+	}
+	for _, ag := range rows {
+		if ag.Departed || ag.SocketPath != c.SocketPath || ag.SessionID != c.SessionID {
+			continue
+		}
+		if ag.PaneID != "" && ag.PaneID != c.PaneID {
+			continue // a sibling pane's identity: not ours to tombstone
+		}
+		_ = cmdDeregister([]string{ag.Alias}, io.Discard)
+	}
+}
+
+// hookOwnsIdentity is the SessionEnd gate for the no-tmux fallback (and the
+// single-identity ownership predicate hookSessionEnd generalizes): deregister
+// only what this pane owns — a dying sibling (subagent) must not tombstone
+// the primary.
 func hookOwnsIdentity(c tmuxenv.Capture) bool {
 	if hookAlias(c) == "" {
 		// No resolvable identity (global hooks, non-tmux sessions): nothing to
