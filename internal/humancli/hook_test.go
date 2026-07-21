@@ -601,6 +601,55 @@ func TestHookSessionEndNoOpForNonOwner(t *testing.T) {
 	}
 }
 
+// TestHookSessionEndDeregistersAllOwnedAliases is the thread-85 identity
+// leak: a session that registered a custom alias on top of its session-name
+// alias must have BOTH tombstoned at SessionEnd — the tmux session (and its
+// @muster_agent option) outlives the Claude session, so a leaked alias is
+// silently inherited, inbox and all, by the next agent in that pane. A
+// sibling pane's registration on the same session and an agent in a
+// different tmux session must both survive the sweep.
+func TestHookSessionEndDeregistersAllOwnedAliases(t *testing.T) {
+	startTestDaemon(t)
+	reg := func(alias, pane string) {
+		t.Helper()
+		if _, err := callData("register_agent", map[string]any{
+			"alias": alias, "socket_path": "/tmp/sockH", "session_id": "$1", "pane_id": pane,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reg("end-sweep", "%2")   // the session-name alias
+	reg("lake-broker", "%2") // the custom alias that used to leak
+	reg("end-paneless", "")  // pane-unset row: owned per the existing gate
+	reg("end-sibling", "%7") // sibling pane on the SAME session: not ours
+	if _, err := callData("register_agent", map[string]any{
+		"alias": "end-elsewhere", "socket_path": "/tmp/sockH", "session_id": "$2", "pane_id": "%2",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("TMUX", "/tmp/sockH,1,0")
+	t.Setenv("TMUX_PANE", "%2")
+	t.Setenv("MUSTER_ALIAS", "")
+	prev := tmuxenv.Run
+	tmuxenv.Run = hookRun(map[string]string{"#{session_id}": "$1", "#{session_name}": "end-sweep"})
+	t.Cleanup(func() { tmuxenv.Run = prev })
+
+	var buf bytes.Buffer
+	if err := cmdHook([]string{"SessionEnd"}, strings.NewReader(""), &buf); err != nil {
+		t.Fatalf("SessionEnd: %v", err)
+	}
+	wantDeparted := map[string]bool{
+		"end-sweep": true, "lake-broker": true, "end-paneless": true,
+		"end-sibling": false, "end-elsewhere": false,
+	}
+	for _, a := range listAgentsForTest(t, "") {
+		if want, tracked := wantDeparted[a.Alias]; tracked && a.Departed != want {
+			t.Errorf("%s: departed=%v, want %v", a.Alias, a.Departed, want)
+		}
+	}
+}
+
 // TestHookSessionEndDeregistersForOwner is the mirror: my pane owns the
 // registration, so SessionEnd must deregister (tombstone) it as today.
 func TestHookSessionEndDeregistersForOwner(t *testing.T) {
