@@ -102,12 +102,17 @@ the discoverability fix.
 
 ### CLI (`internal/humancli`)
 
-- `muster send --broadcast "body"` — global (unchanged).
-- `muster send --broadcast <project> "body"` — project-scoped. The
-  positional slot is currently a usage error when combined with
-  `--broadcast`, so it is free to claim: two positional args mean
-  project + body, one means body. Help text and `registry.go` synopsis
-  updated.
+- `muster send --broadcast "body"` — global (unchanged, including
+  unquoted multi-word bodies: all positionals join into the body).
+- `muster send --broadcast --project <p> "body"` — project-scoped.
+- A positional project slot was considered and rejected: `--broadcast`
+  joins all positionals into the body today, so
+  `muster send --broadcast muster is broken` would silently become a
+  scoped broadcast to project `muster` with body "is broken" whenever the
+  first body word collides with a real project name. The flag form has no
+  such ambiguity.
+- `--project` without `--broadcast` is a usage error. Help text and
+  `registry.go` synopsis updated.
 
 ## Testing
 
@@ -121,7 +126,9 @@ the discoverability fix.
   an unknown project is rejected with the known-projects error; scoped
   broadcast to a departed-only project is rejected; global broadcast is
   never rejected.
-- **CLI:** arg parsing for one- and two-positional `--broadcast` forms.
+- **CLI:** `--project` with `--broadcast` sends a scoped broadcast;
+  `--project` without `--broadcast` is a usage error; plain `--broadcast`
+  with a multi-word unquoted body stays global.
 
 ## Out of scope
 
