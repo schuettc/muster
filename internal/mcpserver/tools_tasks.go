@@ -33,6 +33,9 @@ type TaskTransitionIn struct {
 }
 
 func taskCreateHandler(_ context.Context, _ *mcp.CallToolRequest, in TaskCreateIn) (*mcp.CallToolResult, ThreadIDOut, error) {
+	if err := requireRegisteredFrom(in.From); err != nil {
+		return nil, ThreadIDOut{}, err
+	}
 	raw, err := callDaemon("task_create", map[string]any{
 		"from": in.From, "to_kind": in.ToKind, "to_target": in.ToTarget,
 		"subject": in.Subject, "ref": in.Ref, "body": in.Body, "intent": in.Intent,
