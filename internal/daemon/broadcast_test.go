@@ -76,3 +76,28 @@ func TestScopedBroadcastTaskCreateValidatedToo(t *testing.T) {
 		t.Fatalf("task_create must validate scoped broadcast targets too")
 	}
 }
+
+func TestScopedBroadcastNotifiesOnlyProjectSessions(t *testing.T) {
+	n := &fakeNotifier{}
+	sock := startWithNotifier(t, n)
+	call(t, sock, "register_agent", map[string]any{"alias": "web1", "project": "web", "socket_path": "/s", "session_id": "$1"})
+	call(t, sock, "register_agent", map[string]any{"alias": "web2", "project": "web", "socket_path": "/s", "session_id": "$2"})
+	call(t, sock, "register_agent", map[string]any{"alias": "api1", "project": "api", "socket_path": "/s", "session_id": "$3"})
+
+	call(t, sock, "send_message", map[string]any{
+		"from": "web1", "to_kind": "broadcast", "to_target": "web", "subject": "s", "body": "x",
+	})
+	got := n.snap(&n.notified)
+	if len(got) != 1 || got[0] != "$2" {
+		t.Fatalf("scoped broadcast should notify only web2's session $2 (sender excluded, api1 out of scope), got %v", got)
+	}
+}
+
+func TestTargetOfScopedBroadcast(t *testing.T) {
+	if got := targetOf("broadcast", ""); got != "broadcast" {
+		t.Fatalf("global: got %q", got)
+	}
+	if got := targetOf("broadcast", "web"); got != "broadcast:web" {
+		t.Fatalf("scoped: got %q", got)
+	}
+}

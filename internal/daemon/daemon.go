@@ -362,7 +362,9 @@ func (d *Daemon) notifyForThread(threadID int64, actor string) {
 		}
 	case "broadcast":
 		for _, a := range agents {
-			recipients[a.Alias] = struct{}{}
+			if th.ToTarget == "" || a.Project == th.ToTarget {
+				recipients[a.Alias] = struct{}{}
+			}
 		}
 	}
 	// Drop the actor's entire session: the literal alias always goes (an
@@ -481,10 +483,14 @@ func (d *Daemon) validateBroadcastTarget(project string) error {
 // '<to_kind>:<to_target>'. toTarget is the (possibly daemon-resolved) target
 // actually stored on the thread, not necessarily the raw request arg — so a
 // send_message/task_create addressed to a label journals the ALIAS it
-// resolved to, not the label a caller typed.
+// resolved to, not the label a caller typed. A scoped broadcast journals
+// 'broadcast:<project>'.
 func targetOf(toKind, toTarget string) string {
 	if toKind == "broadcast" {
-		return "broadcast"
+		if toTarget == "" {
+			return "broadcast"
+		}
+		return "broadcast:" + toTarget
 	}
 	return toKind + ":" + toTarget
 }
