@@ -125,7 +125,7 @@ func (r *Renderer) dispTarget(target string) string {
 	if a, ok := strings.CutPrefix(target, "agent:"); ok {
 		return r.disp(a)
 	}
-	if strings.HasPrefix(target, "role:") || target == "broadcast" || target == "" {
+	if strings.HasPrefix(target, "role:") || target == "broadcast" || strings.HasPrefix(target, "broadcast:") || target == "" {
 		return target
 	}
 	return r.disp(target) // nudge's bare alias
