@@ -10,6 +10,43 @@ import (
 	"github.com/schuettc/muster/internal/proto"
 )
 
+// rosterRow is the full-fidelity decode of a list_agents row — the fields
+// AgentView (the tool-facing shape) deliberately omits but identity guards
+// need. Tags match the daemon's snake_case store JSON.
+type rosterRow struct {
+	Alias      string `json:"alias"`
+	ModelType  string `json:"model_type"`
+	SocketPath string `json:"socket_path"`
+	PaneID     string `json:"pane_id"`
+	SessionID  string `json:"session_id"`
+	Label      string `json:"label"`
+	Departed   bool   `json:"departed"`
+}
+
+// paneRegistration returns the calling pane's own live registration: the
+// non-departed roster row matching this exact (socket_path, session_id,
+// pane_id). ok=false outside tmux, on any daemon/decode failure (guards
+// degrade open — today's behavior), or when no row matches.
+func paneRegistration(socketPath, sessionID, paneID string) (rosterRow, bool) {
+	if socketPath == "" || sessionID == "" || paneID == "" {
+		return rosterRow{}, false
+	}
+	raw, err := callDaemon("list_agents", nil)
+	if err != nil {
+		return rosterRow{}, false
+	}
+	var rows []rosterRow
+	if json.Unmarshal(raw, &rows) != nil {
+		return rosterRow{}, false
+	}
+	for _, r := range rows {
+		if !r.Departed && r.SocketPath == socketPath && r.SessionID == sessionID && r.PaneID == paneID {
+			return r, true
+		}
+	}
+	return rosterRow{}, false
+}
+
 // callDaemon sends one op to the daemon (lazily starting it) and returns the
 // response Data as JSON, or an error if the transport failed or the daemon
 // reported !OK. It is a package-level var so tests can stub it.
