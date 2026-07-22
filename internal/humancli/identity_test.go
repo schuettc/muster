@@ -48,6 +48,23 @@ func registerViaDaemon(t *testing.T, _ string, alias, socketPath, sessionID stri
 	}
 }
 
+// registerClaudeViaDaemon registers a live claude-model agent with a pane —
+// the row shape `muster label`'s /rename gate looks for.
+func registerClaudeViaDaemon(t *testing.T, alias, socketPath, sessionID, paneID string) {
+	t.Helper()
+	registerModelViaDaemon(t, alias, socketPath, sessionID, paneID, "claude")
+}
+
+func registerModelViaDaemon(t *testing.T, alias, socketPath, sessionID, paneID, model string) {
+	t.Helper()
+	if _, err := callData("register_agent", map[string]any{
+		"alias": alias, "socket_path": socketPath, "session_id": sessionID,
+		"pane_id": paneID, "model_type": model,
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestRegisterUsesAliasPrecedenceAndCaptures(t *testing.T) {
 	sock := startCLITestDaemon(t)
 	t.Setenv("TMUX", "/tmp/tmux-0/proj-muster,1,0")

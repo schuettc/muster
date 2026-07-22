@@ -142,3 +142,162 @@ func TestLabelRequiresTmux(t *testing.T) {
 		t.Fatalf("expected a tmux-mentioning error, got %v", err)
 	}
 }
+
+// TestLabelRenamesLiveClaudePane covers the third fan-out of `muster label`:
+// a live claude-model registration on the ambient session tuple gets
+// "/rename <name>" typed into its pane (and submitted), so the Claude Code
+// session name follows the label. The gate is the roster + a live pane —
+// see TestLabelSkipsRenameWithoutLiveClaude for every negative.
+func TestLabelRenamesLiveClaudePane(t *testing.T) {
+	startCLITestDaemon(t)
+	t.Setenv("TMUX", "/tmp/sock,1,0")
+	registerClaudeViaDaemon(t, "worker", "/tmp/sock", "$1", "%5")
+
+	var sent [][]string
+	prev := tmuxenv.Run
+	tmuxenv.Run = func(args ...string) (string, error) {
+		last := args[len(args)-1]
+		if last == "#{session_id}" {
+			return "$1", nil
+		}
+		if last == "#{pane_id}" {
+			return "%5", nil // pane-alive probe answers: alive
+		}
+		if last == "#{session_created}" {
+			// session-alive probe: the row was registered with session_created
+			// 0 (registerClaudeViaDaemon doesn't set it), so IsSessionAlive
+			// degrades open on any non-empty answer here — this just proves
+			// the session still exists.
+			return "1700000000", nil
+		}
+		if len(args) > 2 && args[2] == "send-keys" {
+			sent = append(sent, append([]string(nil), args...))
+		}
+		return "", nil
+	}
+	t.Cleanup(func() { tmuxenv.Run = prev })
+
+	var buf bytes.Buffer
+	if err := cmdLabel([]string{"standard 2000"}, &buf); err != nil {
+		t.Fatalf("label: %v", err)
+	}
+	if len(sent) != 2 {
+		t.Fatalf("expected /rename type + Enter submit, got %v", sent)
+	}
+	if got := sent[0][len(sent[0])-1]; got != "/rename standard 2000" {
+		t.Fatalf("typed %q, want %q", got, "/rename standard 2000")
+	}
+	if sent[1][len(sent[1])-1] != "Enter" {
+		t.Fatalf("expected Enter submit, got %v", sent[1])
+	}
+	if !strings.Contains(buf.String(), "renamed claude session") {
+		t.Fatalf("expected rename confirmation in output, got %q", buf.String())
+	}
+}
+
+// TestLabelSkipsRenameWithoutLiveClaude: no injection for (a) a codex row,
+// (b) a departed claude row, (c) a claude row whose pane is dead, (d) a
+// claude row on a DIFFERENT session tuple, (e) a claude row recorded under a
+// STALE session incarnation (session_created mismatch — see
+// tmuxenv.IsSessionAlive). The label/bus writes still happen.
+func TestLabelSkipsRenameWithoutLiveClaude(t *testing.T) {
+	cases := []struct {
+		name      string
+		model     string
+		sessionID string
+		depart    bool
+		paneAlive bool
+		// sessionCreated, when non-zero, is stored on the row at registration
+		// and the live #{session_created} probe answers a DIFFERENT value —
+		// a ghost from a tmux server restart that recycled the session ID.
+		sessionCreated int64
+	}{
+		{"codex row", "codex", "$1", false, true, 0},
+		{"departed claude", "claude", "$1", true, true, 0},
+		{"dead pane", "claude", "$1", false, false, 0},
+		{"other session", "claude", "$9", false, true, 0},
+		{"stale incarnation", "claude", "$1", false, true, 111},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			startCLITestDaemon(t)
+			t.Setenv("TMUX", "/tmp/sock,1,0")
+			if tc.sessionCreated != 0 {
+				if _, err := callData("register_agent", map[string]any{
+					"alias": "worker", "socket_path": "/tmp/sock", "session_id": tc.sessionID,
+					"pane_id": "%5", "model_type": tc.model, "session_created": tc.sessionCreated,
+				}); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				registerModelViaDaemon(t, "worker", "/tmp/sock", tc.sessionID, "%5", tc.model)
+			}
+			if tc.depart {
+				if _, err := callData("deregister_agent", map[string]any{"alias": "worker"}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var sent [][]string
+			prev := tmuxenv.Run
+			tmuxenv.Run = func(args ...string) (string, error) {
+				last := args[len(args)-1]
+				if last == "#{session_id}" {
+					return "$1", nil
+				}
+				if last == "#{pane_id}" {
+					if tc.paneAlive {
+						return "%5", nil
+					}
+					return "", nil // dead pane
+				}
+				if last == "#{session_created}" {
+					return "999", nil // live incarnation — mismatches the stale row's recorded 111
+				}
+				if len(args) > 2 && args[2] == "send-keys" {
+					sent = append(sent, append([]string(nil), args...))
+				}
+				return "", nil
+			}
+			t.Cleanup(func() { tmuxenv.Run = prev })
+
+			var buf bytes.Buffer
+			if err := cmdLabel([]string{"datalake"}, &buf); err != nil {
+				t.Fatalf("label: %v", err)
+			}
+			if len(sent) != 0 {
+				t.Fatalf("expected NO injection for %s, got %v", tc.name, sent)
+			}
+		})
+	}
+}
+
+// TestLabelClearNeverInjects: clearing a label must not type anything into
+// any pane — there is no "/rename to nothing" gesture worth sending.
+func TestLabelClearNeverInjects(t *testing.T) {
+	startCLITestDaemon(t)
+	t.Setenv("TMUX", "/tmp/sock,1,0")
+	registerClaudeViaDaemon(t, "worker", "/tmp/sock", "$1", "%5")
+	var sent [][]string
+	prev := tmuxenv.Run
+	tmuxenv.Run = func(args ...string) (string, error) {
+		last := args[len(args)-1]
+		if last == "#{session_id}" {
+			return "$1", nil
+		}
+		if last == "#{pane_id}" {
+			return "%5", nil
+		}
+		if len(args) > 2 && args[2] == "send-keys" {
+			sent = append(sent, append([]string(nil), args...))
+		}
+		return "", nil
+	}
+	t.Cleanup(func() { tmuxenv.Run = prev })
+	var buf bytes.Buffer
+	if err := cmdLabel([]string{"--clear"}, &buf); err != nil {
+		t.Fatalf("label --clear: %v", err)
+	}
+	if len(sent) != 0 {
+		t.Fatalf("clear must not inject, got %v", sent)
+	}
+}

@@ -1,12 +1,14 @@
 package humancli
 
 import (
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
 
+	"github.com/schuettc/muster/internal/nudge"
 	"github.com/schuettc/muster/internal/tmuxenv"
 )
 
@@ -63,7 +65,9 @@ func cmdLabel(args []string, out io.Writer) error {
 			return err
 		}
 		_ = tmuxenv.RefreshClient() // best-effort: repaint title bars
-		syncLabelToBus(out, "", false)
+		socket := tmuxenv.SocketFromEnv()
+		sessionID := tmuxenv.CurrentSessionID()
+		syncLabelToBus(out, "", false, socket, sessionID)
 		_, err := fmt.Fprintln(out, "label cleared")
 		return err
 	}
@@ -74,7 +78,12 @@ func cmdLabel(args []string, out io.Writer) error {
 		return err
 	}
 	_ = tmuxenv.RefreshClient() // best-effort: repaint title bars
-	syncLabelToBus(out, name, true)
+	socket := tmuxenv.SocketFromEnv()
+	sessionID := tmuxenv.CurrentSessionID()
+	syncLabelToBus(out, name, true, socket, sessionID)
+	if socket != "" && sessionID != "" {
+		syncClaudeName(out, name, socket, sessionID)
+	}
 	_, err := fmt.Fprintf(out, "labeled this session %q (%s)\n", name, opt)
 	return err
 }
@@ -88,9 +97,7 @@ func cmdLabel(args []string, out io.Writer) error {
 // wrong label. It therefore warns rather than fails, and stays silent for
 // a session with no registered agents (updated=0): labeling before
 // registering is routine, and register captures the option anyway.
-func syncLabelToBus(out io.Writer, label string, manual bool) {
-	socket := tmuxenv.SocketFromEnv()
-	sessionID := tmuxenv.CurrentSessionID()
+func syncLabelToBus(out io.Writer, label string, manual bool, socket, sessionID string) {
 	if socket == "" || sessionID == "" {
 		return
 	}
@@ -99,5 +106,56 @@ func syncLabelToBus(out io.Writer, label string, manual bool) {
 		"label": label, "label_manual": manual,
 	}); err != nil {
 		_, _ = fmt.Fprintf(out, "warning: bus label sync failed (%v); the stored label refreshes on this session's next register\n", err)
+	}
+}
+
+// syncClaudeName types "/rename <name>" into this session's registered live
+// Claude pane so the Claude Code session name follows the label — making
+// prefix T (which shells out to `muster label`) the ONE naming gesture for
+// tmux, the bus, and Claude. Strictly gated on the roster: a non-departed
+// claude-model row on this exact session tuple whose pane is still alive. A
+// session with no live Claude (plain shell, codex, dead pane) gets no
+// injection — the roster is the definition of "Claude Code runs here", not
+// pane_current_command sniffing. Also gated on session incarnation
+// (tmuxenv.IsSessionAlive): tmux recycles session IDs across server
+// restarts, so a stale un-reaped row can match this exact tuple yet name a
+// pane that now belongs to a completely different, fresh session — typing
+// "/rename" into that pane would be renaming a stranger. Best-effort like
+// syncLabelToBus: a skipped or failed injection never fails the label
+// write. Clearing never injects (there is no "/rename to nothing" gesture
+// worth typing at a session).
+func syncClaudeName(out io.Writer, name, socket, sessionID string) {
+	raw, err := callData("list_agents", nil)
+	if err != nil {
+		return // no daemon → no roster to gate on; the tmux label already landed
+	}
+	var rows []agentRow
+	if json.Unmarshal(raw, &rows) != nil {
+		return
+	}
+	// Route typing through the tmuxenv.Run seam (NOT a zero-value TmuxNudger,
+	// whose nil Run spawns real tmux): humancli's tests stub tmuxenv.Run, and
+	// one process-spawning seam per package keeps them able to observe this.
+	typer := nudge.TmuxNudger{Run: func(args ...string) error {
+		_, err := tmuxenv.Run(args...)
+		return err
+	}}
+	for _, ag := range rows {
+		if ag.Departed || ag.ModelType != "claude" || ag.SocketPath != socket ||
+			ag.SessionID != sessionID || ag.PaneID == "" {
+			continue
+		}
+		if !tmuxenv.IsPaneAlive(socket, ag.PaneID) {
+			continue
+		}
+		if !tmuxenv.IsSessionAlive(socket, ag.SessionID, ag.SessionCreated) {
+			continue
+		}
+		if _, err := typer.TypeLine(socket, ag.PaneID, "claude", "/rename "+name, true); err != nil {
+			_, _ = fmt.Fprintf(out, "warning: claude session rename failed (%v); run /rename %s in claude yourself\n", err, name)
+			return
+		}
+		_, _ = fmt.Fprintf(out, "renamed claude session to match (pane %s)\n", ag.PaneID)
+		return // one live claude per session; first match wins
 	}
 }

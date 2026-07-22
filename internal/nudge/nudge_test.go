@@ -1,6 +1,7 @@
 package nudge
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -123,5 +124,41 @@ func TestNudgeUnknownModelTypedOnly(t *testing.T) {
 	}
 	if strings.Contains(joinCalls(*calls), "Enter") {
 		t.Fatalf("unknown model must not send Enter (submit behavior unverified):\n%s", joinCalls(*calls))
+	}
+}
+
+func TestTypeLineTypesCallerTextAndSubmitsForClaude(t *testing.T) {
+	var calls [][]string
+	n := TmuxNudger{Run: func(args ...string) error {
+		calls = append(calls, append([]string(nil), args...))
+		return nil
+	}}
+	submitted, err := n.TypeLine("/tmp/sock", "%5", "claude", "/rename standard 2000", true)
+	if err != nil || !submitted {
+		t.Fatalf("TypeLine: submitted=%v err=%v", submitted, err)
+	}
+	if len(calls) != 2 {
+		t.Fatalf("expected type + Enter, got %v", calls)
+	}
+	want := []string{"-S", "/tmp/sock", "send-keys", "-t", "%5", "-l", "/rename standard 2000"}
+	if !reflect.DeepEqual(calls[0], want) {
+		t.Fatalf("type call = %v, want %v", calls[0], want)
+	}
+	if calls[1][len(calls[1])-1] != "Enter" {
+		t.Fatalf("expected trailing Enter submit, got %v", calls[1])
+	}
+}
+
+func TestNudgeStillTypesTheCanonicalMessage(t *testing.T) {
+	var calls [][]string
+	n := TmuxNudger{Run: func(args ...string) error {
+		calls = append(calls, append([]string(nil), args...))
+		return nil
+	}}
+	if _, err := n.Nudge("/tmp/sock", "%5", "claude", false); err != nil {
+		t.Fatal(err)
+	}
+	if calls[0][len(calls[0])-1] != message {
+		t.Fatalf("Nudge must type the canonical message, got %v", calls[0])
 	}
 }

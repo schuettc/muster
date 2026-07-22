@@ -38,6 +38,7 @@ func TestEndToEndOverMCP(t *testing.T) {
 		return res
 	}
 
+	call("register_agent", map[string]any{"alias": "backend", "role": "producer", "model_type": "claude"})
 	call("register_agent", map[string]any{"alias": "reviewer1", "role": "reviewer", "model_type": "codex"})
 	created := call("task_create", map[string]any{
 		"from": "backend", "to_kind": "role", "to_target": "reviewer",
