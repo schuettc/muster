@@ -91,13 +91,15 @@ func init() {
 	Registry = []Command{
 		{
 			Name:     "send",
-			Synopsis: `send <target> "body" [--from <alias>] [--subject <s>] [--ref <r>] [--role] [--broadcast] [--intent fyi|reply-requested|action-requested]`,
+			Synopsis: `send <target> "body" [--from <alias>] [--subject <s>] [--ref <r>] [--role] [--broadcast [--project <p>]] [--intent fyi|reply-requested|action-requested]`,
 			Summary:  "Send a message to an agent, role, or everyone.",
 			Help: `target is an alias, a label, or a "project:label" pair, resolved the same
 way for every muster surface (send, nudge, inbox, tasks). --role treats
 target as a role name instead of an agent; --broadcast ignores target and
 sends to every registered agent (target is then omitted: 'muster send
---broadcast "body"'). --intent tags the message for the recipient's
+--broadcast "body"'). With --project, the broadcast reaches only agents
+registered under that exact project (the daemon rejects unknown projects and
+lists the known ones). --intent tags the message for the recipient's
 inbox/hook rendering: fyi (default, no action implied), reply-requested, or
 action-requested.`,
 			Group:    GroupTalk,
