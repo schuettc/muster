@@ -37,10 +37,19 @@ no added capability at this scope.
 - Concern is evaluated at read time (same as global broadcast today): an
   agent that registers into the project *after* the send still sees the
   thread in its inbox.
-- No validation that the project exists or has live agents. Projects are
-  free-form strings; a scoped broadcast to a project with no agents simply
-  concerns no one (besides the sender, who always sees own-originated
-  threads).
+- **Project validation (daemon-side, hard reject):** a project-scoped
+  broadcast is rejected unless at least one **non-departed** agent is
+  registered with that exact project. This mirrors the existing
+  "black-hole fix" for mistyped aliases (see `internal/daemon/resolve.go`)
+  — the daemon is the only backstop before a thread gets created that
+  concerns nobody, and both surfaces (CLI and MCP) pass `to_target`
+  through unresolved. Departed-only projects are rejected too. The error
+  lists the known (non-departed) projects so the sender can correct in one
+  round trip, e.g.:
+  `no registered agents in project "bettor-hlep" (known projects: bettor-help, muster, …)`.
+  Global broadcast (empty target) is never validated — there is nothing to
+  typo. No fuzzy or prefix matching of project names: project strings come
+  from tmux capture and are stable, so it is exact-match-or-clear-error.
 - An agent with an empty `project` never matches a scoped broadcast; it
   still receives global broadcasts.
 - The sender's own session is excluded from wake/notify, as with all sends
@@ -66,6 +75,12 @@ bound-argument lists accordingly.
 
 ### Daemon (`internal/daemon/daemon.go`)
 
+- **Send-time validation:** in the send_message and task_create op
+  handlers, when `to_kind=='broadcast'` and `to_target != ''`, reject
+  unless some non-departed agent's `project` equals `to_target` exactly
+  (roster read via the store, consistent with `resolveAgentTarget`'s
+  pattern). Error format:
+  `no registered agents in project "<target>" (known projects: <sorted, deduped, non-departed>)`.
 - `notifyForThread`: the `case "broadcast"` fan-out filters recipients to
   `a.Project == th.ToTarget` when `th.ToTarget != ""`.
 - `targetOf`: journal target renders `broadcast` for global,
@@ -102,11 +117,15 @@ the discoverability fix.
   equivalence fixture; departed agents' preserved `project` behaves
   consistently.
 - **Daemon:** wake fan-out badges only same-project sessions for a scoped
-  broadcast; journal rows carry `broadcast:<project>`.
+  broadcast; journal rows carry `broadcast:<project>`; scoped broadcast to
+  an unknown project is rejected with the known-projects error; scoped
+  broadcast to a departed-only project is rejected; global broadcast is
+  never rejected.
 - **CLI:** arg parsing for one- and two-positional `--broadcast` forms.
 
 ## Out of scope
 
-Prefix/wildcard project matching, multi-project targets, broadcast to a
-named set of agents, any new `to_kind`, persistence/announcement semantics
-beyond the existing thread model.
+Prefix/wildcard project matching, fuzzy project-name correction,
+multi-project targets, broadcast to a named set of agents, any new
+`to_kind`, persistence/announcement semantics beyond the existing thread
+model.
