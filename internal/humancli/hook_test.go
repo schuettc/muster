@@ -871,3 +871,30 @@ func TestHookSessionEndUnresolvableIdentityNeverDialsDaemon(t *testing.T) {
 		t.Fatal("cmdHook SessionEnd did not return promptly — likely dialed/spawned the daemon with an unresolvable identity")
 	}
 }
+
+func TestHookReasonLeadsWithLabelWhenPresent(t *testing.T) {
+	got := hookReason(2, 1, []string{"timewalk-2"}, "standard 2000")
+	if !strings.Contains(got, "You are 'standard 2000' — muster alias 'timewalk-2'") {
+		t.Fatalf("single-alias reason must lead with the label, got %q", got)
+	}
+	if !strings.Contains(got, "get_inbox tool now with alias 'timewalk-2'") {
+		t.Fatalf("tool instructions must still use the alias, got %q", got)
+	}
+}
+
+func TestHookReasonUnlabeledWordingUnchanged(t *testing.T) {
+	got := hookReason(1, 0, []string{"dotfiles"}, "")
+	if !strings.Contains(got, "Your muster alias is 'dotfiles' (this tmux session).") {
+		t.Fatalf("empty label must render today's wording, got %q", got)
+	}
+	if strings.Contains(got, "You are ''") {
+		t.Fatalf("empty label must not render an empty You-are clause: %q", got)
+	}
+}
+
+func TestHookReasonMultiAliasWithLabel(t *testing.T) {
+	got := hookReason(3, 0, []string{"timewalk-2", "timewalk-2002"}, "standard 2000")
+	if !strings.Contains(got, "You are 'standard 2000' — muster aliases 'timewalk-2', 'timewalk-2002'") {
+		t.Fatalf("multi-alias reason must lead with the label, got %q", got)
+	}
+}

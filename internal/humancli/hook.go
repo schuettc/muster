@@ -221,7 +221,8 @@ func hookStop(stdin io.Reader, out io.Writer) {
 		return // roster names a live owner and it isn't me: don't drain a sibling's mail
 	}
 
-	reason := hookReason(total, action, aliases)
+	label := tmuxenv.CurrentSessionOption(tmuxenv.LabelOption())
+	reason := hookReason(total, action, aliases, label)
 	b, err := json.Marshal(stopReason{Decision: "block", Reason: reason})
 	if err != nil {
 		return
@@ -291,18 +292,16 @@ func hookStopOwnsAnyAlias(aliases []string) bool {
 	return !sawNamedOwner
 }
 
-// hookReason builds the Stop hook's decision:block reason (spec §2 drain
-// wording, §3 multi-alias drain). The count line states unread threads and
-// appends an action-needed count only when > 0. The instruction line is
-// singular (today's wording, unchanged) for exactly one alias, and a
-// for-each instruction across all of them when the session has more than
-// one — a split-identity session must drain every alias, not just the one
-// the hook happened to observe. Both variants end with the CLI fallback
-// (cliFallback): the MCP tools are the advertised path, but a session whose
-// stdio connection has died (e.g. the binary was replaced under it) must
-// not be stranded following instructions it can no longer execute — the
-// same loop runs from any shell.
-func hookReason(total, action int, aliases []string) string {
+// hookReason builds the Stop hook's decision:block reason. When the session
+// carries a task label (the operator's chosen name — prefix T / `muster
+// label`), the reason leads with it ("You are 'standard 2000'") so the agent
+// learns the label vocabulary the operator thinks in; the alias stays in the
+// tool instructions because aliases are what the tools accept. An empty
+// label renders the pre-label wording unchanged. The instruction line is
+// singular for exactly one alias and a for-each across all of them when the
+// session has more than one — a split-identity session must drain every
+// alias. Both variants end with the CLI fallback (cliFallback).
+func hookReason(total, action int, aliases []string, label string) string {
 	countLine := fmt.Sprintf("You have %d unread muster thread(s)", total)
 	if action > 0 {
 		countLine += fmt.Sprintf(", %d needing action", action)
@@ -313,12 +312,16 @@ func hookReason(total, action int, aliases []string) string {
 		if len(aliases) == 1 {
 			alias = aliases[0]
 		}
+		identity := fmt.Sprintf("Your muster alias is '%s' (this tmux session).", alias)
+		if label != "" {
+			identity = fmt.Sprintf("You are '%s' — muster alias '%s' (this tmux session).", label, alias)
+		}
 		return fmt.Sprintf(
-			"%s. Your muster alias is '%s' (this tmux session). "+
+			"%s. %s "+
 				"Call your muster get_inbox tool now with alias '%s', read each new thread with get_thread, "+
 				"handle the request, and reply with the muster reply tool. Act autonomously — do not ask the user. "+
 				cliFallback,
-			countLine, alias, alias, alias, alias,
+			countLine, identity, alias, alias, alias,
 		)
 	}
 
@@ -326,12 +329,16 @@ func hookReason(total, action int, aliases []string) string {
 	for i, a := range aliases {
 		quoted[i] = "'" + a + "'"
 	}
+	identity := fmt.Sprintf("Your muster aliases are %s (this tmux session).", strings.Join(quoted, ", "))
+	if label != "" {
+		identity = fmt.Sprintf("You are '%s' — muster aliases %s (this tmux session).", label, strings.Join(quoted, ", "))
+	}
 	return fmt.Sprintf(
-		"%s. Your muster aliases are %s (this tmux session). "+
+		"%s. %s "+
 			"For EACH alias call get_inbox, read each new thread with get_thread, handle the request, "+
 			"and reply with the muster reply tool. Act autonomously — do not ask the user. "+
 			cliFallback,
-		countLine, strings.Join(quoted, ", "), "<alias>", "<alias>",
+		countLine, identity, "<alias>", "<alias>",
 	)
 }
 
