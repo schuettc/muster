@@ -163,6 +163,13 @@ func TestLabelRenamesLiveClaudePane(t *testing.T) {
 		if last == "#{pane_id}" {
 			return "%5", nil // pane-alive probe answers: alive
 		}
+		if last == "#{session_created}" {
+			// session-alive probe: the row was registered with session_created
+			// 0 (registerClaudeViaDaemon doesn't set it), so IsSessionAlive
+			// degrades open on any non-empty answer here — this just proves
+			// the session still exists.
+			return "1700000000", nil
+		}
 		if len(args) > 2 && args[2] == "send-keys" {
 			sent = append(sent, append([]string(nil), args...))
 		}
@@ -190,7 +197,9 @@ func TestLabelRenamesLiveClaudePane(t *testing.T) {
 
 // TestLabelSkipsRenameWithoutLiveClaude: no injection for (a) a codex row,
 // (b) a departed claude row, (c) a claude row whose pane is dead, (d) a
-// claude row on a DIFFERENT session tuple. The label/bus writes still happen.
+// claude row on a DIFFERENT session tuple, (e) a claude row recorded under a
+// STALE session incarnation (session_created mismatch — see
+// tmuxenv.IsSessionAlive). The label/bus writes still happen.
 func TestLabelSkipsRenameWithoutLiveClaude(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -198,17 +207,31 @@ func TestLabelSkipsRenameWithoutLiveClaude(t *testing.T) {
 		sessionID string
 		depart    bool
 		paneAlive bool
+		// sessionCreated, when non-zero, is stored on the row at registration
+		// and the live #{session_created} probe answers a DIFFERENT value —
+		// a ghost from a tmux server restart that recycled the session ID.
+		sessionCreated int64
 	}{
-		{"codex row", "codex", "$1", false, true},
-		{"departed claude", "claude", "$1", true, true},
-		{"dead pane", "claude", "$1", false, false},
-		{"other session", "claude", "$9", false, true},
+		{"codex row", "codex", "$1", false, true, 0},
+		{"departed claude", "claude", "$1", true, true, 0},
+		{"dead pane", "claude", "$1", false, false, 0},
+		{"other session", "claude", "$9", false, true, 0},
+		{"stale incarnation", "claude", "$1", false, true, 111},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			startCLITestDaemon(t)
 			t.Setenv("TMUX", "/tmp/sock,1,0")
-			registerModelViaDaemon(t, "worker", "/tmp/sock", tc.sessionID, "%5", tc.model)
+			if tc.sessionCreated != 0 {
+				if _, err := callData("register_agent", map[string]any{
+					"alias": "worker", "socket_path": "/tmp/sock", "session_id": tc.sessionID,
+					"pane_id": "%5", "model_type": tc.model, "session_created": tc.sessionCreated,
+				}); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				registerModelViaDaemon(t, "worker", "/tmp/sock", tc.sessionID, "%5", tc.model)
+			}
 			if tc.depart {
 				if _, err := callData("deregister_agent", map[string]any{"alias": "worker"}); err != nil {
 					t.Fatal(err)
@@ -226,6 +249,9 @@ func TestLabelSkipsRenameWithoutLiveClaude(t *testing.T) {
 						return "%5", nil
 					}
 					return "", nil // dead pane
+				}
+				if last == "#{session_created}" {
+					return "999", nil // live incarnation — mismatches the stale row's recorded 111
 				}
 				if len(args) > 2 && args[2] == "send-keys" {
 					sent = append(sent, append([]string(nil), args...))

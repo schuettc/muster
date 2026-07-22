@@ -35,7 +35,7 @@ type ListAgentsOut struct {
 
 func registerAgentHandler(_ context.Context, _ *mcp.CallToolRequest, in RegisterAgentIn) (*mcp.CallToolResult, OKOut, error) {
 	c := tmuxenv.CaptureEnv()
-	if row, ok := paneRegistration(c.SocketPath, c.SessionID, c.PaneID); ok && row.Alias != in.Alias {
+	if row, ok := paneRegistration(c.SocketPath, c.SessionID, c.PaneID, c.SessionCreated); ok && row.Alias != in.Alias {
 		detail := fmt.Sprintf("already registered as '%s'", row.Alias)
 		if row.Label != "" {
 			detail = fmt.Sprintf("already registered as '%s' (label '%s')", row.Alias, row.Label)

@@ -36,7 +36,7 @@ func requireRegisteredFrom(from string) error {
 		}
 	}
 	c := tmuxenv.CaptureEnv()
-	if row, ok := paneRegistration(c.SocketPath, c.SessionID, c.PaneID); ok {
+	if row, ok := paneRegistration(c.SocketPath, c.SessionID, c.PaneID, c.SessionCreated); ok {
 		identity := fmt.Sprintf("'%s'", row.Alias)
 		if row.Label != "" {
 			identity = fmt.Sprintf("'%s' (label '%s')", row.Alias, row.Label)

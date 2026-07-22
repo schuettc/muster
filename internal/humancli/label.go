@@ -116,9 +116,14 @@ func syncLabelToBus(out io.Writer, label string, manual bool, socket, sessionID 
 // claude-model row on this exact session tuple whose pane is still alive. A
 // session with no live Claude (plain shell, codex, dead pane) gets no
 // injection — the roster is the definition of "Claude Code runs here", not
-// pane_current_command sniffing. Best-effort like syncLabelToBus: a skipped
-// or failed injection never fails the label write. Clearing never injects
-// (there is no "/rename to nothing" gesture worth typing at a session).
+// pane_current_command sniffing. Also gated on session incarnation
+// (tmuxenv.IsSessionAlive): tmux recycles session IDs across server
+// restarts, so a stale un-reaped row can match this exact tuple yet name a
+// pane that now belongs to a completely different, fresh session — typing
+// "/rename" into that pane would be renaming a stranger. Best-effort like
+// syncLabelToBus: a skipped or failed injection never fails the label
+// write. Clearing never injects (there is no "/rename to nothing" gesture
+// worth typing at a session).
 func syncClaudeName(out io.Writer, name, socket, sessionID string) {
 	raw, err := callData("list_agents", nil)
 	if err != nil {
@@ -141,6 +146,9 @@ func syncClaudeName(out io.Writer, name, socket, sessionID string) {
 			continue
 		}
 		if !tmuxenv.IsPaneAlive(socket, ag.PaneID) {
+			continue
+		}
+		if !tmuxenv.IsSessionAlive(socket, ag.SessionID, ag.SessionCreated) {
 			continue
 		}
 		if _, err := typer.TypeLine(socket, ag.PaneID, "claude", "/rename "+name, true); err != nil {

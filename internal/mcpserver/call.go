@@ -19,15 +19,26 @@ type rosterRow struct {
 	SocketPath string `json:"socket_path"`
 	PaneID     string `json:"pane_id"`
 	SessionID  string `json:"session_id"`
-	Label      string `json:"label"`
-	Departed   bool   `json:"departed"`
+	// SessionCreated is the incarnation half of tmux identity (#{session_created},
+	// unix seconds — see tmuxenv.Capture.SessionCreated). tmux recycles session
+	// IDs from $0 across server restarts, so a (socket_path, session_id, pane_id)
+	// tuple match alone cannot tell a live registration from a stale un-reaped
+	// row left behind by a dead server incarnation that happened to reuse the
+	// same IDs. 0 = unknown (a pre-upgrade row, or one captured outside tmux).
+	SessionCreated int64  `json:"session_created"`
+	Label          string `json:"label"`
+	Departed       bool   `json:"departed"`
 }
 
 // paneRegistration returns the calling pane's own live registration: the
 // non-departed roster row matching this exact (socket_path, session_id,
-// pane_id). ok=false outside tmux, on any daemon/decode failure (guards
-// degrade open — today's behavior), or when no row matches.
-func paneRegistration(socketPath, sessionID, paneID string) (rosterRow, bool) {
+// pane_id) tuple AND, when both sides know it, the same session incarnation
+// (session_created — see rosterRow.SessionCreated). A row whose recorded
+// creation time differs from the caller's live one is a ghost left by a
+// recycled session ID, not a match. ok=false outside tmux, on any
+// daemon/decode failure (guards degrade open — today's behavior), when no
+// row matches the tuple, or when a tuple-matching row is a ghost.
+func paneRegistration(socketPath, sessionID, paneID string, sessionCreated int64) (rosterRow, bool) {
 	if socketPath == "" || sessionID == "" || paneID == "" {
 		return rosterRow{}, false
 	}
@@ -41,6 +52,9 @@ func paneRegistration(socketPath, sessionID, paneID string) (rosterRow, bool) {
 	}
 	for _, r := range rows {
 		if !r.Departed && r.SocketPath == socketPath && r.SessionID == sessionID && r.PaneID == paneID {
+			if r.SessionCreated != 0 && sessionCreated != 0 && r.SessionCreated != sessionCreated {
+				continue // ghost: same tuple, different session incarnation
+			}
 			return r, true
 		}
 	}
