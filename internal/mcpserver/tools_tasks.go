@@ -11,7 +11,7 @@ import (
 type TaskCreateIn struct {
 	From     string `json:"from" jsonschema:"the requesting agent's alias"`
 	ToKind   string `json:"to_kind" jsonschema:"agent, role, or broadcast"`
-	ToTarget string `json:"to_target" jsonschema:"the assignee alias or role"`
+	ToTarget string `json:"to_target" jsonschema:"the assignee alias or role; for broadcast: empty for every agent, or a project name for that project's agents only"`
 	Subject  string `json:"subject" jsonschema:"a short task title"`
 	Ref      string `json:"ref,omitempty" jsonschema:"optional pointer to the work (repo/branch/endpoint/file)"`
 	Body     string `json:"body" jsonschema:"task details"`

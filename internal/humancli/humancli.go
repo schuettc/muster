@@ -185,8 +185,8 @@ func validateIntent(intent string) error {
 
 // sendFlagVals holds cmdSend's parsed flag pointers.
 type sendFlagVals struct {
-	from, subject, ref, intent *string
-	role, broadcast            *bool
+	from, subject, ref, intent, project *string
+	role, broadcast                     *bool
 }
 
 // newSendFlagsWithVals declares send's flags and returns both the FlagSet
@@ -202,6 +202,7 @@ func newSendFlagsWithVals() (*flag.FlagSet, sendFlagVals) {
 	v.ref = fs.String("ref", "", "pointer to the work")
 	v.role = fs.Bool("role", false, "treat target as a role")
 	v.broadcast = fs.Bool("broadcast", false, "send to everyone")
+	v.project = fs.String("project", "", "with --broadcast: send only to this project's agents")
 	v.intent = fs.String("intent", "", "message intent: fyi, reply-requested, or action-requested")
 	return fs, v
 }
@@ -228,6 +229,9 @@ func cmdSend(args []string, out io.Writer) error {
 	if err := validateIntent(*v.intent); err != nil {
 		return err
 	}
+	if *v.project != "" && !*v.broadcast {
+		return fmt.Errorf("--project requires --broadcast")
+	}
 	toKind, toTarget := "agent", ""
 	switch {
 	case *v.broadcast:
@@ -238,8 +242,9 @@ func cmdSend(args []string, out io.Writer) error {
 	var body string
 	if *v.broadcast {
 		if len(rest) < 1 {
-			return fmt.Errorf("usage: muster send --broadcast <body> [--intent fyi|reply-requested|action-requested]")
+			return fmt.Errorf("usage: muster send --broadcast [--project <p>] <body> [--intent fyi|reply-requested|action-requested]")
 		}
+		toTarget = *v.project
 		body = strings.Join(rest, " ")
 	} else {
 		if len(rest) < 2 {

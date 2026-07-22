@@ -191,7 +191,7 @@ WHERE `+threadConcerns+`
               WHERE e.thread_id = threads.id
                 AND e.id > COALESCE((SELECT last_read_entry_id FROM agents WHERE alias=?), 0)
                 AND e.from_agent != ?)`,
-		alias, alias, alias, alias, alias).Scan(&n)
+		alias, alias, alias, alias, alias, alias).Scan(&n)
 	return n, err
 }
 

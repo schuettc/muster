@@ -317,10 +317,10 @@ func TestSessionUnreadEmptyTupleNeverGroups(t *testing.T) {
 // and aliases — the "one canonical predicate" rule surviving a join.
 func TestThreadConcernsSessionJoinEquivalence(t *testing.T) {
 	s := newTestStore(t)
-	if err := s.RegisterAgent(Agent{Alias: "rev1", Role: "reviewer"}); err != nil {
+	if err := s.RegisterAgent(Agent{Alias: "rev1", Role: "reviewer", Project: "web"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.RegisterAgent(Agent{Alias: "rev2", Role: "reviewer"}); err != nil {
+	if err := s.RegisterAgent(Agent{Alias: "rev2", Role: "reviewer", Project: "api"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.RegisterAgent(Agent{Alias: "other", Role: "producer"}); err != nil {
@@ -337,6 +337,9 @@ func TestThreadConcernsSessionJoinEquivalence(t *testing.T) {
 	mk("message", "backend", "broadcast", "")
 	mk("message", "rev2", "agent", "someone-else")
 	mk("task", "other", "agent", "rev1")
+	mk("message", "backend", "broadcast", "web")  // scoped: concerns rev1 only
+	mk("message", "backend", "broadcast", "api")  // scoped: concerns rev2 only
+	mk("message", "backend", "broadcast", "gone") // scoped: concerns nobody
 
 	idsMatching := func(query string, args ...any) []int64 {
 		t.Helper()
@@ -357,7 +360,7 @@ func TestThreadConcernsSessionJoinEquivalence(t *testing.T) {
 	}
 
 	for _, alias := range []string{"rev1", "rev2", "other", "nobody"} {
-		want := idsMatching(`SELECT id FROM threads WHERE `+threadConcerns+` ORDER BY id`, alias, alias, alias)
+		want := idsMatching(`SELECT id FROM threads WHERE `+threadConcerns+` ORDER BY id`, alias, alias, alias, alias)
 		got := idsMatching(`WITH sess AS (SELECT ? AS alias) SELECT threads.id FROM threads JOIN sess ON `+threadConcernsJoin+` ORDER BY threads.id`, alias)
 		if !reflect.DeepEqual(want, got) {
 			t.Fatalf("alias=%q: threadConcerns=%v threadConcernsJoin=%v disagree", alias, want, got)
