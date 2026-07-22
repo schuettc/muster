@@ -120,7 +120,7 @@ func (r *Renderer) disp(alias string) string {
 }
 
 // dispTarget renders a journal target ('agent:x' / 'role:r' / 'broadcast' /
-// bare alias) for display.
+// 'broadcast:<project>' / bare alias) for display.
 func (r *Renderer) dispTarget(target string) string {
 	if a, ok := strings.CutPrefix(target, "agent:"); ok {
 		return r.disp(a)
