@@ -9,6 +9,7 @@ import (
 	"os"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/schuettc/muster/internal/display"
@@ -361,7 +362,9 @@ func (d *Daemon) notifyForThread(threadID int64, actor string) {
 		}
 	case "broadcast":
 		for _, a := range agents {
-			recipients[a.Alias] = struct{}{}
+			if th.ToTarget == "" || a.Project == th.ToTarget {
+				recipients[a.Alias] = struct{}{}
+			}
 		}
 	}
 	// Drop the actor's entire session: the literal alias always goes (an
@@ -444,14 +447,50 @@ func (d *Daemon) senderProject(alias string) string {
 	return ag.Project
 }
 
+// validateBroadcastTarget is the send-time backstop for scoped broadcasts
+// (to_kind=broadcast, to_target=<project>): reject unless some non-departed
+// agent is registered under exactly that project, so a typo'd project never
+// creates a thread that concerns nobody — the same black-hole principle as
+// resolveAgentTarget for mistyped aliases. A global broadcast (empty
+// target) is never validated. Exact match only; project strings come from
+// tmux capture and are stable, so no fuzzy or prefix matching.
+func (d *Daemon) validateBroadcastTarget(project string) error {
+	if project == "" {
+		return nil
+	}
+	agents, err := d.s.ListAgents()
+	if err != nil {
+		return err
+	}
+	known := make(map[string]bool)
+	for _, ag := range agents {
+		if !ag.Departed && ag.Project != "" {
+			known[ag.Project] = true
+		}
+	}
+	if known[project] {
+		return nil
+	}
+	names := make([]string, 0, len(known))
+	for p := range known {
+		names = append(names, p)
+	}
+	sort.Strings(names)
+	return fmt.Errorf("no registered agents in project %q (known projects: %s)", project, strings.Join(names, ", "))
+}
+
 // targetOf renders a thread address as a journal target: 'broadcast' or
 // '<to_kind>:<to_target>'. toTarget is the (possibly daemon-resolved) target
 // actually stored on the thread, not necessarily the raw request arg — so a
 // send_message/task_create addressed to a label journals the ALIAS it
-// resolved to, not the label a caller typed.
+// resolved to, not the label a caller typed. A scoped broadcast journals
+// 'broadcast:<project>'.
 func targetOf(toKind, toTarget string) string {
 	if toKind == "broadcast" {
-		return "broadcast"
+		if toTarget == "" {
+			return "broadcast"
+		}
+		return "broadcast:" + toTarget
 	}
 	return toKind + ":" + toTarget
 }
@@ -477,6 +516,11 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 			}
 			toTarget = resolved
 		}
+		if toKind == "broadcast" {
+			if err := d.validateBroadcastTarget(toTarget); err != nil {
+				return fail(err)
+			}
+		}
 		id, err := d.s.CreateThread(store.Thread{
 			Kind: "message", FromAgent: from, ToKind: toKind,
 			ToTarget: toTarget, Subject: str(a, "subject"), Ref: str(a, "ref"),
@@ -497,6 +541,11 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 				return fail(err)
 			}
 			toTarget = resolved
+		}
+		if toKind == "broadcast" {
+			if err := d.validateBroadcastTarget(toTarget); err != nil {
+				return fail(err)
+			}
 		}
 		id, err := d.s.CreateThread(store.Thread{
 			Kind: "task", FromAgent: from, ToKind: toKind,
