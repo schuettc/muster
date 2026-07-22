@@ -8,6 +8,11 @@ import (
 
 func TestTaskCreateClaimTransition(t *testing.T) {
 	startTestDaemon(t)
+	if _, err := callDaemon("register_agent", map[string]any{
+		"alias": "backend", "role": "producer", "model_type": "claude",
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	_, created, err := taskCreateHandler(context.Background(), nil, TaskCreateIn{
 		From: "backend", ToKind: "role", ToTarget: "reviewer",
@@ -44,6 +49,11 @@ func TestTaskCreateClaimTransition(t *testing.T) {
 // field reaches the daemon and lands on the thread.
 func TestTaskCreateIntentPassesThrough(t *testing.T) {
 	startTestDaemon(t)
+	if _, err := callDaemon("register_agent", map[string]any{
+		"alias": "backend", "role": "producer", "model_type": "claude",
+	}); err != nil {
+		t.Fatal(err)
+	}
 	_, created, err := taskCreateHandler(context.Background(), nil, TaskCreateIn{
 		From: "backend", ToKind: "role", ToTarget: "reviewer",
 		Subject: "urgent fix needed", Body: "please act now", Intent: "action-requested",
@@ -81,6 +91,11 @@ func TestTaskCreateIntentPassesThrough(t *testing.T) {
 
 func TestTaskTransitionRejectsInvalidStatus(t *testing.T) {
 	startTestDaemon(t)
+	if _, err := callDaemon("register_agent", map[string]any{
+		"alias": "backend", "role": "producer", "model_type": "claude",
+	}); err != nil {
+		t.Fatal(err)
+	}
 	_, created, _ := taskCreateHandler(context.Background(), nil, TaskCreateIn{
 		From: "backend", ToKind: "role", ToTarget: "reviewer", Subject: "x", Body: "y",
 	})

@@ -57,6 +57,9 @@ type GetThreadOut struct {
 }
 
 func sendMessageHandler(_ context.Context, _ *mcp.CallToolRequest, in SendMessageIn) (*mcp.CallToolResult, ThreadIDOut, error) {
+	if err := requireRegisteredFrom(in.From); err != nil {
+		return nil, ThreadIDOut{}, err
+	}
 	raw, err := callDaemon("send_message", map[string]any{
 		"from": in.From, "to_kind": in.ToKind, "to_target": in.ToTarget,
 		"subject": in.Subject, "ref": in.Ref, "body": in.Body, "intent": in.Intent,
@@ -72,6 +75,9 @@ func sendMessageHandler(_ context.Context, _ *mcp.CallToolRequest, in SendMessag
 }
 
 func replyHandler(_ context.Context, _ *mcp.CallToolRequest, in ReplyIn) (*mcp.CallToolResult, EntryIDOut, error) {
+	if err := requireRegisteredFrom(in.From); err != nil {
+		return nil, EntryIDOut{}, err
+	}
 	raw, err := callDaemon("reply", map[string]any{
 		"thread_id": in.ThreadID, "from": in.From, "body": in.Body,
 	})

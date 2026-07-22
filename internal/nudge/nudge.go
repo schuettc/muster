@@ -48,17 +48,17 @@ func (n TmuxNudger) sleep(d time.Duration) {
 	time.Sleep(d)
 }
 
-// Nudge types the check-inbox line into the pane. When submit is requested it
-// presses Enter to submit the turn: claude accepts the Enter immediately, while
-// codex needs a short delay after the text before a standalone Enter registers
-// as a submit (see codexSubmitDelay). Unknown model types are typed-only
-// (submitted=false) because their send-keys submit behavior is unverified, so
-// the caller can tell the operator to press Enter.
-func (n TmuxNudger) Nudge(socketPath, paneID, modelType string, submit bool) (bool, error) {
+// TypeLine types text into the pane and optionally submits it — the general
+// form of Nudge, for callers with their own line to deliver (e.g. `muster
+// label`'s /rename sync). Submit semantics are per-model, identical to Nudge:
+// claude accepts an immediate Enter; codex needs codexSubmitDelay first;
+// unknown model types are typed-only (submitted=false) so the caller can tell
+// the operator to press Enter.
+func (n TmuxNudger) TypeLine(socketPath, paneID, modelType, text string, submit bool) (bool, error) {
 	if socketPath == "" || paneID == "" {
 		return false, fmt.Errorf("agent has no tmux pane (not registered from inside tmux)")
 	}
-	if err := n.run("-S", socketPath, "send-keys", "-t", paneID, "-l", message); err != nil {
+	if err := n.run("-S", socketPath, "send-keys", "-t", paneID, "-l", text); err != nil {
 		return false, fmt.Errorf("send-keys failed (pane may be gone): %w", err)
 	}
 	if !submit {
@@ -76,4 +76,9 @@ func (n TmuxNudger) Nudge(socketPath, paneID, modelType string, submit bool) (bo
 		return false, fmt.Errorf("submit failed: %w", err)
 	}
 	return true, nil
+}
+
+// Nudge types the check-inbox line into the pane and (optionally) submits it.
+func (n TmuxNudger) Nudge(socketPath, paneID, modelType string, submit bool) (bool, error) {
+	return n.TypeLine(socketPath, paneID, modelType, message, submit)
 }

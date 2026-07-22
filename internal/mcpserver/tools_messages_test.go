@@ -8,9 +8,14 @@ import (
 
 func TestSendMessageAndInbox(t *testing.T) {
 	startTestDaemon(t)
-	// Register the recipient so role/inbox routing has an agent.
-	if _, _, err := registerAgentHandler(context.Background(), nil, RegisterAgentIn{
-		Alias: "consumer", Role: "consumer", ModelType: "codex",
+	// Register both sender and recipient.
+	if _, err := callDaemon("register_agent", map[string]any{
+		"alias": "backend", "role": "producer", "model_type": "claude",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := callDaemon("register_agent", map[string]any{
+		"alias": "consumer", "role": "consumer", "model_type": "codex",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -51,8 +56,13 @@ func TestSendMessageAndInbox(t *testing.T) {
 // list_threads, the same op the CLI/station read).
 func TestSendMessageIntentPassesThrough(t *testing.T) {
 	startTestDaemon(t)
-	if _, _, err := registerAgentHandler(context.Background(), nil, RegisterAgentIn{
-		Alias: "consumer", Role: "consumer", ModelType: "codex",
+	if _, err := callDaemon("register_agent", map[string]any{
+		"alias": "backend", "role": "producer", "model_type": "claude",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := callDaemon("register_agent", map[string]any{
+		"alias": "consumer", "role": "consumer", "model_type": "codex",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -99,13 +109,13 @@ func TestSendMessageIntentPassesThrough(t *testing.T) {
 // own last send without a get_thread round trip.
 func TestGetInboxCarriesLastFromAndUnread(t *testing.T) {
 	startTestDaemon(t)
-	if _, _, err := registerAgentHandler(context.Background(), nil, RegisterAgentIn{
-		Alias: "web", Role: "producer", ModelType: "claude",
+	if _, err := callDaemon("register_agent", map[string]any{
+		"alias": "web", "role": "producer", "model_type": "claude",
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := registerAgentHandler(context.Background(), nil, RegisterAgentIn{
-		Alias: "api", Role: "consumer", ModelType: "claude",
+	if _, err := callDaemon("register_agent", map[string]any{
+		"alias": "api", "role": "consumer", "model_type": "claude",
 	}); err != nil {
 		t.Fatal(err)
 	}
