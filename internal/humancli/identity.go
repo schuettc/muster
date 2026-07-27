@@ -21,7 +21,7 @@ func newRegisterFlagsWithVals() (fs *flag.FlagSet, role, model *string) {
 	fs = flag.NewFlagSet("register", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	role = fs.String("role", "", "this agent's role")
-	model = fs.String("model", "claude", "model backing this agent: claude or codex")
+	model = fs.String("model", "claude", "model backing this agent: claude, codex, or cursor")
 	return fs, role, model
 }
 

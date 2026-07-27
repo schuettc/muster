@@ -217,7 +217,7 @@ marks anything read.`,
 		},
 		{
 			Name:     "register",
-			Synopsis: "register [<alias>] [--role <role>] [--model claude|codex]",
+			Synopsis: "register [<alias>] [--role <role>] [--model claude|codex|cursor]",
 			Summary:  "Register the current tmux session as an agent.",
 			Help: `Alias precedence: the explicit argument, then $MUSTER_ALIAS, then the tmux
 session name. Captures the calling session's project/pane/socket identity
@@ -271,7 +271,7 @@ SIGINT/SIGTERM.`,
 			Synopsis: "mcp",
 			Summary:  "Run the MCP stdio server for coding-agent tool use.",
 			Help: `Exposes the daemon's operations as MCP tools over stdio, for a coding
-agent (Claude Code, Codex, ...) to call directly. stdout is the MCP
+agent (Claude Code, Codex, Cursor, ...) to call directly. stdout is the MCP
 protocol channel — all diagnostics go to stderr.`,
 			Group: GroupPlumbing,
 		},
@@ -280,7 +280,7 @@ protocol channel — all diagnostics go to stderr.`,
 			Synopsis: "hook <SessionStart|SessionEnd|Stop> [model]",
 			Summary:  "Session-lifecycle hook entry point for agent harness configs.",
 			Help: `The single entry point an agent harness's hook config (Claude Code,
-Codex, ...) points at directly — not normally typed by hand. SessionStart
+Codex, Cursor, ...) points at directly — not normally typed by hand. SessionStart
 registers, SessionEnd deregisters, Stop checks the calling tmux session's
 inbox and, if there's unread mail, prints decision:block JSON telling the
 agent to drain it. model defaults to "claude" when omitted. Never blocks a

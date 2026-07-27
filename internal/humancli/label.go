@@ -112,11 +112,13 @@ func syncLabelToBus(out io.Writer, label string, manual bool, socket, sessionID 
 // syncClaudeName types "/rename <name>" into this session's registered live
 // Claude pane so the Claude Code session name follows the label — making
 // prefix T (which shells out to `muster label`) the ONE naming gesture for
-// tmux, the bus, and Claude. Strictly gated on the roster: a non-departed
-// claude-model row on this exact session tuple whose pane is still alive. A
-// session with no live Claude (plain shell, codex, dead pane) gets no
-// injection — the roster is the definition of "Claude Code runs here", not
-// pane_current_command sniffing. Also gated on session incarnation
+// tmux, the bus, and Claude. Cursor, like Codex, has no /rename: prefix T
+// still sets tmux and bus labels, while rename injection remains Claude-only.
+// Strictly gated on the roster: a non-departed claude-model row on this exact
+// session tuple whose pane is still alive. A session with no live Claude
+// (plain shell, Codex, Cursor, dead pane) gets no injection — the roster is
+// the definition of "Claude Code runs here", not pane_current_command
+// sniffing. Also gated on session incarnation
 // (tmuxenv.IsSessionAlive): tmux recycles session IDs across server
 // restarts, so a stale un-reaped row can match this exact tuple yet name a
 // pane that now belongs to a completely different, fresh session — typing
