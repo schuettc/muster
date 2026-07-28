@@ -84,7 +84,7 @@ var callDaemon = func(op string, args map[string]any) (json.RawMessage, error) {
 type AgentView struct {
 	Alias        string `json:"alias" jsonschema:"the agent's addressable alias"`
 	Role         string `json:"role" jsonschema:"the agent's role (producer, consumer, reviewer, ...)"`
-	ModelType    string `json:"model_type" jsonschema:"the agent's model (claude or codex)"`
+	ModelType    string `json:"model_type" jsonschema:"the agent's model (claude, codex, or cursor)"`
 	SessionName  string `json:"session_name" jsonschema:"the tmux session the agent runs in"`
 	RegisteredAt int64  `json:"registered_at" jsonschema:"when the agent first registered (unix ms)"`
 	LastSeen     int64  `json:"last_seen" jsonschema:"when the agent was last active (unix ms)"`

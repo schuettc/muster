@@ -16,13 +16,16 @@ import (
 // get_inbox had already cleared the flag, so the Stop hook never escalated.
 const message = "📬 check your muster inbox: call get_inbox, read each new thread with get_thread, handle the request, and reply on the thread — act autonomously. (No muster MCP tools? The muster CLI is equivalent: muster inbox / thread / reply.)"
 
-// codexSubmitDelay is the pause between typing the nudge text and sending a
-// standalone Enter for codex. codex's TUI treats an Enter that is bundled with
-// (or immediately follows) pasted send-keys text as part of the paste, not a
-// submit; a lone Enter sent after a short delay submits reliably. Empirically a
-// zero delay fails and a few hundred ms works, so this is a conservative
-// default. claude submits with no delay.
-const codexSubmitDelay = 500 * time.Millisecond
+// pasteSubmitDelay is the pause between typing the nudge text and sending a
+// standalone Enter for harnesses whose TUI treats an Enter bundled with (or
+// immediately following) pasted send-keys text as part of the paste, not a
+// submit. A lone Enter after a short delay submits reliably for both Codex and
+// Cursor Agent; empirically a zero delay fails (and for Cursor, leaves the
+// text stuck in the composer so the next paste concatenates). 300ms is the
+// shortest delay that cleared a Cursor Agent composer in delayed-Enter
+// probes; shorter values often submitted and left residue. Applies to both
+// Codex and Cursor. Claude submits with no delay.
+const pasteSubmitDelay = 300 * time.Millisecond
 
 // TmuxNudger types a nudge into a pane and optionally submits it. Run is the
 // command executor (nil → real tmux) and Sleep is the delay function (nil →
@@ -51,9 +54,9 @@ func (n TmuxNudger) sleep(d time.Duration) {
 // TypeLine types text into the pane and optionally submits it — the general
 // form of Nudge, for callers with their own line to deliver (e.g. `muster
 // label`'s /rename sync). Submit semantics are per-model, identical to Nudge:
-// claude accepts an immediate Enter; codex needs codexSubmitDelay first;
-// unknown model types are typed-only (submitted=false) so the caller can tell
-// the operator to press Enter.
+// claude accepts an immediate Enter; codex and cursor need pasteSubmitDelay
+// first; unknown model types are typed-only (submitted=false) so the caller
+// can tell the operator to press Enter.
 func (n TmuxNudger) TypeLine(socketPath, paneID, modelType, text string, submit bool) (bool, error) {
 	if socketPath == "" || paneID == "" {
 		return false, fmt.Errorf("agent has no tmux pane (not registered from inside tmux)")
@@ -67,8 +70,8 @@ func (n TmuxNudger) TypeLine(socketPath, paneID, modelType, text string, submit 
 	switch modelType {
 	case "claude":
 		// Immediate Enter submits.
-	case "codex":
-		n.sleep(codexSubmitDelay) // let codex finish processing the paste before Enter
+	case "codex", "cursor":
+		n.sleep(pasteSubmitDelay) // let the TUI finish processing the paste before Enter
 	default:
 		return false, nil // unknown submit behavior → typed-only
 	}
