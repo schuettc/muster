@@ -21,9 +21,11 @@ const message = "📬 check your muster inbox: call get_inbox, read each new thr
 // immediately following) pasted send-keys text as part of the paste, not a
 // submit. A lone Enter after a short delay submits reliably for both Codex and
 // Cursor Agent; empirically a zero delay fails (and for Cursor, leaves the
-// text stuck in the composer so the next paste concatenates). A few hundred ms
-// works — this is a conservative default. Claude submits with no delay.
-const pasteSubmitDelay = 500 * time.Millisecond
+// text stuck in the composer so the next paste concatenates). 300ms is the
+// shortest delay that cleared a Cursor Agent composer in delayed-Enter
+// probes; shorter values often submitted and left residue. Applies to both
+// Codex and Cursor. Claude submits with no delay.
+const pasteSubmitDelay = 300 * time.Millisecond
 
 // TmuxNudger types a nudge into a pane and optionally submits it. Run is the
 // command executor (nil → real tmux) and Sleep is the delay function (nil →
