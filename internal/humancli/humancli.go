@@ -48,12 +48,16 @@ type agentRow struct {
 	SessionID string `json:"session_id"`
 	// SessionCreated feeds tmuxenv.IsSessionAlive's recycled-session-ID
 	// discrimination (see store.Agent.SessionCreated).
-	SessionCreated int64  `json:"session_created"`
-	SessionName    string `json:"session_name"`
-	Project        string `json:"project"`
-	Label          string `json:"label"`
-	LabelManual    bool   `json:"label_manual"`
-	LastSeen       int64  `json:"last_seen"`
+	SessionCreated int64 `json:"session_created"`
+	// HarnessSessionID links a row to its harness session (see
+	// store.Agent.HarnessSessionID) — how a daemon-hosted session's hooks,
+	// which see no tmux, find their own rows.
+	HarnessSessionID string `json:"harness_session_id"`
+	SessionName      string `json:"session_name"`
+	Project          string `json:"project"`
+	Label            string `json:"label"`
+	LabelManual      bool   `json:"label_manual"`
+	LastSeen         int64  `json:"last_seen"`
 	// Departed is true once the agent has been deregistered (tombstoned, not
 	// deleted — see store.Store.DepartAgent): gc's default reap and
 	// --purge-agents both key off this to decide whether a row still needs
@@ -155,8 +159,14 @@ func cmdAgents(out io.Writer) error {
 			label = "(" + label + ")" // auto-topic: shown but not addressable
 		}
 		live := "✗"
-		if a.Live {
+		switch {
+		case a.Live:
 			live = "●"
+		case a.SocketPath == "" && !a.Departed:
+			// Paneless agents (harness daemon-hosted sessions) have no tmux
+			// session to probe: liveness is unknowable here, and rendering ✗
+			// would read as "dead" for what is usually a live session.
+			live = "◌"
 		}
 		if _, err := fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", proj, a.Alias, label, a.ModelType, live); err != nil {
 			return err

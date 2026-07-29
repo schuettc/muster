@@ -24,6 +24,10 @@ func TestHookStopLoopGuard(t *testing.T) {
 
 func TestHookStopNoTmux(t *testing.T) {
 	t.Setenv("TMUX", "")
+	// Pin the harness identity away: on a dev machine `go test` itself runs
+	// inside a Claude session whose CLAUDE_CODE_SESSION_ID would otherwise
+	// give this "no identity" scenario a paneless identity and a daemon dial.
+	t.Setenv("CLAUDE_CODE_SESSION_ID", "")
 	var buf bytes.Buffer
 	if err := cmdHook([]string{"Stop"}, strings.NewReader(`{}`), &buf); err != nil {
 		t.Fatal(err)
@@ -741,6 +745,7 @@ func TestHookSessionStartBestEffortWhenDaemonUnreachable(t *testing.T) {
 	t.Setenv("TMUX", "")
 	t.Setenv("TMUX_PANE", "")
 	t.Setenv("MUSTER_ALIAS", "")
+	t.Setenv("CLAUDE_CODE_SESSION_ID", "") // pin: a dev machine's own Claude session must not lend this test an identity
 	var buf bytes.Buffer
 	if err := cmdHook([]string{"SessionStart"}, strings.NewReader(""), &buf); err != nil {
 		t.Fatalf("hook must never return an error, got %v", err)
@@ -856,6 +861,11 @@ func TestHookSessionEndUnresolvableIdentityNeverDialsDaemon(t *testing.T) {
 	t.Setenv("TMUX", "")
 	t.Setenv("TMUX_PANE", "")
 	t.Setenv("MUSTER_ALIAS", "")
+	// Pin the harness identity away: with a CLAUDE_CODE_SESSION_ID leaking in
+	// from a dev machine's own Claude session, SessionEnd legitimately HAS an
+	// identity (the paneless tuple) and dialing would be correct — this test
+	// is specifically about the no-identity-at-all branch.
+	t.Setenv("CLAUDE_CODE_SESSION_ID", "")
 
 	done := make(chan error, 1)
 	go func() {

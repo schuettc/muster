@@ -209,7 +209,8 @@ func (d *Daemon) handleRegisterAgent(a map[string]any) proto.Response {
 		Alias: alias, Role: str(a, "role"), ModelType: str(a, "model_type"),
 		SocketPath: str(a, "socket_path"), PaneID: str(a, "pane_id"), SessionName: str(a, "session_name"),
 		SessionID: str(a, "session_id"), SessionCreated: i64(a, "session_created"),
-		Project: str(a, "project"), Label: str(a, "label"), LabelManual: boolArg(a, "label_manual"),
+		HarnessSessionID: str(a, "harness_session_id"),
+		Project:          str(a, "project"), Label: str(a, "label"), LabelManual: boolArg(a, "label_manual"),
 	}
 
 	var mu *sync.Mutex
@@ -603,9 +604,12 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 		d.logEvent(store.Event{Kind: "read", Agent: alias, Detail: detail})
 		return ok(threads)
 	case "session_aliases":
+		// socket_path may be empty: a paneless session's tuple is ("",
+		// harness session UUID) — see internal/harnessenv. Only a missing
+		// session_id leaves no tuple to key on.
 		socketPath, sessionID := str(a, "socket_path"), str(a, "session_id")
-		if socketPath == "" || sessionID == "" {
-			return fail(fmt.Errorf("session_aliases: socket_path and session_id are required"))
+		if sessionID == "" {
+			return fail(fmt.Errorf("session_aliases: session_id is required"))
 		}
 		agents, err := d.s.ListAgents()
 		if err != nil {
@@ -625,9 +629,10 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 		// unlike setSessionBadge, this neither mutates the tmux badge nor
 		// journals anything, so there is nothing for the session lock to
 		// serialize against.
+		// socket_path may be empty — the paneless tuple, as in session_aliases.
 		socketPath, sessionID := str(a, "socket_path"), str(a, "session_id")
-		if socketPath == "" || sessionID == "" {
-			return fail(fmt.Errorf("session_unread: socket_path and session_id are required"))
+		if sessionID == "" {
+			return fail(fmt.Errorf("session_unread: session_id is required"))
 		}
 		total, action, err := d.s.SessionUnread(socketPath, sessionID)
 		if err != nil {
