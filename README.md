@@ -131,7 +131,12 @@ arg → `$MUSTER_ALIAS` → tmux session name → working-directory basename.
 Code's daemon-hosted sessions and background jobs execute outside the pane
 you launched them from) registers *paneless*: alias from the working
 directory, project from the enclosing git checkout, identity keyed on the
-harness session UUID. The session hooks work unchanged — auto-register at
+harness session UUID. Every session in a directory derives the same base, so
+the alias is **allocated unique** — `dotfiles`, then `dotfiles-2`, `-3`, … —
+never taken over from another live session; a resumed session revives its own
+alias instead of taking a new suffix. (The numbers are bus-side allocation
+order and won't necessarily match your tmux session numbering — the session
+can't see its tmux name, which is the whole reason it's paneless.) The session hooks work unchanged — auto-register at
 start, deregister at end, and the Stop hook checks the inbox via the daemon
 directly (there's no tmux badge to poll). Paneless agents show `◌` in the
 LIVE column (liveness is unknowable without a pane), are exempt from `gc`'s

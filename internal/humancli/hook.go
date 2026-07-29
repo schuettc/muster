@@ -57,31 +57,32 @@ func cmdHook(args []string, stdin io.Reader, out io.Writer) error {
 }
 
 // hookSessionStartPaneless auto-registers a session that has no tmux pane in
-// its environment (harness daemon-hosted sessions): alias from $MUSTER_ALIAS
-// or the payload cwd's basename, identity tuple ("", harness session UUID).
-// The claim gate mirrors hookMayClaimIdentity's philosophy — a departed row
-// or one from another session is reclaimed (paneless rows have no liveness,
-// so a stale row from a crashed session must not squat the alias forever);
-// only an alias whose registered tmux pane is provably still alive is left
-// alone, since a live pane-anchored owner CAN be verified.
+// its environment (harness daemon-hosted sessions) on the paneless tuple
+// ("", harness session UUID). $MUSTER_ALIAS is explicit operator intent and
+// registers exactly (plain upsert). Otherwise the alias is ALLOCATED from
+// the payload cwd's basename via allocPanelessAlias — every session in a
+// directory derives the same base, so uniqueness (dotfiles, dotfiles-2, …)
+// must be allocated, never taken over: the takeover this replaces let a
+// second session in the same directory silently steal the first one's
+// identity and inbox. A session that already owns aliases on its tuple
+// (resume) refreshes the first instead of allocating a new one.
 func hookSessionStartPaneless(h harnessenv.Capture, model string) {
-	alias := os.Getenv("MUSTER_ALIAS")
-	if alias == "" {
-		alias = h.Alias()
+	regFn := func(alias string, ifAbsent bool) error {
+		_, err := callData("register_agent", registerPanelessArgs(alias, "", model, h, ifAbsent))
+		return err
 	}
-	if alias == "" {
+	if alias := os.Getenv("MUSTER_ALIAS"); alias != "" {
+		_ = regFn(alias, false)
+		return
+	}
+	if h.SessionID == "" && h.Alias() == "" {
 		return // no resolvable identity: never dial the daemon from an identity-less hook
 	}
-	if ag, found := hookGetAgent(alias); found && !ag.Departed &&
-		ag.SocketPath != "" && ag.PaneID != "" && tmuxenv.IsPaneAlive(ag.SocketPath, ag.PaneID) {
-		return // a live tmux pane owns this alias: not ours to steal
+	if owned := panelessOwnedAliases(h.SessionID); len(owned) > 0 {
+		_ = regFn(owned[0], false) // resume: revive/refresh this session's own identity
+		return
 	}
-	_, _ = callData("register_agent", map[string]any{
-		"alias": alias, "role": "", "model_type": model,
-		"session_name": "", "session_id": h.SessionID, "session_created": 0,
-		"socket_path": "", "pane_id": "",
-		"project": h.Project(), "label": "", "label_manual": false,
-	})
+	_, _ = allocPanelessAlias(h.Alias(), h.SessionID, regFn)
 }
 
 // hookAlias resolves the identity a hook event acts on, mirroring

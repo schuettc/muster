@@ -64,7 +64,32 @@ func cmdRegister(args []string, out io.Writer) error {
 	case c.SessionName != "":
 		alias = c.SessionName
 	default:
-		alias = h.Alias()
+		// Paneless cwd fallback: every session in a directory derives the
+		// same base, so the alias must be ALLOCATED unique (base, base-2, …)
+		// — never taken over from another live session. An explicit arg,
+		// $MUSTER_ALIAS, or a tmux session name (unique by construction)
+		// registers exactly, above.
+		if h.Alias() == "" && h.SessionID == "" {
+			return fmt.Errorf("cannot determine alias: no tmux session and no usable working directory; pass one explicitly or set $MUSTER_ALIAS")
+		}
+		regFn := func(a string, ifAbsent bool) error {
+			args := registerPanelessArgs(a, *role, *model, h, ifAbsent)
+			_, err := callData("register_agent", args)
+			return err
+		}
+		if owned := panelessOwnedAliases(h.SessionID); len(owned) > 0 {
+			alias = owned[0] // this session already has an identity: refresh it
+			if err := regFn(alias, false); err != nil {
+				return err
+			}
+		} else {
+			var err error
+			if alias, err = allocPanelessAlias(h.Alias(), h.SessionID, regFn); err != nil {
+				return err
+			}
+		}
+		_, err := fmt.Fprintf(out, "registered %s (paneless, project %q, model %s)\n", alias, h.Project(), *model)
+		return err
 	}
 	if alias == "" {
 		return fmt.Errorf("cannot determine alias: no tmux session and no usable working directory; pass one explicitly or set $MUSTER_ALIAS")
@@ -114,7 +139,15 @@ func cmdDeregister(args []string, out io.Writer) error {
 	default:
 		alias = tmuxenv.CaptureEnv().SessionName
 		if alias == "" {
-			alias = harnessenv.FromEnv().Alias()
+			// Paneless: this session's ALLOCATED alias may carry a suffix
+			// (dotfiles-2), so resolve through the roster by session UUID
+			// first; the raw cwd basename is only a last resort.
+			h := harnessenv.FromEnv()
+			if owned := panelessOwnedAliases(h.SessionID); len(owned) > 0 {
+				alias = owned[0]
+			} else {
+				alias = h.Alias()
+			}
 		}
 	}
 	if alias == "" {
