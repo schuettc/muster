@@ -155,8 +155,14 @@ func cmdAgents(out io.Writer) error {
 			label = "(" + label + ")" // auto-topic: shown but not addressable
 		}
 		live := "✗"
-		if a.Live {
+		switch {
+		case a.Live:
 			live = "●"
+		case a.SocketPath == "" && !a.Departed:
+			// Paneless agents (harness daemon-hosted sessions) have no tmux
+			// session to probe: liveness is unknowable here, and rendering ✗
+			// would read as "dead" for what is usually a live session.
+			live = "◌"
 		}
 		if _, err := fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", proj, a.Alias, label, a.ModelType, live); err != nil {
 			return err

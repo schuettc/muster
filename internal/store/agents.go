@@ -229,14 +229,17 @@ func (s *Store) MarkRead(alias string) error {
 // session — so a session's own writes under either alias never make its own
 // threads unread, and a broadcast concerning two sibling aliases counts once,
 // never twice (no summing of per-alias counts). action is the subset whose
-// effective intent (effectiveIntent) is action-requested. An empty
-// socketPath or sessionID never groups: it matches no agents, so both
-// results are 0 (per-alias identity is UnreadCount's job for such agents,
-// e.g. one registered without a live tmux pane).
+// effective intent (effectiveIntent) is action-requested. An empty sessionID
+// never groups: it matches no agents, so both results are 0 (per-alias
+// identity is UnreadCount's job for such agents). socketPath MAY be empty —
+// ("", harness session UUID) is the paneless tuple (see internal/harnessenv),
+// a real session identity whose sibling aliases group exactly like a tmux
+// session's; the sessionID guard alone keeps pre-harnessenv no-tmux rows
+// (both fields empty) from ever grouping with each other.
 func (s *Store) SessionUnread(socketPath, sessionID string) (total, action int, err error) {
 	err = s.db.QueryRow(`
 WITH sess AS (SELECT alias, last_read_entry_id FROM agents
-              WHERE socket_path = ?1 AND session_id = ?2 AND ?1 != '' AND ?2 != '')
+              WHERE socket_path = ?1 AND session_id = ?2 AND ?2 != '')
 SELECT
   COUNT(DISTINCT threads.id),
   COUNT(DISTINCT CASE WHEN `+effectiveIntent+` = 'action-requested' THEN threads.id END)
