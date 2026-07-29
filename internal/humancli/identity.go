@@ -18,18 +18,19 @@ import (
 // newRegisterFlagsWithVals declares register's flags and returns typed
 // access to their values — shared by cmdRegister (real parsing) and
 // newRegisterFlags (registry help/man rendering).
-func newRegisterFlagsWithVals() (fs *flag.FlagSet, role, model *string) {
+func newRegisterFlagsWithVals() (fs *flag.FlagSet, role, model, harness *string) {
 	fs = flag.NewFlagSet("register", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	role = fs.String("role", "", "this agent's role")
 	model = fs.String("model", "claude", "model backing this agent: claude or codex")
-	return fs, role, model
+	harness = fs.String("harness-session", "", "harness session UUID this registration belongs to — the pane-side launch handshake passes the UUID it then hands to `claude --session-id`, so the session's own hooks (which see no tmux) can find this row")
+	return fs, role, model, harness
 }
 
 // newRegisterFlags builds register's flag.FlagSet for registry-driven
 // help/man rendering.
 func newRegisterFlags() *flag.FlagSet {
-	fs, _, _ := newRegisterFlagsWithVals()
+	fs, _, _, _ := newRegisterFlagsWithVals()
 	return fs
 }
 
@@ -41,7 +42,7 @@ func newRegisterFlags() *flag.FlagSet {
 // harness session UUID, so hook ownership and sibling grouping still have an
 // identity tuple, ("", uuid), to key on.
 func cmdRegister(args []string, out io.Writer) error {
-	fs, role, model := newRegisterFlagsWithVals()
+	fs, role, model, harness := newRegisterFlagsWithVals()
 	// register has no boolean flags: --role and --model both take values, so
 	// pass an empty bool-flags set (an implicit default would wrongly reuse
 	// send's --role, which IS boolean there).
@@ -77,18 +78,20 @@ func cmdRegister(args []string, out io.Writer) error {
 			_, err := callData("register_agent", args)
 			return err
 		}
-		if owned := panelessOwnedAliases(h.SessionID); len(owned) > 0 {
-			alias = owned[0] // this session already has an identity: refresh it
-			if err := regFn(alias, false); err != nil {
-				return err
-			}
-		} else {
-			var err error
-			if alias, err = allocPanelessAlias(h.Alias(), h.SessionID, regFn); err != nil {
-				return err
-			}
+		if owned := harnessOwnedRows(h.SessionID); len(owned) > 0 {
+			// This session already has an identity (a handshake tmux row or a
+			// prior paneless one): refresh/revive it with its stored shape
+			// intact rather than allocating another.
+			alias = owned[0].Alias
+			reviveRow(owned[0], *model)
+			_, err := fmt.Fprintf(out, "registered %s (existing identity, project %q, model %s)\n", alias, owned[0].Project, *model)
+			return err
 		}
-		_, err := fmt.Fprintf(out, "registered %s (paneless, project %q, model %s)\n", alias, h.Project(), *model)
+		var err error
+		if alias, err = allocPanelessAlias(h.Alias(), h.SessionID, regFn); err != nil {
+			return err
+		}
+		_, err = fmt.Fprintf(out, "registered %s (paneless, project %q, model %s)\n", alias, h.Project(), *model)
 		return err
 	}
 	if alias == "" {
@@ -106,11 +109,19 @@ func cmdRegister(args []string, out io.Writer) error {
 		sessionID = h.SessionID
 		project = h.Project()
 	}
+	// The harness link: --harness-session (the pane-side launch handshake,
+	// which mints the UUID before the session exists), else the ambient
+	// harness UUID when this process runs inside a session.
+	harnessID := *harness
+	if harnessID == "" {
+		harnessID = h.SessionID
+	}
 	if _, err := callData("register_agent", map[string]any{
 		"alias": alias, "role": *role, "model_type": *model,
 		"session_name": sessionName, "session_id": sessionID,
-		"session_created": created,
-		"socket_path":     socketPath, "pane_id": paneID,
+		"session_created":    created,
+		"harness_session_id": harnessID,
+		"socket_path":        socketPath, "pane_id": paneID,
 		"project": project, "label": c.Label, "label_manual": c.LabelManual,
 	}); err != nil {
 		return err
@@ -139,12 +150,12 @@ func cmdDeregister(args []string, out io.Writer) error {
 	default:
 		alias = tmuxenv.CaptureEnv().SessionName
 		if alias == "" {
-			// Paneless: this session's ALLOCATED alias may carry a suffix
-			// (dotfiles-2), so resolve through the roster by session UUID
-			// first; the raw cwd basename is only a last resort.
+			// No tmux: this session's alias may be handshake- or
+			// suffix-allocated, so resolve through the roster by harness
+			// session UUID first; the raw cwd basename is only a last resort.
 			h := harnessenv.FromEnv()
-			if owned := panelessOwnedAliases(h.SessionID); len(owned) > 0 {
-				alias = owned[0]
+			if owned := harnessOwnedRows(h.SessionID); len(owned) > 0 {
+				alias = owned[0].Alias
 			} else {
 				alias = h.Alias()
 			}

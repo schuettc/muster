@@ -78,8 +78,18 @@ func hookSessionStartPaneless(h harnessenv.Capture, model string) {
 	if h.SessionID == "" && h.Alias() == "" {
 		return // no resolvable identity: never dial the daemon from an identity-less hook
 	}
-	if owned := panelessOwnedAliases(h.SessionID); len(owned) > 0 {
-		_ = regFn(owned[0], false) // resume: revive/refresh this session's own identity
+	if owned := harnessOwnedRows(h.SessionID); len(owned) > 0 {
+		// This session already has an identity — the pane-side launch
+		// handshake pre-registered a tmux-anchored row, or a prior life of
+		// this session (resume) left one. A live row needs nothing from
+		// this hook; if every owned row is a tombstone, revive the first
+		// with its stored identity intact.
+		for _, ag := range owned {
+			if !ag.Departed {
+				return
+			}
+		}
+		reviveRow(owned[0], model)
 		return
 	}
 	_, _ = allocPanelessAlias(h.Alias(), h.SessionID, regFn)
@@ -182,21 +192,13 @@ func hookSessionEnd(c tmuxenv.Capture, h harnessenv.Capture) {
 	}
 }
 
-// hookSessionEndPaneless tombstones every alias the dying paneless session
-// owns — rows whose tuple is ("", this harness session UUID). Rows holding a
-// tmux socket, another session's UUID, or no UUID at all (a pre-harnessenv
-// paneless registration) are never this session's to tombstone.
+// hookSessionEndPaneless tombstones every row the dying harness session owns
+// — handshake-registered tmux rows and paneless rows alike (harnessOwnedRows'
+// two match shapes). Rows of other sessions, or with no harness link at all
+// (pre-handshake registrations), are never this session's to tombstone.
 func hookSessionEndPaneless(h harnessenv.Capture) {
-	raw, err := callData("list_agents", nil)
-	if err != nil {
-		return // hooks never block a session on a dead daemon
-	}
-	var rows []agentRow
-	if json.Unmarshal(raw, &rows) != nil {
-		return
-	}
-	for _, ag := range rows {
-		if ag.Departed || ag.SocketPath != "" || ag.SessionID != h.SessionID {
+	for _, ag := range harnessOwnedRows(h.SessionID) {
+		if ag.Departed {
 			continue
 		}
 		_ = cmdDeregister([]string{ag.Alias}, io.Discard)
@@ -299,33 +301,51 @@ func hookStop(payload []byte, out io.Writer) {
 }
 
 // hookStopPaneless is the Stop-hook inbox check for sessions with no tmux in
-// their environment (harness daemon-hosted sessions). A paneless session has
-// no @muster_inbox tmux option to serve as the cheap firing gate, so this
-// dials the daemon directly on every Stop — two ops over a local unix
-// socket, the price of paneless mail. Aliases and unread both come from the
-// paneless tuple ("", harness session UUID); an unregistered session (no
-// aliases on that tuple) prints nothing, and unlike the tmux path there is
-// no session-name fallback to address — a paneless identity either resolved
-// from the roster or doesn't exist.
+// their environment (harness daemon-hosted sessions). Such a session has no
+// @muster_inbox tmux option to serve as the cheap firing gate, so this dials
+// the daemon directly on every Stop — two ops over a local unix socket, the
+// price of daemon-hosted mail. Identity resolves by harness session UUID
+// (harnessOwnedRows): handshake-registered tmux rows and paneless rows
+// alike. An unregistered session prints nothing, and unlike the tmux path
+// there is no session-name fallback to address — a harness identity either
+// resolved from the roster or doesn't exist.
 func hookStopPaneless(h harnessenv.Capture, out io.Writer) {
 	if h.SessionID == "" {
 		return
 	}
-	raw, err := callData("session_aliases", map[string]any{"socket_path": "", "session_id": h.SessionID})
-	if err != nil {
+	var aliases []string
+	var label string
+	var tup *agentRow
+	owned := harnessOwnedRows(h.SessionID)
+	for i, ag := range owned {
+		if ag.Departed {
+			continue
+		}
+		aliases = append(aliases, ag.Alias)
+		if label == "" && ag.LabelManual {
+			label = ag.Label
+		}
+		if tup == nil && ag.SocketPath != "" && ag.SessionID != "" {
+			tup = &owned[i]
+		}
+	}
+	if len(aliases) == 0 {
 		return
 	}
-	var res struct {
-		Aliases []string `json:"aliases"`
+	// Unread comes from ONE tuple: the handshake row's tmux tuple when the
+	// session has one (its mail lives there), else the paneless tuple. A
+	// split identity spanning both would need two queries whose overlapping
+	// threads can't be deduplicated client-side — the aliases list still
+	// names every identity, so nothing goes undrained.
+	sock, sid := "", h.SessionID
+	if tup != nil {
+		sock, sid = tup.SocketPath, tup.SessionID
 	}
-	if json.Unmarshal(raw, &res) != nil || len(res.Aliases) == 0 {
-		return
-	}
-	total, action, ok := sessionUnreadForHook("", h.SessionID)
+	total, action, ok := sessionUnreadForHook(sock, sid)
 	if !ok || total <= 0 {
 		return
 	}
-	b, err := json.Marshal(stopReason{Decision: "block", Reason: hookReason(total, action, res.Aliases, "")})
+	b, err := json.Marshal(stopReason{Decision: "block", Reason: hookReason(total, action, aliases, label)})
 	if err != nil {
 		return
 	}

@@ -209,7 +209,8 @@ func (d *Daemon) handleRegisterAgent(a map[string]any) proto.Response {
 		Alias: alias, Role: str(a, "role"), ModelType: str(a, "model_type"),
 		SocketPath: str(a, "socket_path"), PaneID: str(a, "pane_id"), SessionName: str(a, "session_name"),
 		SessionID: str(a, "session_id"), SessionCreated: i64(a, "session_created"),
-		Project: str(a, "project"), Label: str(a, "label"), LabelManual: boolArg(a, "label_manual"),
+		HarnessSessionID: str(a, "harness_session_id"),
+		Project:          str(a, "project"), Label: str(a, "label"), LabelManual: boolArg(a, "label_manual"),
 	}
 
 	var mu *sync.Mutex

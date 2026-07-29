@@ -281,3 +281,73 @@ func TestGCSparesLivePanelessRows(t *testing.T) {
 		t.Fatalf("a departed paneless row must purge, got %q", buf.String())
 	}
 }
+
+// TestLaunchHandshakeLifecycle drives the pane-side launch handshake end to
+// end: the pane registers the tmux session name with --harness-session (the
+// UUID it will hand to `claude --session-id`), then the SESSION's hooks —
+// which see no tmux — resolve that row by UUID: SessionStart leaves the live
+// row alone (no cwd-derived duplicate), Stop drains mail via the row's tmux
+// tuple with the label leading the reason, SessionEnd tombstones it.
+func TestLaunchHandshakeLifecycle(t *testing.T) {
+	startTestDaemon(t)
+
+	// Pane side: tmux env present, handshake registration.
+	t.Setenv("TMUX", "/tmp/sockHS,1,0")
+	t.Setenv("TMUX_PANE", "%3")
+	t.Setenv("MUSTER_ALIAS", "")
+	t.Setenv("CLAUDE_CODE_SESSION_ID", "")
+	prev := tmuxenv.Run
+	tmuxenv.Run = hookRun(map[string]string{
+		"#{session_id}": "$7", "#{session_name}": "bh-workspace-4", "#{session_created}": "1784000123",
+	})
+	t.Cleanup(func() { tmuxenv.Run = prev })
+	var buf bytes.Buffer
+	if err := cmdRegister([]string{"--harness-session", "hs-shake"}, &buf); err != nil {
+		t.Fatalf("handshake register: %v", err)
+	}
+	ag, found := hookGetAgent("bh-workspace-4")
+	if !found {
+		t.Fatal("handshake row missing")
+	}
+
+	// Session side: no tmux at all.
+	panelessEnv(t, "", "some-worktree-dir")
+	payload := `{"session_id":"hs-shake","cwd":"/x/some-worktree-dir"}`
+	if err := cmdHook([]string{"SessionStart"}, strings.NewReader(payload), &buf); err != nil {
+		t.Fatal(err)
+	}
+	if _, found := hookGetAgent("some-worktree-dir"); found {
+		t.Fatal("SessionStart must not allocate a cwd alias when the handshake row exists")
+	}
+
+	if _, err := callData("register_agent", map[string]any{
+		"alias": "sender", "socket_path": "/p", "session_id": "$9",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := callData("send_message", map[string]any{
+		"from": "sender", "to_kind": "agent", "to_target": "bh-workspace-4", "subject": "s", "body": "b",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := callData("set_label", map[string]any{
+		"socket_path": "/tmp/sockHS", "session_id": "$7", "label": "debug alarms", "label_manual": true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var stop bytes.Buffer
+	if err := cmdHook([]string{"Stop"}, strings.NewReader(`{"session_id":"hs-shake"}`), &stop); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stop.String(), "alias 'bh-workspace-4'") || !strings.Contains(stop.String(), "You are 'debug alarms'") {
+		t.Fatalf("Stop must address the handshake alias and lead with its label, got %q", stop.String())
+	}
+
+	if err := cmdHook([]string{"SessionEnd"}, strings.NewReader(payload), &buf); err != nil {
+		t.Fatal(err)
+	}
+	ag, found = hookGetAgent("bh-workspace-4")
+	if !found || !ag.Departed {
+		t.Fatalf("SessionEnd must tombstone the handshake row, got %+v found=%v", ag, found)
+	}
+}

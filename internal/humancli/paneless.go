@@ -13,27 +13,6 @@ import (
 // leaking registrations, and failing loudly beats alias -51.
 const panelessAliasCap = 50
 
-// panelessOwnedAliases returns the aliases already registered on this
-// session's paneless tuple ("", uuid) — including tombstones, so a resumed
-// session revives its own departed identity rather than allocating a fresh
-// suffix. Empty on any daemon failure.
-func panelessOwnedAliases(sessionID string) []string {
-	if sessionID == "" {
-		return nil
-	}
-	raw, err := callData("session_aliases", map[string]any{"socket_path": "", "session_id": sessionID})
-	if err != nil {
-		return nil
-	}
-	var res struct {
-		Aliases []string `json:"aliases"`
-	}
-	if json.Unmarshal(raw, &res) != nil {
-		return nil
-	}
-	return res.Aliases
-}
-
 // allocPanelessAlias claims a UNIQUE alias for a paneless session: base, then
 // base-2, base-3, … (proj's session-numbering vocabulary). Every session in a
 // directory derives the same base — the tmux model got uniqueness for free
@@ -99,13 +78,58 @@ func allocPanelessAlias(base, sessionID string, register func(alias string, ifAb
 
 // registerPanelessArgs builds the register_agent payload for a paneless
 // registration — the one canonical shape: empty socket/pane, the harness
-// session UUID as session_id, project from the enclosing checkout.
+// session UUID as both session_id (the tuple) and harness_session_id (the
+// uniform lookup key shared with handshake-launched tmux rows), project from
+// the enclosing checkout.
 func registerPanelessArgs(alias, role, model string, h harnessenv.Capture, ifAbsent bool) map[string]any {
 	return map[string]any{
 		"alias": alias, "role": role, "model_type": model,
 		"session_name": "", "session_id": h.SessionID, "session_created": 0,
-		"socket_path": "", "pane_id": "",
+		"harness_session_id": h.SessionID,
+		"socket_path":        "", "pane_id": "",
 		"project": h.Project(), "label": "", "label_manual": false,
 		"if_absent": ifAbsent,
 	}
+}
+
+// harnessOwnedRows returns every roster row belonging to harness session
+// uuid — handshake-registered tmux rows (harness_session_id) and paneless
+// rows (tuple ("", uuid)) alike, tombstones included so resume can revive.
+// Empty on any daemon failure.
+func harnessOwnedRows(uuid string) []agentRow {
+	if uuid == "" {
+		return nil
+	}
+	raw, err := callData("list_agents", nil)
+	if err != nil {
+		return nil
+	}
+	var rows []agentRow
+	if json.Unmarshal(raw, &rows) != nil {
+		return nil
+	}
+	var mine []agentRow
+	for _, ag := range rows {
+		if ag.HarnessSessionID == uuid || (ag.SocketPath == "" && ag.SessionID == uuid) {
+			mine = append(mine, ag)
+		}
+	}
+	return mine
+}
+
+// reviveRow re-registers a tombstoned row echoing back its own stored
+// identity — tuple, harness link, project, label — so revival never rewrites
+// what the row already knows about itself.
+func reviveRow(ag agentRow, model string) {
+	if model == "" {
+		model = ag.ModelType
+	}
+	_, _ = callData("register_agent", map[string]any{
+		"alias": ag.Alias, "role": ag.Role, "model_type": model,
+		"session_name": ag.SessionName, "session_id": ag.SessionID,
+		"session_created":    ag.SessionCreated,
+		"harness_session_id": ag.HarnessSessionID,
+		"socket_path":        ag.SocketPath, "pane_id": ag.PaneID,
+		"project": ag.Project, "label": ag.Label, "label_manual": ag.LabelManual,
+	})
 }
