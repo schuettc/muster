@@ -14,7 +14,12 @@ import (
 // (2026-07-16, thread 27) showed a nudged agent list a new thread and then
 // idle — checking the inbox satisfied the old wording, and by then its own
 // get_inbox had already cleared the flag, so the Stop hook never escalated.
-const message = "📬 check your muster inbox: call get_inbox, read each new thread with get_thread, handle the request, and reply on the thread — act autonomously. (No muster MCP tools? The muster CLI is equivalent: muster inbox / thread / reply.)"
+// The reply clause is deliberately conditional ("if the sender needs
+// something"), not imperative: the unconditional "reply on the thread"
+// wording manufactured ack-loops — every closing ack woke the peer into an
+// instruction that said reply, which produced one more closing ack (measured
+// 2026-07-30: 14% of all bus entries were acknowledgments).
+const message = "📬 check your muster inbox: call get_inbox, read each new thread with get_thread, handle the request, and reply on the thread only if the sender needs something from you — act autonomously. Never reply just to acknowledge an ack or closure; to close out a thread yourself, reply with fyi=true so nobody is woken. (No muster MCP tools? The muster CLI is equivalent: muster inbox / thread / reply [--fyi].)"
 
 // codexSubmitDelay is the pause between typing the nudge text and sending a
 // standalone Enter for codex. codex's TUI treats an Enter that is bundled with

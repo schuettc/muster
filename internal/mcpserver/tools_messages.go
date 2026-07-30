@@ -28,6 +28,7 @@ type ReplyIn struct {
 	ThreadID int64  `json:"thread_id" jsonschema:"the thread to reply to"`
 	From     string `json:"from" jsonschema:"the replying agent's alias"`
 	Body     string `json:"body" jsonschema:"the reply text"`
+	FYI      bool   `json:"fyi,omitempty" jsonschema:"closing note: the entry lands on the thread but wakes nobody — recipients see it on their next natural inbox check. Use for acks, wrap-ups, and any reply that needs nothing back."`
 }
 
 // EntryIDOut is the output of reply.
@@ -79,7 +80,7 @@ func replyHandler(_ context.Context, _ *mcp.CallToolRequest, in ReplyIn) (*mcp.C
 		return nil, EntryIDOut{}, err
 	}
 	raw, err := callDaemon("reply", map[string]any{
-		"thread_id": in.ThreadID, "from": in.From, "body": in.Body,
+		"thread_id": in.ThreadID, "from": in.From, "body": in.Body, "fyi": in.FYI,
 	})
 	if err != nil {
 		return nil, EntryIDOut{}, err
@@ -119,7 +120,7 @@ func getThreadHandler(_ context.Context, _ *mcp.CallToolRequest, in GetThreadIn)
 // get_thread on srv.
 func registerMessageTools(srv *mcp.Server) {
 	mcp.AddTool(srv, &mcp.Tool{Name: "send_message", Description: "Send a message to another agent (to_kind=agent), a role (to_kind=role), or many agents at once (to_kind=broadcast). A broadcast with empty to_target reaches every agent on the bus; set to_target to a project name to reach only that project's agents. Set intent to fyi/reply-requested/action-requested so the recipient's inbox and drain reflect what you actually need back."}, sendMessageHandler)
-	mcp.AddTool(srv, &mcp.Tool{Name: "reply", Description: "Append a reply to an existing thread (message or task)."}, replyHandler)
+	mcp.AddTool(srv, &mcp.Tool{Name: "reply", Description: "Append a reply to an existing thread (message or task). Reply only when the sender needs something from you; never reply just to acknowledge an ack or a closure — the last word is free. For a closing note that needs nothing back, set fyi=true so the entry lands without waking anyone."}, replyHandler)
 	mcp.AddTool(srv, &mcp.Tool{Name: "get_inbox", Description: "Read the threads that concern an agent — addressed to it (directly, by role, or broadcast) or originated by it, so replies on threads it started show up here — newest first. Rows carry last_from and an unread count — unread > 0 means entries you have not seen; read those threads with get_thread before reporting their state."}, getInboxHandler)
 	mcp.AddTool(srv, &mcp.Tool{Name: "get_thread", Description: "Fetch a single thread and all its entries in order."}, getThreadHandler)
 }

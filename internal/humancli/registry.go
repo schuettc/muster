@@ -120,14 +120,17 @@ the operator (or the agent) to submit by hand.`,
 		},
 		{
 			Name:     "reply",
-			Synopsis: `reply <thread-id> "body" [--from <alias>]`,
+			Synopsis: `reply <thread-id> "body" [--from <alias>] [--fyi]`,
 			Summary:  "Append a reply to an existing thread.",
 			Help: `The CLI half of the MCP reply tool: appends an entry to the thread and
 flags every participant's mailbox, exactly as a tool-sent reply would.
---from is the replying agent's alias (default "human"). Together with
-'muster inbox' and 'muster thread' this completes the read-and-respond
-loop from a plain shell — the fallback when a session has no muster MCP
-connection.`,
+--from is the replying agent's alias (default "human"). --fyi marks a
+closing note: the entry lands on the thread but wakes nobody — recipients
+see it on their next natural inbox check. Use it for acks and wrap-ups
+that need nothing back, so a closure doesn't wake the peer into one more
+closing ack. Together with 'muster inbox' and 'muster thread' this
+completes the read-and-respond loop from a plain shell — the fallback
+when a session has no muster MCP connection.`,
 			Group:    GroupTalk,
 			NewFlags: newReplyFlags,
 			Run:      cmdReply,

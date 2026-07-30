@@ -441,7 +441,9 @@ func hookReason(total, action int, aliases []string, label string) string {
 		return fmt.Sprintf(
 			"%s. %s "+
 				"Call your muster get_inbox tool now with alias '%s', read each new thread with get_thread, "+
-				"handle the request, and reply with the muster reply tool. Act autonomously — do not ask the user. "+
+				"handle the request, and reply with the muster reply tool only if the sender needs something from you "+
+				"(never reply just to acknowledge an ack or closure; close out with fyi=true so nobody is woken). "+
+				"Act autonomously — do not ask the user. "+
 				cliFallback,
 			countLine, identity, alias, alias, alias,
 		)
@@ -458,7 +460,9 @@ func hookReason(total, action int, aliases []string, label string) string {
 	return fmt.Sprintf(
 		"%s. %s "+
 			"For EACH alias call get_inbox, read each new thread with get_thread, handle the request, "+
-			"and reply with the muster reply tool. Act autonomously — do not ask the user. "+
+			"and reply with the muster reply tool only if the sender needs something from you "+
+			"(never reply just to acknowledge an ack or closure; close out with fyi=true so nobody is woken). "+
+			"Act autonomously — do not ask the user. "+
 			cliFallback,
 		countLine, identity, "<alias>", "<alias>",
 	)
@@ -468,4 +472,4 @@ func hookReason(total, action int, aliases []string, label string) string {
 // %s is the alias to drain (the literal placeholder "<alias>" in the
 // multi-alias variant, where the agent substitutes each of its own).
 const cliFallback = "(If the muster MCP tools are unavailable, the muster CLI is equivalent: " +
-	"`muster inbox '%s'`, `muster thread <id>`, `muster reply <id> \"...\" --from '%s'`.)"
+	"`muster inbox '%s'`, `muster thread <id>`, `muster reply <id> \"...\" --from '%s' [--fyi]`.)"
