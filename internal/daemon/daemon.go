@@ -579,7 +579,14 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 			return fail(err)
 		}
 		d.logEvent(store.Event{Kind: "reply", Agent: str(a, "from"), ThreadID: i64(a, "thread_id"), Detail: display.Sanitize(str(a, "body"), replyPreviewWidth)})
-		d.notifyForThread(i64(a, "thread_id"), str(a, "from"))
+		// An fyi reply is a closer: the entry lands on the thread and shows
+		// as unread on the recipients' next natural inbox check, but nobody's
+		// badge lights — no wake means no reflexive ack back, which is what
+		// breaks the ack-loop (each closing ack waking the peer into one more
+		// closing ack).
+		if !boolArg(a, "fyi") {
+			d.notifyForThread(i64(a, "thread_id"), str(a, "from"))
+		}
 		return ok(map[string]any{"entry_id": id})
 	case "get_inbox":
 		alias := str(a, "alias")
