@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "hooks": {
+    "sessionStart": [{ "command": "muster hook SessionStart cursor" }],
+    "stop": [{ "command": "muster hook Stop cursor", "loop_limit": 3 }],
+    "sessionEnd": [{ "command": "muster hook SessionEnd cursor" }]
+  }
+}

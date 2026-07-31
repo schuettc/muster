@@ -22,6 +22,23 @@ func TestHookStopLoopGuard(t *testing.T) {
 	}
 }
 
+func TestHookStopCursorLoopGuard(t *testing.T) {
+	t.Setenv("TMUX", "/tmp/sock,1,0")
+	for _, input := range []string{
+		`{"loop_count":1}`,
+		`{"status":"aborted"}`,
+		`{"status":"error"}`,
+	} {
+		var buf bytes.Buffer
+		if err := cmdHook([]string{"Stop", "cursor"}, strings.NewReader(input), &buf); err != nil {
+			t.Fatalf("hook Stop input %s: %v", input, err)
+		}
+		if buf.Len() != 0 {
+			t.Fatalf("input %s: expected no output on loop guard, got %q", input, buf.String())
+		}
+	}
+}
+
 func TestHookStopNoTmux(t *testing.T) {
 	t.Setenv("TMUX", "")
 	// Pin the harness identity away: on a dev machine `go test` itself runs

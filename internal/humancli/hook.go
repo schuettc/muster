@@ -229,15 +229,19 @@ func hookOwnsIdentity(c tmuxenv.Capture) bool {
 }
 
 // stopInput decodes the Stop-hook stdin payload. Invalid or empty JSON leaves
-// it at its zero value (StopHookActive=false), matching the contrib script's
-// tolerant `jq -r '.stop_hook_active // false'`.
+// it at its zero value, matching the contrib script's tolerant
+// `jq -r '.stop_hook_active // false'`. Cursor uses loop_count and status for
+// the same loop guard.
 type stopInput struct {
-	StopHookActive bool `json:"stop_hook_active"`
+	StopHookActive bool   `json:"stop_hook_active"`
+	LoopCount      int    `json:"loop_count"`
+	Status         string `json:"status"`
 }
 
 // stopReason is the JSON payload muster prints on stdout for a Stop hook
 // finding unread mail: {"decision":"block","reason":"..."}. Claude Code and
-// Codex both treat decision:block as "run reason as the next prompt".
+// Codex both treat decision:block as "run reason as the next prompt"; Cursor
+// accepts the same shape (with stopInput's loop guard preventing a loop).
 type stopReason struct {
 	Decision string `json:"decision"`
 	Reason   string `json:"reason"`
@@ -263,8 +267,11 @@ type stopReason struct {
 func hookStop(payload []byte, out io.Writer) {
 	var in stopInput
 	_ = json.Unmarshal(payload, &in) // invalid/empty JSON -> zero value (false)
-	if in.StopHookActive {
+	if in.StopHookActive || in.LoopCount > 0 {
 		return // loop guard: we already triggered a continuation this cycle
+	}
+	if in.Status == "aborted" || in.Status == "error" {
+		return
 	}
 	if os.Getenv("TMUX") == "" {
 		hookStopPaneless(harnessenv.FromHookPayload(payload), out)

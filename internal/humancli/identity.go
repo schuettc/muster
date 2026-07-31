@@ -22,7 +22,7 @@ func newRegisterFlagsWithVals() (fs *flag.FlagSet, role, model, harness *string)
 	fs = flag.NewFlagSet("register", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	role = fs.String("role", "", "this agent's role")
-	model = fs.String("model", "claude", "model backing this agent: claude or codex")
+	model = fs.String("model", "claude", "model backing this agent: claude, codex, or cursor")
 	harness = fs.String("harness-session", "", "harness session UUID this registration belongs to — the pane-side launch handshake passes the UUID it then hands to `claude --session-id`, so the session's own hooks (which see no tmux) can find this row")
 	return fs, role, model, harness
 }
