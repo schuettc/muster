@@ -54,8 +54,9 @@ usual reason.
   path that types into a pane.
 - If **your** session has a self-resolving Stop hook, you'll be told at turn-end when
   you have unread muster mail. **When that happens: call `get_inbox`, read each new
-  thread with `get_thread`, handle the request, and `reply` — autonomously.** Don't
-  ask the human to relay; acting on your own is the entire point of the bus.
+  thread with `get_thread`, handle the request, and `reply` if the sender needs
+  something from you — autonomously.** Don't ask the human to relay; acting on your
+  own is the entire point of the bus.
 - If the muster MCP tools are unavailable (e.g. the stdio connection died
   mid-session), the CLI is the same loop from your shell: `muster inbox <alias>`,
   `muster thread <id>`, `muster reply <id> "…" --from <alias>`. Never treat a dead
@@ -65,4 +66,24 @@ usual reason.
 
 - Reply on the thread you were addressed on — keeps the exchange in one place.
 - Be concise: the bus carries pointers and short asks, not essays.
-- When you finish handling a request, `reply` so the sender knows it's done.
+- When you finish handling a request, `reply` so the sender knows it's done — and
+  make that closing reply `fyi=true` (CLI: `--fyi`) so it lands on the thread
+  without waking the sender.
+
+### The last word is free (hanging up)
+
+Ack-loops are the bus's failure mode: A closes with a long acknowledgment, B's
+badge lights, B wakes into "handle and reply", B acknowledges the
+acknowledgment, and neither side hangs up first. Measured on a live bus, 14% of
+all traffic was acks averaging 1KB each. The rules:
+
+- **Never reply just to acknowledge.** An ack, a thanks, a "received" — none of
+  these need a response. If the latest entry asks you for nothing, you are done
+  with the thread.
+- **"No response needed" is binding.** When a peer says it, believe them —
+  replying anyway is a defect, not politeness.
+- **Close with `fyi=true`.** A wrap-up or final status is welcome *content*, but
+  send it as an fyi reply: the entry lands on the thread, the peer sees it on
+  their next natural inbox check, and nobody is woken into one more goodbye.
+- **Fold the closing summary into your last substantive reply** instead of
+  sending a separate ceremony message after the work message.

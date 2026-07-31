@@ -103,17 +103,18 @@ func cmdThread(args []string, out io.Writer) error {
 // newReplyFlagsWithVals declares reply's flags and returns typed access to
 // their values — shared by cmdReply (real parsing) and newReplyFlags
 // (registry help/man rendering).
-func newReplyFlagsWithVals() (fs *flag.FlagSet, from *string) {
+func newReplyFlagsWithVals() (fs *flag.FlagSet, from *string, fyi *bool) {
 	fs = flag.NewFlagSet("reply", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	from = fs.String("from", "human", "replying agent alias")
-	return fs, from
+	fyi = fs.Bool("fyi", false, "closing note: append without waking anyone")
+	return fs, from, fyi
 }
 
 // newReplyFlags builds reply's flag.FlagSet for registry-driven help/man
 // rendering.
 func newReplyFlags() *flag.FlagSet {
-	fs, _ := newReplyFlagsWithVals()
+	fs, _, _ := newReplyFlagsWithVals()
 	return fs
 }
 
@@ -123,11 +124,10 @@ func newReplyFlags() *flag.FlagSet {
 // Recipients' mailboxes are flagged by the daemon exactly as for a
 // tool-sent reply.
 func cmdReply(args []string, out io.Writer) error {
-	fs, from := newReplyFlagsWithVals()
-	// reply has no boolean flags: --from takes a value, so pass an explicit
-	// empty bool-flags set (the implicit default would wrongly reuse send's
-	// boolean --role).
-	flagArgs, rest := splitFlagsAndPositional(args, map[string]bool{})
+	fs, from, fyi := newReplyFlagsWithVals()
+	// --from takes a value; --fyi is reply's only boolean flag (the implicit
+	// default bool-flags set would wrongly reuse send's boolean --role).
+	flagArgs, rest := splitFlagsAndPositional(args, map[string]bool{"fyi": true})
 	if err := fs.Parse(flagArgs); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return HelpFor("reply", out)
@@ -142,7 +142,7 @@ func cmdReply(args []string, out io.Writer) error {
 		return fmt.Errorf("thread id must be a number, got %q", rest[0])
 	}
 	body := strings.Join(rest[1:], " ")
-	raw, err := callData("reply", map[string]any{"thread_id": id, "from": *from, "body": body})
+	raw, err := callData("reply", map[string]any{"thread_id": id, "from": *from, "body": body, "fyi": *fyi})
 	if err != nil {
 		return err
 	}

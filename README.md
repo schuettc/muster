@@ -147,7 +147,25 @@ deleted (default `720h`, i.e. 30 days), so the journal doesn't grow without
 bound on a long-running daemon.
 
 `register` captures the tmux pane automatically. Alias precedence: explicit
-arg → `$MUSTER_ALIAS` → tmux session name. `--model` is stored on the agent and
+arg → `$MUSTER_ALIAS` → tmux session name → working-directory basename.
+
+**Paneless sessions.** A session with no tmux in its environment (Claude
+Code's daemon-hosted sessions and background jobs execute outside the pane
+you launched them from) registers *paneless*: alias from the working
+directory, project from the enclosing git checkout, identity keyed on the
+harness session UUID. Every session in a directory derives the same base, so
+the alias is **allocated unique** — `dotfiles`, then `dotfiles-2`, `-3`, … —
+never taken over from another live session; a resumed session revives its own
+alias instead of taking a new suffix. (The numbers are bus-side allocation
+order and won't necessarily match your tmux session numbering — the session
+can't see its tmux name, which is the whole reason it's paneless.) The session hooks work unchanged — auto-register at
+start, deregister at end, and the Stop hook checks the inbox via the daemon
+directly (there's no tmux badge to poll). Paneless agents show `◌` in the
+LIVE column (liveness is unknowable without a pane), are exempt from `gc`'s
+tmux-liveness reaping, and can't be reached by `muster nudge` — mail waits in
+the inbox for their next Stop.
+
+`--model` is stored on the agent and
 tunes `muster nudge`'s submit keystroke (`claude`, `codex`, and `cursor`
 auto-submit; other values are typed without submitting).
 

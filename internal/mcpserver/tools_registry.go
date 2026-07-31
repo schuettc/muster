@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/schuettc/muster/internal/harnessenv"
 	"github.com/schuettc/muster/internal/tmuxenv"
 )
 
@@ -47,16 +48,30 @@ func registerAgentHandler(_ context.Context, _ *mcp.CallToolRequest, in Register
 	if sessionName == "" {
 		sessionName = c.SessionName
 	}
+	socketPath, paneID := c.SocketPath, c.PaneID
+	sessionID, project := c.SessionID, c.Project
+	if c.SocketPath == "" || c.PaneID == "" {
+		// Paneless session (harness daemon-hosted — the MCP server inherits
+		// the session's env, which has no tmux): register under the paneless
+		// tuple ("", harness session UUID) so the SessionEnd hook can reap
+		// this alias and gc knows not to judge it by tmux liveness. A
+		// half-captured socket (run-shell contexts) is dropped too — a tuple
+		// mixing a real socket with a non-tmux session ID would read as dead
+		// to every liveness check.
+		h := harnessenv.FromEnv()
+		socketPath, paneID = "", ""
+		sessionID, project = h.SessionID, h.Project()
+	}
 	_, err := callDaemon("register_agent", map[string]any{
 		"alias":           in.Alias,
 		"role":            in.Role,
 		"model_type":      in.ModelType,
 		"session_name":    sessionName,
-		"session_id":      c.SessionID,
+		"session_id":      sessionID,
 		"session_created": c.SessionCreated,
-		"socket_path":     c.SocketPath,
-		"pane_id":         c.PaneID,
-		"project":         c.Project,
+		"socket_path":     socketPath,
+		"pane_id":         paneID,
+		"project":         project,
 		"label":           c.Label,
 		"label_manual":    c.LabelManual,
 	})

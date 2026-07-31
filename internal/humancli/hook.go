@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/schuettc/muster/internal/harnessenv"
 	"github.com/schuettc/muster/internal/tmuxenv"
 )
 
@@ -15,6 +16,12 @@ import (
 // the single entry point an agent harness's hook config points at directly
 // (in place of a copied contrib/muster-session-hook.sh). model defaults to
 // "claude" when omitted.
+//
+// The stdin payload is read once here and handed to every branch: harnesses
+// that host sessions outside tmux (daemon-hosted sessions — see harnessenv)
+// leave tmuxenv.CaptureEnv empty, and the payload's session_id/cwd are then
+// the ONLY identity a hook has, for SessionStart's register just as much as
+// for Stop's inbox check.
 //
 // A hook must never block a session, so cmdHook always returns nil: every
 // internal error is swallowed, and on any input other than a recognized
@@ -30,17 +37,62 @@ func cmdHook(args []string, stdin io.Reader, out io.Writer) error {
 	if len(args) > 1 && args[1] != "" {
 		model = args[1]
 	}
+	payload, _ := io.ReadAll(io.LimitReader(stdin, 1<<20)) // a hook payload is small; the cap only guards a pathological writer
 	switch args[0] {
 	case "SessionStart":
-		if hookMayClaimIdentity(tmuxenv.CaptureEnv()) {
-			_ = cmdRegister([]string{"--model", model}, io.Discard)
+		c := tmuxenv.CaptureEnv()
+		if c.SocketPath != "" && c.PaneID != "" {
+			if hookMayClaimIdentity(c) {
+				_ = cmdRegister([]string{"--model", model}, io.Discard)
+			}
+		} else {
+			hookSessionStartPaneless(harnessenv.FromHookPayload(payload), model)
 		}
 	case "SessionEnd":
-		hookSessionEnd(tmuxenv.CaptureEnv())
+		hookSessionEnd(tmuxenv.CaptureEnv(), harnessenv.FromHookPayload(payload))
 	case "Stop":
-		hookStop(stdin, out)
+		hookStop(payload, out)
 	}
 	return nil
+}
+
+// hookSessionStartPaneless auto-registers a session that has no tmux pane in
+// its environment (harness daemon-hosted sessions) on the paneless tuple
+// ("", harness session UUID). $MUSTER_ALIAS is explicit operator intent and
+// registers exactly (plain upsert). Otherwise the alias is ALLOCATED from
+// the payload cwd's basename via allocPanelessAlias — every session in a
+// directory derives the same base, so uniqueness (dotfiles, dotfiles-2, …)
+// must be allocated, never taken over: the takeover this replaces let a
+// second session in the same directory silently steal the first one's
+// identity and inbox. A session that already owns aliases on its tuple
+// (resume) refreshes the first instead of allocating a new one.
+func hookSessionStartPaneless(h harnessenv.Capture, model string) {
+	regFn := func(alias string, ifAbsent bool) error {
+		_, err := callData("register_agent", registerPanelessArgs(alias, "", model, h, ifAbsent))
+		return err
+	}
+	if alias := os.Getenv("MUSTER_ALIAS"); alias != "" {
+		_ = regFn(alias, false)
+		return
+	}
+	if h.SessionID == "" && h.Alias() == "" {
+		return // no resolvable identity: never dial the daemon from an identity-less hook
+	}
+	if owned := harnessOwnedRows(h.SessionID); len(owned) > 0 {
+		// This session already has an identity — the pane-side launch
+		// handshake pre-registered a tmux-anchored row, or a prior life of
+		// this session (resume) left one. A live row needs nothing from
+		// this hook; if every owned row is a tombstone, revive the first
+		// with its stored identity intact.
+		for _, ag := range owned {
+			if !ag.Departed {
+				return
+			}
+		}
+		reviveRow(owned[0], model)
+		return
+	}
+	_, _ = allocPanelessAlias(h.Alias(), h.SessionID, regFn)
 }
 
 // hookAlias resolves the identity a hook event acts on, mirroring
@@ -106,10 +158,16 @@ func hookMayClaimIdentity(c tmuxenv.Capture) bool {
 // same predicate hookOwnsIdentity applies to one: same (socket_path,
 // session_id) tuple, not departed, and the row's pane is unset or this pane
 // — so a dying sibling (subagent) pane still cannot tombstone the primary's
-// registrations. Outside tmux there is no tuple to enumerate; the
-// single-identity gate is all there is, exactly as before.
-func hookSessionEnd(c tmuxenv.Capture) {
+// registrations. Outside tmux the paneless tuple ("", harness session UUID)
+// is enumerated the same way — every alias this harness session registered is
+// tombstoned; with no harness identity either, the single-identity gate is
+// all there is, exactly as before.
+func hookSessionEnd(c tmuxenv.Capture, h harnessenv.Capture) {
 	if c.SocketPath == "" || c.SessionID == "" {
+		if h.SessionID != "" {
+			hookSessionEndPaneless(h)
+			return
+		}
 		if hookOwnsIdentity(c) {
 			_ = cmdDeregister(nil, io.Discard)
 		}
@@ -129,6 +187,19 @@ func hookSessionEnd(c tmuxenv.Capture) {
 		}
 		if ag.PaneID != "" && ag.PaneID != c.PaneID {
 			continue // a sibling pane's identity: not ours to tombstone
+		}
+		_ = cmdDeregister([]string{ag.Alias}, io.Discard)
+	}
+}
+
+// hookSessionEndPaneless tombstones every row the dying harness session owns
+// — handshake-registered tmux rows and paneless rows alike (harnessOwnedRows'
+// two match shapes). Rows of other sessions, or with no harness link at all
+// (pre-handshake registrations), are never this session's to tombstone.
+func hookSessionEndPaneless(h harnessenv.Capture) {
+	for _, ag := range harnessOwnedRows(h.SessionID) {
+		if ag.Departed {
+			continue
 		}
 		_ = cmdDeregister([]string{ag.Alias}, io.Discard)
 	}
@@ -193,11 +264,9 @@ type stopReason struct {
 // happened to read the option from. Either call's failure (or an empty
 // alias list) falls back to today's single session-name behavior so the
 // hook never goes silent because of a daemon hiccup.
-func hookStop(stdin io.Reader, out io.Writer) {
+func hookStop(payload []byte, out io.Writer) {
 	var in stopInput
-	if b, err := io.ReadAll(stdin); err == nil {
-		_ = json.Unmarshal(b, &in) // invalid/empty JSON -> zero value (false)
-	}
+	_ = json.Unmarshal(payload, &in) // invalid/empty JSON -> zero value (false)
 	if in.StopHookActive || in.LoopCount > 0 {
 		return // loop guard: we already triggered a continuation this cycle
 	}
@@ -205,6 +274,7 @@ func hookStop(stdin io.Reader, out io.Writer) {
 		return
 	}
 	if os.Getenv("TMUX") == "" {
+		hookStopPaneless(harnessenv.FromHookPayload(payload), out)
 		return
 	}
 	optCount, err := strconv.Atoi(tmuxenv.CurrentSessionOption("@muster_inbox"))
@@ -231,6 +301,58 @@ func hookStop(stdin io.Reader, out io.Writer) {
 	label := tmuxenv.CurrentSessionOption(tmuxenv.LabelOption())
 	reason := hookReason(total, action, aliases, label)
 	b, err := json.Marshal(stopReason{Decision: "block", Reason: reason})
+	if err != nil {
+		return
+	}
+	_, _ = fmt.Fprintln(out, string(b)) // best-effort: a hook's stdout write failing has nowhere to report to
+}
+
+// hookStopPaneless is the Stop-hook inbox check for sessions with no tmux in
+// their environment (harness daemon-hosted sessions). Such a session has no
+// @muster_inbox tmux option to serve as the cheap firing gate, so this dials
+// the daemon directly on every Stop — two ops over a local unix socket, the
+// price of daemon-hosted mail. Identity resolves by harness session UUID
+// (harnessOwnedRows): handshake-registered tmux rows and paneless rows
+// alike. An unregistered session prints nothing, and unlike the tmux path
+// there is no session-name fallback to address — a harness identity either
+// resolved from the roster or doesn't exist.
+func hookStopPaneless(h harnessenv.Capture, out io.Writer) {
+	if h.SessionID == "" {
+		return
+	}
+	var aliases []string
+	var label string
+	var tup *agentRow
+	owned := harnessOwnedRows(h.SessionID)
+	for i, ag := range owned {
+		if ag.Departed {
+			continue
+		}
+		aliases = append(aliases, ag.Alias)
+		if label == "" && ag.LabelManual {
+			label = ag.Label
+		}
+		if tup == nil && ag.SocketPath != "" && ag.SessionID != "" {
+			tup = &owned[i]
+		}
+	}
+	if len(aliases) == 0 {
+		return
+	}
+	// Unread comes from ONE tuple: the handshake row's tmux tuple when the
+	// session has one (its mail lives there), else the paneless tuple. A
+	// split identity spanning both would need two queries whose overlapping
+	// threads can't be deduplicated client-side — the aliases list still
+	// names every identity, so nothing goes undrained.
+	sock, sid := "", h.SessionID
+	if tup != nil {
+		sock, sid = tup.SocketPath, tup.SessionID
+	}
+	total, action, ok := sessionUnreadForHook(sock, sid)
+	if !ok || total <= 0 {
+		return
+	}
+	b, err := json.Marshal(stopReason{Decision: "block", Reason: hookReason(total, action, aliases, label)})
 	if err != nil {
 		return
 	}
@@ -326,7 +448,9 @@ func hookReason(total, action int, aliases []string, label string) string {
 		return fmt.Sprintf(
 			"%s. %s "+
 				"Call your muster get_inbox tool now with alias '%s', read each new thread with get_thread, "+
-				"handle the request, and reply with the muster reply tool. Act autonomously — do not ask the user. "+
+				"handle the request, and reply with the muster reply tool only if the sender needs something from you "+
+				"(never reply just to acknowledge an ack or closure; close out with fyi=true so nobody is woken). "+
+				"Act autonomously — do not ask the user. "+
 				cliFallback,
 			countLine, identity, alias, alias, alias,
 		)
@@ -343,7 +467,9 @@ func hookReason(total, action int, aliases []string, label string) string {
 	return fmt.Sprintf(
 		"%s. %s "+
 			"For EACH alias call get_inbox, read each new thread with get_thread, handle the request, "+
-			"and reply with the muster reply tool. Act autonomously — do not ask the user. "+
+			"and reply with the muster reply tool only if the sender needs something from you "+
+			"(never reply just to acknowledge an ack or closure; close out with fyi=true so nobody is woken). "+
+			"Act autonomously — do not ask the user. "+
 			cliFallback,
 		countLine, identity, "<alias>", "<alias>",
 	)
@@ -353,4 +479,4 @@ func hookReason(total, action int, aliases []string, label string) string {
 // %s is the alias to drain (the literal placeholder "<alias>" in the
 // multi-alias variant, where the agent substitutes each of its own).
 const cliFallback = "(If the muster MCP tools are unavailable, the muster CLI is equivalent: " +
-	"`muster inbox '%s'`, `muster thread <id>`, `muster reply <id> \"...\" --from '%s'`.)"
+	"`muster inbox '%s'`, `muster thread <id>`, `muster reply <id> \"...\" --from '%s' [--fyi]`.)"

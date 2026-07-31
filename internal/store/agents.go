@@ -16,8 +16,8 @@ import (
 func (s *Store) RegisterAgent(a Agent) error {
 	now := clock.NowMillis()
 	_, err := s.db.Exec(`
-INSERT INTO agents (alias, role, model_type, socket_path, pane_id, session_name, session_id, session_created, project, label, label_manual, departed, registered_at, last_seen)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+INSERT INTO agents (alias, role, model_type, socket_path, pane_id, session_name, session_id, session_created, harness_session_id, project, label, label_manual, departed, registered_at, last_seen)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
 ON CONFLICT(alias) DO UPDATE SET
     role=excluded.role,
     model_type=excluded.model_type,
@@ -26,13 +26,14 @@ ON CONFLICT(alias) DO UPDATE SET
     session_name=excluded.session_name,
     session_id=excluded.session_id,
     session_created=excluded.session_created,
+    harness_session_id=excluded.harness_session_id,
     project=excluded.project,
     label=excluded.label,
     label_manual=excluded.label_manual,
     departed=0,
     last_seen=excluded.last_seen`,
 		a.Alias, a.Role, a.ModelType, a.SocketPath, a.PaneID, a.SessionName, a.SessionID, a.SessionCreated,
-		a.Project, a.Label, a.LabelManual, now, now)
+		a.HarnessSessionID, a.Project, a.Label, a.LabelManual, now, now)
 	return err
 }
 
@@ -40,7 +41,7 @@ ON CONFLICT(alias) DO UPDATE SET
 // agents included: their rows are history, not gone (see DepartAgent).
 func (s *Store) ListAgents() ([]Agent, error) {
 	rows, err := s.db.Query(`
-SELECT alias, role, model_type, socket_path, pane_id, session_name, session_id, session_created, project, label, label_manual, registered_at, last_seen, last_read_entry_id, departed
+SELECT alias, role, model_type, socket_path, pane_id, session_name, session_id, session_created, harness_session_id, project, label, label_manual, registered_at, last_seen, last_read_entry_id, departed
 FROM agents ORDER BY alias`)
 	if err != nil {
 		return nil, err
@@ -49,7 +50,7 @@ FROM agents ORDER BY alias`)
 	var out []Agent
 	for rows.Next() {
 		var a Agent
-		if err := rows.Scan(&a.Alias, &a.Role, &a.ModelType, &a.SocketPath, &a.PaneID, &a.SessionName, &a.SessionID, &a.SessionCreated, &a.Project, &a.Label, &a.LabelManual, &a.RegisteredAt, &a.LastSeen, &a.LastReadEntryID, &a.Departed); err != nil {
+		if err := rows.Scan(&a.Alias, &a.Role, &a.ModelType, &a.SocketPath, &a.PaneID, &a.SessionName, &a.SessionID, &a.SessionCreated, &a.HarnessSessionID, &a.Project, &a.Label, &a.LabelManual, &a.RegisteredAt, &a.LastSeen, &a.LastReadEntryID, &a.Departed); err != nil {
 			return nil, err
 		}
 		out = append(out, a)
@@ -63,9 +64,9 @@ FROM agents ORDER BY alias`)
 func (s *Store) GetAgent(alias string) (Agent, bool, error) {
 	var a Agent
 	err := s.db.QueryRow(`
-SELECT alias, role, model_type, socket_path, pane_id, session_name, session_id, session_created, project, label, label_manual, registered_at, last_seen, last_read_entry_id, departed
+SELECT alias, role, model_type, socket_path, pane_id, session_name, session_id, session_created, harness_session_id, project, label, label_manual, registered_at, last_seen, last_read_entry_id, departed
 FROM agents WHERE alias=?`, alias).
-		Scan(&a.Alias, &a.Role, &a.ModelType, &a.SocketPath, &a.PaneID, &a.SessionName, &a.SessionID, &a.SessionCreated, &a.Project, &a.Label, &a.LabelManual, &a.RegisteredAt, &a.LastSeen, &a.LastReadEntryID, &a.Departed)
+		Scan(&a.Alias, &a.Role, &a.ModelType, &a.SocketPath, &a.PaneID, &a.SessionName, &a.SessionID, &a.SessionCreated, &a.HarnessSessionID, &a.Project, &a.Label, &a.LabelManual, &a.RegisteredAt, &a.LastSeen, &a.LastReadEntryID, &a.Departed)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Agent{}, false, nil
 	}
@@ -229,14 +230,17 @@ func (s *Store) MarkRead(alias string) error {
 // session — so a session's own writes under either alias never make its own
 // threads unread, and a broadcast concerning two sibling aliases counts once,
 // never twice (no summing of per-alias counts). action is the subset whose
-// effective intent (effectiveIntent) is action-requested. An empty
-// socketPath or sessionID never groups: it matches no agents, so both
-// results are 0 (per-alias identity is UnreadCount's job for such agents,
-// e.g. one registered without a live tmux pane).
+// effective intent (effectiveIntent) is action-requested. An empty sessionID
+// never groups: it matches no agents, so both results are 0 (per-alias
+// identity is UnreadCount's job for such agents). socketPath MAY be empty —
+// ("", harness session UUID) is the paneless tuple (see internal/harnessenv),
+// a real session identity whose sibling aliases group exactly like a tmux
+// session's; the sessionID guard alone keeps pre-harnessenv no-tmux rows
+// (both fields empty) from ever grouping with each other.
 func (s *Store) SessionUnread(socketPath, sessionID string) (total, action int, err error) {
 	err = s.db.QueryRow(`
 WITH sess AS (SELECT alias, last_read_entry_id FROM agents
-              WHERE socket_path = ?1 AND session_id = ?2 AND ?1 != '' AND ?2 != '')
+              WHERE socket_path = ?1 AND session_id = ?2 AND ?2 != '')
 SELECT
   COUNT(DISTINCT threads.id),
   COUNT(DISTINCT CASE WHEN `+effectiveIntent+` = 'action-requested' THEN threads.id END)
