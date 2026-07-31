@@ -16,7 +16,7 @@ import (
 type RegisterAgentIn struct {
 	Alias       string `json:"alias" jsonschema:"a short addressable name for this agent, e.g. backend"`
 	Role        string `json:"role" jsonschema:"this agent's role: producer, consumer, reviewer, ..."`
-	ModelType   string `json:"model_type" jsonschema:"the model backing this agent: claude or codex"`
+	ModelType   string `json:"model_type" jsonschema:"the model backing this agent: claude, codex, or cursor"`
 	SessionName string `json:"session_name,omitempty" jsonschema:"optional tmux session name for display"`
 }
 

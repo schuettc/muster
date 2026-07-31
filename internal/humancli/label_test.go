@@ -195,12 +195,57 @@ func TestLabelRenamesLiveClaudePane(t *testing.T) {
 	}
 }
 
-// TestLabelSkipsRenameWithoutLiveClaude: no injection for (a) a codex row,
-// (b) a departed claude row, (c) a claude row whose pane is dead, (d) a
+// TestLabelRenamesLiveCursorPane covers Cursor's delayed paste submit path:
+// "/rename <name>" and Enter must be distinct tmux calls, so Cursor finishes
+// handling the paste before receiving the submit key.
+func TestLabelRenamesLiveCursorPane(t *testing.T) {
+	startCLITestDaemon(t)
+	t.Setenv("TMUX", "/tmp/sock,1,0")
+	registerModelViaDaemon(t, "worker", "/tmp/sock", "$1", "%5", "cursor")
+
+	var sent [][]string
+	prev := tmuxenv.Run
+	tmuxenv.Run = func(args ...string) (string, error) {
+		last := args[len(args)-1]
+		switch last {
+		case "#{session_id}":
+			return "$1", nil
+		case "#{pane_id}":
+			return "%5", nil
+		case "#{session_created}":
+			return "1700000000", nil
+		}
+		if len(args) > 2 && args[2] == "send-keys" {
+			sent = append(sent, append([]string(nil), args...))
+		}
+		return "", nil
+	}
+	t.Cleanup(func() { tmuxenv.Run = prev })
+
+	var buf bytes.Buffer
+	if err := cmdLabel([]string{"standard 2000"}, &buf); err != nil {
+		t.Fatalf("label: %v", err)
+	}
+	if len(sent) != 2 {
+		t.Fatalf("expected /rename type + delayed Enter submit, got %v", sent)
+	}
+	if got := sent[0][len(sent[0])-1]; got != "/rename standard 2000" {
+		t.Fatalf("typed %q, want %q", got, "/rename standard 2000")
+	}
+	if sent[1][len(sent[1])-1] != "Enter" {
+		t.Fatalf("expected delayed Enter submit, got %v", sent[1])
+	}
+	if !strings.Contains(buf.String(), "renamed cursor session") {
+		t.Fatalf("expected Cursor rename confirmation in output, got %q", buf.String())
+	}
+}
+
+// TestLabelSkipsRenameWithoutLiveSupportedAgent: no injection for (a) a codex
+// row, (b) a departed claude row, (c) a claude row whose pane is dead, (d) a
 // claude row on a DIFFERENT session tuple, (e) a claude row recorded under a
 // STALE session incarnation (session_created mismatch — see
 // tmuxenv.IsSessionAlive). The label/bus writes still happen.
-func TestLabelSkipsRenameWithoutLiveClaude(t *testing.T) {
+func TestLabelSkipsRenameWithoutLiveSupportedAgent(t *testing.T) {
 	cases := []struct {
 		name      string
 		model     string
