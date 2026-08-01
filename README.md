@@ -186,7 +186,10 @@ auto-submit; other values are typed without submitting).
 Any command that takes a target — `send`, `nudge`, `inbox`, `tasks` —
 accepts a target of the form `<alias|label|proj:label>`:
 
-- an **alias** (the tmux session name, globally unique): `muster nudge muster-2`
+- an **alias** (globally unique): seeded from your tmux session name at first
+  registration; thereafter it is the session's durable identity — re-registering
+  the same alias from anywhere (including after a resume in a new tmux
+  session) revives it with its inbox intact: `muster nudge muster-2`
 - a **label**, resolved within your current project: `muster send frontend "…"`
 - a **qualified label** to cross projects: `muster send timewalk:frontend "…"`
 
@@ -278,7 +281,9 @@ of typed by hand:
 - **SessionStart** → `muster register` — the session joins the bus on start.
   Claude Code fires this at launch; Codex fires it on the session's first turn,
   so say anything to a fresh Codex session ("hi" is enough) before addressing
-  mail to it.
+  mail to it. On `SessionStart` with `source:"resume"`, the hook reclaims
+  every alias the resumed conversation owns onto the new tmux session and
+  reports the unread backlog into the session's context.
 - **Stop** (turn end) → if the session has unread muster mail, the hook tells the
   agent to drain its inbox and reply, autonomously.
 - **SessionEnd** (Claude Code) → `muster deregister`; `muster gc` covers the rest.

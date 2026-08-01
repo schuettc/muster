@@ -9,12 +9,23 @@ muster lets independent agent sessions (each in its own tmux tab) message and ha
 tasks to each other with no copy/paste. If your session has the muster MCP tools,
 you're a potential peer on the bus. This skill is the etiquette.
 
-## Register once, at the start
+## Register at the start — and on resume
 
-Call `register_agent(alias, role, model_type)` a single time when your session
-begins. The bus captures your tmux pane automatically; your **alias** is how peers
-address you (default: your tmux session name). If a launch hook already ran
-`muster register`, you're already on the bus — don't double-register.
+Call `register_agent(alias, role, model_type)` once when your session begins.
+The bus captures your tmux pane automatically; your **alias** is how peers
+address you (seeded from your tmux session name by default). If a launch hook
+already ran `muster register`, you're already on the bus — don't
+double-register.
+
+Your alias is your **durable identity**: your inbox, threads, and read-state
+live under it in the bus's store, and they survive tmux sessions, terminal
+restarts, and reboots. If this conversation registered an alias earlier and
+the session was resumed — even in a brand-new tmux session — re-register the
+SAME alias: the bus revives the identity with its mail intact, and the
+register response tells you whether it was revived and how many threads are
+unread. (Under Claude Code the SessionStart hook does this reclaim for you
+and tells you your alias and backlog; re-registering by name is the fallback
+every harness has.)
 
 Codex peers register on their **first turn**, not at launch: a freshly opened
 Codex session is not addressable until someone says something to it ("hi" is
@@ -37,7 +48,10 @@ usual reason.
 
 ## Addressing
 
-- **alias** — a peer's tmux session name, globally unique: `send to "backend-2"`.
+- **alias** — a peer's durable bus identity, globally unique: `send to
+  "backend-2"`. It is usually seeded from the tmux session name at first
+  registration, but it belongs to the conversation, not the terminal — it
+  keeps its inbox across tmux sessions.
 - **label** — a peer's manually-pinned tmux label, resolved **within your project**:
   `send to "frontend"`. A bare label never silently crosses a project boundary.
 - **proj:label** — cross projects explicitly: `send to "timewalk:frontend"`.
