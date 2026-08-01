@@ -40,13 +40,14 @@ func cmdHook(args []string, stdin io.Reader, out io.Writer) error {
 	payload, _ := io.ReadAll(io.LimitReader(stdin, 1<<20)) // a hook payload is small; the cap only guards a pathological writer
 	switch args[0] {
 	case "SessionStart":
-		c := tmuxenv.CaptureEnv()
+		c := hookCapture()
+		h := harnessenv.FromHookPayload(payload)
 		if c.SocketPath != "" && c.PaneID != "" {
 			if hookMayClaimIdentity(c) {
-				_ = cmdRegister([]string{"--model", model}, io.Discard)
+				hookRegisterPane(c, h, model)
 			}
 		} else {
-			hookSessionStartPaneless(harnessenv.FromHookPayload(payload), model)
+			hookSessionStartPaneless(h, model)
 		}
 	case "SessionEnd":
 		hookSessionEnd(tmuxenv.CaptureEnv(), harnessenv.FromHookPayload(payload))
@@ -54,6 +55,37 @@ func cmdHook(args []string, stdin io.Reader, out io.Writer) error {
 		hookStop(payload, out)
 	}
 	return nil
+}
+
+// hookCapture resolves the tmux identity a hook acts on: the environment
+// when the harness passed it through, else the process-ancestry walk —
+// hooks are spawned env-stripped, but a synchronous hook is still a
+// descendant of its pane's shell (see tmuxenv.CaptureFromAncestry). The
+// zero Capture (both paths empty) means genuinely paneless.
+func hookCapture() tmuxenv.Capture {
+	if c := tmuxenv.CaptureEnv(); c.SocketPath != "" && c.PaneID != "" {
+		return c
+	}
+	return tmuxenv.CaptureFromAncestry()
+}
+
+// hookRegisterPane registers the session-name alias for a pane-anchored
+// SessionStart. It cannot delegate to cmdRegister: that reads the tmux
+// identity from the ENVIRONMENT, which a stripped hook doesn't have — the
+// capture c (env or ancestry walk) is the truth here.
+func hookRegisterPane(c tmuxenv.Capture, h harnessenv.Capture, model string) {
+	alias := hookAlias(c)
+	if alias == "" {
+		return
+	}
+	_, _ = callData("register_agent", map[string]any{
+		"alias": alias, "role": "", "model_type": model,
+		"session_name": c.SessionName, "session_id": c.SessionID,
+		"session_created":    c.SessionCreated,
+		"harness_session_id": h.SessionID,
+		"socket_path":        c.SocketPath, "pane_id": c.PaneID,
+		"project": c.Project, "label": c.Label, "label_manual": c.LabelManual,
+	})
 }
 
 // hookSessionStartPaneless auto-registers a session that has no tmux pane in
@@ -294,6 +326,17 @@ func hookStop(payload []byte, out io.Writer) {
 	}
 	aliases := sessionAliasesForHook(socketPath, sessionID)
 
+	// Repair missing harness links (durable-alias spec: the stamp's Stop
+	// half). An alias registered via the MCP tool in an env carrying no
+	// harness UUID has no link for a future resume to find; every Stop
+	// payload carries the UUID, so stamp it here. This runs only when the
+	// mail gate above already opened — the cheap @muster_inbox check stays
+	// the sole decider of whether Stop dials the daemon at all, so a
+	// mail-less session costs nothing (documented residual: a link-less
+	// alias that never receives mail is never auto-stamped and rides the
+	// re-register-by-transcript contract instead).
+	stampHarnessLinks(aliases, harnessenv.FromHookPayload(payload), socketPath, sessionID)
+
 	if !hookStopOwnsAnyAlias(aliases) {
 		return // roster names a live owner and it isn't me: don't drain a sibling's mail
 	}
@@ -357,6 +400,25 @@ func hookStopPaneless(h harnessenv.Capture, out io.Writer) {
 		return
 	}
 	_, _ = fmt.Fprintln(out, string(b)) // best-effort: a hook's stdout write failing has nowhere to report to
+}
+
+// stampHarnessLinks attaches h.SessionID to every alias of MY tuple that
+// lacks a harness link. Best-effort per alias: a failed get or stamp is
+// skipped — hooks never block a session.
+func stampHarnessLinks(aliases []string, h harnessenv.Capture, socketPath, sessionID string) {
+	if h.SessionID == "" {
+		return
+	}
+	for _, alias := range aliases {
+		ag, ok := hookGetAgent(alias)
+		if !ok || ag.Departed || ag.HarnessSessionID != "" ||
+			ag.SocketPath != socketPath || ag.SessionID != sessionID {
+			continue
+		}
+		_, _ = callData("stamp_harness_session", map[string]any{
+			"alias": alias, "harness_session_id": h.SessionID,
+		})
+	}
 }
 
 // sessionAliasesForHook calls the session_aliases op and returns the sorted,

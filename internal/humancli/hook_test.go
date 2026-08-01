@@ -763,6 +763,7 @@ func TestHookSessionStartBestEffortWhenDaemonUnreachable(t *testing.T) {
 	t.Setenv("TMUX_PANE", "")
 	t.Setenv("MUSTER_ALIAS", "")
 	t.Setenv("CLAUDE_CODE_SESSION_ID", "") // pin: a dev machine's own Claude session must not lend this test an identity
+	pinAncestryWalkAway(t)                 // pin: hookCapture's ancestry fallback must not resolve this test process's real tmux pane
 	var buf bytes.Buffer
 	if err := cmdHook([]string{"SessionStart"}, strings.NewReader(""), &buf); err != nil {
 		t.Fatalf("hook must never return an error, got %v", err)
@@ -923,5 +924,47 @@ func TestHookReasonMultiAliasWithLabel(t *testing.T) {
 	got := hookReason(3, 0, []string{"timewalk-2", "timewalk-2002"}, "standard 2000")
 	if !strings.Contains(got, "You are 'standard 2000' — muster aliases 'timewalk-2', 'timewalk-2002'") {
 		t.Fatalf("multi-alias reason must lead with the label, got %q", got)
+	}
+}
+
+// TestHookStopStampsHarnessLink covers the repair half of the durable-alias
+// spec: a custom alias registered via the MCP tool (no harness link) gets the
+// payload's session_id stamped when the Stop hook fires for real mail — so a
+// later resume can find the row. The stamp piggybacks on the mail gate: no
+// mail, no daemon dials, no stamp.
+func TestHookStopStampsHarnessLink(t *testing.T) {
+	startTestDaemon(t)
+	t.Setenv("TMUX", "/tmp/sock,1,0")
+	t.Setenv("TMUX_PANE", "%1")
+	if _, err := callData("register_agent", map[string]any{
+		"alias": "backend", "socket_path": "/tmp/sock", "session_id": "$1", "pane_id": "%1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := callData("register_agent", map[string]any{
+		"alias": "sender", "socket_path": "/tmp/sock", "session_id": "$2",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := callData("send_message", map[string]any{
+		"from": "sender", "to_kind": "agent", "to_target": "backend", "subject": "s", "body": "b",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	prev := tmuxenv.Run
+	tmuxenv.Run = hookRun(map[string]string{
+		"@muster_inbox":   "1",
+		"#{session_id}":   "$1",
+		"#{session_name}": "backend",
+	})
+	t.Cleanup(func() { tmuxenv.Run = prev })
+
+	var buf bytes.Buffer
+	if err := cmdHook([]string{"Stop"}, strings.NewReader(`{"session_id":"uuid-9"}`), &buf); err != nil {
+		t.Fatal(err)
+	}
+	ag, ok := hookGetAgent("backend")
+	if !ok || ag.HarnessSessionID != "uuid-9" {
+		t.Fatalf("harness link after Stop = %q (found=%v), want uuid-9", ag.HarnessSessionID, ok)
 	}
 }

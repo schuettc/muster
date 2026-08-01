@@ -12,17 +12,35 @@ import (
 	"github.com/schuettc/muster/internal/tmuxenv"
 )
 
+// pinAncestryWalkAway neuters tmuxenv.CaptureFromAncestry for the duration of
+// a test by making its two seams find nothing: no ancestor PIDs, no socket
+// directory to glob. Without this, a paneless test (empty $TMUX/$TMUX_PANE)
+// leaves hookCapture() falling through to the REAL ancestry walk — and on a
+// dev machine, `go test` itself commonly runs inside a real tmux pane (e.g. a
+// coding-agent session on the muster bus), so the walk can find that real
+// pane and turn an intended paneless SessionStart into a pane-anchored one.
+func pinAncestryWalkAway(t *testing.T) {
+	t.Helper()
+	prevAnc, prevDir := tmuxenv.AncestorPIDs, tmuxenv.SocketDir
+	tmuxenv.AncestorPIDs = func() []int { return nil }
+	tmuxenv.SocketDir = func() string { return t.TempDir() } // fresh empty dir: Glob matches nothing
+	t.Cleanup(func() { tmuxenv.AncestorPIDs, tmuxenv.SocketDir = prevAnc, prevDir })
+}
+
 // panelessEnv pins the process into a paneless shape: no tmux, a known
 // harness session UUID, and a working directory whose basename is the
 // expected fallback alias. CLAUDE_CODE_SESSION_ID must be pinned in every
 // paneless test — on a dev machine `go test` itself runs inside a Claude
-// session whose UUID would otherwise leak in.
+// session whose UUID would otherwise leak in. Also pins the ancestry-walk
+// seams away (see pinAncestryWalkAway) so hookCapture()'s fallback can't
+// resolve this test process's real tmux pane.
 func panelessEnv(t *testing.T, uuid, dirName string) string {
 	t.Helper()
 	t.Setenv("TMUX", "")
 	t.Setenv("TMUX_PANE", "")
 	t.Setenv("MUSTER_ALIAS", "")
 	t.Setenv("CLAUDE_CODE_SESSION_ID", uuid)
+	pinAncestryWalkAway(t)
 	dir := filepath.Join(t.TempDir(), dirName)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
