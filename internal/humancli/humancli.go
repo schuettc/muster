@@ -39,6 +39,9 @@ type agentFull struct {
 	// get_agent returns tombstoned rows with found=true, so hook gates must
 	// decode this to tell a live owner from a dead one.
 	Departed bool `json:"departed"`
+	// Label mirrors agentRow's own copy — the resume reclaim test asserts a
+	// manually-pinned label survives the reclaim onto the new tuple.
+	Label string `json:"label"`
 }
 
 type agentRow struct {

@@ -42,7 +42,14 @@ func cmdHook(args []string, stdin io.Reader, out io.Writer) error {
 	case "SessionStart":
 		c := hookCapture()
 		h := harnessenv.FromHookPayload(payload)
+		var start struct {
+			Source string `json:"source"`
+		}
+		_ = json.Unmarshal(payload, &start)
 		if c.SocketPath != "" && c.PaneID != "" {
+			if start.Source == "resume" && hookSessionStartResume(c, h, model, out) {
+				return nil
+			}
 			if hookMayClaimIdentity(c) {
 				hookRegisterPane(c, h, model)
 			}
@@ -86,6 +93,40 @@ func hookRegisterPane(c tmuxenv.Capture, h harnessenv.Capture, model string) {
 		"socket_path":        c.SocketPath, "pane_id": c.PaneID,
 		"project": c.Project, "label": c.Label, "label_manual": c.LabelManual,
 	})
+}
+
+// hookSessionStartResume reclaims a resumed conversation's aliases onto the
+// tmux session it woke up in (durable-alias spec change 4). The harness
+// session UUID is the lookup key — resume keeps it (only fork mints a new
+// one) — and harnessOwnedRows returns every row this conversation ever
+// registered. Each row is re-registered onto the CURRENT tuple (the revive
+// path: read-state survives, the daemon reports outcome+unread), EXCEPT a
+// row still live in a different, provably-alive tmux session — that is a
+// real collision (the old side's SessionEnd reason:"resume" normally
+// tombstones first), reported rather than clobbered. Returns true when at
+// least one alias was reclaimed: the caller then skips the default
+// session-name register — the conversation's identity IS the reclaimed one,
+// and minting a second alias would split it. Output goes to stdout, which
+// the harness injects into the session's context: the agent wakes up
+// knowing who it is and what's waiting.
+func hookSessionStartResume(c tmuxenv.Capture, h harnessenv.Capture, model string, out io.Writer) bool {
+	if h.SessionID == "" {
+		return false
+	}
+	reclaimed := 0
+	for _, ag := range harnessOwnedRows(h.SessionID) {
+		sameTuple := ag.SocketPath == c.SocketPath && ag.SessionID == c.SessionID
+		if !ag.Departed && !sameTuple && ag.SocketPath != "" &&
+			tmuxenv.IsSessionAlive(ag.SocketPath, ag.SessionID, ag.SessionCreated) {
+			_, _ = fmt.Fprintf(out, "muster: alias '%s' is still live in another tmux session — not reclaimed\n", ag.Alias)
+			continue
+		}
+		ack := reclaimRow(ag, c, h.SessionID, model)
+		_, _ = fmt.Fprintf(out, "muster: reconnected as '%s' (%s) — %d unread thread(s); call get_inbox with alias '%s'\n",
+			ag.Alias, ack.Outcome, ack.Unread, ag.Alias)
+		reclaimed++
+	}
+	return reclaimed > 0
 }
 
 // hookSessionStartPaneless auto-registers a session that has no tmux pane in

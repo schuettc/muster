@@ -137,3 +137,23 @@ func reviveRow(ag agentRow, model string) registerAck {
 	})
 	return decodeRegisterAck(raw)
 }
+
+// reclaimRow re-registers a conversation's row onto the tmux session it
+// resumed in: role, model, label, and harness link are echoed from the row
+// (they belong to the conversation), while the tuple is the CURRENT
+// capture's (the conversation moved). Contrast reviveRow, which echoes the
+// stored tuple back for an in-place revival.
+func reclaimRow(ag agentRow, c tmuxenv.Capture, harnessID, model string) registerAck {
+	if model == "" {
+		model = ag.ModelType
+	}
+	raw, _ := callData("register_agent", map[string]any{
+		"alias": ag.Alias, "role": ag.Role, "model_type": model,
+		"session_name": c.SessionName, "session_id": c.SessionID,
+		"session_created":    c.SessionCreated,
+		"harness_session_id": harnessID,
+		"socket_path":        c.SocketPath, "pane_id": c.PaneID,
+		"project": c.Project, "label": ag.Label, "label_manual": ag.LabelManual,
+	})
+	return decodeRegisterAck(raw)
+}

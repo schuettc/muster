@@ -968,3 +968,96 @@ func TestHookStopStampsHarnessLink(t *testing.T) {
 		t.Fatalf("harness link after Stop = %q (found=%v), want uuid-9", ag.HarnessSessionID, ok)
 	}
 }
+
+// TestHookSessionStartResumeReclaimsAlias is the durable-alias spec's core
+// scenario end to end: a conversation's alias was registered in a now-dead
+// tmux session (tombstoned), mail arrived, and the conversation is resumed
+// in a brand-new tmux session. The SessionStart hook with source:"resume"
+// must re-register the alias onto the NEW tuple and print a summary line
+// (which Claude Code injects into the session's context) naming the alias
+// and the backlog — and must NOT additionally register a fresh
+// session-name alias.
+func TestHookSessionStartResumeReclaimsAlias(t *testing.T) {
+	startTestDaemon(t)
+	t.Setenv("TMUX", "/tmp/sock,1,0")
+	t.Setenv("TMUX_PANE", "%9")
+	t.Setenv("MUSTER_ALIAS", "")
+	seed := func(op string, args map[string]any) {
+		t.Helper()
+		if _, err := callData(op, args); err != nil {
+			t.Fatal(err)
+		}
+	}
+	seed("register_agent", map[string]any{
+		"alias": "backend-2", "socket_path": "/tmp/sock", "session_id": "$OLD",
+		"session_created": 111, "harness_session_id": "uuid-42", "label": "lake", "label_manual": true,
+	})
+	seed("register_agent", map[string]any{"alias": "sender", "socket_path": "/tmp/sock", "session_id": "$2"})
+	seed("send_message", map[string]any{"from": "sender", "to_kind": "agent", "to_target": "backend-2", "subject": "s", "body": "b"})
+	seed("deregister_agent", map[string]any{"alias": "backend-2"})
+
+	prev := tmuxenv.Run
+	tmuxenv.Run = hookRun(map[string]string{
+		"#{session_id}":      "$NEW",
+		"#{session_name}":    "muster-3",
+		"#{session_created}": "222",
+	})
+	t.Cleanup(func() { tmuxenv.Run = prev })
+
+	var buf bytes.Buffer
+	if err := cmdHook([]string{"SessionStart"}, strings.NewReader(`{"source":"resume","session_id":"uuid-42"}`), &buf); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "backend-2") || !strings.Contains(out, "1 unread") {
+		t.Fatalf("resume summary missing alias/backlog:\n%s", out)
+	}
+	ag, ok := hookGetAgent("backend-2")
+	if !ok || ag.Departed || ag.SessionID != "$NEW" || ag.Label != "lake" {
+		t.Fatalf("reclaimed row = %+v (found=%v), want live on $NEW with label kept", ag, ok)
+	}
+	if _, exists := hookGetAgent("muster-3"); exists {
+		t.Fatalf("resume must not also register a fresh session-name alias")
+	}
+}
+
+// TestHookSessionStartResumeSkipsLiveCollision: a row still provably live in
+// another tmux session is reported, never clobbered — and with nothing
+// reclaimed the hook falls through to the normal session-name register.
+func TestHookSessionStartResumeSkipsLiveCollision(t *testing.T) {
+	startTestDaemon(t)
+	t.Setenv("TMUX", "/tmp/sock,1,0")
+	t.Setenv("TMUX_PANE", "%9")
+	t.Setenv("MUSTER_ALIAS", "")
+	if _, err := callData("register_agent", map[string]any{
+		"alias": "backend-2", "socket_path": "/other-sock", "session_id": "$OLD",
+		"session_created": 111, "harness_session_id": "uuid-42",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	prev := tmuxenv.Run
+	tmuxenv.Run = func(args ...string) (string, error) {
+		// The liveness probe against /other-sock/$OLD must confirm alive.
+		for _, a := range args {
+			if a == "/other-sock" {
+				return "111", nil
+			}
+		}
+		return hookRun(map[string]string{
+			"#{session_id}": "$NEW", "#{session_name}": "muster-3", "#{session_created}": "222",
+		})(args...)
+	}
+	t.Cleanup(func() { tmuxenv.Run = prev })
+
+	var buf bytes.Buffer
+	if err := cmdHook([]string{"SessionStart"}, strings.NewReader(`{"source":"resume","session_id":"uuid-42"}`), &buf); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(buf.String(), "not reclaimed") {
+		t.Fatalf("expected a collision notice, got:\n%s", buf.String())
+	}
+	ag, _ := hookGetAgent("backend-2")
+	if ag.SessionID != "$OLD" {
+		t.Fatalf("collision row moved to %q — must stay on $OLD", ag.SessionID)
+	}
+}
