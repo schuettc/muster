@@ -247,6 +247,20 @@ from tmux (internal/tmuxenv) so other commands can address it.`,
 			Run:      cmdLabel,
 		},
 		{
+			Name:     "whereami",
+			Synopsis: "whereami [--json]",
+			Summary:  "Print the tmux identity of the pane this process runs under.",
+			Help: `Resolves via $TMUX when present, else by walking process ancestry (works
+inside env-stripped harness hooks). For muster's own hooks and operator
+convenience. Prints "socket=<path> session_id=<id> session_name=<name>
+pane=<id> created=<ts>" (one line); --json emits the same fields as a JSON
+object. Empty stdout and a nonzero exit when no pane resolves — never a
+cwd guess.`,
+			Group:    GroupIdentity,
+			NewFlags: newWhereamiFlags,
+			Run:      cmdWhereami,
+		},
+		{
 			Name:     "gc",
 			Synopsis: "gc [--events-keep <dur>] [--purge-agents]",
 			Summary:  "Reap dead agents and prune old journal events.",
