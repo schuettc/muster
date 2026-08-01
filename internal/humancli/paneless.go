@@ -119,12 +119,15 @@ func harnessOwnedRows(uuid string) []agentRow {
 
 // reviveRow re-registers a tombstoned row echoing back its own stored
 // identity — tuple, harness link, project, label — so revival never rewrites
-// what the row already knows about itself.
-func reviveRow(ag agentRow, model string) {
+// what the row already knows about itself. Returns the daemon's ack (outcome
+// + unread) so callers that want to surface it can; callers that don't care
+// may call this as a bare statement — Go permits discarding a value-returning
+// function's result.
+func reviveRow(ag agentRow, model string) registerAck {
 	if model == "" {
 		model = ag.ModelType
 	}
-	_, _ = callData("register_agent", map[string]any{
+	raw, _ := callData("register_agent", map[string]any{
 		"alias": ag.Alias, "role": ag.Role, "model_type": model,
 		"session_name": ag.SessionName, "session_id": ag.SessionID,
 		"session_created":    ag.SessionCreated,
@@ -132,4 +135,5 @@ func reviveRow(ag agentRow, model string) {
 		"socket_path":        ag.SocketPath, "pane_id": ag.PaneID,
 		"project": ag.Project, "label": ag.Label, "label_manual": ag.LabelManual,
 	})
+	return decodeRegisterAck(raw)
 }
