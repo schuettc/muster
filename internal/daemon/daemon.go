@@ -34,6 +34,7 @@ type storeAPI interface {
 	DepartAgent(alias string) error
 	DepartStaleSiblings(socketPath, sessionID string, created int64, keepAlias string) ([]string, error)
 	SetSessionLabel(socketPath, sessionID, label string, manual bool) (int64, error)
+	SetHarnessSessionID(alias, id string) error
 	DeleteAgent(alias string) error
 	CreateThread(t store.Thread, firstBody string) (int64, error)
 	AppendEntry(threadID int64, fromAgent, body, statusChange string) (int64, error)
@@ -754,6 +755,11 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 			return fail(err)
 		}
 		return ok(map[string]any{"updated": n})
+	case "stamp_harness_session":
+		if err := d.s.SetHarnessSessionID(str(a, "alias"), str(a, "harness_session_id")); err != nil {
+			return fail(err)
+		}
+		return ok(nil)
 	case "purge_agent":
 		// The explicit, irreversible hard-delete: `muster gc --purge-agents`'s
 		// own op, distinct from deregister_agent's tombstone. Identity,

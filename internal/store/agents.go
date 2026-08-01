@@ -82,6 +82,17 @@ func (s *Store) TouchAgent(alias string) error {
 	return err
 }
 
+// SetHarnessSessionID stamps the harness session UUID onto an existing row —
+// the repair half of the durable-alias spec: an alias registered without a
+// harness link (an MCP register in an env carrying no harness UUID) gets one
+// attached later by a hook that DOES see the UUID (every hook payload carries
+// it). Identity, tuple, and read-state are untouched; unknown alias is a
+// no-op, mirroring TouchAgent's contract.
+func (s *Store) SetHarnessSessionID(alias, id string) error {
+	_, err := s.db.Exec(`UPDATE agents SET harness_session_id=? WHERE alias=?`, id, alias)
+	return err
+}
+
 // DepartAgent tombstones alias (spec: deregistration must survive so
 // departed history stays drillable): sets departed=1 in place. Identity,
 // project, label, and read-state (last_read_entry_id/last_read_at) are all

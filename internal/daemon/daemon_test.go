@@ -458,3 +458,24 @@ func TestListEventsMaxIDAndFollow(t *testing.T) {
 		t.Fatalf("follow from 0: %+v", out)
 	}
 }
+
+// TestStampHarnessSession covers the stamp op end to end: register without a
+// harness link, stamp, and see the link in list_agents.
+func TestStampHarnessSession(t *testing.T) {
+	sock := startWithNotifier(t, &fakeNotifier{})
+	call(t, sock, "register_agent", map[string]any{
+		"alias": "backend", "socket_path": "/s", "session_id": "$1",
+	})
+	resp := call(t, sock, "stamp_harness_session", map[string]any{
+		"alias": "backend", "harness_session_id": "uuid-1",
+	})
+	if !resp.OK {
+		t.Fatalf("stamp: %+v", resp)
+	}
+	list := call(t, sock, "list_agents", nil)
+	rows, _ := list.Data.([]any)
+	m, _ := rows[0].(map[string]any)
+	if m["harness_session_id"] != "uuid-1" {
+		t.Fatalf("harness_session_id = %v, want uuid-1", m["harness_session_id"])
+	}
+}
