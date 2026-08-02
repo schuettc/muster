@@ -1,6 +1,7 @@
 package store
 
 import (
+	"errors"
 	"reflect"
 	"testing"
 
@@ -453,5 +454,69 @@ func TestSetHarnessSessionID(t *testing.T) {
 	// Unknown alias is a no-op, mirroring TouchAgent's contract.
 	if err := s.SetHarnessSessionID("ghost", "uuid-2"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestBecomeClonesIdentityAndRetiresSeed covers the become spec's core move:
+// the claimed alias inherits the seed's full identity INCLUDING the read
+// watermark (without it, all of history would flip unread), and the seed
+// retires as a tombstone with its own history intact.
+func TestBecomeClonesIdentityAndRetiresSeed(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.RegisterAgent(Agent{
+		Alias: "muster-2", Role: "peer", ModelType: "claude",
+		SocketPath: "/s", SessionID: "$1", SessionCreated: 111, PaneID: "%1",
+		SessionName: "muster-2", HarnessSessionID: "uuid-1",
+		Project: "muster", Label: "durable-alias", LabelManual: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.MarkRead("muster-2"); err != nil { // establish a nonzero watermark
+		t.Fatal(err)
+	}
+	seed, _, _ := s.GetAgent("muster-2")
+
+	if err := s.Become("muster-2", "alias-routing"); err != nil {
+		t.Fatal(err)
+	}
+	to, ok, err := s.GetAgent("alias-routing")
+	if err != nil || !ok {
+		t.Fatalf("claimed alias missing: %v %v", ok, err)
+	}
+	if to.SocketPath != "/s" || to.SessionID != "$1" || to.SessionCreated != 111 ||
+		to.PaneID != "%1" || to.HarnessSessionID != "uuid-1" ||
+		to.Project != "muster" || to.Label != "durable-alias" || !to.LabelManual ||
+		to.Role != "peer" || to.ModelType != "claude" || to.Departed {
+		t.Fatalf("clone dropped identity fields: %+v", to)
+	}
+	if to.LastReadEntryID != seed.LastReadEntryID {
+		t.Fatalf("watermark not carried: got %d want %d", to.LastReadEntryID, seed.LastReadEntryID)
+	}
+	from, _, _ := s.GetAgent("muster-2")
+	if !from.Departed {
+		t.Fatalf("seed not retired: %+v", from)
+	}
+}
+
+// TestBecomeGuards: missing from and existing to (live OR tombstoned) both
+// fail with the typed sentinels — become never silently fuses identities.
+func TestBecomeGuards(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.Become("ghost", "x"); !errors.Is(err, ErrBecomeFromMissing) {
+		t.Fatalf("missing from: got %v", err)
+	}
+	_ = s.RegisterAgent(Agent{Alias: "a"})
+	_ = s.RegisterAgent(Agent{Alias: "b"})
+	if err := s.Become("a", "b"); !errors.Is(err, ErrBecomeToExists) {
+		t.Fatalf("live to: got %v", err)
+	}
+	_ = s.DepartAgent("b")
+	if err := s.Become("a", "b"); !errors.Is(err, ErrBecomeToExists) {
+		t.Fatalf("tombstoned to must ALSO refuse: got %v", err)
+	}
+	// Departed FROM is fine: a session may claim after gc tombstoned its seed.
+	_ = s.DepartAgent("a")
+	if err := s.Become("a", "c"); err != nil {
+		t.Fatalf("departed from should still clone: %v", err)
 	}
 }

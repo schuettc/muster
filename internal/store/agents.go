@@ -231,6 +231,55 @@ func (s *Store) MarkRead(alias string) error {
 	return tx.Commit()
 }
 
+// ErrBecomeFromMissing / ErrBecomeToExists are become's guard sentinels —
+// the daemon maps them to loud, hint-carrying wire errors.
+var (
+	ErrBecomeFromMissing = errors.New("become: from alias not found")
+	ErrBecomeToExists    = errors.New("become: to alias already exists")
+)
+
+// Become claims a new name for an existing identity (spec:
+// become-claim-your-name): inserts to as a CLONE of from — tuple, harness
+// link, project, label, role, model, and the READ WATERMARK, without which
+// the claimed identity would see all of history as unread — then retires
+// from as a tombstone. to must not exist at all: a live row is someone
+// else's identity and a tombstone is some other conversation's history;
+// merging identities is exactly the confusion this feature exists to kill.
+// from may already be departed (a claim after gc swept the seed). One
+// transaction: a crash mid-become never leaves both rows live.
+func (s *Store) Become(from, to string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var n int
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM agents WHERE alias=?`, to).Scan(&n); err != nil {
+		return err
+	}
+	if n > 0 {
+		return ErrBecomeToExists
+	}
+	now := clock.NowMillis()
+	res, err := tx.Exec(`
+INSERT INTO agents (alias, role, model_type, socket_path, pane_id, session_name, session_id, session_created, harness_session_id, project, label, label_manual, departed, registered_at, last_seen, last_read_entry_id, last_read_at)
+SELECT ?, role, model_type, socket_path, pane_id, session_name, session_id, session_created, harness_session_id, project, label, label_manual, 0, ?, ?, last_read_entry_id, last_read_at
+FROM agents WHERE alias=?`, to, now, now, from)
+	if err != nil {
+		return err
+	}
+	if rows, err := res.RowsAffected(); err != nil {
+		return err
+	} else if rows == 0 {
+		return ErrBecomeFromMissing
+	}
+	if _, err := tx.Exec(`UPDATE agents SET departed=1 WHERE alias=?`, from); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 // SessionUnread is the ONE canonical session-level unread query (spec §3):
 // all aliases sharing the exact (socketPath, sessionID) tuple are one actor
 // identity for unread math and actor exclusion. total is the count of
