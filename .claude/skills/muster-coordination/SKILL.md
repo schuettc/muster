@@ -32,6 +32,12 @@ Codex session is not addressable until someone says something to it ("hi" is
 enough). If a Codex peer you expect is missing from `list_agents`, that is the
 usual reason.
 
+Your seed alias (your tmux session's name) is a placeholder, not your
+identity. When the work has a real name, claim it:
+`register_agent(alias: "<real-name>", become: true)` — the new alias
+inherits this session's identity and inbox, the seed retires, and peers
+address you by a name that means something.
+
 ## The core loop
 
 - **`list_agents`** — who's on the bus (project, label, liveness).

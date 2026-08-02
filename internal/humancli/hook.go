@@ -111,18 +111,24 @@ func hookRegisterPane(c tmuxenv.Capture, h harnessenv.Capture, model string) {
 // path: read-state survives, the daemon reports outcome+unread), EXCEPT a
 // row still live in a different, provably-alive tmux session — that is a
 // real collision (the old side's SessionEnd reason:"resume" normally
-// tombstones first), reported rather than clobbered. Returns true when at
-// least one alias was reclaimed: the caller then skips the default
-// session-name register — the conversation's identity IS the reclaimed one,
-// and minting a second alias would split it. Output goes to stdout, which
-// the harness injects into the session's context: the agent wakes up
-// knowing who it is and what's waiting.
+// tombstones first), reported rather than clobbered — OR a row
+// hookResumeSuperseded identifies as a become-retired seed, which must never
+// resurrect alongside the name that claimed it. Returns true when at least
+// one alias was reclaimed: the caller then skips the default session-name
+// register — the conversation's identity IS the reclaimed one, and minting a
+// second alias would split it. Output goes to stdout, which the harness
+// injects into the session's context: the agent wakes up knowing who it is
+// and what's waiting.
 func hookSessionStartResume(c tmuxenv.Capture, h harnessenv.Capture, model string, out io.Writer) bool {
 	if h.SessionID == "" {
 		return false
 	}
+	owned := harnessOwnedRows(h.SessionID)
 	reclaimed := 0
-	for _, ag := range harnessOwnedRows(h.SessionID) {
+	for _, ag := range owned {
+		if hookResumeSuperseded(ag, owned) {
+			continue // become-retired seed: the live claimed alias already carries this identity forward
+		}
 		sameTuple := ag.SocketPath == c.SocketPath && ag.SessionID == c.SessionID
 		if !ag.Departed && !sameTuple && ag.SocketPath != "" &&
 			tmuxenv.IsSessionAlive(ag.SocketPath, ag.SessionID, ag.SessionCreated) {
@@ -135,6 +141,30 @@ func hookSessionStartResume(c tmuxenv.Capture, h harnessenv.Capture, model strin
 		reclaimed++
 	}
 	return reclaimed > 0
+}
+
+// hookResumeSuperseded reports whether ag is a become-retired seed: a
+// departed row whose (socket_path, session_id) tuple is ALSO held by a live
+// sibling among this harness session's own rows. store.Become clones the
+// seed's exact tuple onto the claimed alias and marks only the seed
+// departed, so nothing else in the row itself distinguishes "retired because
+// its name was claimed" from an ordinary Stop/SessionEnd tombstone — this
+// tuple-sharing signature is unique to become (a live split-identity sibling
+// pair is tombstoned together by hookSessionEnd, never leaving one live and
+// one departed on the same tuple). Without this check, resume would
+// reclaim the seed right alongside the alias that already claimed its
+// identity, resurrecting a name the operator explicitly retired.
+func hookResumeSuperseded(ag agentRow, owned []agentRow) bool {
+	if !ag.Departed {
+		return false
+	}
+	for _, other := range owned {
+		if other.Alias != ag.Alias && !other.Departed &&
+			other.SocketPath == ag.SocketPath && other.SessionID == ag.SessionID {
+			return true
+		}
+	}
+	return false
 }
 
 // hookSessionStartPaneless auto-registers a session that has no tmux pane in
