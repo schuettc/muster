@@ -48,6 +48,7 @@ type storeAPI interface {
 	MarkRead(alias string) error
 	UnreadCount(alias string) (int, error)
 	SessionUnread(socketPath, sessionID string) (total, action int, err error)
+	SessionAliasLineage(socketPath, sessionID string) ([]string, error)
 	KVSet(key, value, updatedBy string) error
 	KVGet(key string) (store.KVPair, bool, error)
 	AppendEvent(e store.Event) error
@@ -637,22 +638,23 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 		// socket_path may be empty: a paneless session's tuple is ("",
 		// harness session UUID) — see internal/harnessenv. Only a missing
 		// session_id leaves no tuple to key on.
+		//
+		// SessionAliasLineage (not a flat tuple filter over ListAgents) walks
+		// supersession lineage the same way SessionUnread does: a
+		// become-retired seed's row sits on its OLD tuple forever (reclaim
+		// correctly never resurrects it there), so a flat filter would drop
+		// it from the very session its identity moved to. Lineage rows are
+		// additive to this op's existing include-departed-on-purpose
+		// behavior — nothing here narrows what used to come back, it only
+		// adds the aliases a flat tuple match was missing.
 		socketPath, sessionID := str(a, "socket_path"), str(a, "session_id")
 		if sessionID == "" {
 			return fail(fmt.Errorf("session_aliases: session_id is required"))
 		}
-		agents, err := d.s.ListAgents()
+		aliases, err := d.s.SessionAliasLineage(socketPath, sessionID)
 		if err != nil {
 			return fail(err)
 		}
-		aliases := []string{}
-		for _, ag := range agents {
-			if ag.SocketPath == socketPath && ag.SessionID == sessionID {
-				aliases = append(aliases, ag.Alias)
-			}
-		}
-		sort.Strings(aliases)
-		aliases = compactStrings(aliases)
 		return ok(map[string]any{"aliases": aliases})
 	case "session_unread":
 		// Read-only display data (spec §3/§4 hook wiring): no lock needed —
@@ -791,9 +793,14 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 		if err := d.s.Become(from, to); err != nil {
 			switch {
 			case errors.Is(err, store.ErrBecomeFromMissing):
-				return fail(fmt.Errorf("become: no such alias %q to become from; register first", from))
+				// No self-prefix (finding F3): callData already renders
+				// "<op>: <resp.Error>" for every op — send_message's resolve
+				// errors follow the same convention (no "send_message: "
+				// baked in here). A daemon error that also opened with
+				// "become: " doubled into "become: become: ..." on the CLI.
+				return fail(fmt.Errorf("no such alias %q to become from; register first", from))
 			case errors.Is(err, store.ErrBecomeToExists):
-				return fail(fmt.Errorf("become: alias %q already has history; pick another name, or purge it with `muster gc --purge-agents`", to))
+				return fail(fmt.Errorf("alias %q already has history; pick another name, or purge it with `muster gc --purge-agents`", to))
 			}
 			return fail(err)
 		}

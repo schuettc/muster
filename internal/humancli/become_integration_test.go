@@ -187,3 +187,106 @@ func TestResumeChainedBecomeReclaimsOnlyFinalName(t *testing.T) {
 		t.Fatalf("middle link must stay retired: %+v", midRow)
 	}
 }
+
+// TestResumeSummaryReportsSessionUnreadTruth is finding F2, live rig: mail
+// addressed to the retired seed alias pends BEFORE resume. Before the fix,
+// the printed resume summary used the per-alias register ack (UnreadCount of
+// the CLAIMED alias only), which never sees mail addressed to the SEED's
+// name and printed "0 unread thread(s)" while a real thread pended — the
+// injected context lied to the agent about its own backlog. This asserts
+// the exact count, not just non-zero: session_unread's lineage-aware total.
+func TestResumeSummaryReportsSessionUnreadTruth(t *testing.T) {
+	startTestDaemon(t)
+	t.Setenv("TMUX", "/tmp/sock,1,0")
+	t.Setenv("TMUX_PANE", "%9")
+	t.Setenv("MUSTER_ALIAS", "")
+	prev := tmuxenv.Run
+	tmuxenv.Run = hookRun(map[string]string{
+		"#{session_id}": "$NEW", "#{session_name}": "muster-9", "#{session_created}": "222",
+	})
+	t.Cleanup(func() { tmuxenv.Run = prev })
+	seed := func(op string, args map[string]any) {
+		t.Helper()
+		if _, err := callData(op, args); err != nil {
+			t.Fatal(err)
+		}
+	}
+	seed("register_agent", map[string]any{
+		"alias": "muster-2", "socket_path": "/tmp/sock", "session_id": "$OLD",
+		"session_created": 111, "harness_session_id": "uuid-42",
+	})
+	seed("become", map[string]any{"from": "muster-2", "to": "alias-routing"})
+	seed("register_agent", map[string]any{"alias": "peer", "socket_path": "/tmp/sock2", "session_id": "$peer"})
+	// A straggler addressed to the RETIRED seed name, sent BEFORE resume —
+	// the exact live-rig topology: the mail's target is a departed alias
+	// whose superseded_by carries the identity forward.
+	seed("send_message", map[string]any{"from": "peer", "to_kind": "agent", "to_target": "muster-2", "subject": "s", "body": "for the old name"})
+
+	var buf bytes.Buffer
+	if err := cmdHook([]string{"SessionStart"}, strings.NewReader(`{"source":"resume","session_id":"uuid-42"}`), &buf); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "reconnected as 'alias-routing' (refreshed) — 1 unread thread(s)") {
+		t.Fatalf("resume summary must report the true (lineage) pending count, got:\n%s", out)
+	}
+}
+
+// TestStopHookDrainsSeedStragglerAfterResume: extends
+// TestStopHookDrainsSeedStragglerAfterBecome across resume. A straggler sent
+// to the RETIRED name AFTER the conversation resumed onto a brand-new tmux
+// tuple must still light the Stop-hook drain on the NEW tuple — the seed's
+// own row never moves off the dead old tuple, so this only works if the
+// drain path (session_aliases + session_unread) follows supersession
+// lineage rather than a flat tuple match (finding F1).
+func TestStopHookDrainsSeedStragglerAfterResume(t *testing.T) {
+	startTestDaemon(t)
+	t.Setenv("TMUX", "/tmp/sock,1,0")
+	t.Setenv("TMUX_PANE", "%9")
+	t.Setenv("MUSTER_ALIAS", "")
+	prevRun := tmuxenv.Run
+	tmuxenv.Run = hookRun(map[string]string{
+		"#{session_id}": "$NEW", "#{session_name}": "muster-9", "#{session_created}": "222",
+	})
+	t.Cleanup(func() { tmuxenv.Run = prevRun })
+	seed := func(op string, args map[string]any) {
+		t.Helper()
+		if _, err := callData(op, args); err != nil {
+			t.Fatal(err)
+		}
+	}
+	seed("register_agent", map[string]any{
+		"alias": "muster-2", "socket_path": "/tmp/sock", "session_id": "$OLD",
+		"session_created": 111, "harness_session_id": "uuid-42",
+	})
+	seed("become", map[string]any{"from": "muster-2", "to": "alias-routing"})
+
+	var resumeBuf bytes.Buffer
+	if err := cmdHook([]string{"SessionStart"}, strings.NewReader(`{"source":"resume","session_id":"uuid-42"}`), &resumeBuf); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(resumeBuf.String(), "reconnected as 'alias-routing'") {
+		t.Fatalf("setup: resume did not reclaim as expected:\n%s", resumeBuf.String())
+	}
+
+	// A straggler addressed to the RETIRED seed name, sent AFTER resume: the
+	// seed's own row is still departed on the OLD (now-dead) tuple.
+	seed("register_agent", map[string]any{"alias": "peer", "socket_path": "/tmp/sock2", "session_id": "$peer"})
+	seed("send_message", map[string]any{"from": "peer", "to_kind": "agent", "to_target": "muster-2", "subject": "s", "body": "still for the old name"})
+
+	// Stop, on the NEW tuple, driven by tmux env matching the resumed session.
+	tmuxenv.Run = hookRun(map[string]string{
+		"@muster_inbox": "1", "#{session_id}": "$NEW", "#{session_name}": "muster-9",
+	})
+	var stopBuf bytes.Buffer
+	if err := cmdHook([]string{"Stop"}, strings.NewReader(`{}`), &stopBuf); err != nil {
+		t.Fatal(err)
+	}
+	out := stopBuf.String()
+	if !strings.Contains(out, "alias-routing") {
+		t.Fatalf("Stop-hook drain on the new tuple must surface the unread mail (either by naming the alias or the count), got:\n%s", out)
+	}
+	if !strings.Contains(out, "1 unread") && !strings.Contains(out, `"reason"`) {
+		t.Fatalf("Stop-hook drain must surface the straggler as pending mail:\n%s", out)
+	}
+}

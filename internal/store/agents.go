@@ -308,10 +308,38 @@ FROM agents WHERE alias=?`, to, now, now, from)
 // a real session identity whose sibling aliases group exactly like a tmux
 // session's; the sessionID guard alone keeps pre-harnessenv no-tmux rows
 // (both fields empty) from ever grouping with each other.
+//
+// Mail follows the name, wherever the conversation moved (become-retired
+// lineage, found live: a straggler addressed to a retired seed alias must
+// still light the badge on the tuple its identity moved to). The sess CTE is
+// therefore a WITH RECURSIVE lineage walk, not a flat tuple match: the base
+// case is every alias currently sitting on the queried tuple; each
+// recursive step adds rows whose superseded_by points at an alias already
+// in the set. store.Become stamps superseded_by on the SEED pointing
+// FORWARD at its successor (from.superseded_by = to), so the walk goes
+// backward through the chain — for A→B→C (A became B, B became C: A's
+// superseded_by='B', B's superseded_by='C'), starting from C on the live
+// tuple the first step finds B (superseded_by='C') and the next step finds
+// A (superseded_by='B'), even though A's own row still sits on a
+// long-dead tuple. Each lineage row keeps ITS OWN
+// last_read_entry_id as the EXISTS watermark below — a superseded row's
+// watermark is frozen at the moment it was retired (exactly the read state
+// Become cloned forward onto its successor), so this stays per-row
+// semantics, never a session-wide max. UNION (not UNION ALL) dedups on the
+// full row; since alias is a primary key, that collapses to "one alias
+// enters the set at most once" — a malformed superseded_by cycle (A→B→A)
+// simply produces no new row on the step that would re-add an
+// already-present alias, so the recursion terminates instead of hanging
+// (see TestSessionUnreadLineageCycleGuard).
 func (s *Store) SessionUnread(socketPath, sessionID string) (total, action int, err error) {
 	err = s.db.QueryRow(`
-WITH sess AS (SELECT alias, last_read_entry_id FROM agents
-              WHERE socket_path = ?1 AND session_id = ?2 AND ?2 != '')
+WITH RECURSIVE sess AS (
+  SELECT alias, last_read_entry_id, superseded_by FROM agents
+  WHERE socket_path = ?1 AND session_id = ?2 AND ?2 != ''
+  UNION
+  SELECT a.alias, a.last_read_entry_id, a.superseded_by
+  FROM agents a JOIN sess ON a.superseded_by = sess.alias
+)
 SELECT
   COUNT(DISTINCT threads.id),
   COUNT(DISTINCT CASE WHEN `+effectiveIntent+` = 'action-requested' THEN threads.id END)
@@ -323,4 +351,40 @@ WHERE EXISTS (SELECT 1 FROM entries e
                 AND e.from_agent NOT IN (SELECT alias FROM sess))`,
 		socketPath, sessionID).Scan(&total, &action)
 	return total, action, err
+}
+
+// SessionAliasLineage returns every alias belonging to a session's
+// supersession lineage — the exact same WITH RECURSIVE walk SessionUnread
+// runs (see its doc comment for the "mail follows the name" rule and the
+// cycle-termination argument), projected down to just the alias column. It
+// backs the daemon's session_aliases op, which includes departed aliases ON
+// PURPOSE (their unread mail still needs draining) — lineage rows are
+// additive to that, never a filter: a become-retired seed on a long-dead
+// tuple belongs in the list precisely because it is departed, not despite
+// it. Result is sorted and deduplicated; an empty sessionID matches no
+// agents (mirrors SessionUnread's empty-tuple guard) and returns an empty
+// slice.
+func (s *Store) SessionAliasLineage(socketPath, sessionID string) ([]string, error) {
+	rows, err := s.db.Query(`
+WITH RECURSIVE sess AS (
+  SELECT alias, superseded_by FROM agents
+  WHERE socket_path = ?1 AND session_id = ?2 AND ?2 != ''
+  UNION
+  SELECT a.alias, a.superseded_by
+  FROM agents a JOIN sess ON a.superseded_by = sess.alias
+)
+SELECT alias FROM sess ORDER BY alias`, socketPath, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	out := []string{}
+	for rows.Next() {
+		var alias string
+		if err := rows.Scan(&alias); err != nil {
+			return nil, err
+		}
+		out = append(out, alias)
+	}
+	return out, rows.Err()
 }

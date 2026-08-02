@@ -121,11 +121,26 @@ func hookRegisterPane(c tmuxenv.Capture, h harnessenv.Capture, model string) {
 // reclaimed one, and minting a second alias would split it. Output goes to
 // stdout, which the harness injects into the session's context: the agent
 // wakes up knowing who it is and what's waiting.
+//
+// The printed unread count is session truth, not per-alias truth (finding
+// F2, live rig): register_agent's ack.Unread is store.UnreadCount(alias) —
+// text-matched to the single alias just reclaimed, blind to mail addressed
+// to a superseded seed whose identity moved onto this same tuple (F1). Once
+// at least one alias reclaims, session_unread's lineage-aware total (see
+// store.SessionUnread) is queried ONCE for the current tuple and substituted
+// into every printed line — a session's pending mail is one number, not a
+// sum of per-alias guesses, so all reclaimed aliases share it. A
+// session_unread failure degrades to the per-alias acks already collected,
+// unchanged, rather than block the hook.
 func hookSessionStartResume(c tmuxenv.Capture, h harnessenv.Capture, model string, out io.Writer) bool {
 	if h.SessionID == "" {
 		return false
 	}
-	reclaimed := 0
+	type reclaimedLine struct {
+		alias, outcome string
+		unread         int
+	}
+	var lines []reclaimedLine
 	for _, ag := range harnessOwnedRows(h.SessionID) {
 		if ag.Departed && ag.SupersededBy != "" {
 			continue // become-retired seed: SupersededBy already carries this identity forward, never resurrect it
@@ -137,11 +152,21 @@ func hookSessionStartResume(c tmuxenv.Capture, h harnessenv.Capture, model strin
 			continue
 		}
 		ack := reclaimRow(ag, c, h.SessionID, model)
-		_, _ = fmt.Fprintf(out, "muster: reconnected as '%s' (%s) — %d unread thread(s); call get_inbox with alias '%s'\n",
-			ag.Alias, ack.Outcome, ack.Unread, ag.Alias)
-		reclaimed++
+		lines = append(lines, reclaimedLine{ag.Alias, ack.Outcome, ack.Unread})
 	}
-	return reclaimed > 0
+	if len(lines) == 0 {
+		return false
+	}
+	if total, _, ok := sessionUnreadForHook(c.SocketPath, c.SessionID); ok {
+		for i := range lines {
+			lines[i].unread = total
+		}
+	}
+	for _, ln := range lines {
+		_, _ = fmt.Fprintf(out, "muster: reconnected as '%s' (%s) — %d unread thread(s); call get_inbox with alias '%s'\n",
+			ln.alias, ln.outcome, ln.unread, ln.alias)
+	}
+	return true
 }
 
 // hookSessionStartPaneless auto-registers a session that has no tmux pane in

@@ -99,3 +99,41 @@ func TestBecomeRejectsEmptyAlias(t *testing.T) {
 		t.Fatal("whitespace-only alias must never reach the daemon")
 	}
 }
+
+// TestBecomeToExistsErrorHasNoPrefixStutter is finding F3, live rig:
+// `muster become` on an already-claimed name used to print "become: become:
+// alias ..." — the daemon's own error text for this guard baked in a
+// "become: " prefix, and callData (the ONE place that renders "<op>:
+// <daemon error>" for every op) added a second one on top. cmd/muster's
+// main() then prints "muster: " + err.Error() verbatim, so the doubled
+// prefix reached the operator's terminal unchanged. The error text
+// Dispatch returns here is exactly what main() prints after "muster: ", so
+// asserting on err.Error() catches the stutter at its source.
+func TestBecomeToExistsErrorHasNoPrefixStutter(t *testing.T) {
+	startTestDaemon(t)
+	t.Setenv("TMUX", "/tmp/sock,1,0")
+	t.Setenv("TMUX_PANE", "%1")
+	prev := tmuxenv.Run
+	tmuxenv.Run = hookRun(map[string]string{"#{session_id}": "$1"})
+	t.Cleanup(func() { tmuxenv.Run = prev })
+	if _, err := callData("register_agent", map[string]any{
+		"alias": "muster-2", "socket_path": "/tmp/sock", "session_id": "$1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := callData("register_agent", map[string]any{"alias": "taken"}); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	err := Dispatch([]string{"become", "taken"}, &buf)
+	if err == nil {
+		t.Fatal("want an error claiming an already-existing alias")
+	}
+	if n := strings.Count(err.Error(), "become:"); n != 1 {
+		t.Fatalf("error must carry exactly one 'become:' prefix, got %d: %q", n, err.Error())
+	}
+	if strings.Contains(err.Error(), "become: become:") {
+		t.Fatalf("prefix stutter survived: %q", err.Error())
+	}
+}

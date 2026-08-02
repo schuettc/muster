@@ -4,6 +4,7 @@ import (
 	"errors"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/schuettc/muster/internal/clock"
 )
@@ -431,6 +432,124 @@ func TestSessionUnreadPerAliasWatermarks(t *testing.T) {
 	if total != 0 {
 		t.Fatalf("after MarkRead(aliasB): expected 0 unread, got %d", total)
 	}
+}
+
+// TestSessionUnreadFollowsSupersessionLineage reproduces the live-rig gap:
+// become + resume leaves the retired seed's row on its OLD (now-dead) tuple
+// while its identity moved to a NEW tuple. Mail addressed to the retired
+// seed alias must still count against the session now sitting on the new
+// tuple — the lineage walk, not a flat tuple match.
+func TestSessionUnreadFollowsSupersessionLineage(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.RegisterAgent(Agent{Alias: "seed", SocketPath: "/old", SessionID: "$old"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Become("seed", "claimed"); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate hookSessionStartResume's reclaim: the claimed alias's row
+	// re-registers onto a brand-new tuple (the resumed session), while the
+	// seed's row stays exactly where Become left it — on the OLD tuple,
+	// departed, superseded_by="claimed".
+	if err := s.RegisterAgent(Agent{Alias: "claimed", SocketPath: "/new", SessionID: "$new"}); err != nil {
+		t.Fatal(err)
+	}
+	seed, _, _ := s.GetAgent("seed")
+	if !seed.Departed || seed.SocketPath != "/old" || seed.SessionID != "$old" {
+		t.Fatalf("seed row expected to stay departed on the old tuple: %+v", seed)
+	}
+
+	// A straggler addressed to the RETIRED seed alias.
+	if _, err := s.CreateThread(Thread{Kind: "message", FromAgent: "outsider", ToKind: "agent", ToTarget: "seed"}, "hi seed"); err != nil {
+		t.Fatal(err)
+	}
+
+	total, _, err := s.SessionUnread("/new", "$new")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 1 {
+		t.Fatalf("mail addressed to a superseded seed must count on the successor's live tuple: got total=%d, want 1", total)
+	}
+}
+
+// TestSessionUnreadFollowsChainedLineage: A→B→C (A became B, B became C),
+// with only C sitting on the live tuple. The lineage walk must resolve
+// TRANSITIVELY through the middle link — mail addressed to the original
+// alias A must still reach C's tuple, not just B's.
+func TestSessionUnreadFollowsChainedLineage(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.RegisterAgent(Agent{Alias: "a", SocketPath: "/old", SessionID: "$old"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Become("a", "b"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Become("b", "c"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RegisterAgent(Agent{Alias: "c", SocketPath: "/new", SessionID: "$new"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := s.CreateThread(Thread{Kind: "message", FromAgent: "outsider", ToKind: "agent", ToTarget: "a"}, "hi a"); err != nil {
+		t.Fatal(err)
+	}
+
+	total, _, err := s.SessionUnread("/new", "$new")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 1 {
+		t.Fatalf("mail addressed to the ORIGINAL alias of a two-hop chain must reach the final tuple: got total=%d, want 1", total)
+	}
+}
+
+// TestSessionUnreadLineageCycleGuard: a malformed superseded_by cycle
+// (deliberately written past Become's own guards, via raw SQL — Become
+// itself can never produce one) must not hang the recursive CTE and must
+// not miscount. UNION's row-level dedup is what bounds the recursion.
+func TestSessionUnreadLineageCycleGuard(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.RegisterAgent(Agent{Alias: "x", SocketPath: "/s", SessionID: "$1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RegisterAgent(Agent{Alias: "y", SocketPath: "/other", SessionID: "$other"}); err != nil {
+		t.Fatal(err)
+	}
+	// Force a cycle: x superseded_by y, y superseded_by x. Both rows sit on
+	// the queried tuple's neighborhood is irrelevant here — the point is the
+	// recursive walk from x's own tuple must terminate.
+	if _, err := s.DB().Exec(`UPDATE agents SET departed=1, superseded_by='y' WHERE alias='x'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB().Exec(`UPDATE agents SET departed=1, superseded_by='x' WHERE alias='y'`); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := s.CreateThread(Thread{Kind: "message", FromAgent: "outsider", ToKind: "agent", ToTarget: "x"}, "hi x"); err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan struct{})
+	var total, action int
+	var err error
+	go func() {
+		total, action, err = s.SessionUnread("/s", "$1")
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("SessionUnread hung on a superseded_by cycle")
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 1 {
+		t.Fatalf("cycle must not miscount (double-add) the shared alias: got total=%d, want 1", total)
+	}
+	_ = action
 }
 
 // TestSetHarnessSessionID covers the hook-repair path of the durable-alias
