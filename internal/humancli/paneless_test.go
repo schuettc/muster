@@ -12,17 +12,35 @@ import (
 	"github.com/schuettc/muster/internal/tmuxenv"
 )
 
+// pinAncestryWalkAway neuters tmuxenv.CaptureFromAncestry for the duration of
+// a test by making its two seams find nothing: no ancestor PIDs, no socket
+// directory to glob. Without this, a paneless test (empty $TMUX/$TMUX_PANE)
+// leaves hookCapture() falling through to the REAL ancestry walk — and on a
+// dev machine, `go test` itself commonly runs inside a real tmux pane (e.g. a
+// coding-agent session on the muster bus), so the walk can find that real
+// pane and turn an intended paneless SessionStart into a pane-anchored one.
+func pinAncestryWalkAway(t *testing.T) {
+	t.Helper()
+	prevAnc, prevDir := tmuxenv.AncestorPIDs, tmuxenv.SocketDir
+	tmuxenv.AncestorPIDs = func() []int { return nil }
+	tmuxenv.SocketDir = func() string { return t.TempDir() } // fresh empty dir: Glob matches nothing
+	t.Cleanup(func() { tmuxenv.AncestorPIDs, tmuxenv.SocketDir = prevAnc, prevDir })
+}
+
 // panelessEnv pins the process into a paneless shape: no tmux, a known
 // harness session UUID, and a working directory whose basename is the
 // expected fallback alias. CLAUDE_CODE_SESSION_ID must be pinned in every
 // paneless test — on a dev machine `go test` itself runs inside a Claude
-// session whose UUID would otherwise leak in.
+// session whose UUID would otherwise leak in. Also pins the ancestry-walk
+// seams away (see pinAncestryWalkAway) so hookCapture()'s fallback can't
+// resolve this test process's real tmux pane.
 func panelessEnv(t *testing.T, uuid, dirName string) string {
 	t.Helper()
 	t.Setenv("TMUX", "")
 	t.Setenv("TMUX_PANE", "")
 	t.Setenv("MUSTER_ALIAS", "")
 	t.Setenv("CLAUDE_CODE_SESSION_ID", uuid)
+	pinAncestryWalkAway(t)
 	dir := filepath.Join(t.TempDir(), dirName)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
@@ -195,6 +213,65 @@ func TestHookSessionEndPanelessReapsOnlyOwnAliases(t *testing.T) {
 	}
 }
 
+// TestHookSessionEndPanelessSparesLiveOtherTuple is finding F2's core
+// scenario: the resume-coexistence race. harnessOwnedRows keys purely on the
+// harness session UUID with no tuple discrimination, so a dying paneless
+// SessionEnd that enumerates them could tombstone a DIFFERENT alias's row
+// that a concurrent resume has already reclaimed onto a brand-new, live tmux
+// tuple sharing the same UUID. The belt-and-suspenders check
+// (tmuxenv.IsSessionAlive, mirroring hookSessionStartResume's own collision
+// predicate) must spare that provably-alive row while still tombstoning the
+// dying tuple's own (paneless, unqueryable) row. Contrast
+// TestLaunchHandshakeLifecycle, which pins the mirror case: a row whose tmux
+// tuple is genuinely gone must still be tombstoned as before.
+func TestHookSessionEndPanelessSparesLiveOtherTuple(t *testing.T) {
+	startTestDaemon(t)
+	seed := func(args map[string]any) {
+		t.Helper()
+		if _, err := callData("register_agent", args); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The dying side: a paneless row (no tmux tuple to probe at all).
+	seed(map[string]any{
+		"alias": "race-old", "socket_path": "", "session_id": "uuid-race",
+		"harness_session_id": "uuid-race",
+	})
+	// The other side: already reclaimed onto a brand-new, live tmux tuple,
+	// sharing the SAME harness UUID (the reclaim race's live half).
+	seed(map[string]any{
+		"alias": "race-new", "socket_path": "/tmp/sockRace", "session_id": "$9",
+		"session_created": 777, "harness_session_id": "uuid-race",
+	})
+
+	panelessEnv(t, "uuid-race", "race-dir")
+	prev := tmuxenv.Run
+	tmuxenv.Run = func(args ...string) (string, error) {
+		for _, a := range args {
+			if a == "/tmp/sockRace" {
+				return "777", nil // IsSessionAlive: matches the stored created time -> alive
+			}
+		}
+		return "", fmt.Errorf("gone")
+	}
+	t.Cleanup(func() { tmuxenv.Run = prev })
+
+	var buf bytes.Buffer
+	if err := cmdHook([]string{"SessionEnd"}, strings.NewReader(`{"session_id":"uuid-race"}`), &buf); err != nil {
+		t.Fatal(err)
+	}
+	departed := map[string]bool{}
+	for _, a := range listAgentsForTest(t, "") {
+		departed[a.Alias] = a.Departed
+	}
+	if !departed["race-old"] {
+		t.Fatalf("the dying (paneless) tuple's row must still be tombstoned, got %+v", departed)
+	}
+	if departed["race-new"] {
+		t.Fatalf("a provably-live other-tuple row sharing the UUID must survive the race, got %+v", departed)
+	}
+}
+
 func TestHookStopPanelessBlocksOnUnread(t *testing.T) {
 	startTestDaemon(t)
 	if _, err := callData("register_agent", map[string]any{
@@ -343,6 +420,13 @@ func TestLaunchHandshakeLifecycle(t *testing.T) {
 		t.Fatalf("Stop must address the handshake alias and lead with its label, got %q", stop.String())
 	}
 
+	// By the time the daemon-hosted session's own SessionEnd fires, the
+	// launching pane has actually closed too (a realistic teardown order,
+	// and the ordinary case finding F2's belt-and-suspenders IsSessionAlive
+	// check must still let through) — every tmux probe now answers "gone".
+	// Contrast TestHookSessionEndPanelessSparesLiveOtherTuple, which pins the
+	// OTHER half: a tuple that IS still alive must survive.
+	tmuxenv.Run = func(_ ...string) (string, error) { return "", fmt.Errorf("pane closed") }
 	if err := cmdHook([]string{"SessionEnd"}, strings.NewReader(payload), &buf); err != nil {
 		t.Fatal(err)
 	}

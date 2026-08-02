@@ -119,12 +119,15 @@ func harnessOwnedRows(uuid string) []agentRow {
 
 // reviveRow re-registers a tombstoned row echoing back its own stored
 // identity — tuple, harness link, project, label — so revival never rewrites
-// what the row already knows about itself.
-func reviveRow(ag agentRow, model string) {
+// what the row already knows about itself. Returns the daemon's ack (outcome
+// + unread) so callers that want to surface it can; callers that don't care
+// may call this as a bare statement — Go permits discarding a value-returning
+// function's result.
+func reviveRow(ag agentRow, model string) registerAck {
 	if model == "" {
 		model = ag.ModelType
 	}
-	_, _ = callData("register_agent", map[string]any{
+	raw, _ := callData("register_agent", map[string]any{
 		"alias": ag.Alias, "role": ag.Role, "model_type": model,
 		"session_name": ag.SessionName, "session_id": ag.SessionID,
 		"session_created":    ag.SessionCreated,
@@ -132,4 +135,25 @@ func reviveRow(ag agentRow, model string) {
 		"socket_path":        ag.SocketPath, "pane_id": ag.PaneID,
 		"project": ag.Project, "label": ag.Label, "label_manual": ag.LabelManual,
 	})
+	return decodeRegisterAck(raw)
+}
+
+// reclaimRow re-registers a conversation's row onto the tmux session it
+// resumed in: role, model, label, and harness link are echoed from the row
+// (they belong to the conversation), while the tuple is the CURRENT
+// capture's (the conversation moved). Contrast reviveRow, which echoes the
+// stored tuple back for an in-place revival.
+func reclaimRow(ag agentRow, c tmuxenv.Capture, harnessID, model string) registerAck {
+	if model == "" {
+		model = ag.ModelType
+	}
+	raw, _ := callData("register_agent", map[string]any{
+		"alias": ag.Alias, "role": ag.Role, "model_type": model,
+		"session_name": c.SessionName, "session_id": c.SessionID,
+		"session_created":    c.SessionCreated,
+		"harness_session_id": harnessID,
+		"socket_path":        c.SocketPath, "pane_id": c.PaneID,
+		"project": c.Project, "label": ag.Label, "label_manual": ag.LabelManual,
+	})
+	return decodeRegisterAck(raw)
 }

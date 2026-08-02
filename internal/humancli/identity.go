@@ -83,9 +83,14 @@ func cmdRegister(args []string, out io.Writer) error {
 			// prior paneless one): refresh/revive it with its stored shape
 			// intact rather than allocating another.
 			alias = owned[0].Alias
-			reviveRow(owned[0], *model)
-			_, err := fmt.Fprintf(out, "registered %s (existing identity, project %q, model %s)\n", alias, owned[0].Project, *model)
-			return err
+			ack := reviveRow(owned[0], *model)
+			if _, err := fmt.Fprintf(out, "registered %s (existing identity, project %q, model %s)\n", alias, owned[0].Project, *model); err != nil {
+				return err
+			}
+			if s := ack.line(alias); s != "" {
+				_, _ = fmt.Fprint(out, s)
+			}
+			return nil
 		}
 		var err error
 		if alias, err = allocPanelessAlias(h.Alias(), h.SessionID, regFn); err != nil {
@@ -116,22 +121,30 @@ func cmdRegister(args []string, out io.Writer) error {
 	if harnessID == "" {
 		harnessID = h.SessionID
 	}
-	if _, err := callData("register_agent", map[string]any{
+	raw, err := callData("register_agent", map[string]any{
 		"alias": alias, "role": *role, "model_type": *model,
 		"session_name": sessionName, "session_id": sessionID,
 		"session_created":    created,
 		"harness_session_id": harnessID,
 		"socket_path":        socketPath, "pane_id": paneID,
 		"project": project, "label": c.Label, "label_manual": c.LabelManual,
-	}); err != nil {
+	})
+	if err != nil {
 		return err
 	}
 	shape := ""
 	if paneless {
 		shape = "paneless, "
 	}
-	_, err := fmt.Fprintf(out, "registered %s (%sproject %q, model %s)\n", alias, shape, project, *model)
-	return err
+	if _, err := fmt.Fprintf(out, "registered %s (%sproject %q, model %s)\n", alias, shape, project, *model); err != nil {
+		return err
+	}
+	if s := decodeRegisterAck(raw).line(alias); s != "" {
+		if _, err := fmt.Fprint(out, s); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // cmdDeregister removes an agent's registration. Alias precedence mirrors

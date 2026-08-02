@@ -431,3 +431,27 @@ func TestSessionUnreadPerAliasWatermarks(t *testing.T) {
 		t.Fatalf("after MarkRead(aliasB): expected 0 unread, got %d", total)
 	}
 }
+
+// TestSetHarnessSessionID covers the hook-repair path of the durable-alias
+// spec: an alias registered without a harness link (e.g. via the MCP tool in
+// an env with no harness UUID) gets one stamped later by the Stop hook.
+func TestSetHarnessSessionID(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.RegisterAgent(Agent{Alias: "backend"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetHarnessSessionID("backend", "uuid-1"); err != nil {
+		t.Fatal(err)
+	}
+	ag, ok, err := s.GetAgent("backend")
+	if err != nil || !ok {
+		t.Fatalf("get: %v %v", ok, err)
+	}
+	if ag.HarnessSessionID != "uuid-1" {
+		t.Fatalf("harness_session_id = %q, want uuid-1", ag.HarnessSessionID)
+	}
+	// Unknown alias is a no-op, mirroring TouchAgent's contract.
+	if err := s.SetHarnessSessionID("ghost", "uuid-2"); err != nil {
+		t.Fatal(err)
+	}
+}

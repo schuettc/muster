@@ -159,6 +159,50 @@ func TestRegisterAgentSameAliasStillUpserts(t *testing.T) {
 	}
 }
 
+// TestRegisterAgentStampsHarnessLinkAndReportsRevival covers the durable-alias
+// spec's MCP surface: the handler forwards the ambient harness session UUID
+// (so hook reclaim can find this row after a resume), and folds the daemon's
+// outcome/unread into the Detail so a re-registering agent learns its backlog.
+func TestRegisterAgentStampsHarnessLinkAndReportsRevival(t *testing.T) {
+	t.Setenv("TMUX", "/tmp/sock,1,0")
+	t.Setenv("TMUX_PANE", "%6")
+	t.Setenv("CLAUDE_CODE_SESSION_ID", "uuid-7")
+	prev := tmuxenv.Run
+	tmuxenv.Run = func(args ...string) (string, error) {
+		switch args[len(args)-1] {
+		case "#{session_id}":
+			return "$5", nil
+		case "#{session_name}":
+			return "muster-2", nil
+		default:
+			return "", nil
+		}
+	}
+	t.Cleanup(func() { tmuxenv.Run = prev })
+
+	var got map[string]any
+	prevDaemon := callDaemon
+	callDaemon = func(op string, args map[string]any) (json.RawMessage, error) {
+		if op == "register_agent" {
+			got = args
+			return []byte(`{"outcome":"revived","unread":3}`), nil
+		}
+		return []byte(`[]`), nil // paneRegistration's list_agents probe
+	}
+	t.Cleanup(func() { callDaemon = prevDaemon })
+
+	_, out, err := registerAgentHandler(context.TODO(), nil, RegisterAgentIn{Alias: "backend", Role: "peer", ModelType: "claude"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got["harness_session_id"] != "uuid-7" {
+		t.Fatalf("harness_session_id = %v, want uuid-7", got["harness_session_id"])
+	}
+	if !strings.Contains(out.Detail, "revived") || !strings.Contains(out.Detail, "3 unread") {
+		t.Fatalf("Detail = %q, want revival + unread notice", out.Detail)
+	}
+}
+
 func TestRegisterAgentFreshPaneRegisters(t *testing.T) {
 	t.Setenv("TMUX", "/tmp/sock,1,0")
 	t.Setenv("TMUX_PANE", "%14")

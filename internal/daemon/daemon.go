@@ -34,6 +34,7 @@ type storeAPI interface {
 	DepartAgent(alias string) error
 	DepartStaleSiblings(socketPath, sessionID string, created int64, keepAlias string) ([]string, error)
 	SetSessionLabel(socketPath, sessionID, label string, manual bool) (int64, error)
+	SetHarnessSessionID(alias, id string) error
 	DeleteAgent(alias string) error
 	CreateThread(t store.Thread, firstBody string) (int64, error)
 	AppendEntry(threadID int64, fromAgent, body, statusChange string) (int64, error)
@@ -43,6 +44,7 @@ type storeAPI interface {
 	Threads(limit int) ([]store.Thread, error)
 	Inbox(alias string) ([]store.Thread, error)
 	MarkRead(alias string) error
+	UnreadCount(alias string) (int, error)
 	SessionUnread(socketPath, sessionID string) (total, action int, err error)
 	KVSet(key, value, updatedBy string) error
 	KVGet(key string) (store.KVPair, bool, error)
@@ -249,7 +251,26 @@ func (d *Daemon) handleRegisterAgent(a map[string]any) proto.Response {
 		d.reconcileBadge(old.SocketPath, old.SessionID)
 	}
 	d.reconcileBadge(newAgent.SocketPath, newAgent.SessionID)
-	return ok(nil)
+	// Outcome classification (durable-alias spec change 1): the pre-mutation
+	// row read above already tells this apart for free — no prior row is a
+	// first sight, a live prior row is a tuple refresh, and a tombstone is a
+	// returning session (RegisterAgent's upsert just revived it). The unread
+	// count rides along so a resuming session learns its backlog in the same
+	// call; a count failure degrades to 0 rather than failing a register that
+	// already succeeded.
+	outcome := "new"
+	switch {
+	case hadOld && old.Departed:
+		outcome = "revived"
+		d.logEvent(store.Event{Kind: "register", Agent: alias, Detail: "revived"})
+	case hadOld:
+		outcome = "refreshed"
+	}
+	unread, err := d.s.UnreadCount(alias)
+	if err != nil {
+		unread = 0
+	}
+	return ok(map[string]any{"outcome": outcome, "unread": unread})
 }
 
 // setSessionBadge is the ONE canonical {recompute, push} sequence for a
@@ -734,6 +755,11 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 			return fail(err)
 		}
 		return ok(map[string]any{"updated": n})
+	case "stamp_harness_session":
+		if err := d.s.SetHarnessSessionID(str(a, "alias"), str(a, "harness_session_id")); err != nil {
+			return fail(err)
+		}
+		return ok(nil)
 	case "purge_agent":
 		// The explicit, irreversible hard-delete: `muster gc --purge-agents`'s
 		// own op, distinct from deregister_agent's tombstone. Identity,

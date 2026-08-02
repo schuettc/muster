@@ -44,6 +44,7 @@ func registerAgentHandler(_ context.Context, _ *mcp.CallToolRequest, in Register
 		return nil, OKOut{OK: true, Detail: detail + " — use that alias; not adding a second"}, nil
 	}
 
+	h := harnessenv.FromEnv()
 	sessionName := in.SessionName
 	if sessionName == "" {
 		sessionName = c.SessionName
@@ -58,27 +59,39 @@ func registerAgentHandler(_ context.Context, _ *mcp.CallToolRequest, in Register
 		// half-captured socket (run-shell contexts) is dropped too — a tuple
 		// mixing a real socket with a non-tmux session ID would read as dead
 		// to every liveness check.
-		h := harnessenv.FromEnv()
 		socketPath, paneID = "", ""
 		sessionID, project = h.SessionID, h.Project()
 	}
-	_, err := callDaemon("register_agent", map[string]any{
-		"alias":           in.Alias,
-		"role":            in.Role,
-		"model_type":      in.ModelType,
-		"session_name":    sessionName,
-		"session_id":      sessionID,
-		"session_created": c.SessionCreated,
-		"socket_path":     socketPath,
-		"pane_id":         paneID,
-		"project":         project,
-		"label":           c.Label,
-		"label_manual":    c.LabelManual,
+	raw, err := callDaemon("register_agent", map[string]any{
+		"alias":              in.Alias,
+		"role":               in.Role,
+		"model_type":         in.ModelType,
+		"session_name":       sessionName,
+		"session_id":         sessionID,
+		"session_created":    c.SessionCreated,
+		"socket_path":        socketPath,
+		"pane_id":            paneID,
+		"project":            project,
+		"label":              c.Label,
+		"label_manual":       c.LabelManual,
+		"harness_session_id": h.SessionID,
 	})
 	if err != nil {
 		return nil, OKOut{}, err
 	}
-	return nil, OKOut{OK: true, Detail: "registered " + in.Alias}, nil
+	var ack struct {
+		Outcome string `json:"outcome"`
+		Unread  int    `json:"unread"`
+	}
+	_ = json.Unmarshal(raw, &ack)
+	detail := "registered " + in.Alias
+	if ack.Outcome == "revived" {
+		detail = fmt.Sprintf("reconnected as '%s' — revived a previous registration", in.Alias)
+	}
+	if ack.Unread > 0 {
+		detail += fmt.Sprintf("; %d unread thread(s): call get_inbox with alias '%s'", ack.Unread, in.Alias)
+	}
+	return nil, OKOut{OK: true, Detail: detail}, nil
 }
 
 func listAgentsHandler(_ context.Context, _ *mcp.CallToolRequest, _ ListAgentsIn) (*mcp.CallToolResult, ListAgentsOut, error) {
