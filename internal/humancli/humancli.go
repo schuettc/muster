@@ -42,6 +42,10 @@ type agentFull struct {
 	// Label mirrors agentRow's own copy — the resume reclaim test asserts a
 	// manually-pinned label survives the reclaim onto the new tuple.
 	Label string `json:"label"`
+	// SupersededBy mirrors store.Agent.SupersededBy — hookSessionStartResume
+	// reads it via hookGetAgent/harnessOwnedRows to tell a become-retired
+	// seed (never reclaim) from an ordinary tombstone (reclaim as before).
+	SupersededBy string `json:"superseded_by"`
 }
 
 type agentRow struct {
@@ -70,6 +74,12 @@ type agentRow struct {
 	// --purge-agents both key off this to decide whether a row still needs
 	// reaping or is already history.
 	Departed bool `json:"departed"`
+	// SupersededBy mirrors store.Agent.SupersededBy — non-empty on a row
+	// retired via `become`, naming the alias that now carries its identity
+	// forward. hookSessionStartResume uses this as ground truth: a departed
+	// row with SupersededBy set must never reclaim on resume, regardless of
+	// whether its successor is currently live.
+	SupersededBy string `json:"superseded_by"`
 }
 
 // threadRow decodes daemon thread responses (get_inbox, get_thread, list_tasks).

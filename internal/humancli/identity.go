@@ -80,17 +80,23 @@ func cmdRegister(args []string, out io.Writer) error {
 		}
 		if owned := harnessOwnedRows(h.SessionID); len(owned) > 0 {
 			// This session already has an identity (a handshake tmux row or a
-			// prior paneless one): refresh/revive it with its stored shape
-			// intact rather than allocating another.
-			alias = owned[0].Alias
-			ack := reviveRow(owned[0], *model)
-			if _, err := fmt.Fprintf(out, "registered %s (existing identity, project %q, model %s)\n", alias, owned[0].Project, *model); err != nil {
-				return err
+			// prior paneless one): refresh/revive it with its stored shape intact
+			// rather than allocating another — but never a become-retired seed
+			// (finding F1): firstUnsuperseded skips any row already claimed away
+			// via `muster become`. If every owned row is superseded there is no
+			// identity left to revive here; fall through to allocation below
+			// exactly as if owned had been empty.
+			if ag, ok := firstUnsuperseded(owned); ok {
+				alias = ag.Alias
+				ack := reviveRow(ag, *model)
+				if _, err := fmt.Fprintf(out, "registered %s (existing identity, project %q, model %s)\n", alias, ag.Project, *model); err != nil {
+					return err
+				}
+				if s := ack.line(alias); s != "" {
+					_, _ = fmt.Fprint(out, s)
+				}
+				return nil
 			}
-			if s := ack.line(alias); s != "" {
-				_, _ = fmt.Fprint(out, s)
-			}
-			return nil
 		}
 		var err error
 		if alias, err = allocPanelessAlias(h.Alias(), h.SessionID, regFn); err != nil {

@@ -435,3 +435,55 @@ func TestLaunchHandshakeLifecycle(t *testing.T) {
 		t.Fatalf("SessionEnd must tombstone the handshake row, got %+v found=%v", ag, found)
 	}
 }
+
+// TestHookSessionStartPanelessRevivesSuccessorNotSupersededSeed is finding
+// F1's core scenario: a harness session UUID owns TWO tombstoned rows —
+// "aaa-old" (become-retired: superseded_by="zzz-new") and "zzz-new" (the
+// successor, also since departed on its own). ORDER BY alias in ListAgents
+// puts "aaa-old" first, so the pre-fix code (owned[0], no SupersededBy
+// check) would revive the RETIRED SEED under its old alias — resurrecting an
+// identity that `muster become` already carried forward. The fix
+// (firstUnsuperseded) must skip it and revive "zzz-new" instead, leaving
+// "aaa-old" departed forever.
+func TestHookSessionStartPanelessRevivesSuccessorNotSupersededSeed(t *testing.T) {
+	startTestDaemon(t)
+	panelessEnv(t, "hs-f1", "f1-dir")
+
+	if _, err := callData("register_agent", map[string]any{
+		"alias": "aaa-old", "session_id": "hs-f1", "harness_session_id": "hs-f1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := callData("become", map[string]any{"from": "aaa-old", "to": "zzz-new"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := callData("deregister_agent", map[string]any{"alias": "zzz-new"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Setup sanity: both rows departed, and the supersession link points the
+	// direction the fix must respect.
+	old, ok := hookGetAgent("aaa-old")
+	if !ok || !old.Departed || old.SupersededBy != "zzz-new" {
+		t.Fatalf("setup: aaa-old = %+v (ok=%v)", old, ok)
+	}
+	successor, ok := hookGetAgent("zzz-new")
+	if !ok || !successor.Departed || successor.SupersededBy != "" {
+		t.Fatalf("setup: zzz-new = %+v (ok=%v)", successor, ok)
+	}
+
+	payload := `{"session_id":"hs-f1","cwd":"/x/f1-dir"}`
+	var buf bytes.Buffer
+	if err := cmdHook([]string{"SessionStart"}, strings.NewReader(payload), &buf); err != nil {
+		t.Fatal(err)
+	}
+
+	revived, ok := hookGetAgent("zzz-new")
+	if !ok || revived.Departed || revived.SessionID != "hs-f1" {
+		t.Fatalf("revive must pick the successor zzz-new, got %+v (ok=%v)", revived, ok)
+	}
+	stillOld, ok := hookGetAgent("aaa-old")
+	if !ok || !stillOld.Departed {
+		t.Fatalf("the superseded seed must never be resurrected, got %+v (ok=%v)", stillOld, ok)
+	}
+}
