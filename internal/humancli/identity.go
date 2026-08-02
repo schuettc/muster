@@ -18,19 +18,20 @@ import (
 // newRegisterFlagsWithVals declares register's flags and returns typed
 // access to their values — shared by cmdRegister (real parsing) and
 // newRegisterFlags (registry help/man rendering).
-func newRegisterFlagsWithVals() (fs *flag.FlagSet, role, model, harness *string) {
+func newRegisterFlagsWithVals() (fs *flag.FlagSet, role, model, harness *string, ifAbsent *bool) {
 	fs = flag.NewFlagSet("register", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	role = fs.String("role", "", "this agent's role")
 	model = fs.String("model", "claude", "model backing this agent: claude, codex, or cursor")
+	ifAbsent = fs.Bool("if-absent", false, "fail instead of upserting when the alias is already registered to a DIFFERENT session — the race-free guard for launch wrappers seeding a session-name alias")
 	harness = fs.String("harness-session", "", "harness session UUID this registration belongs to — the pane-side launch handshake passes the UUID it then hands to `claude --session-id`, so the session's own hooks (which see no tmux) can find this row")
-	return fs, role, model, harness
+	return fs, role, model, harness, ifAbsent
 }
 
 // newRegisterFlags builds register's flag.FlagSet for registry-driven
 // help/man rendering.
 func newRegisterFlags() *flag.FlagSet {
-	fs, _, _, _ := newRegisterFlagsWithVals()
+	fs, _, _, _, _ := newRegisterFlagsWithVals()
 	return fs
 }
 
@@ -42,11 +43,14 @@ func newRegisterFlags() *flag.FlagSet {
 // harness session UUID, so hook ownership and sibling grouping still have an
 // identity tuple, ("", uuid), to key on.
 func cmdRegister(args []string, out io.Writer) error {
-	fs, role, model, harness := newRegisterFlagsWithVals()
-	// register has no boolean flags: --role and --model both take values, so
-	// pass an empty bool-flags set (an implicit default would wrongly reuse
-	// send's --role, which IS boolean there).
-	flagArgs, rest := splitFlagsAndPositional(args, map[string]bool{})
+	fs, role, model, harness, ifAbsent := newRegisterFlagsWithVals()
+	// --role and --model both take values, so they must be absent from the
+	// bool-flags set (an implicit default would wrongly reuse send's --role,
+	// which IS boolean there) — but --if-absent genuinely is boolean, so it
+	// must be listed here or splitFlagsAndPositional will misparse it as a
+	// value flag and swallow whatever token follows it (e.g. a positional
+	// alias) as its bogus value.
+	flagArgs, rest := splitFlagsAndPositional(args, map[string]bool{"if-absent": true})
 	if err := fs.Parse(flagArgs); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return HelpFor("register", out)
@@ -72,6 +76,16 @@ func cmdRegister(args []string, out io.Writer) error {
 		// registers exactly, above.
 		if h.Alias() == "" && h.SessionID == "" {
 			return fmt.Errorf("cannot determine alias: no tmux session and no usable working directory; pass one explicitly or set $MUSTER_ALIAS")
+		}
+		if *ifAbsent {
+			// allocPanelessAlias already runs its own internal if_absent CAS
+			// per candidate (base, base-2, ...) to keep two sessions launching
+			// in the same directory from colliding -- layering the caller's
+			// flag on top has no clean meaning here (which candidate would it
+			// even guard?). --if-absent is for the tmux-anchored seed path,
+			// where the alias is a single fixed target (the tmux session
+			// name), not an allocated one.
+			return fmt.Errorf("--if-absent is for the tmux-anchored seed path; paneless registration already allocates a unique alias race-free (see allocPanelessAlias)")
 		}
 		regFn := func(a string, ifAbsent bool) error {
 			args := registerPanelessArgs(a, *role, *model, h, ifAbsent)
@@ -134,6 +148,7 @@ func cmdRegister(args []string, out io.Writer) error {
 		"harness_session_id": harnessID,
 		"socket_path":        socketPath, "pane_id": paneID,
 		"project": project, "label": c.Label, "label_manual": c.LabelManual,
+		"if_absent": *ifAbsent,
 	})
 	if err != nil {
 		return err
