@@ -18,6 +18,7 @@ type RegisterAgentIn struct {
 	Role        string `json:"role" jsonschema:"this agent's role: producer, consumer, reviewer, ..."`
 	ModelType   string `json:"model_type" jsonschema:"the model backing this agent: claude, codex, or cursor"`
 	SessionName string `json:"session_name,omitempty" jsonschema:"optional tmux session name for display"`
+	Become      bool   `json:"become,omitempty" jsonschema:"claim this alias as the session's name: the current alias retires and its identity and read-state carry over"`
 }
 
 // OKOut is a simple success acknowledgement for void operations.
@@ -37,11 +38,26 @@ type ListAgentsOut struct {
 func registerAgentHandler(_ context.Context, _ *mcp.CallToolRequest, in RegisterAgentIn) (*mcp.CallToolResult, OKOut, error) {
 	c := tmuxenv.CaptureEnv()
 	if row, ok := paneRegistration(c.SocketPath, c.SessionID, c.PaneID, c.SessionCreated); ok && row.Alias != in.Alias {
+		if in.Become {
+			raw, err := callDaemon("become", map[string]any{"from": row.Alias, "to": in.Alias})
+			if err != nil {
+				return nil, OKOut{}, err
+			}
+			var trade struct {
+				From   string `json:"from"`
+				To     string `json:"to"`
+				Unread int    `json:"unread"`
+			}
+			_ = json.Unmarshal(raw, &trade)
+			detail := fmt.Sprintf("you are now '%s' (was '%s'); %d unread thread(s): call get_inbox with alias '%s'", trade.To, trade.From, trade.Unread, trade.To)
+			return nil, OKOut{OK: true, Detail: detail}, nil
+		}
 		detail := fmt.Sprintf("already registered as '%s'", row.Alias)
 		if row.Label != "" {
 			detail = fmt.Sprintf("already registered as '%s' (label '%s')", row.Alias, row.Label)
 		}
-		return nil, OKOut{OK: true, Detail: detail + " — use that alias; not adding a second"}, nil
+		detail += " — use that alias; not adding a second, or pass become:true to claim '" + in.Alias + "' as this session's name"
+		return nil, OKOut{OK: true, Detail: detail}, nil
 	}
 
 	h := harnessenv.FromEnv()
