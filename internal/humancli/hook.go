@@ -171,14 +171,20 @@ func hookSessionStartPaneless(h harnessenv.Capture, model string) {
 		// handshake pre-registered a tmux-anchored row, or a prior life of
 		// this session (resume) left one. A live row needs nothing from
 		// this hook; if every owned row is a tombstone, revive the first
-		// with its stored identity intact.
+		// UNSUPERSEDED one with its stored identity intact (finding F1: a
+		// become-retired seed must never be revived under its old alias —
+		// firstUnsuperseded skips it). If every owned row turns out to be
+		// superseded, there is no identity left to revive; fall through to
+		// allocation below exactly as if owned had been empty.
 		for _, ag := range owned {
 			if !ag.Departed {
 				return
 			}
 		}
-		reviveRow(owned[0], model)
-		return
+		if ag, ok := firstUnsuperseded(owned); ok {
+			reviveRow(ag, model)
+			return
+		}
 	}
 	_, _ = allocPanelessAlias(h.Alias(), h.SessionID, regFn)
 }

@@ -800,7 +800,13 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 		d.logEvent(store.Event{Kind: "become", Agent: to, Detail: from + " → " + to})
 		ag, _, err := d.s.GetAgent(to)
 		if err != nil {
-			return fail(err)
+			// store.Become above already committed: the claim itself succeeded,
+			// so a GetAgent read failure here must not surface as an op failure
+			// (finding F3) — a caller retrying on error would then hit
+			// ErrBecomeToExists for a claim that already went through. Degrade
+			// best-effort exactly like the unread lookup below already does:
+			// skip the badge reconcile and report unread:0 instead of failing.
+			return ok(map[string]any{"from": from, "to": to, "unread": 0})
 		}
 		d.reconcileBadge(ag.SocketPath, ag.SessionID)
 		unread, _, err := d.s.SessionUnread(ag.SocketPath, ag.SessionID)

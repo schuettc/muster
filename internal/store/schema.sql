@@ -13,7 +13,7 @@ CREATE TABLE IF NOT EXISTS agents (
     last_read_at  INTEGER NOT NULL DEFAULT 0,
     last_read_entry_id INTEGER NOT NULL DEFAULT 0,
     departed      INTEGER NOT NULL DEFAULT 0, -- 1 = deregistered (tombstoned): identity/project/label/read-state all preserved; see store.migrate and Store.DepartAgent
-    superseded_by TEXT NOT NULL DEFAULT '', -- non-empty on a departed row claimed away via Become: names the alias that now carries this identity forward, so resume reclaim never resurrects a retired seed (see Store.Become, hookResumeSuperseded). Cleared on re-register (RegisterAgent's upsert): a revived/re-registered alias is no longer superseded.
+    superseded_by TEXT NOT NULL DEFAULT '', -- non-empty on a departed row claimed away via Become: names the alias that now carries this identity forward, so resume reclaim never resurrects a retired seed (see Store.Become, hookSessionStartResume). Cleared on re-register (RegisterAgent's upsert): a revived/re-registered alias is no longer superseded.
     registered_at INTEGER NOT NULL,
     last_seen     INTEGER NOT NULL
 );

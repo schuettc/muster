@@ -45,6 +45,12 @@ func cmdBecome(args []string, out io.Writer) error {
 		return fmt.Errorf("usage: muster become <name> [--from <alias>]")
 	}
 	to := rest[0]
+	if strings.TrimSpace(to) == "" {
+		// Mirrors cmdRegister's empty-alias rejection (finding F4): reject
+		// before dialing the daemon rather than letting an empty/blank name
+		// round-trip into a claim nobody could address afterward.
+		return fmt.Errorf("cannot become an empty alias")
+	}
 
 	c := hookCapture()
 

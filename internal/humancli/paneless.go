@@ -117,6 +117,24 @@ func harnessOwnedRows(uuid string) []agentRow {
 	return mine
 }
 
+// firstUnsuperseded returns the first row in owned whose SupersededBy is
+// empty, and true. A non-empty SupersededBy means this row is a
+// become-retired seed: store.Become already cloned its identity onto the
+// named successor in the same transaction that tombstoned it, so reviving
+// THIS row would resurrect a retired identity under its old alias — exactly
+// the bug finding F1 closes. false means every row in owned is superseded
+// (or owned is empty); callers must treat that as "no identity here" and
+// fall through to ordinary allocation/registration, never revive one of
+// them.
+func firstUnsuperseded(owned []agentRow) (agentRow, bool) {
+	for _, ag := range owned {
+		if ag.SupersededBy == "" {
+			return ag, true
+		}
+	}
+	return agentRow{}, false
+}
+
 // reviveRow re-registers a tombstoned row echoing back its own stored
 // identity — tuple, harness link, project, label — so revival never rewrites
 // what the row already knows about itself. Returns the daemon's ack (outcome

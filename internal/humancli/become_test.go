@@ -62,3 +62,40 @@ func TestBecomeRequiresFromWhenSplit(t *testing.T) {
 		t.Fatalf("explicit --from: %v", err)
 	}
 }
+
+// TestBecomeRejectsEmptyAlias is finding F4: `muster become ""` (or a
+// whitespace-only name) must error before dialing the daemon at all,
+// mirroring cmdRegister's empty-alias rejection — a blank claimed name would
+// round-trip into a row nothing could ever address again.
+func TestBecomeRejectsEmptyAlias(t *testing.T) {
+	startTestDaemon(t)
+	t.Setenv("TMUX", "/tmp/sock,1,0")
+	t.Setenv("TMUX_PANE", "%1")
+	prev := tmuxenv.Run
+	tmuxenv.Run = hookRun(map[string]string{"#{session_id}": "$1"})
+	t.Cleanup(func() { tmuxenv.Run = prev })
+	if _, err := callData("register_agent", map[string]any{
+		"alias": "muster-2", "socket_path": "/tmp/sock", "session_id": "$1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, name := range []string{"", "   "} {
+		var buf bytes.Buffer
+		err := Dispatch([]string{"become", name}, &buf)
+		if err == nil {
+			t.Fatalf("become %q: want an error, got none (out %q)", name, buf.String())
+		}
+		if buf.Len() != 0 {
+			t.Fatalf("become %q: must not print anything before erroring, got %q", name, buf.String())
+		}
+	}
+
+	// No row must have been created for either rejected name.
+	if _, found := hookGetAgent(""); found {
+		t.Fatal("empty alias must never reach the daemon")
+	}
+	if _, found := hookGetAgent("   "); found {
+		t.Fatal("whitespace-only alias must never reach the daemon")
+	}
+}
