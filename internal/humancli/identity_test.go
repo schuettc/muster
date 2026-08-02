@@ -266,3 +266,33 @@ func TestGCRejectsNonPositiveEventsKeep(t *testing.T) {
 		t.Fatalf("expected --events-keep must be > 0 error, got %v", err)
 	}
 }
+
+// TestRegisterPrintsRevivalAndUnread covers the resume loop's CLI surface:
+// re-registering a departed alias that accrued mail must say so, so the
+// operator (or a resumed agent using the CLI) learns the backlog in the
+// same command.
+func TestRegisterPrintsRevivalAndUnread(t *testing.T) {
+	startTestDaemon(t)
+	t.Setenv("TMUX", "")
+	t.Setenv("CLAUDE_CODE_SESSION_ID", "")
+	t.Setenv("MUSTER_ALIAS", "")
+	seed := func(op string, args map[string]any) {
+		t.Helper()
+		if _, err := callData(op, args); err != nil {
+			t.Fatal(err)
+		}
+	}
+	seed("register_agent", map[string]any{"alias": "backend", "socket_path": "/s", "session_id": "$1"})
+	seed("register_agent", map[string]any{"alias": "sender", "socket_path": "/s", "session_id": "$2"})
+	seed("send_message", map[string]any{"from": "sender", "to_kind": "agent", "to_target": "backend", "subject": "hi", "body": "b"})
+	seed("deregister_agent", map[string]any{"alias": "backend"})
+
+	var buf bytes.Buffer
+	if err := cmdRegister([]string{"backend"}, &buf); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "revived") || !strings.Contains(out, "1 unread") {
+		t.Fatalf("register output missing revival/unread notice:\n%s", out)
+	}
+}
