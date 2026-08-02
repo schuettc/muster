@@ -230,6 +230,18 @@ from tmux (internal/tmuxenv) so other commands can address it.`,
 			Run:      cmdRegister,
 		},
 		{
+			Name:     "become",
+			Synopsis: "become <name> [--from <alias>]",
+			Summary:  "Claim a durable name for this session.",
+			Help: `Claim this session's real name: a new alias inherits this session's
+identity and inbox watermark, and the tmux-seeded alias retires — route
+traffic by a name the work deserves. --from selects which of this session's
+live aliases to claim from; required when the session has more than one.`,
+			Group:    GroupIdentity,
+			NewFlags: newBecomeFlags,
+			Run:      cmdBecome,
+		},
+		{
 			Name:     "deregister",
 			Synopsis: "deregister [<alias>]",
 			Summary:  "Remove an agent's registration.",
