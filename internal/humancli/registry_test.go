@@ -16,7 +16,7 @@ import (
 var wantCommandNames = []string{
 	"send", "nudge", "reply",
 	"agents", "inbox", "tasks", "thread", "events", "watch", "station",
-	"register", "deregister", "label", "whereami", "gc",
+	"register", "become", "deregister", "label", "whereami", "gc",
 	"serve", "mcp", "hook", "debug",
 }
 

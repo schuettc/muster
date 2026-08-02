@@ -228,3 +228,83 @@ func TestRegisterAgentFreshPaneRegisters(t *testing.T) {
 		t.Fatalf("fresh pane must register: registered=%v out=%+v err=%v", registered, out, err)
 	}
 }
+
+// TestRegisterAgentBecomeClaimsThroughPaneGuard: an already-registered pane
+// calling register_agent with become:true issues the become op instead of
+// the refusal, and the Detail reports the trade.
+func TestRegisterAgentBecomeClaimsThroughPaneGuard(t *testing.T) {
+	t.Setenv("TMUX", "/tmp/sock,1,0")
+	t.Setenv("TMUX_PANE", "%6")
+	prev := tmuxenv.Run
+	tmuxenv.Run = func(args ...string) (string, error) {
+		if args[len(args)-1] == "#{session_id}" {
+			return "$1", nil
+		}
+		return "", nil
+	}
+	t.Cleanup(func() { tmuxenv.Run = prev })
+
+	var becomeArgs map[string]any
+	prevDaemon := callDaemon
+	callDaemon = func(op string, args map[string]any) (json.RawMessage, error) {
+		switch op {
+		case "become":
+			becomeArgs = args
+			return []byte(`{"from":"muster-2","to":"alias-routing","unread":2}`), nil
+		default: // paneRegistration's roster probe: this pane already owns muster-2
+			return []byte(`[{"alias":"muster-2","socket_path":"/tmp/sock","session_id":"$1","pane_id":"%6"}]`), nil
+		}
+	}
+	t.Cleanup(func() { callDaemon = prevDaemon })
+
+	_, out, err := registerAgentHandler(context.TODO(), nil, RegisterAgentIn{
+		Alias: "alias-routing", Role: "peer", ModelType: "claude", Become: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if becomeArgs["from"] != "muster-2" || becomeArgs["to"] != "alias-routing" {
+		t.Fatalf("become args = %+v", becomeArgs)
+	}
+	if !strings.Contains(out.Detail, "you are now 'alias-routing' (was 'muster-2')") ||
+		!strings.Contains(out.Detail, "2 unread") {
+		t.Fatalf("Detail = %q", out.Detail)
+	}
+}
+
+// TestRegisterAgentRefusalAdvertisesBecome: the become:false refusal now
+// tells the agent how to claim instead of dead-ending.
+func TestRegisterAgentRefusalAdvertisesBecome(t *testing.T) {
+	t.Setenv("TMUX", "/tmp/sock,1,0")
+	t.Setenv("TMUX_PANE", "%6")
+	prev := tmuxenv.Run
+	tmuxenv.Run = func(args ...string) (string, error) {
+		if args[len(args)-1] == "#{session_id}" {
+			return "$1", nil
+		}
+		return "", nil
+	}
+	t.Cleanup(func() { tmuxenv.Run = prev })
+
+	prevDaemon := callDaemon
+	callDaemon = func(op string, _ map[string]any) (json.RawMessage, error) {
+		switch op {
+		case "become":
+			t.Fatalf("must not issue become op when become:false")
+			return nil, nil
+		default: // paneRegistration's roster probe: this pane already owns muster-2
+			return []byte(`[{"alias":"muster-2","socket_path":"/tmp/sock","session_id":"$1","pane_id":"%6"}]`), nil
+		}
+	}
+	t.Cleanup(func() { callDaemon = prevDaemon })
+
+	_, out, err := registerAgentHandler(context.TODO(), nil, RegisterAgentIn{
+		Alias: "alias-routing", Role: "peer", ModelType: "claude", Become: false,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.Detail, "pass become:true to claim 'alias-routing'") {
+		t.Fatalf("Detail = %q, want become-advertisement", out.Detail)
+	}
+}
