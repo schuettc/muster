@@ -12,12 +12,15 @@ import (
 // departed is always reset to 0 by both the insert and the conflict update, so
 // re-registering a previously-departed alias (a returning session) revives it
 // cleanly — read-state (last_read_entry_id/last_read_at) is untouched by
-// either branch, so it survives the roundtrip intact.
+// either branch, so it survives the roundtrip intact. superseded_by is always
+// reset to ” too: a revived/re-registered alias is no longer superseded by
+// whatever claimed it before (e.g. the operator purged the successor and
+// re-registered the old name) — see Store.Become and hookSessionStartResume.
 func (s *Store) RegisterAgent(a Agent) error {
 	now := clock.NowMillis()
 	_, err := s.db.Exec(`
-INSERT INTO agents (alias, role, model_type, socket_path, pane_id, session_name, session_id, session_created, harness_session_id, project, label, label_manual, departed, registered_at, last_seen)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+INSERT INTO agents (alias, role, model_type, socket_path, pane_id, session_name, session_id, session_created, harness_session_id, project, label, label_manual, departed, superseded_by, registered_at, last_seen)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, '', ?, ?)
 ON CONFLICT(alias) DO UPDATE SET
     role=excluded.role,
     model_type=excluded.model_type,
@@ -31,6 +34,7 @@ ON CONFLICT(alias) DO UPDATE SET
     label=excluded.label,
     label_manual=excluded.label_manual,
     departed=0,
+    superseded_by='',
     last_seen=excluded.last_seen`,
 		a.Alias, a.Role, a.ModelType, a.SocketPath, a.PaneID, a.SessionName, a.SessionID, a.SessionCreated,
 		a.HarnessSessionID, a.Project, a.Label, a.LabelManual, now, now)
@@ -41,7 +45,7 @@ ON CONFLICT(alias) DO UPDATE SET
 // agents included: their rows are history, not gone (see DepartAgent).
 func (s *Store) ListAgents() ([]Agent, error) {
 	rows, err := s.db.Query(`
-SELECT alias, role, model_type, socket_path, pane_id, session_name, session_id, session_created, harness_session_id, project, label, label_manual, registered_at, last_seen, last_read_entry_id, departed
+SELECT alias, role, model_type, socket_path, pane_id, session_name, session_id, session_created, harness_session_id, project, label, label_manual, registered_at, last_seen, last_read_entry_id, departed, superseded_by
 FROM agents ORDER BY alias`)
 	if err != nil {
 		return nil, err
@@ -50,7 +54,7 @@ FROM agents ORDER BY alias`)
 	var out []Agent
 	for rows.Next() {
 		var a Agent
-		if err := rows.Scan(&a.Alias, &a.Role, &a.ModelType, &a.SocketPath, &a.PaneID, &a.SessionName, &a.SessionID, &a.SessionCreated, &a.HarnessSessionID, &a.Project, &a.Label, &a.LabelManual, &a.RegisteredAt, &a.LastSeen, &a.LastReadEntryID, &a.Departed); err != nil {
+		if err := rows.Scan(&a.Alias, &a.Role, &a.ModelType, &a.SocketPath, &a.PaneID, &a.SessionName, &a.SessionID, &a.SessionCreated, &a.HarnessSessionID, &a.Project, &a.Label, &a.LabelManual, &a.RegisteredAt, &a.LastSeen, &a.LastReadEntryID, &a.Departed, &a.SupersededBy); err != nil {
 			return nil, err
 		}
 		out = append(out, a)
@@ -64,9 +68,9 @@ FROM agents ORDER BY alias`)
 func (s *Store) GetAgent(alias string) (Agent, bool, error) {
 	var a Agent
 	err := s.db.QueryRow(`
-SELECT alias, role, model_type, socket_path, pane_id, session_name, session_id, session_created, harness_session_id, project, label, label_manual, registered_at, last_seen, last_read_entry_id, departed
+SELECT alias, role, model_type, socket_path, pane_id, session_name, session_id, session_created, harness_session_id, project, label, label_manual, registered_at, last_seen, last_read_entry_id, departed, superseded_by
 FROM agents WHERE alias=?`, alias).
-		Scan(&a.Alias, &a.Role, &a.ModelType, &a.SocketPath, &a.PaneID, &a.SessionName, &a.SessionID, &a.SessionCreated, &a.HarnessSessionID, &a.Project, &a.Label, &a.LabelManual, &a.RegisteredAt, &a.LastSeen, &a.LastReadEntryID, &a.Departed)
+		Scan(&a.Alias, &a.Role, &a.ModelType, &a.SocketPath, &a.PaneID, &a.SessionName, &a.SessionID, &a.SessionCreated, &a.HarnessSessionID, &a.Project, &a.Label, &a.LabelManual, &a.RegisteredAt, &a.LastSeen, &a.LastReadEntryID, &a.Departed, &a.SupersededBy)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Agent{}, false, nil
 	}
@@ -242,11 +246,18 @@ var (
 // become-claim-your-name): inserts to as a CLONE of from — tuple, harness
 // link, project, label, role, model, and the READ WATERMARK, without which
 // the claimed identity would see all of history as unread — then retires
-// from as a tombstone. to must not exist at all: a live row is someone
-// else's identity and a tombstone is some other conversation's history;
-// merging identities is exactly the confusion this feature exists to kill.
-// from may already be departed (a claim after gc swept the seed). One
-// transaction: a crash mid-become never leaves both rows live.
+// from as a tombstone AND stamps from.superseded_by = to. to must not exist
+// at all: a live row is someone else's identity and a tombstone is some
+// other conversation's history; merging identities is exactly the confusion
+// this feature exists to kill. from may already be departed (a claim after
+// gc swept the seed). The clone's INSERT deliberately omits superseded_by
+// (it defaults to ”) — the successor starts unsuperseded even if from was
+// itself a superseded row (a chained become A→B→C leaves B's superseded_by
+// pointing at C, never inherited backward onto C). superseded_by is the
+// ground truth hookSessionStartResume uses to keep a retired seed from
+// resurrecting on resume, in place of inferring retirement from tuple
+// coincidence. One transaction: a crash mid-become never leaves both rows
+// live.
 func (s *Store) Become(from, to string) error {
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -274,7 +285,7 @@ FROM agents WHERE alias=?`, to, now, now, from)
 	} else if rows == 0 {
 		return ErrBecomeFromMissing
 	}
-	if _, err := tx.Exec(`UPDATE agents SET departed=1 WHERE alias=?`, from); err != nil {
+	if _, err := tx.Exec(`UPDATE agents SET departed=1, superseded_by=? WHERE alias=?`, to, from); err != nil {
 		return err
 	}
 	return tx.Commit()

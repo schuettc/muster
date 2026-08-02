@@ -59,6 +59,15 @@ type Agent struct {
 	// row — it sets Departed instead; `gc --purge-agents` hard-deletes
 	// departed/dead rows the old way.
 	Departed bool `json:"departed"`
+	// SupersededBy is non-empty on a departed row that was claimed away via
+	// Become: it names the alias that now carries this identity forward.
+	// RegisterAgent's upsert always resets it to "" (a revived/re-registered
+	// alias is no longer superseded — e.g. the operator purged the successor
+	// and re-registered the old name), and Become's clone does NOT copy it
+	// onto the new alias (the successor starts unsuperseded). Resume reclaim
+	// (hookSessionStartResume) uses this as ground truth to skip resurrecting a
+	// retired seed, rather than inferring it from tuple coincidence.
+	SupersededBy string `json:"superseded_by"`
 }
 
 // Thread is a conversation: a message (no status) or a task (status set).

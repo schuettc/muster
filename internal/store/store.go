@@ -51,6 +51,7 @@ func migrate(db *sql.DB) error {
 		`ALTER TABLE agents ADD COLUMN departed INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE agents ADD COLUMN session_created INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE agents ADD COLUMN harness_session_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE agents ADD COLUMN superseded_by TEXT NOT NULL DEFAULT ''`,
 	}
 	for _, ddl := range alters {
 		if _, err := db.Exec(ddl); err != nil && !strings.Contains(err.Error(), "duplicate column name") {

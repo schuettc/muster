@@ -498,6 +498,61 @@ func TestBecomeClonesIdentityAndRetiresSeed(t *testing.T) {
 	}
 }
 
+// TestBecomeStampsSupersededBy: Become's ground-truth lineage marker (fix
+// round 1, replacing hookResumeSuperseded's tuple-sharing heuristic) —
+// the seed's superseded_by must name the claimed alias, the CLONE must NOT
+// inherit it (a chained become's successor starts unsuperseded even though
+// its own seed was itself superseded), and re-registering the retired seed
+// must clear it (a revived/re-registered alias is no longer superseded — the
+// operator may have purged the successor and taken the name back).
+func TestBecomeStampsSupersededBy(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.RegisterAgent(Agent{Alias: "muster-2", SocketPath: "/s", SessionID: "$1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Become("muster-2", "alias-routing"); err != nil {
+		t.Fatal(err)
+	}
+	seed, _, _ := s.GetAgent("muster-2")
+	if seed.SupersededBy != "alias-routing" {
+		t.Fatalf("seed.SupersededBy = %q, want %q", seed.SupersededBy, "alias-routing")
+	}
+	successor, _, _ := s.GetAgent("alias-routing")
+	if successor.SupersededBy != "" {
+		t.Fatalf("clone must not inherit SupersededBy: %+v", successor)
+	}
+
+	// Chain the claim again: alias-routing -> final-name. The middle link
+	// (alias-routing) becomes superseded too; the seed (muster-2) is
+	// untouched by this second call and keeps pointing at alias-routing, not
+	// final-name — superseded_by never chases the chain to its end.
+	if err := s.Become("alias-routing", "final-name"); err != nil {
+		t.Fatal(err)
+	}
+	middle, _, _ := s.GetAgent("alias-routing")
+	if middle.SupersededBy != "final-name" {
+		t.Fatalf("middle.SupersededBy = %q, want %q", middle.SupersededBy, "final-name")
+	}
+	seedAfterChain, _, _ := s.GetAgent("muster-2")
+	if seedAfterChain.SupersededBy != "alias-routing" {
+		t.Fatalf("seed.SupersededBy changed by a later become on its successor: %+v", seedAfterChain)
+	}
+	end, _, _ := s.GetAgent("final-name")
+	if end.SupersededBy != "" {
+		t.Fatalf("final clone must not inherit SupersededBy: %+v", end)
+	}
+
+	// Re-registering the retired seed clears it — a revived/re-registered
+	// alias is no longer superseded.
+	if err := s.RegisterAgent(Agent{Alias: "muster-2", SocketPath: "/s2", SessionID: "$9"}); err != nil {
+		t.Fatal(err)
+	}
+	revived, _, _ := s.GetAgent("muster-2")
+	if revived.SupersededBy != "" || revived.Departed {
+		t.Fatalf("re-register must clear SupersededBy and revive: %+v", revived)
+	}
+}
+
 // TestBecomeGuards: missing from and existing to (live OR tombstoned) both
 // fail with the typed sentinels — become never silently fuses identities.
 func TestBecomeGuards(t *testing.T) {
