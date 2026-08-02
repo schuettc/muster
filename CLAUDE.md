@@ -70,3 +70,25 @@ notify · `internal/nudge` send-keys · `internal/tmuxenv` tmux capture/liveness
 If you're an agent working here and want to coordinate with sessions in other
 terminals, the `.claude/skills/muster-coordination` skill is the etiquette
 (register, inbox, send/reply, addressing, the wake model).
+
+## Worktrees
+
+Every distinct line of work — a feature, a fix, an agent's task — runs in its own
+git worktree on its own branch. **Never branch-switch this clone**; it may hold
+uncommitted work.
+
+Worktrees live at **`<repo-root>/.worktrees/<branch>`** — inside the repo, resolved
+from the repo root, never as a sibling directory:
+
+```bash
+ROOT=$(git rev-parse --show-toplevel)
+git -C "$ROOT" worktree add "$ROOT/.worktrees/<branch>" -b <branch> origin/dev
+```
+
+- **Never a sibling** (`../<repo>-<topic>`, `<repo>-worktrees/`). Siblings escape the
+  repo, clutter the parent directory, and strand themselves when the repo moves.
+- **Never `/tmp`.** On macOS it symlinks to `/private/tmp`; worktrees under it break
+  vite-node/vitest module resolution *before a single test runs*.
+- Remove the worktree and its branch once merged:
+  `git -C "$ROOT" worktree remove "$ROOT/.worktrees/<branch>"`.
+- `.worktrees/` and `.claude/worktrees/` are gitignored.
