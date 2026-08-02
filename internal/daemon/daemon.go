@@ -4,6 +4,7 @@ package daemon
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -36,6 +37,7 @@ type storeAPI interface {
 	SetSessionLabel(socketPath, sessionID, label string, manual bool) (int64, error)
 	SetHarnessSessionID(alias, id string) error
 	DeleteAgent(alias string) error
+	Become(from, to string) error
 	CreateThread(t store.Thread, firstBody string) (int64, error)
 	AppendEntry(threadID int64, fromAgent, body, statusChange string) (int64, error)
 	ClaimTask(threadID int64, byAgent string) error
@@ -773,6 +775,39 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 			d.reconcileBadge(old.SocketPath, old.SessionID)
 		}
 		return ok(nil)
+	case "become":
+		// Claim a durable name: the seed's identity moves to `to` and the
+		// seed retires (store.Become). unread is computed via SessionUnread
+		// on the claimed alias's (socket_path, session_id) tuple, not
+		// UnreadCount(to) — mail addressed to the pre-claim seed alias
+		// concerns that alias's *text*, not the destination alias's, so
+		// UnreadCount(to) would miss it. SessionUnread groups by the
+		// session tuple, which now belongs to `to` post-claim, so it
+		// correctly picks up mail that arrived before the claim. This
+		// matches the spec's intent: "how much mail is waiting for this
+		// session", reported so a caller can say "you are now X — N
+		// unread" in one round trip.
+		from, to := str(a, "from"), str(a, "to")
+		if err := d.s.Become(from, to); err != nil {
+			switch {
+			case errors.Is(err, store.ErrBecomeFromMissing):
+				return fail(fmt.Errorf("become: no such alias %q to become from; register first", from))
+			case errors.Is(err, store.ErrBecomeToExists):
+				return fail(fmt.Errorf("become: alias %q already has history; pick another name, or purge it with `muster gc --purge-agents`", to))
+			}
+			return fail(err)
+		}
+		d.logEvent(store.Event{Kind: "become", Agent: to, Detail: from + " → " + to})
+		ag, _, err := d.s.GetAgent(to)
+		if err != nil {
+			return fail(err)
+		}
+		d.reconcileBadge(ag.SocketPath, ag.SessionID)
+		unread, _, err := d.s.SessionUnread(ag.SocketPath, ag.SessionID)
+		if err != nil {
+			unread = 0 // best-effort: the claim already succeeded
+		}
+		return ok(map[string]any{"from": from, "to": to, "unread": unread})
 	default:
 		return proto.Response{Error: "unknown op: " + req.Op}
 	}
