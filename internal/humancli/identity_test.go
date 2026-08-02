@@ -315,6 +315,41 @@ func TestRegisterIfAbsentConflict(t *testing.T) {
 	}
 }
 
+// TestRegisterIfAbsentRefusesForeignHarnessClaim pins the semantics the
+// whole feature exists for: a fresh session's --if-absent seed must NOT take
+// over an alias already LIVE-claimed by a different owner. Alias "seed-owned"
+// is registered on tuple A carrying a real harness link (harness_session_id
+// "uuid-owner" — a genuinely claimed identity, not a bare tmux row). A
+// --if-absent register from tuple B, itself linked to a DIFFERENT harness
+// UUID ("uuid-attacker"), must fail with "if_absent conflict" and leave the
+// row on tuple A untouched — including its harness link, which a successful
+// (bad) overwrite would have clobbered.
+func TestRegisterIfAbsentRefusesForeignHarnessClaim(t *testing.T) {
+	startTestDaemon(t)
+	t.Setenv("TMUX", "/tmp/tmux-0/proj-muster,1,0")
+	t.Setenv("TMUX_PANE", "%0")
+	t.Setenv("MUSTER_ALIAS", "")
+	socketPath := "/tmp/tmux-0/proj-muster"
+	if _, err := callData("register_agent", map[string]any{
+		"alias": "seed-owned", "socket_path": socketPath, "session_id": "$A",
+		"harness_session_id": "uuid-owner",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	tmuxCaptureStub(t, "$B", "seed-owned")
+
+	var buf bytes.Buffer
+	err := cmdRegister([]string{"seed-owned", "--if-absent", "--harness-session", "uuid-attacker"}, &buf)
+	if err == nil || !strings.Contains(err.Error(), "if_absent conflict") {
+		t.Fatalf("expected an if_absent conflict error refusing the foreign claim, got %v", err)
+	}
+	agents := listAgentsForTest(t, "")
+	if len(agents) != 1 || agents[0].SessionID != "$A" || agents[0].HarnessSessionID != "uuid-owner" {
+		t.Fatalf("expected the owned row to survive untouched (tuple A, harness uuid-owner), got %+v", agents)
+	}
+}
+
 // TestRegisterIfAbsentSameTupleIdempotent covers the non-conflicting case:
 // re-registering with --if-absent from the SAME (socket_path, session_id)
 // tuple already on the row is a no-op upsert, not a conflict — a launch

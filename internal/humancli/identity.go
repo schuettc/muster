@@ -23,7 +23,7 @@ func newRegisterFlagsWithVals() (fs *flag.FlagSet, role, model, harness *string,
 	fs.SetOutput(io.Discard)
 	role = fs.String("role", "", "this agent's role")
 	model = fs.String("model", "claude", "model backing this agent: claude, codex, or cursor")
-	ifAbsent = fs.Bool("if-absent", false, "fail instead of upserting when the alias is already registered to a DIFFERENT session — the race-free guard for launch wrappers seeding a session-name alias")
+	ifAbsent = fs.Bool("if-absent", false, "fail instead of upserting when the alias is already registered to a DIFFERENT session — the race-free guard for launch wrappers seeding a session-name alias. A same-tuple re-register (the ordinary relaunch-in-the-same-session seed path, even over a departed row) still succeeds; only a cross-session (different socket_path/session_id, or a differently-owned harness link) claim is refused")
 	harness = fs.String("harness-session", "", "harness session UUID this registration belongs to — the pane-side launch handshake passes the UUID it then hands to `claude --session-id`, so the session's own hooks (which see no tmux) can find this row")
 	return fs, role, model, harness, ifAbsent
 }
