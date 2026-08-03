@@ -54,12 +54,19 @@ same reason DynamoDB does, while also putting business logic on every device and
 requiring every cross-device race to be re-derived client-side. It buys nothing
 the proxy shape does not.
 
-**Direct device-to-DynamoDB with no Lambda tier.** Genuinely tempting: no server
-to deploy, no cold starts, infrastructure reduced to one table and one IAM
-policy. Rejected because business logic would ship to every device, so a stale
-binary could write state a newer one would not, and because there is then no
-server-side place to add a push channel later. Note that this does *not* differ
-on credentials — see "Authentication" below.
+**Direct device-to-DynamoDB with no Lambda tier.** Genuinely tempting on its
+own terms: no server to deploy, no cold starts, infrastructure reduced to one
+table and one IAM policy.
+
+**Ruled out by the no-AWS-credentials requirement.** DynamoDB authenticates with
+SigV4 and has no bearer-token equivalent, so every device would need AWS
+credentials — the exact thing this design must avoid. A Lambda can authenticate
+however it likes; a DynamoDB table cannot. This is decisive on its own, and it
+is why the server tier is not optional here.
+
+Secondary reasons it was already weak: business logic would ship to every
+device, so a stale binary could write state a newer one would not, and there
+would be no server-side place to add a push channel later.
 
 **API Gateway in front of the Lambda.** Rejected on cost. At $1.00 per million
 requests it would exceed every other line item combined on poll traffic alone.
@@ -105,20 +112,77 @@ must be verified rather than assumed during implementation.
 
 ## Authentication
 
-The Function URL uses auth type `AWS_IAM`. Callers sign requests with SigV4
-using the standard AWS credential chain, and the device's IAM policy grants
-`lambda:InvokeFunctionUrl` on exactly one function.
+The Function URL uses auth type `NONE` and the Lambda authenticates requests
+itself against a shared bearer token. **Devices need no AWS credentials, no AWS
+configuration, and no AWS SDK** — `internal/remote` is a plain HTTPS client that
+POSTs JSON.
 
-**This means every device needs AWS credentials.** An earlier framing claimed
-the Lambda tier avoided that relative to direct-to-DynamoDB; it does not. The
-real advantage is narrower: the granted permission is invoke-one-function rather
-than read-write-a-table, and no business logic ships to devices.
+This is a hard requirement, not a preference: the operator does not want AWS
+credentials provisioned on every machine they code from.
 
-Auth type `NONE` plus a shared bearer token was considered, because it would
-reduce setup to pasting one URL. Rejected: it puts a public endpoint on the
-internet guarded by a secret that must be distributed and rotated, which is a
-worse posture than IAM for a marginal convenience gain on a tool whose operators
-already have AWS accounts.
+### Mechanics
+
+- The token is generated at deploy time and passed to the stack as a parameter.
+- On the device it lives in a file at `<MUSTER_HOME>/remote-token`, mode 0600 —
+  **not** an environment variable. muster runs alongside coding agents that read
+  their own environment, so a token in `MUSTER_REMOTE_TOKEN` can leak into an
+  agent's context or a session transcript. A file the daemon reads at startup
+  does not.
+- The daemon sends it as `Authorization: Bearer <token>`.
+- The handler compares with `crypto/subtle.ConstantTimeCompare` and rejects with
+  HTTP 401 **before** touching DynamoDB, and caps request body size before
+  parsing.
+- The Lambda accepts **two** valid tokens (`MUSTER_TOKEN` and
+  `MUSTER_TOKEN_PREVIOUS`), so a new token can be rolled out across devices
+  before the old one is retired. With a single token every device breaks the
+  instant it rotates, which in practice means it never rotates.
+
+### Accepted risk
+
+With `AWS_IAM`, unsigned requests are rejected at the AWS edge before any code
+runs. With `NONE`, the URL is publicly reachable and security rests entirely on
+the token. A leaked token grants full bus access — read every message, send as
+any agent — which is comparable to what leaked IAM credentials would grant; the
+difference is that AWS would otherwise manage rotation and expiry.
+
+Two things bound this. Function URL hostnames are random 32-character
+subdomains on `lambda-url.<region>.on.aws` and are not enumerable in practice.
+And the reserved concurrency cap (see "Concurrency") bounds what an attacker who
+does find the URL can cost.
+
+The URL should therefore be treated as a secret in its own right, as defense in
+depth, and documented that way.
+
+### This is a first step, not the destination
+
+A single shared bearer token is deliberately the *simplest thing that meets the
+no-AWS-credentials requirement*, and it is expected to be replaced. Its
+weaknesses are known and accepted for v1: one secret shared by every device
+means no per-device attribution and no way to revoke a single device without
+rotating all of them, and the token is long-lived.
+
+The planned upgrade, in order of cost:
+
+1. **Per-device tokens held in DynamoDB** rather than one shared token in the
+   function's environment. Each device gets its own, stored **hashed** (the
+   table already exists, so this is one item type and one lookup), giving
+   per-device attribution and single-device revocation via a
+   `muster device revoke` command. This is the cheapest meaningful improvement
+   and the intended next step.
+2. **OIDC with short-lived tokens** — a browser device-code login on the daemon,
+   a signed JWT verified by the handler, no long-lived shared secret anywhere.
+   This is the real destination if the bus outlives a single operator.
+
+`AWS_IAM` remains available as a third path and is worth reconsidering
+specifically under AWS SSO, which issues short-lived credentials without
+long-lived keys on disk — that combination would satisfy the spirit of the
+no-credentials requirement while restoring edge-level rejection.
+
+**To keep this cheap later, authentication must sit behind a seam from day
+one.** The handler resolves credentials through a small interface rather than
+reading environment variables inline, so swapping the env-token implementation
+for a table lookup is a one-file change rather than a rewrite of the request
+path.
 
 ## Wake
 
@@ -282,11 +346,13 @@ Environment variables, matching `MUSTER_HOME`'s existing style:
 | `MUSTER_POLL_INTERVAL` | `10s` | poller base cadence |
 | `MUSTER_DEVICE_ID` | persisted file | device identity override |
 
-Region and credentials come from the standard AWS chain; muster does not define
-its own.
+The bearer token is **not** an environment variable — see "Authentication". It
+is read from `<MUSTER_HOME>/remote-token` (mode 0600). A device in remote mode
+needs nothing else: no region, no profile, no AWS credentials.
 
 Deployment is a CloudFormation template in `contrib/` creating the table, the
-function, the Function URL, and the IAM role. The release workflow gains one
+function, the Function URL, and the execution role. It takes the bearer token as
+a `NoEcho` parameter and outputs the Function URL. The release workflow gains one
 artifact: a `bootstrap` zip for the `provided.al2023` runtime, built from the
 linux/arm64 binary it already cross-compiles.
 
@@ -368,3 +434,7 @@ Additional coverage needed:
   behavior where no daemon means no bus.
 - **Multi-tenancy.** One deployment serves one operator. There is no account
   model, and none is planned.
+- **Anything beyond a shared bearer token for authentication.** Per-device
+  tokens and OIDC are planned successors, not v1 scope — see "This is a first
+  step, not the destination". The v1 requirement on them is only that the
+  `Authenticator` seam exists so they are a one-file change later.

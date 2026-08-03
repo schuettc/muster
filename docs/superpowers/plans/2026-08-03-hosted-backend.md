@@ -14,8 +14,9 @@ this device's session badges), triggered inline after local writes and by a
 poller for remote-originated traffic.
 
 **Tech Stack:** Go 1.26.4, AWS SDK for Go v2 (`config`, `service/dynamodb`,
-`feature/dynamodb/attributevalue`, `aws/signer/v4`), `aws-lambda-go`,
-DynamoDB Local for tests, CloudFormation for deployment.
+`feature/dynamodb/attributevalue`) and `aws-lambda-go` — **server side only**;
+DynamoDB Local for tests; CloudFormation for deployment. Devices in remote mode
+use net/http and a bearer token, with no AWS dependency whatsoever.
 
 **Spec:** `docs/superpowers/specs/2026-08-03-hosted-backend-design.md`
 
@@ -56,8 +57,8 @@ DynamoDB Local for tests, CloudFormation for deployment.
   `events.go`, `idem.go`, `poll.go`.
 - `internal/storetest/` — the backend conformance suite, run against both
   implementations.
-- `internal/remote/` — the upstream transport: SigV4 signing, timeouts, retry
-  policy, idempotency-key generation.
+- `internal/remote/` — the upstream transport: bearer-token auth, timeouts,
+  retry policy, idempotency-key generation. No AWS dependency.
 - `internal/lambdamode/` — the Function URL adapter over `daemon.Dispatch`.
 - `contrib/cloudformation/muster-backend.yaml` — table, function, URL, role.
 
@@ -1590,8 +1591,15 @@ untouched."
 
 **Interfaces:**
 - Consumes: `daemon.New`, `daemon.Dispatch`, `dynamostore.Open`.
-- Produces: `lambdamode.Handler(d *daemon.Daemon) func(context.Context, events.LambdaFunctionURLRequest) (events.LambdaFunctionURLResponse, error)`;
+- Produces: `lambdamode.Authenticator` (interface, see Step 4);
+  `lambdamode.EnvAuth` (the v1 implementation, exported so tests can use it);
+  `lambdamode.Handler(d *daemon.Daemon, auth Authenticator) func(context.Context, events.LambdaFunctionURLRequest) (events.LambdaFunctionURLResponse, error)`;
   `lambdamode.Run() int`.
+
+**Note on the test code below:** it is written as `lambdamode.Handler(d)` for
+readability. Every one of those calls is `lambdamode.Handler(d, lambdamode.EnvAuth{})`
+in the real test file — `EnvAuth` reads the `MUSTER_TOKEN` values the tests set
+with `t.Setenv`.
 
 - [ ] **Step 1: Add the Lambda dependency**
 
@@ -1606,14 +1614,21 @@ just cross
 - [ ] **Step 2: Write the failing test**
 
 ```go
+// authed is the header set every handler test needs; the handler rejects
+// anything else with 401 before it reaches Dispatch.
+func authed() map[string]string {
+	return map[string]string{"authorization": "Bearer good-token"}
+}
+
 func TestHandlerDispatchesRequestBody(t *testing.T) {
+	t.Setenv("MUSTER_TOKEN", "good-token")
 	s := newLambdaTestStore(t) // a *store.Store is fine; this tests the adapter
 	d := daemon.New(s, nil)
 	h := lambdamode.Handler(d)
 
 	body, _ := json.Marshal(proto.Request{Op: "list_agents"})
 	resp, err := h(context.Background(), events.LambdaFunctionURLRequest{
-		Body: string(body),
+		Body: string(body), Headers: authed(),
 	})
 	if err != nil {
 		t.Fatalf("handler: %v", err)
@@ -1631,9 +1646,12 @@ func TestHandlerDispatchesRequestBody(t *testing.T) {
 }
 
 func TestHandlerRejectsMalformedBody(t *testing.T) {
+	t.Setenv("MUSTER_TOKEN", "good-token")
 	d := daemon.New(newLambdaTestStore(t), nil)
 	h := lambdamode.Handler(d)
-	resp, err := h(context.Background(), events.LambdaFunctionURLRequest{Body: "{not json"})
+	resp, err := h(context.Background(), events.LambdaFunctionURLRequest{
+		Body: "{not json", Headers: authed(),
+	})
 	if err != nil {
 		t.Fatalf("handler must not return a transport error for a bad body: %v", err)
 	}
@@ -1642,13 +1660,83 @@ func TestHandlerRejectsMalformedBody(t *testing.T) {
 	}
 }
 
+func TestHandlerRejectsMissingOrWrongToken(t *testing.T) {
+	t.Setenv("MUSTER_TOKEN", "good-token")
+	d := daemon.New(newLambdaTestStore(t), nil)
+	h := lambdamode.Handler(d)
+	body, _ := json.Marshal(proto.Request{Op: "list_agents"})
+
+	for _, tc := range []struct {
+		name string
+		hdr  map[string]string
+	}{
+		{"missing", nil},
+		{"wrong", map[string]string{"authorization": "Bearer nope"}},
+		{"malformed", map[string]string{"authorization": "good-token"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resp, err := h(context.Background(), events.LambdaFunctionURLRequest{
+				Body: string(body), Headers: tc.hdr,
+			})
+			if err != nil {
+				t.Fatalf("handler: %v", err)
+			}
+			if resp.StatusCode != 401 {
+				t.Fatalf("status = %d, want 401", resp.StatusCode)
+			}
+		})
+	}
+}
+
+func TestHandlerAcceptsPreviousToken(t *testing.T) {
+	// Rotation overlap: a device still holding the old token must keep working
+	// until it is rolled forward. Without this, rotating breaks every device
+	// at once, which means it never happens.
+	t.Setenv("MUSTER_TOKEN", "new-token")
+	t.Setenv("MUSTER_TOKEN_PREVIOUS", "old-token")
+	d := daemon.New(newLambdaTestStore(t), nil)
+	h := lambdamode.Handler(d)
+	body, _ := json.Marshal(proto.Request{Op: "list_agents"})
+
+	for _, tok := range []string{"new-token", "old-token"} {
+		resp, err := h(context.Background(), events.LambdaFunctionURLRequest{
+			Body:    string(body),
+			Headers: map[string]string{"authorization": "Bearer " + tok},
+		})
+		if err != nil {
+			t.Fatalf("handler with %s: %v", tok, err)
+		}
+		if resp.StatusCode != 200 {
+			t.Fatalf("%s rejected: status %d", tok, resp.StatusCode)
+		}
+	}
+}
+
+func TestHandlerRejectsOversizedBody(t *testing.T) {
+	t.Setenv("MUSTER_TOKEN", "good-token")
+	d := daemon.New(newLambdaTestStore(t), nil)
+	h := lambdamode.Handler(d)
+	resp, err := h(context.Background(), events.LambdaFunctionURLRequest{
+		Body:    strings.Repeat("x", 8*1024*1024),
+		Headers: map[string]string{"authorization": "Bearer good-token"},
+	})
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	if resp.StatusCode != 413 {
+		t.Fatalf("status = %d, want 413", resp.StatusCode)
+	}
+}
+
 func TestHandlerDecodesBase64Body(t *testing.T) {
+	t.Setenv("MUSTER_TOKEN", "good-token")
 	d := daemon.New(newLambdaTestStore(t), nil)
 	h := lambdamode.Handler(d)
 	body, _ := json.Marshal(proto.Request{Op: "list_agents"})
 	resp, err := h(context.Background(), events.LambdaFunctionURLRequest{
 		Body:            base64.StdEncoding.EncodeToString(body),
 		IsBase64Encoded: true,
+		Headers:         authed(),
 	})
 	if err != nil {
 		t.Fatalf("handler: %v", err)
@@ -1666,11 +1754,56 @@ Expected: FAIL — package does not exist.
 
 - [ ] **Step 4: Implement `lambdamode.go`**
 
-`Handler` decodes the body (honoring `IsBase64Encoded`), unmarshals to
-`proto.Request`, calls `d.Dispatch`, and marshals the `proto.Response` back with
-`Content-Type: application/json`. A malformed body returns HTTP 400 with a
-`proto.Response` carrying the error — **not** a Go error, which Lambda would
-render as a 502 and lose the message.
+`Handler` runs these checks in order, and the order matters — each one is
+cheaper than the next, and none of them may reach DynamoDB:
+
+1. **Authenticate.** Read the `authorization` header (Function URL headers
+   arrive lowercased; do not assume canonical casing), require the `Bearer `
+   prefix, and compare the remainder against `MUSTER_TOKEN` and, if set,
+   `MUSTER_TOKEN_PREVIOUS`, using `crypto/subtle.ConstantTimeCompare`. Anything
+   else is HTTP 401. Two accepted tokens exist so a rotation can roll across
+   devices before the old one retires; with one token, rotating breaks every
+   device simultaneously.
+2. **Cap the body.** Reject bodies over 6MB with HTTP 413 before parsing.
+   Lambda's own payload limit is 6MB, so this is about not spending CPU on
+   something that cannot be legitimate.
+3. **Decode and dispatch.** Honor `IsBase64Encoded`, unmarshal to
+   `proto.Request`, call `d.Dispatch`, marshal the `proto.Response` back with
+   `Content-Type: application/json`.
+
+A malformed body returns HTTP 400 with a `proto.Response` carrying the error —
+**not** a Go error, which Lambda would render as a 502 and lose the message.
+
+If `MUSTER_TOKEN` is unset, `Handler` must reject *everything* with 401 rather
+than allowing unauthenticated access. A misconfigured deployment must fail
+closed: this endpoint is publicly reachable, so an empty-token fallback would
+silently expose the whole bus.
+
+**Put authentication behind a seam.** A shared bearer token is explicitly a
+first step, not the destination — the spec's "This is a first step" section
+records the planned upgrade to per-device tokens held in DynamoDB, then OIDC.
+Resolve credentials through an interface rather than reading the environment
+inline, so that upgrade is a one-file change instead of a rewrite of the request
+path:
+
+```go
+// Authenticator decides whether a presented bearer token is valid. The v1
+// implementation compares against MUSTER_TOKEN / MUSTER_TOKEN_PREVIOUS; the
+// planned successor looks up per-device hashed tokens in DynamoDB so a single
+// device can be revoked without rotating the fleet.
+type Authenticator interface {
+	Valid(ctx context.Context, token string) bool
+}
+
+// EnvAuth is the v1 implementation: constant-time comparison against
+// MUSTER_TOKEN and, during rotation, MUSTER_TOKEN_PREVIOUS. Exported so tests
+// can construct it. Valid returns false when MUSTER_TOKEN is unset — a
+// misconfigured deployment fails closed.
+type EnvAuth struct{}
+```
+
+`Handler` takes an `Authenticator` as its second parameter; `Run` wires
+`EnvAuth{}`.
 
 A dispatch that returns `Response.OK == false` still returns HTTP 200: the
 protocol carries its own error channel, and the client must see the
@@ -1731,9 +1864,16 @@ surface as 409 for the retry policy."
 - Create: `internal/remote/remote.go`, `internal/remote/remote_test.go`
 
 **Interfaces:**
-- Consumes: `proto.Request`/`proto.Response`.
-- Produces: `remote.New(url string, opts ...Option) (*Client, error)`;
-  `(*Client).Call(ctx context.Context, req proto.Request) (proto.Response, error)`.
+- Consumes: `proto.Request`/`proto.Response`, `daemon.IsWriteOp`.
+- Produces: `remote.New(url, token string, opts ...Option) (*Client, error)`;
+  `(*Client).Call(ctx context.Context, req proto.Request) (proto.Response, error)`;
+  `remote.ReadToken() (string, error)`.
+
+**No AWS dependency.** This package must not import any `aws-sdk-go-v2`
+package. A device in remote mode needs no AWS credentials, no region, and no
+profile — it POSTs JSON over HTTPS with a bearer token. If you find yourself
+reaching for the SDK here, stop: that is the requirement this design exists to
+satisfy.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1748,7 +1888,7 @@ func TestCallAttachesIdemKeyToWrites(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	c, err := remote.New(srv.URL, remote.WithoutSigning())
+	c, err := remote.New(srv.URL, "test-token")
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -1770,7 +1910,7 @@ func TestCallOmitsIdemKeyOnReads(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	c, _ := remote.New(srv.URL, remote.WithoutSigning())
+	c, _ := remote.New(srv.URL, "test-token")
 	if _, err := c.Call(context.Background(), proto.Request{Op: "list_agents"}); err != nil {
 		t.Fatalf("Call: %v", err)
 	}
@@ -1795,7 +1935,7 @@ func TestCallReusesIdemKeyAcrossRetries(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	c, _ := remote.New(srv.URL, remote.WithoutSigning(), remote.WithBackoff(time.Millisecond))
+	c, _ := remote.New(srv.URL, "test-token", remote.WithBackoff(time.Millisecond))
 	if _, err := c.Call(context.Background(), proto.Request{Op: "send_message"}); err != nil {
 		t.Fatalf("Call: %v", err)
 	}
@@ -1819,15 +1959,76 @@ func TestCallRetriesOn409InFlight(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	c, _ := remote.New(srv.URL, remote.WithoutSigning(), remote.WithBackoff(time.Millisecond))
+	c, _ := remote.New(srv.URL, "test-token", remote.WithBackoff(time.Millisecond))
 	resp, err := c.Call(context.Background(), proto.Request{Op: "send_message"})
 	if err != nil || !resp.OK {
 		t.Fatalf("409 must be retried: err=%v resp=%+v", err, resp)
 	}
 }
 
+func TestCallSendsBearerToken(t *testing.T) {
+	var auth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth = r.Header.Get("Authorization")
+		_ = json.NewEncoder(w).Encode(proto.Response{OK: true})
+	}))
+	t.Cleanup(srv.Close)
+
+	c, _ := remote.New(srv.URL, "test-token")
+	if _, err := c.Call(context.Background(), proto.Request{Op: "list_agents"}); err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	if auth != "Bearer test-token" {
+		t.Fatalf("Authorization = %q, want %q", auth, "Bearer test-token")
+	}
+}
+
+func TestCallDoesNotRetry401(t *testing.T) {
+	var n int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n++
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	t.Cleanup(srv.Close)
+
+	c, _ := remote.New(srv.URL, "wrong", remote.WithBackoff(time.Millisecond))
+	if _, err := c.Call(context.Background(), proto.Request{Op: "list_agents"}); err == nil {
+		t.Fatal("expected an error on 401")
+	}
+	if n != 1 {
+		t.Fatalf("401 was retried %d times — a bad token is permanent, not transient", n)
+	}
+}
+
+func TestReadTokenRejectsLoosePermissions(t *testing.T) {
+	dir, cleanup, err := mustertest.ShortHome()
+	if err != nil {
+		t.Fatalf("ShortHome: %v", err)
+	}
+	t.Cleanup(cleanup)
+	t.Setenv("MUSTER_HOME", dir)
+
+	p := filepath.Join(dir, "remote-token")
+	if err := os.WriteFile(p, []byte("secret\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if _, err := remote.ReadToken(); err == nil {
+		t.Fatal("world-readable token file must be rejected")
+	}
+	if err := os.Chmod(p, 0o600); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	got, err := remote.ReadToken()
+	if err != nil {
+		t.Fatalf("ReadToken: %v", err)
+	}
+	if got != "secret" {
+		t.Fatalf("token = %q, want secret (trailing newline must be trimmed)", got)
+	}
+}
+
 func TestCallSurfacesUnreachableUpstreamPromptly(t *testing.T) {
-	c, _ := remote.New("http://127.0.0.1:1", remote.WithoutSigning(),
+	c, _ := remote.New("http://127.0.0.1:1", "test-token",
 		remote.WithBackoff(time.Millisecond), remote.WithTimeout(200*time.Millisecond))
 	start := time.Now()
 	if _, err := c.Call(context.Background(), proto.Request{Op: "list_agents"}); err == nil {
@@ -1846,19 +2047,27 @@ Expected: FAIL — package does not exist.
 
 - [ ] **Step 3: Implement `remote.go`**
 
-The client holds a URL, an `*http.Client` with a timeout, an AWS SigV4 signer
-plus credential provider, and a backoff base. `Option` values cover
-`WithoutSigning` (tests only), `WithBackoff`, and `WithTimeout`.
+The client holds a URL, a bearer token, an `*http.Client` with a timeout, and a
+backoff base. `Option` values cover `WithBackoff` and `WithTimeout`. There is no
+signer and no credential provider — see the no-AWS-dependency note above.
 
-`Call` generates one `IdemKey` per logical call — via `uuid.NewString()`, only
-when `daemon.IsWriteOp(req.Op)` — and **holds it constant across every retry of
-that call**. This is the entire point: a fresh key per attempt would duplicate
+`ReadToken` reads `<paths.Home()>/remote-token`, trims surrounding whitespace,
+and **fails if the file's mode is not 0600**. The token is deliberately not an
+environment variable: muster runs alongside coding agents that read their own
+environment, so `MUSTER_REMOTE_TOKEN` would be one `env` call away from an agent
+transcript. Refusing loose permissions is what keeps the file alternative
+actually safer rather than merely different.
+
+`Call` sets `Authorization: Bearer <token>` on every request. It generates one
+`IdemKey` per logical call — via `uuid.NewString()`, only when
+`daemon.IsWriteOp(req.Op)` — and **holds it constant across every retry of that
+call**. This is the entire point: a fresh key per attempt would duplicate
 writes, which is the failure this design exists to prevent.
 
 Retry on connection errors, HTTP 5xx, 429, and 409 (the in-flight idempotency
-collision), with exponential backoff and a cap. Do not retry 4xx other than
-429/409 — those are permanent. Requests are signed with SigV4 for service
-`lambda` unless `WithoutSigning` is set.
+collision), with exponential backoff and a cap. Do **not** retry any other 4xx.
+401 in particular is a permanent misconfiguration — retrying it just burns
+Lambda invocations against a token that will never work.
 
 - [ ] **Step 4: Run to verify they pass**
 
@@ -1869,7 +2078,7 @@ Expected: PASS.
 
 ```bash
 git add internal/remote/ go.mod go.sum
-git commit -m "feat(remote): SigV4 upstream transport with idempotent retries
+git commit -m "feat(remote): bearer-token upstream transport with idempotent retries
 
 One IdemKey per logical write, held constant across every retry of that
 call — a fresh key per attempt would duplicate writes, which is the exact
@@ -2035,7 +2244,12 @@ func runServe() int {
 			fmt.Fprintln(os.Stderr, "muster: MUSTER_BACKEND=remote requires MUSTER_REMOTE_URL")
 			return 1
 		}
-		up, err := remote.New(url)
+		token, err := remote.ReadToken()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "muster: remote token:", err)
+			return 1
+		}
+		up, err := remote.New(url, token)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "muster: remote:", err)
 			return 1
@@ -2354,9 +2568,19 @@ poll at all."
 One stack containing: the DynamoDB table (on-demand billing, PK `pk` string, SK
 `sk` number, GSI1 and GSI2 as specified in Task 4, TTL enabled on `ttl`); the
 Lambda function (runtime `provided.al2023`, architecture `arm64`, handler
-`bootstrap`, `MUSTER_DDB_TABLE` env var, memory 256MB, timeout 30s, reserved
-concurrency 10); the Function URL with `AuthType: AWS_IAM`; and the execution
-role granting only the table actions the store uses.
+`bootstrap`, env vars `MUSTER_DDB_TABLE` / `MUSTER_TOKEN` /
+`MUSTER_TOKEN_PREVIOUS`, memory 256MB, timeout 30s, reserved concurrency 10);
+the Function URL with `AuthType: NONE`; and the execution role granting only the
+table actions the store uses.
+
+The bearer token is a stack **`Parameter` with `NoEcho: true`**, so it does not
+appear in stack events, the console, or `describe-stacks` output.
+`MUSTER_TOKEN_PREVIOUS` is a second parameter defaulting to empty, used only
+during rotation.
+
+`AuthType: NONE` means this endpoint is publicly reachable and the token is the
+only thing protecting it. Say so in a comment at the top of the template — the
+next person to read it should not have to infer that from the auth type.
 
 Reserved concurrency of 10 is a **cost guard** — blast radius against a bug that
 spins the poller. Comment it as such in the template. It is not a correctness
@@ -2418,11 +2642,19 @@ additional coverage, not a replacement.
 - [ ] **Step 5: Write the operator documentation**
 
 `docs/hosted-backend.md` covers: what this is and what it is not (self-hosted,
-one operator, no service anyone else's data flows through); deploying the stack;
-setting `MUSTER_BACKEND=remote` and `MUSTER_REMOTE_URL` on each device; the IAM
-permissions each device needs and how to grant them; the full environment
+one operator, no service anyone else's data flows through); generating a token
+(`openssl rand -base64 32`) and deploying the stack with it; setting
+`MUSTER_BACKEND=remote` and `MUSTER_REMOTE_URL` on each device and installing
+the token at `<MUSTER_HOME>/remote-token` with mode 0600; the full environment
 variable table from the spec; expected latency (30–50ms warm, one 200–400ms cold
 start after an idle gap); and the cost model.
+
+State plainly that **devices need no AWS credentials** — that is the point of
+the token — and equally plainly that **the Function URL is publicly reachable**,
+so both the URL and the token should be treated as secrets. Document the
+rotation procedure: set `MUSTER_TOKEN_PREVIOUS` to the current token, set
+`MUSTER_TOKEN` to the new one, redeploy, roll the devices, then clear
+`MUSTER_TOKEN_PREVIOUS` and redeploy again.
 
 **Re-verify the AWS list prices before publishing them.** The spec's table was
 built from recalled rates and is explicitly flagged as needing confirmation.
