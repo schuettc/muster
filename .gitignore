@@ -10,3 +10,7 @@ bus.db-wal
 
 # SDD / superpowers scratch (transient build artifacts)
 .superpowers/
+
+# git worktrees (see CLAUDE.md)
+.worktrees/
+.claude/worktrees/
