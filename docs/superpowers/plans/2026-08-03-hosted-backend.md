@@ -32,6 +32,18 @@ use net/http and a bearer token, with no AWS dependency whatsoever.
   recipe that requires the container.
 - **Local mode must be byte-for-byte unchanged.** No AWS package may be imported
   on a code path reachable from `MUSTER_BACKEND=local`. Default is `local`.
+- **The AWS SDK ships only in the Lambda artifact.** `internal/lambdamode` and
+  `internal/dynamostore` are reachable **only** under the `lambda` build tag.
+  The default binary — the one every device runs, in local *and* remote mode —
+  must contain no AWS code at all. Baseline for comparison: the pre-change
+  binary is 17,075,090 bytes (~16MB); an untagged `just build` must stay within
+  a few hundred KB of that. If it jumps toward 25MB, an AWS import has leaked
+  into the default build and that is a constraint violation, not a size
+  regression to accept.
+
+  This works because remote mode authenticates with a bearer token over plain
+  HTTP (see Task 12), so a device using the hosted backend needs no AWS SDK
+  either. The only artifact that carries it is the Lambda zip.
 - **One canonical module per concern.** Identity capture stays in
   `internal/tmuxenv`. Do not fork it.
 - **Knobs, not constants.** Operator-tunable defaults over hardcoded numbers.
@@ -70,8 +82,14 @@ use net/http and a bearer token, with no AWS dependency whatsoever.
 - `internal/proto/proto.go` — `Request.IdemKey`.
 - `internal/store/` — `Agent.DeviceID`, schema + migration, `idem` table,
   `DevicePoll`.
-- `cmd/muster/main.go` — backend selection, `lambda` mode.
-- `justfile` — `verify-dynamo`.
+- `cmd/muster/main.go` — backend selection, and a `runLambda()` call whose two
+  implementations are selected by build tag.
+- `cmd/muster/lambda_on.go` (`//go:build lambda`) — imports `internal/lambdamode`
+  and calls `lambdamode.Run()`. This is the *only* file in `cmd/muster` that may
+  reference an AWS-dependent package.
+- `cmd/muster/lambda_off.go` (`//go:build !lambda`) — a stub returning a clear
+  error. Imports nothing AWS.
+- `justfile` — `verify-dynamo`, and a tagged variant in `cross`.
 - `.github/workflows/` — the dynamo CI job and the Lambda release artifact.
 
 ---
@@ -589,10 +607,21 @@ go get github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue@latest
 go mod tidy
 ```
 
-- [ ] **Step 2: Confirm cgo-free still holds**
+- [ ] **Step 2: Confirm cgo-free still holds, and that the SDK stays out of the binary**
 
-Run: `just cross`
-Expected: PASS. If any AWS package pulls in cgo, stop and report — that is a
+```bash
+CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build ./...   # compiles dynamostore itself
+just cross                                              # the shipped binary
+go list -deps ./cmd/muster | grep aws                   # must print NOTHING
+```
+
+`just cross` alone is not sufficient here: nothing imports `dynamostore` yet, so
+the compiler would skip it entirely and the cgo question would go unasked.
+`go build ./...` is what actually compiles it.
+
+The `go list` check is the constraint from Global Constraints — the default
+binary carries no AWS code. It must print nothing at every task from here on,
+not just this one. If any AWS package pulls in cgo, stop and report: that is a
 blocking constraint violation, not something to work around.
 
 - [ ] **Step 3: Write the failing test**
@@ -1819,9 +1848,10 @@ retry policy can distinguish it.
 Run: `go test ./internal/lambdamode/ -race -v`
 Expected: PASS.
 
-- [ ] **Step 6: Wire the mode into `cmd/muster/main.go`**
+- [ ] **Step 6: Wire the mode into `cmd/muster` behind the build tag**
 
-Add to the `switch os.Args[1]` block, alongside `serve`/`mcp`/`debug`:
+`main.go` gets the routing case and calls an indirection — it must **not**
+import `lambdamode`, or the AWS SDK lands in every binary:
 
 ```go
 	case "lambda":
@@ -1829,7 +1859,44 @@ Add to the `switch os.Args[1]` block, alongside `serve`/`mcp`/`debug`:
 			_ = humancli.HelpFor("lambda", os.Stdout)
 			return
 		}
-		os.Exit(lambdamode.Run())
+		os.Exit(runLambda())
+```
+
+`cmd/muster/lambda_on.go`:
+
+```go
+//go:build lambda
+
+package main
+
+import "github.com/schuettc/muster/internal/lambdamode"
+
+// runLambda serves the AWS Lambda runtime. Built only under the `lambda` tag:
+// it is the sole path that pulls the AWS SDK in, and the default binary that
+// every device runs must not carry it.
+func runLambda() int { return lambdamode.Run() }
+```
+
+`cmd/muster/lambda_off.go`:
+
+```go
+//go:build !lambda
+
+package main
+
+import (
+	"fmt"
+	"os"
+)
+
+// runLambda reports that this binary was built without lambda mode. The AWS
+// SDK ships only in the Lambda release artifact (built with `-tags lambda`),
+// so the default binary omits it entirely — see the plan's Global Constraints.
+func runLambda() int {
+	fmt.Fprintln(os.Stderr, "muster: this binary was built without lambda mode "+
+		"(rebuild with -tags lambda; the released muster-lambda-*.zip already has it)")
+	return 2
+}
 ```
 
 Add the corresponding `humancli` help entry so `muster lambda --help` works and
@@ -1837,15 +1904,35 @@ usage stays canonical — the file comment in `main.go` warns that a second
 subcommand list once shipped a release whose usage advertised a command `main()`
 refused to route.
 
-- [ ] **Step 7: Run the full gate**
+- [ ] **Step 7: Add the tagged build to `just cross`**
 
-Run: `just verify`
-Expected: PASS, including `cross`.
+The tagged configuration must compile in CI or it will rot silently. Append to
+the `cross` recipe, after the existing loop:
 
-- [ ] **Step 8: Commit**
+```make
+    CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -tags lambda -ldflags "{{ ldflags }}" -o /dev/null ./cmd/muster
+```
+
+- [ ] **Step 8: Verify the default binary stayed small**
 
 ```bash
-git add internal/lambdamode/ cmd/muster/ internal/humancli/ go.mod go.sum
+just build && stat -f %z bin/muster    # macOS; use `stat -c %s` on Linux
+```
+
+Expected: within a few hundred KB of the 17,075,090-byte baseline in Global
+Constraints. A jump toward 25MB means an AWS import leaked into the untagged
+build — find it with `go list -deps ./cmd/muster | grep aws` (which must print
+nothing) rather than accepting the size.
+
+- [ ] **Step 9: Run the full gate**
+
+Run: `just verify`
+Expected: PASS, including both `cross` configurations.
+
+- [ ] **Step 10: Commit**
+
+```bash
+git add internal/lambdamode/ cmd/muster/ internal/humancli/ justfile go.mod go.sum
 git commit -m "feat(lambda): Function URL adapter over daemon.Dispatch
 
 The Lambda is a transport adapter, not a second implementation: body in,
@@ -2604,10 +2691,15 @@ the Lambda bundle from the linux/arm64 binary:
 ```yaml
       - name: Build Lambda bundle
         run: |
-          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build \
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -tags lambda \
             -ldflags "$LDFLAGS" -o bootstrap ./cmd/muster
           zip -j muster-lambda-arm64.zip bootstrap
 ```
+
+The `-tags lambda` is not optional: without it the zip contains a binary whose
+`runLambda` is the stub, and the function would fail at runtime with "built
+without lambda mode". The released device binaries are built **without** the
+tag, which is what keeps the AWS SDK out of them.
 
 Attach `muster-lambda-arm64.zip` to the release alongside the existing binaries
 and checksums, and include it in the checksum file.
