@@ -70,3 +70,8 @@ notify · `internal/nudge` send-keys · `internal/tmuxenv` tmux capture/liveness
 If you're an agent working here and want to coordinate with sessions in other
 terminals, the `.claude/skills/muster-coordination` skill is the etiquette
 (register, inbox, send/reply, addressing, the wake model).
+
+## Worktrees
+
+Isolate each line of work in its own worktree at `<repo-root>/.worktrees/<branch>`
+— see the `worktree-isolation` skill.
