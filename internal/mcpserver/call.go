@@ -81,11 +81,25 @@ var callDaemon = func(op string, args map[string]any) (json.RawMessage, error) {
 
 // AgentView is the tool-facing shape of a registered agent. Field tags match
 // the daemon's JSON case-insensitively.
+//
+// Project/Label/LabelManual/Departed exist because an alias is not the only
+// address on this bus: internal/resolve matches an exact alias FIRST, then a
+// qualified "project:label", then a bare label scoped to the sender's own
+// project. A roster that showed aliases alone therefore described a smaller
+// bus than the daemon actually routes — an agent reading it concluded a live
+// label address did not exist and proposed retiring a durable alias to
+// "fix" mail that was already being delivered. These four fields are exactly
+// what the resolver decides on, so a caller can build any address the daemon
+// will accept, and none it won't.
 type AgentView struct {
 	Alias        string `json:"alias" jsonschema:"the agent's addressable alias"`
 	Role         string `json:"role" jsonschema:"the agent's role (producer, consumer, reviewer, ...)"`
 	ModelType    string `json:"model_type" jsonschema:"the agent's model (claude, codex, or cursor)"`
 	SessionName  string `json:"session_name" jsonschema:"the tmux session the agent runs in"`
+	Project      string `json:"project" jsonschema:"the project the agent is registered under; the qualifier in a 'project:label' address"`
+	Label        string `json:"label" jsonschema:"what the agent is working on right now; addressable as 'project:label' (or bare within your own project) only when label_manual is true"`
+	LabelManual  bool   `json:"label_manual" jsonschema:"true when a human pinned this label, which is what makes it addressable; an auto-generated label is display-only and will not resolve"`
+	Departed     bool   `json:"departed" jsonschema:"true for a deregistered agent: its alias still accepts mail (it may return) but its label no longer resolves"`
 	RegisteredAt int64  `json:"registered_at" jsonschema:"when the agent first registered (unix ms)"`
 	LastSeen     int64  `json:"last_seen" jsonschema:"when the agent was last active (unix ms)"`
 }
