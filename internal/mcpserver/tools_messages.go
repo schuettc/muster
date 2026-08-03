@@ -11,7 +11,7 @@ import (
 type SendMessageIn struct {
 	From     string `json:"from" jsonschema:"the sending agent's alias"`
 	ToKind   string `json:"to_kind" jsonschema:"agent, role, or broadcast"`
-	ToTarget string `json:"to_target,omitempty" jsonschema:"the recipient alias or role; for broadcast: empty reaches every agent on the bus, or a project name reaches only that project's agents (unknown projects are rejected)"`
+	ToTarget string `json:"to_target,omitempty" jsonschema:"the recipient: an alias, a 'project:label' pair, or a bare label of an agent in your own project (resolved in that order) — or a role with to_kind=role; for broadcast: empty reaches every agent on the bus, or a project name reaches only that project's agents (unknown projects are rejected)"`
 	Subject  string `json:"subject" jsonschema:"a short subject line"`
 	Ref      string `json:"ref,omitempty" jsonschema:"optional pointer to the work (repo/branch/endpoint/file)"`
 	Body     string `json:"body" jsonschema:"the message body"`

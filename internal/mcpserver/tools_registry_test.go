@@ -308,3 +308,57 @@ func TestRegisterAgentRefusalAdvertisesBecome(t *testing.T) {
 		t.Fatalf("Detail = %q, want become-advertisement", out.Detail)
 	}
 }
+
+// TestListAgentsCarriesAddressableLabel pins the roster against the resolver
+// (internal/resolve): an address is BUILT from project + label — the
+// "proj:label" and bare-label rungs below exact-alias — and a label is
+// addressable only while it is manually pinned on a live row. list_agents
+// must therefore carry all four fields, or an MCP agent sees aliases alone
+// and concludes a working address does not exist. That is not hypothetical:
+// a live session whose operator had labeled it "nfl-3" reported to that
+// operator that "nfl-3" was a dead address and offered to retire its durable
+// alias to fix it, because list_agents could not show the label that was
+// already routing mail to it.
+func TestListAgentsCarriesAddressableLabel(t *testing.T) {
+	startTestDaemon(t)
+	for _, a := range []map[string]any{
+		{"alias": "bettor-help-workspace-2", "project": "bettor-help-workspace", "label": "nfl-3", "label_manual": true},
+		{"alias": "bettor-help-workspace-4", "project": "bettor-help-workspace", "label": "debug alarms", "label_manual": false},
+		{"alias": "bettor-help-workspace-5", "project": "bettor-help-workspace", "label": "corpus-rebuild", "label_manual": true},
+	} {
+		if _, err := callDaemon("register_agent", a); err != nil {
+			t.Fatalf("register %v: %v", a["alias"], err)
+		}
+	}
+	if _, err := callDaemon("deregister_agent", map[string]any{"alias": "bettor-help-workspace-5"}); err != nil {
+		t.Fatalf("deregister: %v", err)
+	}
+
+	_, out, err := listAgentsHandler(context.TODO(), nil, ListAgentsIn{})
+	if err != nil {
+		t.Fatalf("list_agents: %v", err)
+	}
+	byAlias := map[string]AgentView{}
+	for _, ag := range out.Agents {
+		byAlias[ag.Alias] = ag
+	}
+
+	// The addressable one: every field a caller needs to write
+	// "bettor-help-workspace:nfl-3" (or bare "nfl-3" from inside the project).
+	live := byAlias["bettor-help-workspace-2"]
+	if live.Project != "bettor-help-workspace" || live.Label != "nfl-3" || !live.LabelManual || live.Departed {
+		t.Fatalf("addressable row = %+v, want project/label carried with label_manual set and not departed", live)
+	}
+	// An auto-generated label is display-only — the resolver skips it, so the
+	// roster must say so rather than let a caller address it.
+	auto := byAlias["bettor-help-workspace-4"]
+	if auto.Label != "debug alarms" || auto.LabelManual {
+		t.Fatalf("auto-labeled row = %+v, want label carried with label_manual false", auto)
+	}
+	// A tombstone keeps its alias addressable (mail waits) but not its label;
+	// without Departed the caller cannot tell the two apart.
+	gone := byAlias["bettor-help-workspace-5"]
+	if !gone.Departed || gone.Label != "corpus-rebuild" {
+		t.Fatalf("departed row = %+v, want departed true with its label still visible", gone)
+	}
+}

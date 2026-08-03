@@ -129,6 +129,6 @@ func registerRegistryTools(srv *mcp.Server) {
 	}, registerAgentHandler)
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "list_agents",
-		Description: "List all agents currently registered on the muster bus.",
+		Description: "List all agents currently registered on the muster bus, with the fields an address is built from. An alias is not the only way to reach someone: a target resolves as exact alias first, then 'project:label', then a bare label within your own project. So a session you know by a label (its label field, when label_manual is true) is reachable by that label even though the label is not an alias — do not report such a target as unreachable. Departed agents remain listed: their alias still accepts mail, their label no longer resolves.",
 	}, listAgentsHandler)
 }
