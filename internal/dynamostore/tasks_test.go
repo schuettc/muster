@@ -5,8 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"sync"
-	"sync/atomic"
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -257,145 +255,6 @@ func TestRunTaskWriteRetryStateMachine(t *testing.T) {
 
 // --- endpoint-backed tests --------------------------------------------------
 
-// TestClaimTaskSucceedsOnceThenFails is the compare-and-swap contract itself,
-// ported from internal/store/tasks_test.go's TestClaimTaskIsAtomic.
-func TestClaimTaskSucceedsOnceThenFails(t *testing.T) {
-	s := newTestStore(t)
-	id := newTestTask(t, s)
-
-	if err := s.ClaimTask(id, "rev1"); err != nil {
-		t.Fatalf("first claim: %v", err)
-	}
-	if err := s.ClaimTask(id, "rev2"); !errors.Is(err, store.ErrNotClaimable) {
-		t.Fatalf("second claim err = %v, want ErrNotClaimable", err)
-	}
-	th, _, err := s.GetThread(id)
-	if err != nil {
-		t.Fatalf("GetThread: %v", err)
-	}
-	if th.Status != "claimed" {
-		t.Fatalf("status = %q, want claimed", th.Status)
-	}
-}
-
-// TestClaimTaskIsAtomicUnderConcurrency is the reason ClaimTask is a
-// ConditionExpression and not a read-then-write. There is no
-// reserved-concurrency-1 backstop on this backend, so this is the ONLY thing
-// stopping two agents from picking up the same work.
-func TestClaimTaskIsAtomicUnderConcurrency(t *testing.T) {
-	s := newTestStore(t)
-	id := newTestTask(t, s)
-
-	const n = 8
-	var wins int64
-	errs := make([]error, n)
-	var wg sync.WaitGroup
-	for i := range n {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			err := s.ClaimTask(id, fmt.Sprintf("a%d", i))
-			errs[i] = err
-			if err == nil {
-				atomic.AddInt64(&wins, 1)
-			}
-		}()
-	}
-	wg.Wait()
-
-	if wins != 1 {
-		t.Fatalf("%d of %d concurrent claims succeeded, want exactly 1 (errs: %v)", wins, n, errs)
-	}
-	// Every loser must lose the DOCUMENTED way. An infrastructure error that
-	// happened to fail would satisfy the count above while meaning something
-	// entirely different to the daemon.
-	for i, err := range errs {
-		if err != nil && !errors.Is(err, store.ErrNotClaimable) {
-			t.Fatalf("claim %d failed with %v, want ErrNotClaimable", i, err)
-		}
-	}
-	// A cancelled transaction writes NOTHING: the opener plus exactly one
-	// status-change entry.
-	_, entries, err := s.GetThread(id)
-	if err != nil {
-		t.Fatalf("GetThread: %v", err)
-	}
-	if len(entries) != 2 {
-		t.Fatalf("thread has %d entries, want 2 — a losing claim must write no entry", len(entries))
-	}
-}
-
-// TestClaimTaskRecordsStatusChangeEntry pins the SQLite INSERT: an empty body,
-// status_change "claimed", attributed to the CLAIMANT (not the originator).
-func TestClaimTaskRecordsStatusChangeEntry(t *testing.T) {
-	s := newTestStore(t)
-	id := newTestTask(t, s)
-
-	if err := s.ClaimTask(id, "rev1"); err != nil {
-		t.Fatalf("claim: %v", err)
-	}
-	_, entries, err := s.GetThread(id)
-	if err != nil {
-		t.Fatalf("GetThread: %v", err)
-	}
-	last := entries[len(entries)-1]
-	if last.StatusChange != "claimed" || last.FromAgent != "rev1" || last.Body != "" {
-		t.Fatalf("last entry = %+v, want an empty-bodied \"claimed\" entry from rev1", last)
-	}
-}
-
-// TestClaimTaskOnMissingThreadIsNotClaimable pins a divergence the obvious
-// implementation gets wrong. The SQLite UPDATE matches no rows for an unknown
-// id and returns ErrNotClaimable — NOT ErrThreadNotFound, which is what a
-// metadata read would naturally produce here.
-func TestClaimTaskOnMissingThreadIsNotClaimable(t *testing.T) {
-	s := newTestStore(t)
-	err := s.ClaimTask(999999, "rev1")
-	if !errors.Is(err, store.ErrNotClaimable) {
-		t.Fatalf("ClaimTask on a missing thread = %v, want ErrNotClaimable", err)
-	}
-	if errors.Is(err, store.ErrThreadNotFound) {
-		t.Fatalf("ClaimTask on a missing thread leaked ErrThreadNotFound: %v", err)
-	}
-}
-
-// TestClaimTaskOnATerminalTaskIsNotClaimable covers the states a real bus
-// spends most of its life in. The open guard is what stops finished work being
-// picked back up, and only `claimed` was exercised — a guard written as
-// `#status <> :claimed` would have passed every other test in this file.
-func TestClaimTaskOnATerminalTaskIsNotClaimable(t *testing.T) {
-	for _, terminal := range []string{"completed", "cancelled", "declined"} {
-		t.Run(terminal, func(t *testing.T) {
-			s := newTestStore(t)
-			id := newTestTask(t, s)
-			if err := s.TransitionTask(id, "rev1", terminal, "that's a wrap"); err != nil {
-				t.Fatalf("transition to %q: %v", terminal, err)
-			}
-			_, before, err := s.GetThread(id)
-			if err != nil {
-				t.Fatalf("GetThread: %v", err)
-			}
-
-			if err := s.ClaimTask(id, "rev2"); !errors.Is(err, store.ErrNotClaimable) {
-				t.Fatalf("claim of a %q task = %v, want ErrNotClaimable", terminal, err)
-			}
-
-			th, after, err := s.GetThread(id)
-			if err != nil {
-				t.Fatalf("GetThread after the refused claim: %v", err)
-			}
-			if th.Status != terminal {
-				t.Fatalf("status = %q, want %q — the refused claim moved it anyway", th.Status, terminal)
-			}
-			// A cancelled transaction writes NOTHING, entry included.
-			if len(after) != len(before) {
-				t.Fatalf("thread has %d entries, want %d — a refused claim must write no entry",
-					len(after), len(before))
-			}
-		})
-	}
-}
-
 // TestClaimTaskAnnotatesLastEntry pins the denormalized last-entry trio, which
 // SQLite recomputes from MAX(entries.id) at read time and this backend must
 // maintain on write. Without it, a claimed task's inbox row still credits the
@@ -591,44 +450,6 @@ func TestTaskTransactSurvivesARepeatedSend(t *testing.T) {
 	})
 }
 
-// TestTransitionTaskValidatesAndRecords is ported one-for-one from
-// internal/store/tasks_test.go.
-func TestTransitionTaskValidatesAndRecords(t *testing.T) {
-	s := newTestStore(t)
-	id := newTestTask(t, s)
-	if err := s.ClaimTask(id, "rev1"); err != nil {
-		t.Fatalf("claim: %v", err)
-	}
-
-	if err := s.TransitionTask(id, "rev1", "bogus", ""); err == nil {
-		t.Fatal("expected an error for an invalid status")
-	}
-	if err := s.TransitionTask(id, "rev1", "completed", "LGTM"); err != nil {
-		t.Fatalf("valid transition: %v", err)
-	}
-	th, entries, err := s.GetThread(id)
-	if err != nil {
-		t.Fatalf("GetThread: %v", err)
-	}
-	if th.Status != "completed" {
-		t.Fatalf("status = %q, want completed", th.Status)
-	}
-	last := entries[len(entries)-1]
-	if last.StatusChange != "completed" || last.Body != "LGTM" || last.FromAgent != "rev1" {
-		t.Fatalf("transition not recorded as an entry: %+v", last)
-	}
-}
-
-// TestTransitionTaskOnMissingThreadReturnsErrThreadNotFound — and note the
-// contrast with ClaimTask, whose SQLite counterpart returns ErrNotClaimable for
-// the same input.
-func TestTransitionTaskOnMissingThreadReturnsErrThreadNotFound(t *testing.T) {
-	s := newTestStore(t)
-	if err := s.TransitionTask(999999, "rev1", "completed", "LGTM"); !errors.Is(err, store.ErrThreadNotFound) {
-		t.Fatalf("TransitionTask on a missing thread = %v, want ErrThreadNotFound", err)
-	}
-}
-
 // TestTransitionTaskIgnoresCurrentStatus is the deliberate asymmetry with
 // ClaimTask: the SQLite UPDATE carries no status predicate, so any state may
 // move to any other, including back to open.
@@ -647,34 +468,6 @@ func TestTransitionTaskIgnoresCurrentStatus(t *testing.T) {
 		if th.Status != status {
 			t.Fatalf("status = %q, want %q", th.Status, status)
 		}
-	}
-}
-
-// TestTransitionTaskBackToOpenIsClaimableAgain closes the loop between the two
-// methods: the claim guard reads the LIVE status, so re-opening a task makes it
-// claimable again rather than permanently burnt.
-func TestTransitionTaskBackToOpenIsClaimableAgain(t *testing.T) {
-	s := newTestStore(t)
-	id := newTestTask(t, s)
-
-	if err := s.ClaimTask(id, "rev1"); err != nil {
-		t.Fatalf("claim: %v", err)
-	}
-	if err := s.TransitionTask(id, "rev1", "open", "handing it back"); err != nil {
-		t.Fatalf("reopen: %v", err)
-	}
-	if err := s.ClaimTask(id, "rev2"); err != nil {
-		t.Fatalf("re-claim after reopen: %v", err)
-	}
-	th, entries, err := s.GetThread(id)
-	if err != nil {
-		t.Fatalf("GetThread: %v", err)
-	}
-	if th.Status != "claimed" {
-		t.Fatalf("status = %q, want claimed", th.Status)
-	}
-	if len(entries) != 4 {
-		t.Fatalf("thread has %d entries, want 4 (open, claim, reopen, re-claim)", len(entries))
 	}
 }
 

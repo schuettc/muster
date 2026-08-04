@@ -28,3 +28,28 @@ jobs:
         run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
       - name: Verify
         run: just verify
+
+  # The DynamoDB backend's real semantics — conditional writes, atomic
+  # counters, transactions, the exactly-one idempotency claim — need an actual
+  # endpoint, so those tests SKIP without one. `just verify` above must stay
+  # fast and container-free, which means it can compile and vet them but never
+  # run them. This job is where they run: a separate gate, not a replacement.
+  #
+  # It covers both the backend's own package and the cross-backend conformance
+  # suite, whose DynamoDB half is the only thing proving the two
+  # implementations agree.
+  dynamo:
+    runs-on: ubuntu-latest
+    services:
+      dynamodb:
+        image: amazon/dynamodb-local
+        ports: ["8000:8000"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+      - name: DynamoDB backend + conformance tests
+        env:
+          MUSTER_DDB_ENDPOINT: http://localhost:8000
+        run: go test -race ./internal/dynamostore/... ./internal/storetest/...

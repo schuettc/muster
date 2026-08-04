@@ -21,11 +21,12 @@ import (
 // dependency. `just verify-dynamo` is the recipe that guarantees the endpoint
 // is up.
 //
-// Nothing in CI runs these today — `just verify` compiles and vets them and
-// then skips every one. Task 9 adds the CI job that stands a DynamoDB Local
-// service container up; until it lands, the only thing exercising this
-// backend's real semantics is a developer running `just verify-dynamo` by
-// hand, so a green CI run is NOT evidence that these passed.
+// `just verify` compiles and vets these and then skips every one, so a green
+// run of THAT recipe is no evidence they passed. The `dynamo` job in
+// .github/workflows/ci.yml is what actually runs them: it stands a DynamoDB
+// Local service container up and runs this package plus internal/storetest
+// with an endpoint set. It is a separate job from the `just verify` gate, so
+// check the right one before concluding this backend is green.
 func newTestStore(t *testing.T) *Store {
 	t.Helper()
 	if os.Getenv(EndpointEnv) == "" {

@@ -40,11 +40,14 @@ cross:
 # Full gate — what pre-push and CI run.
 verify: fmt-check lint test build cross
 
-# DynamoDB backend tests against DynamoDB Local. Requires Docker, so it is
-# deliberately NOT part of `verify`: that gate must stay fast and
-# dependency-free. Without an endpoint the dynamo tests skip, so `verify`
-# still compiles and vets them — it just can't exercise the DynamoDB
-# semantics (conditional writes, atomic counters) this recipe covers.
+# DynamoDB backend tests against DynamoDB Local, plus the DynamoDB half of the
+# cross-backend conformance suite. Requires Docker, so it is deliberately NOT
+# part of `verify`: that gate must stay fast and dependency-free. Without an
+# endpoint the dynamo tests skip, so `verify` still compiles and vets them (and
+# runs the SQLite half of the conformance suite) — it just can't exercise the
+# DynamoDB semantics (conditional writes, atomic counters, transactions) this
+# recipe covers. The `dynamo` job in .github/workflows/ci.yml runs the same two
+# packages against a service container.
 verify-dynamo:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -55,4 +58,4 @@ verify-dynamo:
       curl -s http://localhost:8000 >/dev/null 2>&1 && break
       sleep 0.5
     done
-    MUSTER_DDB_ENDPOINT=http://localhost:8000 go test -race ./internal/dynamostore/...
+    MUSTER_DDB_ENDPOINT=http://localhost:8000 go test -race ./internal/dynamostore/... ./internal/storetest/...

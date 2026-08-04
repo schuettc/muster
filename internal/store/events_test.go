@@ -16,6 +16,13 @@ func TestAppendEventPersistsTarget(t *testing.T) {
 	}
 }
 
+// TestEventsBacklogAndFollowModes stays a SQLite test rather than moving into
+// internal/storetest with its backlog-mode siblings: the FOLLOW half is a
+// guarantee only this backend makes. Serialized writers plus an AUTOINCREMENT
+// id mean a poll after id N can never miss a row, whereas the DynamoDB
+// backend reads an eventually-consistent index with no cross-item ordering
+// guarantee (see Events in internal/dynamostore/events.go). Follow-mode
+// parity is therefore not a contract the conformance suite can assert.
 func TestEventsBacklogAndFollowModes(t *testing.T) {
 	s := newTestStore(t)
 	for i, k := range []string{"send", "reply", "notify"} {
@@ -49,39 +56,6 @@ func TestEventsBacklogAndFollowModes(t *testing.T) {
 	}
 }
 
-// TestEventsAgentFilterMatchesThreadConcern is the finding-1 regression: a
-// reply row has empty target, so only the thread-concern join can match the
-// originator.
-func TestEventsAgentFilterMatchesThreadConcern(t *testing.T) {
-	s := newTestStore(t)
-	id, err := s.CreateThread(Thread{Kind: "message", FromAgent: "web", ToKind: "agent", ToTarget: "api"}, "req")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, e := range []Event{
-		{Kind: "send", Agent: "web", Target: "agent:api", ThreadID: id, Detail: "req"},
-		{Kind: "reply", Agent: "api", ThreadID: id},
-		{Kind: "nudge", Target: "web"},
-		{Kind: "send", Agent: "x", Target: "agent:zzz", ThreadID: 999},
-	} {
-		if err := s.AppendEvent(e); err != nil {
-			t.Fatal(err)
-		}
-	}
-	got, err := s.Events(EventQuery{Agent: "web", Backlog: true, Limit: 10})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got) != 3 { // its send (actor), api's reply (thread concern), the nudge (bare target)
-		t.Fatalf("agent=web should match 3 events, got %d: %+v", len(got), got)
-	}
-	for _, e := range got {
-		if e.Agent == "x" {
-			t.Fatalf("unrelated event leaked through agent filter: %+v", e)
-		}
-	}
-}
-
 func TestPruneEventsExactBoundarySurvives(t *testing.T) {
 	fakeTick(t) // from threads_test.go — strictly increasing clock
 	s := newTestStore(t)
@@ -97,26 +71,5 @@ func TestPruneEventsExactBoundarySurvives(t *testing.T) {
 	left, _ := s.Events(EventQuery{Backlog: true, Limit: 10})
 	if len(left) != 2 { // ts=2 (exactly at cutoff) must survive
 		t.Fatalf("rows after prune = %d, want 2", len(left))
-	}
-}
-
-func TestEventsJoinsThreadSubject(t *testing.T) {
-	s := newTestStore(t)
-	id, err := s.CreateThread(Thread{Kind: "message", FromAgent: "web", ToKind: "agent", ToTarget: "api", Subject: "hello subj"}, "b")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := s.AppendEvent(Event{Kind: "notify", Agent: "api", ThreadID: id, Count: 1, Detail: "lit"}); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.AppendEvent(Event{Kind: "read", Agent: "api"}); err != nil {
-		t.Fatal(err)
-	}
-	evs, err := s.Events(EventQuery{Backlog: true, Limit: 10})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if evs[1].Subject != "hello subj" || evs[0].Subject != "" {
-		t.Fatalf("subject join: notify=%q (want hello subj), read=%q (want empty)", evs[1].Subject, evs[0].Subject)
 	}
 }

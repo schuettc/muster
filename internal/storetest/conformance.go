@@ -1,0 +1,1597 @@
+// Package storetest holds the backend conformance suite: one set of
+// behavioural tests run against every store.API implementation, so the SQLite
+// and DynamoDB backends cannot drift.
+//
+// The SQLite implementation is the specification. Every case here was written
+// against the store.API surface only — nothing reaches into a backend's
+// storage — so a case that passes on one backend and fails on the other is a
+// real disagreement about what the bus does, not a test artefact.
+//
+// Three behaviours are deliberately NOT asserted here, because the two
+// backends legitimately differ and the difference is invisible to every
+// caller:
+//
+//   - After IdemComplete(key, nil), SQLite hands back a zero-length non-nil
+//     []byte and DynamoDB hands back nil. Both are honest reads of their own
+//     storage, so the cases below assert len(resp) == 0 and never resp == nil.
+//   - GetThread on an unknown id returns store.ErrThreadNotFound on DynamoDB
+//     and sql.ErrNoRows on SQLite. The daemon only stringifies it, so no
+//     caller can observe the identity; testGetThreadUnknownID asserts only
+//     that some error comes back.
+//   - The events FOLLOW path (EventQuery.AfterID). DynamoDB reads an
+//     eventually-consistent GSI with no cross-item ordering guarantee, so a
+//     follow poll can skip an event permanently; SQLite's serialized writers
+//     and AUTOINCREMENT make that impossible. See the Events doc comment in
+//     internal/dynamostore/events.go. Each backend pins its own follow
+//     semantics in its own package; the shared suite covers only backlog
+//     reads, which both backends order the same way.
+//
+// PruneEvents is likewise absent: it genuinely prunes on SQLite and returns
+// (0, nil) on DynamoDB, where native TTL supersedes it.
+package storetest
+
+import (
+	"errors"
+	"fmt"
+	"slices"
+	"sync"
+	"sync/atomic"
+	"testing"
+
+	"github.com/schuettc/muster/internal/clock"
+	"github.com/schuettc/muster/internal/store"
+)
+
+// RunConformance runs the full behavioural suite against newStore. Each
+// subtest gets a fresh store, so no case can be made to pass (or fail) by
+// state another case left behind.
+func RunConformance(t *testing.T, newStore func(t *testing.T) store.API) {
+	t.Helper()
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.fn(t, newStore(t))
+		})
+	}
+}
+
+type conformanceCase struct {
+	name string
+	fn   func(t *testing.T, s store.API)
+}
+
+var cases = []conformanceCase{
+	// Roster.
+	{"RegisterAgentUpsertsAndRevivesDeparted", testRegisterAgentUpsert},
+	{"RegisterAgentRoundTripsEveryField", testRegisterAgentRoundTrip},
+	{"ListAgentsOrdersByAlias", testListAgentsOrder},
+	{"GetAgentUnknownAliasIsNotAnError", testGetAgentUnknown},
+	{"DeleteAgentRemovesTheRow", testDeleteAgent},
+	{"DepartAgentTombstonesPreservingFields", testDepartAgentTombstone},
+	{"SetSessionLabelMovesSiblingsTogether", testSetSessionLabel},
+	{"SetSessionLabelNoOpsOnEmptyTuple", testSetSessionLabelEmptyTuple},
+	{"DepartStaleSiblingsGhostGuard", testDepartStaleSiblings},
+	{"DepartStaleSiblingsNoOpsOnEmptyTuple", testDepartStaleSiblingsEmptyTuple},
+
+	// Threads and entries.
+	{"CreateThreadAndGetThread", testCreateThread},
+	{"CreateThreadValidatesIntent", testIntentValidation},
+	{"CreateThreadPreservesAnExplicitIntentOnATask", testExplicitTaskIntent},
+	{"EntriesReturnInIDOrder", testEntryOrder},
+	{"AppendEntryReturnsTheNewEntryID", testAppendReturnsID},
+	{"AppendEntryAdvancesUpdatedAt", testAppendAdvancesUpdatedAt},
+	{"AppendEntryOnMissingThreadIsNotFound", testAppendMissingThread},
+	{"GetThreadUnknownIDIsAnError", testGetThreadUnknownID},
+	{"EffectiveIntentAcrossReadSurfaces", testEffectiveIntent},
+	{"ThreadsLastEntryIsTheHighestID", testThreadsLastEntry},
+	{"ThreadsOrderingTiesByID", testThreadsTieByID},
+	{"ThreadsRespectsLimit", testThreadsLimit},
+	{"ThreadsDefaultsAnUnsetLimit", testThreadsUnsetLimit},
+
+	// Inbox and unread.
+	{"UnreadCountRespectsWatermark", testUnreadWatermark},
+	{"BroadcastCountsAsUnread", testBroadcastUnread},
+	{"MarkReadUnknownAliasIsNoOp", testMarkReadUnknown},
+	{"InboxMatchesAgentRoleBroadcastAndOriginated", testInboxArms},
+	{"InboxIncludesOriginatedThreadsForUnregisteredAlias", testInboxOriginatedUnregistered},
+	{"UnreadCountOriginatorSeesPeerReply", testUnreadOriginatorSeesReply},
+	{"UnreadCountIgnoresOwnReply", testUnreadIgnoresOwnReply},
+	{"InboxAnnotatesLastFromAndUnread", testInboxAnnotations},
+	{"InboxUnreadDropsAfterMarkRead", testInboxUnreadDrops},
+	{"InboxOrdersMostRecentlyUpdatedFirst", testInboxOrder},
+
+	// Session-scoped unread.
+	{"SessionUnreadCountsDistinctThreads", testSessionUnreadDistinct},
+	{"SessionUnreadExcludesSiblingAuthors", testSessionUnreadSiblingAuthors},
+	{"SessionUnreadActionCount", testSessionUnreadAction},
+	{"SessionUnreadUsesPerAliasWatermark", testSessionUnreadPerAliasWatermark},
+	{"SessionUnreadEmptyTupleNeverGroups", testSessionUnreadEmptyTuple},
+
+	// Tasks.
+	{"ClaimTaskSucceedsOnceThenFails", testClaimOnce},
+	{"ClaimTaskIsAtomicUnderConcurrency", testClaimAtomic},
+	{"ClaimTaskRecordsStatusChangeEntry", testClaimEntry},
+	{"ClaimTaskOnMissingThreadIsNotClaimable", testClaimMissingThread},
+	{"ClaimTaskOnATerminalTaskIsNotClaimable", testClaimTerminal},
+	{"TransitionTaskValidatesAndRecords", testTransitionRecords},
+	{"TransitionTaskOnMissingThreadIsNotFound", testTransitionMissingThread},
+	{"TransitionTaskBackToOpenIsClaimableAgain", testTransitionReopen},
+
+	// Idempotency records.
+	{"IdemBeginClaimsThenReportsDone", testIdemLifecycle},
+	{"IdemBeginIsAtomicUnderConcurrency", testIdemAtomic},
+	{"IdemKeysAreIndependent", testIdemKeysIndependent},
+	{"IdemCompleteUnknownKeyIsNoOp", testIdemCompleteUnknown},
+	{"IdemCompleteEmptyResponse", testIdemCompleteEmpty},
+
+	// Blackboard.
+	{"KVSetIsLastWriteWins", testKVLastWriteWins},
+	{"KVGetIsReadYourWrites", testKVReadYourWrites},
+
+	// Journal.
+	{"AppendEventRoundTripsEveryField", testEventRoundTrip},
+	{"MaxEventIDOnAnEmptyJournal", testMaxEventIDEmpty},
+	{"EventsBacklogIsNewestFirst", testEventsBacklog},
+	{"EventsFilterByAgent", testEventsByAgent},
+	{"EventsFilterByAgentUsesTheAliasesRole", testEventsByAgentRole},
+	{"EventsFilterByKindAndThread", testEventsByKindAndThread},
+	{"EventsJoinsThreadSubjectAndIntent", testEventsJoin},
+	{"EventsJoinToleratesAMissingThread", testEventsJoinMissingThread},
+}
+
+// --- helpers ---------------------------------------------------------------
+
+func mustRegister(t *testing.T, s store.API, a store.Agent) {
+	t.Helper()
+	if err := s.RegisterAgent(a); err != nil {
+		t.Fatalf("RegisterAgent(%q): %v", a.Alias, err)
+	}
+}
+
+func mustThread(t *testing.T, s store.API, th store.Thread, body string) int64 {
+	t.Helper()
+	id, err := s.CreateThread(th, body)
+	if err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	return id
+}
+
+func mustAppend(t *testing.T, s store.API, id int64, from, body, statusChange string) {
+	t.Helper()
+	if _, err := s.AppendEntry(id, from, body, statusChange); err != nil {
+		t.Fatalf("AppendEntry: %v", err)
+	}
+}
+
+// newTask creates the open task every claim/transition case starts from.
+func newTask(t *testing.T, s store.API) int64 {
+	t.Helper()
+	return mustThread(t, s, store.Thread{
+		Kind: "task", FromAgent: "backend", ToKind: "role", ToTarget: "reviewer", Status: "open",
+	}, "review please")
+}
+
+// freezeClock pins the clock so same-millisecond ordering cases are
+// deterministic. Both backends read time through internal/clock, so this is
+// backend-agnostic.
+func freezeClock(t *testing.T, at int64) {
+	t.Helper()
+	clock.SetForTesting(func() int64 { return at })
+	t.Cleanup(clock.ResetForTesting)
+}
+
+func threadsByID(ts []store.Thread) map[int64]store.Thread {
+	byID := make(map[int64]store.Thread, len(ts))
+	for _, th := range ts {
+		byID[th.ID] = th
+	}
+	return byID
+}
+
+// --- roster ----------------------------------------------------------------
+
+// testRegisterAgentUpsert: re-registering an alias refreshes the mutable tuple
+// in place (never a duplicate row), leaves the insert-only RegisteredAt alone,
+// and clears the departed tombstone so a returning session revives its row.
+func testRegisterAgentUpsert(t *testing.T, s store.API) {
+	mustRegister(t, s, store.Agent{
+		Alias: "backend", Role: "producer", ModelType: "claude", SocketPath: "/s", PaneID: "%1",
+	})
+	first, ok, err := s.GetAgent("backend")
+	if err != nil || !ok {
+		t.Fatalf("GetAgent: ok=%v err=%v", ok, err)
+	}
+	if first.RegisteredAt == 0 || first.LastSeen == 0 {
+		t.Fatalf("timestamps not stamped: %+v", first)
+	}
+	if err := s.DepartAgent("backend"); err != nil {
+		t.Fatalf("DepartAgent: %v", err)
+	}
+
+	mustRegister(t, s, store.Agent{
+		Alias: "backend", Role: "reviewer", ModelType: "claude", SocketPath: "/s2", PaneID: "%9",
+	})
+	agents, err := s.ListAgents()
+	if err != nil {
+		t.Fatalf("ListAgents: %v", err)
+	}
+	if len(agents) != 1 {
+		t.Fatalf("re-register produced %d rows, want 1 (upsert, not insert)", len(agents))
+	}
+	got := agents[0]
+	if got.PaneID != "%9" || got.SocketPath != "/s2" || got.Role != "reviewer" {
+		t.Errorf("upsert did not refresh the tuple: %+v", got)
+	}
+	if got.Departed {
+		t.Error("re-registering must clear Departed — a returning session revives its row")
+	}
+	if got.RegisteredAt != first.RegisteredAt {
+		t.Errorf("RegisteredAt changed on re-register: %d -> %d; it is insert-only",
+			first.RegisteredAt, got.RegisteredAt)
+	}
+	if got.LastSeen < first.LastSeen {
+		t.Errorf("LastSeen went backwards: %d -> %d", first.LastSeen, got.LastSeen)
+	}
+}
+
+// testRegisterAgentRoundTrip pins every column through the write and both read
+// paths — a field silently dropped by one backend is a wake-routing or
+// liveness bug that nothing else notices.
+func testRegisterAgentRoundTrip(t *testing.T, s store.API) {
+	want := store.Agent{
+		Alias: "a1", Role: "worker", ModelType: "claude",
+		SocketPath: "/tmp/tmux-501/default", PaneID: "%1",
+		SessionName: "muster-1", SessionID: "$1", SessionCreated: 1700000000,
+		DeviceID: "dev-1", Project: "muster", Label: "backend", LabelManual: true,
+	}
+	mustRegister(t, s, want)
+	got, ok, err := s.GetAgent("a1")
+	if err != nil || !ok {
+		t.Fatalf("GetAgent: ok=%v err=%v", ok, err)
+	}
+	if got.Alias != want.Alias || got.Role != want.Role || got.ModelType != want.ModelType ||
+		got.SocketPath != want.SocketPath || got.PaneID != want.PaneID ||
+		got.SessionName != want.SessionName || got.SessionID != want.SessionID ||
+		got.SessionCreated != want.SessionCreated || got.DeviceID != want.DeviceID ||
+		got.Project != want.Project || got.Label != want.Label || got.LabelManual != want.LabelManual {
+		t.Fatalf("round trip lost fields:\n got %+v\nwant %+v", got, want)
+	}
+	list, err := s.ListAgents()
+	if err != nil || len(list) != 1 {
+		t.Fatalf("ListAgents: %d rows (%v)", len(list), err)
+	}
+	if list[0].SessionCreated != want.SessionCreated || list[0].DeviceID != want.DeviceID {
+		t.Fatalf("ListAgents dropped identity fields: %+v", list[0])
+	}
+}
+
+// testListAgentsOrder: aliases come back sorted, and a departed row is history
+// rather than gone — it stays in the roster.
+func testListAgentsOrder(t *testing.T, s store.API) {
+	for _, alias := range []string{"c", "a", "b"} {
+		mustRegister(t, s, store.Agent{Alias: alias})
+	}
+	if err := s.DepartAgent("b"); err != nil {
+		t.Fatalf("DepartAgent: %v", err)
+	}
+	got, err := s.ListAgents()
+	if err != nil {
+		t.Fatalf("ListAgents: %v", err)
+	}
+	var aliases []string
+	for _, a := range got {
+		aliases = append(aliases, a.Alias)
+	}
+	if want := []string{"a", "b", "c"}; !slices.Equal(aliases, want) {
+		t.Fatalf("aliases = %v, want %v (sorted, departed included)", aliases, want)
+	}
+}
+
+func testGetAgentUnknown(t *testing.T, s store.API) {
+	_, ok, err := s.GetAgent("nobody")
+	if err != nil {
+		t.Fatalf("GetAgent on an unknown alias must not error: %v", err)
+	}
+	if ok {
+		t.Fatal("unknown alias must report ok=false")
+	}
+	// DepartAgent on an unknown alias is a no-op, not a phantom row: on
+	// DynamoDB an unguarded UpdateItem would upsert one containing nothing
+	// but a departed flag.
+	if err := s.DepartAgent("nobody"); err != nil {
+		t.Fatalf("DepartAgent unknown: %v", err)
+	}
+	agents, err := s.ListAgents()
+	if err != nil {
+		t.Fatalf("ListAgents: %v", err)
+	}
+	if len(agents) != 0 {
+		t.Fatalf("no-op calls created %d phantom row(s): %+v", len(agents), agents)
+	}
+}
+
+func testDeleteAgent(t *testing.T, s store.API) {
+	mustRegister(t, s, store.Agent{Alias: "a1"})
+	if err := s.DeleteAgent("a1"); err != nil {
+		t.Fatalf("DeleteAgent: %v", err)
+	}
+	if _, ok, err := s.GetAgent("a1"); err != nil || ok {
+		t.Fatalf("agent should be gone after DeleteAgent: ok=%v err=%v", ok, err)
+	}
+	if err := s.DeleteAgent("nonexistent"); err != nil {
+		t.Fatalf("DeleteAgent of an unknown alias must be a no-op, got %v", err)
+	}
+}
+
+// testDepartAgentTombstone: deregistration is a tombstone, not a delete. The
+// row survives with Departed set and every other field — project, label,
+// label_manual, the read watermark — untouched, so departed history stays
+// drillable.
+func testDepartAgentTombstone(t *testing.T, s store.API) {
+	mustRegister(t, s, store.Agent{
+		Alias: "muster-2", Role: "peer", ModelType: "codex", SocketPath: "/s", SessionID: "$1",
+		Project: "muster", Label: "frontend", LabelManual: true,
+	})
+	mustThread(t, s, store.Thread{
+		Kind: "message", FromAgent: "x", ToKind: "agent", ToTarget: "muster-2",
+	}, "hi")
+	if err := s.MarkRead("muster-2"); err != nil {
+		t.Fatalf("MarkRead: %v", err)
+	}
+	before, ok, err := s.GetAgent("muster-2")
+	if err != nil || !ok {
+		t.Fatalf("GetAgent: ok=%v err=%v", ok, err)
+	}
+	if before.LastReadEntryID == 0 {
+		t.Fatalf("MarkRead did not advance the watermark: %+v", before)
+	}
+
+	if err := s.DepartAgent("muster-2"); err != nil {
+		t.Fatalf("DepartAgent: %v", err)
+	}
+	got, ok, err := s.GetAgent("muster-2")
+	if err != nil || !ok {
+		t.Fatalf("departed agent must still be readable: ok=%v err=%v", ok, err)
+	}
+	if !got.Departed {
+		t.Error("Departed not set")
+	}
+	if got.Project != before.Project || got.Label != before.Label ||
+		got.LabelManual != before.LabelManual || got.Role != before.Role ||
+		got.LastReadEntryID != before.LastReadEntryID {
+		t.Fatalf("tombstone lost fields:\n got %+v\nwant %+v", got, before)
+	}
+}
+
+// testSetSessionLabel: the set_label op moves every LIVE alias on the tuple
+// together — labels are addresses, so a sibling left behind is an alias that
+// no longer answers to the name its session goes by. A departed sibling and
+// another session are both spared.
+func testSetSessionLabel(t *testing.T, s store.API) {
+	const sock, sess = "/tmp/tmux-501/default", "$1"
+	for _, alias := range []string{"a1", "a2"} {
+		mustRegister(t, s, store.Agent{Alias: alias, SocketPath: sock, SessionID: sess})
+	}
+	mustRegister(t, s, store.Agent{Alias: "other", SocketPath: sock, SessionID: "$2"})
+	mustRegister(t, s, store.Agent{Alias: "gone", SocketPath: sock, SessionID: sess})
+	if err := s.DepartAgent("gone"); err != nil {
+		t.Fatalf("DepartAgent: %v", err)
+	}
+
+	n, err := s.SetSessionLabel(sock, sess, "backend", true)
+	if err != nil {
+		t.Fatalf("SetSessionLabel: %v", err)
+	}
+	if n != 2 {
+		t.Fatalf("labelled %d rows, want 2 (a1 and a2 only)", n)
+	}
+	for _, tc := range []struct{ alias, want string }{
+		{"a1", "backend"}, {"a2", "backend"}, {"other", ""}, {"gone", ""},
+	} {
+		got, _, err := s.GetAgent(tc.alias)
+		if err != nil {
+			t.Fatalf("GetAgent %s: %v", tc.alias, err)
+		}
+		if got.Label != tc.want {
+			t.Errorf("%s label = %q, want %q", tc.alias, got.Label, tc.want)
+		}
+	}
+}
+
+func testSetSessionLabelEmptyTuple(t *testing.T, s store.API) {
+	for _, tc := range []struct{ sock, sess string }{{"", "$1"}, {"/tmp/s", ""}, {"", ""}} {
+		n, err := s.SetSessionLabel(tc.sock, tc.sess, "x", true)
+		if err != nil {
+			t.Fatalf("SetSessionLabel(%q,%q): %v", tc.sock, tc.sess, err)
+		}
+		if n != 0 {
+			t.Errorf("SetSessionLabel(%q,%q) = %d, want 0 — an empty tuple is never a group",
+				tc.sock, tc.sess, n)
+		}
+	}
+}
+
+// testDepartStaleSiblings covers the ghost reaper: tmux recycles session IDs
+// across server restarts, so a registration left behind by a dead incarnation
+// can share a (socket, session id) tuple with a live session. Only a
+// DIFFERING, NON-ZERO session_created proves a row is a ghost — a row with 0
+// carries no incarnation evidence and must be spared.
+func testDepartStaleSiblings(t *testing.T, s store.API) {
+	const sock, sess = "/tmp/tmux-501/default", "$1"
+	const nowCreated = int64(1700000200)
+	reg := func(alias string, created int64) {
+		t.Helper()
+		mustRegister(t, s, store.Agent{
+			Alias: alias, SocketPath: sock, SessionID: sess, SessionCreated: created,
+		})
+	}
+	reg("ghost", 1700000000)
+	reg("keeper", nowCreated)
+	reg("sibling", nowCreated)
+	reg("preupgrade", 0)
+	mustRegister(t, s, store.Agent{
+		Alias: "elsewhere", SocketPath: sock, SessionID: "$2", SessionCreated: 1700000000,
+	})
+
+	stale, err := s.DepartStaleSiblings(sock, sess, nowCreated, "keeper")
+	if err != nil {
+		t.Fatalf("DepartStaleSiblings: %v", err)
+	}
+	if want := []string{"ghost"}; !slices.Equal(stale, want) {
+		t.Fatalf("departed %v, want %v — only a differing NON-ZERO session_created is a ghost", stale, want)
+	}
+	for _, alias := range []string{"keeper", "sibling", "preupgrade", "elsewhere"} {
+		got, _, err := s.GetAgent(alias)
+		if err != nil {
+			t.Fatalf("GetAgent %s: %v", alias, err)
+		}
+		if got.Departed {
+			t.Errorf("%s was departed but should have been spared", alias)
+		}
+	}
+}
+
+func testDepartStaleSiblingsEmptyTuple(t *testing.T, s store.API) {
+	for _, tc := range []struct {
+		sock, sess string
+		created    int64
+	}{{"", "$1", 1}, {"/tmp/s", "", 1}, {"/tmp/s", "$1", 0}} {
+		got, err := s.DepartStaleSiblings(tc.sock, tc.sess, tc.created, "keeper")
+		if err != nil {
+			t.Fatalf("DepartStaleSiblings(%q,%q,%d): %v", tc.sock, tc.sess, tc.created, err)
+		}
+		if len(got) != 0 {
+			t.Errorf("DepartStaleSiblings(%q,%q,%d) = %v, want none",
+				tc.sock, tc.sess, tc.created, got)
+		}
+	}
+}
+
+// --- threads and entries ---------------------------------------------------
+
+func testCreateThread(t *testing.T, s store.API) {
+	id := mustThread(t, s, store.Thread{
+		Kind: "message", FromAgent: "a1", ToKind: "agent", ToTarget: "a2",
+		Subject: "hi", Ref: "repo=x", OriginProject: "muster",
+	}, "first body")
+	th, entries, err := s.GetThread(id)
+	if err != nil {
+		t.Fatalf("GetThread: %v", err)
+	}
+	if th.ID != id || th.Kind != "message" || th.FromAgent != "a1" || th.ToKind != "agent" ||
+		th.ToTarget != "a2" || th.Subject != "hi" || th.Ref != "repo=x" || th.OriginProject != "muster" {
+		t.Fatalf("thread round trip wrong: %+v", th)
+	}
+	if th.CreatedAt == 0 || th.UpdatedAt == 0 {
+		t.Fatalf("timestamps not stamped: %+v", th)
+	}
+	if len(entries) != 1 || entries[0].Body != "first body" || entries[0].FromAgent != "a1" ||
+		entries[0].ThreadID != id {
+		t.Fatalf("entries = %+v, want one carrying 'first body'", entries)
+	}
+	// LastFrom/LastAt/EntryCount/Unread are query-time only: CreateThread and
+	// GetThread leave them zero.
+	if th.LastFrom != "" || th.LastAt != 0 || th.EntryCount != 0 || th.Unread != 0 {
+		t.Fatalf("GetThread must leave query-time-only fields zero: %+v", th)
+	}
+}
+
+// testIntentValidation: CreateThread is the validation boundary, so MCP, CLI
+// and station cannot diverge on the vocabulary.
+func testIntentValidation(t *testing.T, s store.API) {
+	for _, ok := range []string{"", store.IntentFYI, store.IntentReply, store.IntentAction} {
+		if _, err := s.CreateThread(store.Thread{
+			Kind: "message", FromAgent: "a", ToKind: "broadcast", Intent: ok,
+		}, "body"); err != nil {
+			t.Fatalf("intent %q should be valid: %v", ok, err)
+		}
+	}
+	if _, err := s.CreateThread(store.Thread{
+		Kind: "message", FromAgent: "a", ToKind: "broadcast", Intent: "urgent",
+	}, "body"); err == nil {
+		t.Fatal("an unknown intent must be rejected")
+	}
+}
+
+// testExplicitTaskIntent: effectiveIntent supplies action-requested only when
+// a task stored NO intent. An explicit one is the operator's word and must
+// survive every read surface unchanged.
+func testExplicitTaskIntent(t *testing.T, s store.API) {
+	mustRegister(t, s, store.Agent{Alias: "worker", SocketPath: "/s", SessionID: "$1"})
+	id := mustThread(t, s, store.Thread{
+		Kind: "task", FromAgent: "backend", ToKind: "agent", ToTarget: "worker",
+		Status: "open", Intent: store.IntentFYI,
+	}, "heads up, no action needed")
+
+	th, _, err := s.GetThread(id)
+	if err != nil {
+		t.Fatalf("GetThread: %v", err)
+	}
+	if th.Intent != store.IntentFYI {
+		t.Errorf("GetThread intent = %q, want %q — an explicit intent must not be overridden",
+			th.Intent, store.IntentFYI)
+	}
+	for name, load := range map[string]func() ([]store.Thread, error){
+		"Threads": func() ([]store.Thread, error) { return s.Threads(10) },
+		"Inbox":   func() ([]store.Thread, error) { return s.Inbox("worker") },
+	} {
+		got, err := load()
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if in := threadsByID(got)[id].Intent; in != store.IntentFYI {
+			t.Errorf("%s intent = %q, want %q", name, in, store.IntentFYI)
+		}
+	}
+	// The action count keys off the EFFECTIVE intent, not off kind: a task
+	// explicitly marked fyi is unread but is not asking for anything.
+	total, action, err := s.SessionUnread("/s", "$1")
+	if err != nil {
+		t.Fatalf("SessionUnread: %v", err)
+	}
+	if total != 1 || action != 0 {
+		t.Fatalf("an fyi-intent task: total=%d action=%d, want 1,0 — the action count follows "+
+			"the effective intent, not the thread kind", total, action)
+	}
+}
+
+func testEntryOrder(t *testing.T, s store.API) {
+	id := mustThread(t, s, store.Thread{
+		Kind: "message", FromAgent: "a1", ToKind: "agent", ToTarget: "a2",
+	}, "one")
+	for _, body := range []string{"two", "three"} {
+		mustAppend(t, s, id, "a2", body, "")
+	}
+	_, entries, err := s.GetThread(id)
+	if err != nil {
+		t.Fatalf("GetThread: %v", err)
+	}
+	var bodies []string
+	for _, e := range entries {
+		bodies = append(bodies, e.Body)
+	}
+	if want := []string{"one", "two", "three"}; !slices.Equal(bodies, want) {
+		t.Fatalf("bodies = %v, want %v", bodies, want)
+	}
+}
+
+// testAppendReturnsID: the id AppendEntry returns is the id the entry
+// actually got, and ids advance. The daemon hands this straight back to the
+// caller as the reply's entry id, so a backend returning a counter value it
+// then failed to use would misreport a write that never landed.
+func testAppendReturnsID(t *testing.T, s store.API) {
+	id := mustThread(t, s, store.Thread{
+		Kind: "message", FromAgent: "a", ToKind: "agent", ToTarget: "b",
+	}, "first")
+	firstReply, err := s.AppendEntry(id, "b", "second", "")
+	if err != nil {
+		t.Fatalf("AppendEntry: %v", err)
+	}
+	secondReply, err := s.AppendEntry(id, "b", "third", "")
+	if err != nil {
+		t.Fatalf("AppendEntry: %v", err)
+	}
+	if firstReply <= 0 || secondReply <= firstReply {
+		t.Fatalf("returned entry ids = %d then %d, want increasing positives", firstReply, secondReply)
+	}
+	_, entries, err := s.GetThread(id)
+	if err != nil {
+		t.Fatalf("GetThread: %v", err)
+	}
+	if len(entries) != 3 {
+		t.Fatalf("thread has %d entries, want 3", len(entries))
+	}
+	if entries[1].ID != firstReply || entries[2].ID != secondReply {
+		t.Fatalf("stored ids = %d,%d but AppendEntry returned %d,%d",
+			entries[1].ID, entries[2].ID, firstReply, secondReply)
+	}
+}
+
+func testAppendAdvancesUpdatedAt(t *testing.T, s store.API) {
+	id := mustThread(t, s, store.Thread{
+		Kind: "task", FromAgent: "backend", ToKind: "role", ToTarget: "reviewer", Status: "open",
+	}, "please review")
+	before, _, err := s.GetThread(id)
+	if err != nil {
+		t.Fatalf("GetThread: %v", err)
+	}
+	mustAppend(t, s, id, "reviewer", "looks good", "claimed")
+	after, entries, err := s.GetThread(id)
+	if err != nil {
+		t.Fatalf("GetThread: %v", err)
+	}
+	if after.UpdatedAt < before.UpdatedAt {
+		t.Fatalf("updated_at went backwards: %d -> %d", before.UpdatedAt, after.UpdatedAt)
+	}
+	if len(entries) != 2 || entries[1].StatusChange != "claimed" {
+		t.Fatalf("entries = %+v, want the second carrying status_change=claimed", entries)
+	}
+	if after.Status != "open" {
+		t.Fatalf("AppendEntry must not touch status, got %q", after.Status)
+	}
+}
+
+func testAppendMissingThread(t *testing.T, s store.API) {
+	if _, err := s.AppendEntry(999999, "backend", "hello", ""); !errors.Is(err, store.ErrThreadNotFound) {
+		t.Fatalf("AppendEntry on a missing thread = %v, want ErrThreadNotFound", err)
+	}
+	// The write must not have half-landed: nothing addressed to anyone.
+	threads, err := s.Threads(10)
+	if err != nil {
+		t.Fatalf("Threads: %v", err)
+	}
+	if len(threads) != 0 {
+		t.Fatalf("a failed append created %d thread(s): %+v", len(threads), threads)
+	}
+}
+
+// testGetThreadUnknownID asserts only that an unknown id is an error. The two
+// backends report DIFFERENT errors — store.ErrThreadNotFound on DynamoDB,
+// sql.ErrNoRows on SQLite — and the daemon only stringifies it, so no caller
+// can observe the difference. Asserting identity here would pin an accepted
+// divergence rather than the contract.
+func testGetThreadUnknownID(t *testing.T, s store.API) {
+	if _, _, err := s.GetThread(999999); err == nil {
+		t.Fatal("GetThread on an unknown id must return an error")
+	}
+}
+
+// testEffectiveIntent: a task stored with intent "" must read as
+// action-requested from Threads, GetThread AND Inbox — one vocabulary
+// everywhere a Thread is read, with no surface left on the raw stored value.
+func testEffectiveIntent(t *testing.T, s store.API) {
+	mustRegister(t, s, store.Agent{Alias: "worker"})
+	taskID := mustThread(t, s, store.Thread{
+		Kind: "task", FromAgent: "backend", ToKind: "agent", ToTarget: "worker", Status: "open",
+	}, "please do X")
+	msgID := mustThread(t, s, store.Thread{
+		Kind: "message", FromAgent: "backend", ToKind: "agent", ToTarget: "worker",
+	}, "fyi-ish")
+
+	th, _, err := s.GetThread(taskID)
+	if err != nil {
+		t.Fatalf("GetThread: %v", err)
+	}
+	if th.Intent != store.IntentAction {
+		t.Errorf("GetThread task intent = %q, want %q", th.Intent, store.IntentAction)
+	}
+	msg, _, err := s.GetThread(msgID)
+	if err != nil {
+		t.Fatalf("GetThread: %v", err)
+	}
+	if msg.Intent != "" {
+		t.Errorf("GetThread message intent = %q, want \"\"", msg.Intent)
+	}
+
+	for name, load := range map[string]func() ([]store.Thread, error){
+		"Threads": func() ([]store.Thread, error) { return s.Threads(10) },
+		"Inbox":   func() ([]store.Thread, error) { return s.Inbox("worker") },
+	} {
+		got, err := load()
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		byID := threadsByID(got)
+		if byID[taskID].Intent != store.IntentAction {
+			t.Errorf("%s task intent = %q, want %q", name, byID[taskID].Intent, store.IntentAction)
+		}
+		if byID[msgID].Intent != "" {
+			t.Errorf("%s message intent = %q, want \"\"", name, byID[msgID].Intent)
+		}
+	}
+}
+
+// testThreadsLastEntry: with the clock frozen the two entries share a
+// created_at, so the last entry must be identified by the higher ID (append
+// order) rather than by an ambiguous MAX(created_at).
+func testThreadsLastEntry(t *testing.T, s store.API) {
+	freezeClock(t, 5000)
+	id := mustThread(t, s, store.Thread{Kind: "message", FromAgent: "a", ToKind: "broadcast"}, "first")
+	mustAppend(t, s, id, "b", "second", "")
+	threads, err := s.Threads(10)
+	if err != nil {
+		t.Fatalf("Threads: %v", err)
+	}
+	if len(threads) != 1 {
+		t.Fatalf("Threads returned %d, want 1", len(threads))
+	}
+	if threads[0].LastFrom != "b" {
+		t.Fatalf("last entry from = %q, want \"b\" (the higher-id entry, despite identical created_at)",
+			threads[0].LastFrom)
+	}
+	if threads[0].EntryCount != 2 {
+		t.Fatalf("entry count = %d, want 2", threads[0].EntryCount)
+	}
+	if threads[0].LastAt == 0 {
+		t.Fatal("LastAt not populated")
+	}
+}
+
+func testThreadsTieByID(t *testing.T, s store.API) {
+	freezeClock(t, 9000)
+	firstID := mustThread(t, s, store.Thread{Kind: "message", FromAgent: "a", ToKind: "broadcast"}, "one")
+	secondID := mustThread(t, s, store.Thread{Kind: "message", FromAgent: "a", ToKind: "broadcast"}, "two")
+	threads, err := s.Threads(10)
+	if err != nil {
+		t.Fatalf("Threads: %v", err)
+	}
+	if len(threads) != 2 || threads[0].ID != secondID || threads[1].ID != firstID {
+		t.Fatalf("tie-break order = %+v, want [%d, %d] (newest id first)", threads, secondID, firstID)
+	}
+}
+
+// testThreadsLimit: a thread outside the limited window contributes nothing —
+// the threads that ARE returned still carry correct aggregates.
+func testThreadsLimit(t *testing.T, s store.API) {
+	oldID := mustThread(t, s, store.Thread{Kind: "message", FromAgent: "a", ToKind: "broadcast"}, "old-1")
+	mustAppend(t, s, oldID, "a", "old-2", "")
+	newID := mustThread(t, s, store.Thread{Kind: "message", FromAgent: "b", ToKind: "broadcast"}, "new-1")
+	threads, err := s.Threads(1)
+	if err != nil {
+		t.Fatalf("Threads: %v", err)
+	}
+	if len(threads) != 1 || threads[0].ID != newID || threads[0].EntryCount != 1 {
+		t.Fatalf("limit=1 result = %+v, want just thread %d with 1 entry", threads, newID)
+	}
+}
+
+// testThreadsUnsetLimit: limit <= 0 is "unspecified", not "none". Every human
+// CLI and MCP caller that omits a limit relies on the store's default rather
+// than on getting an empty list back.
+func testThreadsUnsetLimit(t *testing.T, s store.API) {
+	for _, body := range []string{"one", "two", "three"} {
+		mustThread(t, s, store.Thread{Kind: "message", FromAgent: "a", ToKind: "broadcast"}, body)
+	}
+	for _, limit := range []int{0, -1} {
+		got, err := s.Threads(limit)
+		if err != nil {
+			t.Fatalf("Threads(%d): %v", limit, err)
+		}
+		if len(got) != 3 {
+			t.Fatalf("Threads(%d) returned %d threads, want 3 — a non-positive limit means "+
+				"'use the default', not 'return nothing'", limit, len(got))
+		}
+	}
+}
+
+// --- inbox and unread ------------------------------------------------------
+
+func testUnreadWatermark(t *testing.T, s store.API) {
+	mustRegister(t, s, store.Agent{Alias: "a2"})
+	mustThread(t, s, store.Thread{
+		Kind: "message", FromAgent: "a1", ToKind: "agent", ToTarget: "a2",
+	}, "unread one")
+	n, err := s.UnreadCount("a2")
+	if err != nil {
+		t.Fatalf("UnreadCount: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("UnreadCount = %d, want 1", n)
+	}
+	if err := s.MarkRead("a2"); err != nil {
+		t.Fatalf("MarkRead: %v", err)
+	}
+	if n, err := s.UnreadCount("a2"); err != nil || n != 0 {
+		t.Fatalf("UnreadCount after MarkRead = %d (%v), want 0", n, err)
+	}
+	mustThread(t, s, store.Thread{
+		Kind: "message", FromAgent: "a1", ToKind: "agent", ToTarget: "a2",
+	}, "unread two")
+	if n, err := s.UnreadCount("a2"); err != nil || n != 1 {
+		t.Fatalf("UnreadCount after a new message = %d (%v), want 1", n, err)
+	}
+}
+
+func testBroadcastUnread(t *testing.T, s store.API) {
+	mustRegister(t, s, store.Agent{Alias: "a2"})
+	mustThread(t, s, store.Thread{Kind: "message", FromAgent: "a1", ToKind: "broadcast"}, "all hands")
+	n, err := s.UnreadCount("a2")
+	if err != nil {
+		t.Fatalf("UnreadCount: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("broadcast unread = %d, want 1", n)
+	}
+}
+
+func testMarkReadUnknown(t *testing.T, s store.API) {
+	if err := s.MarkRead("nobody"); err != nil {
+		t.Fatalf("MarkRead on an unknown alias: %v", err)
+	}
+	agents, err := s.ListAgents()
+	if err != nil {
+		t.Fatalf("ListAgents: %v", err)
+	}
+	if len(agents) != 0 {
+		t.Fatalf("MarkRead created %d phantom row(s): %+v", len(agents), agents)
+	}
+}
+
+// testInboxArms is the thread-concern predicate in full — direct, by role, by
+// broadcast, and originated. Inbox and UnreadCount must agree on it, so both
+// are asserted against the same fixture.
+func testInboxArms(t *testing.T, s store.API) {
+	mustRegister(t, s, store.Agent{Alias: "rev1", Role: "reviewer"})
+	mk := func(from, toKind, toTarget string) {
+		t.Helper()
+		mustThread(t, s, store.Thread{
+			Kind: "message", FromAgent: from, ToKind: toKind, ToTarget: toTarget,
+		}, "hi")
+	}
+	mk("backend", "agent", "rev1")        // direct
+	mk("backend", "role", "reviewer")     // by role
+	mk("backend", "broadcast", "")        // to everyone
+	mk("rev1", "agent", "someone-else")   // originated by rev1
+	mk("backend", "agent", "someoneelse") // not for rev1
+	mk("backend", "role", "producer")     // another role
+
+	in, err := s.Inbox("rev1")
+	if err != nil {
+		t.Fatalf("Inbox: %v", err)
+	}
+	if len(in) != 4 {
+		t.Fatalf("Inbox returned %d threads, want 4 (direct, role, broadcast, originated): %+v", len(in), in)
+	}
+	n, err := s.UnreadCount("rev1")
+	if err != nil {
+		t.Fatalf("UnreadCount: %v", err)
+	}
+	if n != 3 {
+		t.Fatalf("UnreadCount = %d, want 3 — Inbox and UnreadCount must use the same predicate", n)
+	}
+}
+
+func testInboxOriginatedUnregistered(t *testing.T, s store.API) {
+	mustThread(t, s, store.Thread{
+		Kind: "message", FromAgent: "web", ToKind: "agent", ToTarget: "api",
+	}, "req")
+	in, err := s.Inbox("web")
+	if err != nil {
+		t.Fatalf("Inbox: %v", err)
+	}
+	if len(in) != 1 {
+		t.Fatalf("the originator arm must not require registration, got %d threads", len(in))
+	}
+}
+
+// testUnreadOriginatorSeesReply is the originator-blindness regression: a
+// reply on a thread you started counts as unread for you, so the notify
+// fan-out lights your mailbox instead of clearing it.
+func testUnreadOriginatorSeesReply(t *testing.T, s store.API) {
+	mustRegister(t, s, store.Agent{Alias: "web"})
+	id := mustThread(t, s, store.Thread{
+		Kind: "message", FromAgent: "web", ToKind: "agent", ToTarget: "api",
+	}, "req")
+	if n, err := s.UnreadCount("web"); err != nil || n != 0 {
+		t.Fatalf("own send must not count as unread, got %d (%v)", n, err)
+	}
+	mustAppend(t, s, id, "api", "done", "")
+	if n, err := s.UnreadCount("web"); err != nil || n != 1 {
+		t.Fatalf("peer reply on an originated thread = %d unread (%v), want 1", n, err)
+	}
+	if err := s.MarkRead("web"); err != nil {
+		t.Fatalf("MarkRead: %v", err)
+	}
+	if n, err := s.UnreadCount("web"); err != nil || n != 0 {
+		t.Fatalf("unread after MarkRead = %d (%v), want 0", n, err)
+	}
+}
+
+func testUnreadIgnoresOwnReply(t *testing.T, s store.API) {
+	mustRegister(t, s, store.Agent{Alias: "api"})
+	id := mustThread(t, s, store.Thread{
+		Kind: "message", FromAgent: "web", ToKind: "agent", ToTarget: "api",
+	}, "req")
+	if err := s.MarkRead("api"); err != nil {
+		t.Fatalf("MarkRead: %v", err)
+	}
+	mustAppend(t, s, id, "api", "done", "")
+	if n, err := s.UnreadCount("api"); err != nil || n != 0 {
+		t.Fatalf("own reply re-flagged own inbox: %d unread (%v), want 0", n, err)
+	}
+}
+
+// testInboxAnnotations is the production defect reproduction: an agent must be
+// able to tell "a peer replied on my thread" from "my own last send" without
+// drilling into GetThread.
+func testInboxAnnotations(t *testing.T, s store.API) {
+	for _, alias := range []string{"web", "api"} {
+		mustRegister(t, s, store.Agent{Alias: alias})
+	}
+	repliedID := mustThread(t, s, store.Thread{
+		Kind: "message", FromAgent: "web", ToKind: "agent", ToTarget: "api",
+	}, "req")
+	mustAppend(t, s, repliedID, "api", "done", "")
+	ownLastID := mustThread(t, s, store.Thread{
+		Kind: "message", FromAgent: "web", ToKind: "agent", ToTarget: "api",
+	}, "another req")
+
+	in, err := s.Inbox("web")
+	if err != nil {
+		t.Fatalf("Inbox: %v", err)
+	}
+	byID := threadsByID(in)
+	replied := byID[repliedID]
+	if replied.LastFrom != "api" || replied.Unread != 1 || replied.EntryCount != 2 {
+		t.Fatalf("replied thread = {LastFrom:%q Unread:%d EntryCount:%d}, want {api 1 2}",
+			replied.LastFrom, replied.Unread, replied.EntryCount)
+	}
+	if replied.LastAt == 0 {
+		t.Fatal("replied thread LastAt not populated")
+	}
+	ownLast := byID[ownLastID]
+	if ownLast.LastFrom != "web" || ownLast.Unread != 0 || ownLast.EntryCount != 1 {
+		t.Fatalf("own-last thread = {LastFrom:%q Unread:%d EntryCount:%d}, want {web 0 1}",
+			ownLast.LastFrom, ownLast.Unread, ownLast.EntryCount)
+	}
+}
+
+func testInboxUnreadDrops(t *testing.T, s store.API) {
+	mustRegister(t, s, store.Agent{Alias: "web"})
+	id := mustThread(t, s, store.Thread{
+		Kind: "message", FromAgent: "web", ToKind: "agent", ToTarget: "api",
+	}, "req")
+	mustAppend(t, s, id, "api", "done", "")
+	before, err := s.Inbox("web")
+	if err != nil {
+		t.Fatalf("Inbox: %v", err)
+	}
+	if len(before) != 1 || before[0].Unread != 1 {
+		t.Fatalf("before MarkRead: %+v, want one thread with unread 1", before)
+	}
+	if err := s.MarkRead("web"); err != nil {
+		t.Fatalf("MarkRead: %v", err)
+	}
+	after, err := s.Inbox("web")
+	if err != nil {
+		t.Fatalf("Inbox: %v", err)
+	}
+	if len(after) != 1 || after[0].Unread != 0 {
+		t.Fatalf("after MarkRead: %+v, want one thread with unread 0 — the annotation is watermark-relative", after)
+	}
+}
+
+// testInboxOrder: an inbox is a work queue, so the thread touched most
+// recently comes first — and a reply on an OLDER thread pulls it back to the
+// top, which is the whole reason the sort key is updated_at rather than
+// created_at.
+func testInboxOrder(t *testing.T, s store.API) {
+	var tick int64 = 1000
+	clock.SetForTesting(func() int64 { tick++; return tick })
+	t.Cleanup(clock.ResetForTesting)
+
+	mustRegister(t, s, store.Agent{Alias: "api"})
+	first := mustThread(t, s, store.Thread{
+		Kind: "message", FromAgent: "web", ToKind: "agent", ToTarget: "api",
+	}, "oldest")
+	second := mustThread(t, s, store.Thread{
+		Kind: "message", FromAgent: "web", ToKind: "agent", ToTarget: "api",
+	}, "newer")
+
+	in, err := s.Inbox("api")
+	if err != nil {
+		t.Fatalf("Inbox: %v", err)
+	}
+	if len(in) != 2 || in[0].ID != second || in[1].ID != first {
+		t.Fatalf("inbox order = %+v, want [%d, %d] (most recent first)", in, second, first)
+	}
+
+	mustAppend(t, s, first, "web", "bumped", "")
+	in, err = s.Inbox("api")
+	if err != nil {
+		t.Fatalf("Inbox: %v", err)
+	}
+	if len(in) != 2 || in[0].ID != first {
+		t.Fatalf("after a reply on the older thread the order = %+v, want thread %d first",
+			in, first)
+	}
+}
+
+// --- session-scoped unread -------------------------------------------------
+
+func testSessionUnreadDistinct(t *testing.T, s store.API) {
+	for _, alias := range []string{"session-name", "chosen-alias"} {
+		mustRegister(t, s, store.Agent{Alias: alias, SocketPath: "/s", SessionID: "$1"})
+	}
+	mustThread(t, s, store.Thread{Kind: "message", FromAgent: "peer", ToKind: "broadcast"}, "hi all")
+	total, action, err := s.SessionUnread("/s", "$1")
+	if err != nil {
+		t.Fatalf("SessionUnread: %v", err)
+	}
+	if total != 1 {
+		t.Fatalf("a broadcast concerning both sibling aliases counted total=%d, want 1", total)
+	}
+	if action != 0 {
+		t.Fatalf("a plain message counted action=%d, want 0", action)
+	}
+}
+
+func testSessionUnreadSiblingAuthors(t *testing.T, s store.API) {
+	for _, alias := range []string{"a1", "a2"} {
+		mustRegister(t, s, store.Agent{Alias: alias, SocketPath: "/s", SessionID: "$1"})
+	}
+	mustThread(t, s, store.Thread{
+		Kind: "message", FromAgent: "a1", ToKind: "agent", ToTarget: "outsider",
+	}, "hello")
+	total, action, err := s.SessionUnread("/s", "$1")
+	if err != nil {
+		t.Fatalf("SessionUnread: %v", err)
+	}
+	if total != 0 || action != 0 {
+		t.Fatalf("a session's own write must not flag its own thread unread, got total=%d action=%d", total, action)
+	}
+}
+
+func testSessionUnreadAction(t *testing.T, s store.API) {
+	mustRegister(t, s, store.Agent{Alias: "worker", SocketPath: "/s", SessionID: "$1"})
+	mustThread(t, s, store.Thread{
+		Kind: "task", FromAgent: "backend", ToKind: "agent", ToTarget: "worker", Status: "open",
+	}, "please do X")
+	total, action, err := s.SessionUnread("/s", "$1")
+	if err != nil {
+		t.Fatalf("SessionUnread: %v", err)
+	}
+	if total != 1 || action != 1 {
+		t.Fatalf("task addressed to a session alias: total=%d action=%d, want 1,1", total, action)
+	}
+}
+
+// testSessionUnreadPerAliasWatermark: each alias of a session is judged
+// against its OWN read watermark, so a sibling reading its inbox cannot clear
+// a thread that concerns only its neighbour.
+func testSessionUnreadPerAliasWatermark(t *testing.T, s store.API) {
+	for _, alias := range []string{"a1", "a2"} {
+		mustRegister(t, s, store.Agent{Alias: alias, SocketPath: "/s", SessionID: "$1"})
+	}
+	mustThread(t, s, store.Thread{
+		Kind: "message", FromAgent: "peer", ToKind: "agent", ToTarget: "a1",
+	}, "for a1")
+	if total, _, err := s.SessionUnread("/s", "$1"); err != nil || total != 1 {
+		t.Fatalf("before any read: total=%d (%v), want 1", total, err)
+	}
+	if err := s.MarkRead("a2"); err != nil {
+		t.Fatalf("MarkRead a2: %v", err)
+	}
+	if total, _, err := s.SessionUnread("/s", "$1"); err != nil || total != 1 {
+		t.Fatalf("after a sibling's MarkRead: total=%d (%v), want 1 — each alias is judged against its OWN watermark",
+			total, err)
+	}
+	if err := s.MarkRead("a1"); err != nil {
+		t.Fatalf("MarkRead a1: %v", err)
+	}
+	if total, _, err := s.SessionUnread("/s", "$1"); err != nil || total != 0 {
+		t.Fatalf("after the concerned alias's MarkRead: total=%d (%v), want 0", total, err)
+	}
+}
+
+func testSessionUnreadEmptyTuple(t *testing.T, s store.API) {
+	mustRegister(t, s, store.Agent{Alias: "a1", SocketPath: "", SessionID: ""})
+	mustThread(t, s, store.Thread{Kind: "message", FromAgent: "peer", ToKind: "broadcast"}, "hi")
+	for _, tc := range []struct{ sock, sess string }{{"", ""}, {"", "$1"}, {"/s", ""}} {
+		total, action, err := s.SessionUnread(tc.sock, tc.sess)
+		if err != nil {
+			t.Fatalf("SessionUnread(%q,%q): %v", tc.sock, tc.sess, err)
+		}
+		if total != 0 || action != 0 {
+			t.Fatalf("SessionUnread(%q,%q) = %d,%d, want 0,0 — an empty tuple is never a group",
+				tc.sock, tc.sess, total, action)
+		}
+	}
+}
+
+// --- tasks -----------------------------------------------------------------
+
+func testClaimOnce(t *testing.T, s store.API) {
+	id := newTask(t, s)
+	if err := s.ClaimTask(id, "rev1"); err != nil {
+		t.Fatalf("first claim: %v", err)
+	}
+	if err := s.ClaimTask(id, "rev2"); !errors.Is(err, store.ErrNotClaimable) {
+		t.Fatalf("second claim err = %v, want ErrNotClaimable", err)
+	}
+	th, _, err := s.GetThread(id)
+	if err != nil {
+		t.Fatalf("GetThread: %v", err)
+	}
+	if th.Status != "claimed" {
+		t.Fatalf("status = %q, want claimed", th.Status)
+	}
+}
+
+// testClaimAtomic is the reason ClaimTask is a compare-and-swap rather than a
+// read-then-write: it is the only thing stopping two agents from picking up
+// the same work.
+func testClaimAtomic(t *testing.T, s store.API) {
+	id := newTask(t, s)
+	const n = 8
+	var wins int64
+	errs := make([]error, n)
+	var wg sync.WaitGroup
+	for i := range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			err := s.ClaimTask(id, fmt.Sprintf("a%d", i))
+			errs[i] = err
+			if err == nil {
+				atomic.AddInt64(&wins, 1)
+			}
+		}()
+	}
+	wg.Wait()
+
+	if wins != 1 {
+		t.Fatalf("%d of %d concurrent claims succeeded, want exactly 1 (errs: %v)", wins, n, errs)
+	}
+	// Every loser must lose the DOCUMENTED way — an infrastructure error that
+	// happened to fail would satisfy the count while meaning something else
+	// entirely to the daemon.
+	for i, err := range errs {
+		if err != nil && !errors.Is(err, store.ErrNotClaimable) {
+			t.Fatalf("claim %d failed with %v, want ErrNotClaimable", i, err)
+		}
+	}
+	// A losing claim writes NOTHING: the opener plus exactly one status-change
+	// entry.
+	_, entries, err := s.GetThread(id)
+	if err != nil {
+		t.Fatalf("GetThread: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("thread has %d entries, want 2 — a losing claim must write no entry", len(entries))
+	}
+}
+
+func testClaimEntry(t *testing.T, s store.API) {
+	id := newTask(t, s)
+	if err := s.ClaimTask(id, "rev1"); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	_, entries, err := s.GetThread(id)
+	if err != nil {
+		t.Fatalf("GetThread: %v", err)
+	}
+	last := entries[len(entries)-1]
+	if last.StatusChange != "claimed" || last.FromAgent != "rev1" || last.Body != "" {
+		t.Fatalf("last entry = %+v, want an empty-bodied \"claimed\" entry from rev1", last)
+	}
+}
+
+// testClaimMissingThread pins the contract the obvious implementation gets
+// wrong: an unknown id is NOT claimable, and must not surface as
+// ErrThreadNotFound — a metadata read is the natural (and wrong) way to
+// implement it.
+func testClaimMissingThread(t *testing.T, s store.API) {
+	err := s.ClaimTask(999999, "rev1")
+	if !errors.Is(err, store.ErrNotClaimable) {
+		t.Fatalf("ClaimTask on a missing thread = %v, want ErrNotClaimable", err)
+	}
+	if errors.Is(err, store.ErrThreadNotFound) {
+		t.Fatalf("ClaimTask on a missing thread leaked ErrThreadNotFound: %v", err)
+	}
+}
+
+// testClaimTerminal covers the states a real bus spends most of its life in:
+// the open guard is what stops finished work being picked back up. A guard
+// written as "status != claimed" would pass every other claim case here.
+func testClaimTerminal(t *testing.T, s store.API) {
+	for _, terminal := range []string{"completed", "cancelled", "declined"} {
+		id := newTask(t, s)
+		if err := s.TransitionTask(id, "rev1", terminal, "that's a wrap"); err != nil {
+			t.Fatalf("transition to %q: %v", terminal, err)
+		}
+		_, before, err := s.GetThread(id)
+		if err != nil {
+			t.Fatalf("GetThread: %v", err)
+		}
+		if err := s.ClaimTask(id, "rev2"); !errors.Is(err, store.ErrNotClaimable) {
+			t.Fatalf("claim of a %q task = %v, want ErrNotClaimable", terminal, err)
+		}
+		th, after, err := s.GetThread(id)
+		if err != nil {
+			t.Fatalf("GetThread: %v", err)
+		}
+		if th.Status != terminal {
+			t.Fatalf("a refused claim changed status to %q, want %q", th.Status, terminal)
+		}
+		if len(after) != len(before) {
+			t.Fatalf("a refused claim wrote %d entries", len(after)-len(before))
+		}
+	}
+}
+
+func testTransitionRecords(t *testing.T, s store.API) {
+	id := newTask(t, s)
+	if err := s.ClaimTask(id, "rev1"); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if err := s.TransitionTask(id, "rev1", "bogus", ""); err == nil {
+		t.Fatal("an invalid status must be rejected")
+	}
+	if err := s.TransitionTask(id, "rev1", "completed", "LGTM"); err != nil {
+		t.Fatalf("valid transition: %v", err)
+	}
+	th, entries, err := s.GetThread(id)
+	if err != nil {
+		t.Fatalf("GetThread: %v", err)
+	}
+	if th.Status != "completed" {
+		t.Fatalf("status = %q, want completed", th.Status)
+	}
+	last := entries[len(entries)-1]
+	if last.StatusChange != "completed" || last.Body != "LGTM" || last.FromAgent != "rev1" {
+		t.Fatalf("transition not recorded as an entry: %+v", last)
+	}
+}
+
+// testTransitionMissingThread — note the deliberate contrast with ClaimTask,
+// which returns ErrNotClaimable for the same input.
+func testTransitionMissingThread(t *testing.T, s store.API) {
+	if err := s.TransitionTask(999999, "rev1", "completed", "LGTM"); !errors.Is(err, store.ErrThreadNotFound) {
+		t.Fatalf("TransitionTask on a missing thread = %v, want ErrThreadNotFound", err)
+	}
+}
+
+// testTransitionReopen closes the loop between the two methods: TransitionTask
+// carries no status predicate, and the claim guard reads the LIVE status, so
+// re-opening a task makes it claimable again rather than permanently burnt.
+func testTransitionReopen(t *testing.T, s store.API) {
+	id := newTask(t, s)
+	if err := s.ClaimTask(id, "rev1"); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if err := s.TransitionTask(id, "rev1", "open", "handing it back"); err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	if err := s.ClaimTask(id, "rev2"); err != nil {
+		t.Fatalf("re-claim after reopen: %v", err)
+	}
+	th, entries, err := s.GetThread(id)
+	if err != nil {
+		t.Fatalf("GetThread: %v", err)
+	}
+	if th.Status != "claimed" {
+		t.Fatalf("status = %q, want claimed", th.Status)
+	}
+	if len(entries) != 4 {
+		t.Fatalf("thread has %d entries, want 4 (open, claim, reopen, re-claim)", len(entries))
+	}
+}
+
+// --- idempotency records ---------------------------------------------------
+
+func testIdemLifecycle(t *testing.T, s store.API) {
+	if _, _, found, err := s.IdemBegin("k1"); err != nil || found {
+		t.Fatalf("first IdemBegin: found=%v err=%v, want found=false", found, err)
+	}
+	if _, done, found, err := s.IdemBegin("k1"); err != nil || !found || done {
+		t.Fatalf("in-flight IdemBegin: found=%v done=%v err=%v, want found=true done=false", found, done, err)
+	}
+	if err := s.IdemComplete("k1", []byte(`{"ok":true}`)); err != nil {
+		t.Fatalf("IdemComplete: %v", err)
+	}
+	resp, done, found, err := s.IdemBegin("k1")
+	if err != nil || !found || !done {
+		t.Fatalf("completed IdemBegin: found=%v done=%v err=%v", found, done, err)
+	}
+	if string(resp) != `{"ok":true}` {
+		t.Fatalf("recorded response = %s", resp)
+	}
+}
+
+// testIdemAtomic is the test the whole design exists for: N callers race for
+// one key and exactly one may execute the op.
+func testIdemAtomic(t *testing.T, s store.API) {
+	const n = 8
+	var claims int64
+	var wg sync.WaitGroup
+	for range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, _, found, err := s.IdemBegin("race"); err == nil && !found {
+				atomic.AddInt64(&claims, 1)
+			}
+		}()
+	}
+	wg.Wait()
+	if claims != 1 {
+		t.Fatalf("%d callers claimed the key, want exactly 1", claims)
+	}
+}
+
+// testIdemKeysIndependent guards the obvious way to get the claim wrong: a
+// single-row table, or a key that is not actually part of the primary key.
+func testIdemKeysIndependent(t *testing.T, s store.API) {
+	if _, _, found, err := s.IdemBegin("a"); err != nil || found {
+		t.Fatalf("claim a: found=%v err=%v", found, err)
+	}
+	if _, _, found, err := s.IdemBegin("b"); err != nil || found {
+		t.Fatalf("claim b must be independent of a: found=%v err=%v", found, err)
+	}
+	if err := s.IdemComplete("a", []byte("ra")); err != nil {
+		t.Fatalf("IdemComplete a: %v", err)
+	}
+	resp, done, found, err := s.IdemBegin("b")
+	if err != nil || !found || done || len(resp) != 0 {
+		t.Fatalf("b after completing a: found=%v done=%v resp=%q err=%v", found, done, resp, err)
+	}
+}
+
+// testIdemCompleteUnknown pins the DynamoDB hazard against the SQLite
+// specification: UpdateItem is an upsert, so an unguarded IdemComplete would
+// CREATE a done record for a key nobody claimed and the next caller would be
+// told its op had already run. SQLite's UPDATE matches no rows.
+func testIdemCompleteUnknown(t *testing.T, s store.API) {
+	if err := s.IdemComplete("never-claimed", []byte("x")); err != nil {
+		t.Fatalf("IdemComplete on an unknown key: %v", err)
+	}
+	if _, _, found, err := s.IdemBegin("never-claimed"); err != nil || found {
+		t.Fatalf("after a no-op complete the key must still be claimable: found=%v err=%v", found, err)
+	}
+}
+
+// testIdemCompleteEmpty: an op recording no body still reads back as done.
+// The length check is deliberate — SQLite returns a zero-length non-nil slice
+// here and DynamoDB returns nil, an accepted divergence no caller can observe.
+func testIdemCompleteEmpty(t *testing.T, s store.API) {
+	if _, _, found, err := s.IdemBegin("empty"); err != nil || found {
+		t.Fatalf("claim: found=%v err=%v", found, err)
+	}
+	if err := s.IdemComplete("empty", nil); err != nil {
+		t.Fatalf("IdemComplete: %v", err)
+	}
+	resp, done, found, err := s.IdemBegin("empty")
+	if err != nil || !found || !done {
+		t.Fatalf("completed with an empty response: found=%v done=%v err=%v", found, done, err)
+	}
+	if len(resp) != 0 {
+		t.Fatalf("resp = %q, want empty", resp)
+	}
+}
+
+// --- blackboard ------------------------------------------------------------
+
+func testKVLastWriteWins(t *testing.T, s store.API) {
+	if _, ok, err := s.KVGet("api.base"); err != nil || ok {
+		t.Fatalf("a missing key must read ok=false, got ok=%v err=%v", ok, err)
+	}
+	if err := s.KVSet("api.base", "http://localhost:4000", "backend"); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	if err := s.KVSet("api.base", "http://localhost:4001", "backend"); err != nil {
+		t.Fatalf("overwrite must be last-write-wins, not an error: %v", err)
+	}
+	p, ok, err := s.KVGet("api.base")
+	if err != nil || !ok {
+		t.Fatalf("get: ok=%v err=%v", ok, err)
+	}
+	if p.Key != "api.base" || p.Value != "http://localhost:4001" || p.UpdatedBy != "backend" {
+		t.Fatalf("unexpected pair: %+v", p)
+	}
+	if p.UpdatedAt == 0 {
+		t.Fatalf("UpdatedAt must be stamped, got %+v", p)
+	}
+}
+
+// testKVReadYourWrites: the blackboard is a coordination primitive, so an
+// agent that writes a fact and reads it back must never be handed the
+// superseded value.
+func testKVReadYourWrites(t *testing.T, s store.API) {
+	for i := range 20 {
+		if err := s.KVSet("k", fmt.Sprintf("v%d", i), "writer"); err != nil {
+			t.Fatalf("set %d: %v", i, err)
+		}
+		p, ok, err := s.KVGet("k")
+		if err != nil || !ok || p.Value != fmt.Sprintf("v%d", i) {
+			t.Fatalf("read %d: ok=%v value=%q err=%v", i, ok, p.Value, err)
+		}
+	}
+}
+
+// --- journal ---------------------------------------------------------------
+
+func testEventRoundTrip(t *testing.T, s store.API) {
+	want := store.Event{Kind: "send", Agent: "web", Target: "agent:api", ThreadID: 3, Count: 4, Detail: "subj"}
+	if err := s.AppendEvent(want); err != nil {
+		t.Fatalf("AppendEvent: %v", err)
+	}
+	got, err := s.Events(store.EventQuery{Backlog: true, Limit: 10})
+	if err != nil || len(got) != 1 {
+		t.Fatalf("Events: %d rows (%v)", len(got), err)
+	}
+	e := got[0]
+	if e.Kind != want.Kind || e.Agent != want.Agent || e.Target != want.Target ||
+		e.ThreadID != want.ThreadID || e.Count != want.Count || e.Detail != want.Detail {
+		t.Fatalf("round trip = %+v, want %+v", e, want)
+	}
+	if e.ID == 0 || e.TS == 0 {
+		t.Fatalf("id and ts must be stamped, got %+v", e)
+	}
+}
+
+func testMaxEventIDEmpty(t *testing.T, s store.API) {
+	n, err := s.MaxEventID()
+	if err != nil || n != 0 {
+		t.Fatalf("MaxEventID on an empty journal = %d (%v), want 0 — the follow poller's "+
+			"starting watermark must not be an error", n, err)
+	}
+}
+
+// testEventsBacklog covers the mode both backends order identically: a backlog
+// read is newest-first and honours its limit, MaxEventID names the newest row,
+// and a negative AfterID is rejected rather than silently treated as zero.
+//
+// The FOLLOW mode (AfterID > 0) is deliberately absent — see the package doc:
+// DynamoDB's follow path reads an eventually-consistent index with no
+// cross-item ordering guarantee, so parity there is not a contract either
+// backend can be held to.
+func testEventsBacklog(t *testing.T, s store.API) {
+	for i, k := range []string{"send", "reply", "notify"} {
+		if err := s.AppendEvent(store.Event{Kind: k, Agent: "web", ThreadID: int64(i + 1)}); err != nil {
+			t.Fatalf("AppendEvent %s: %v", k, err)
+		}
+	}
+	back, err := s.Events(store.EventQuery{Backlog: true, Limit: 2})
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	if len(back) != 2 || back[0].Kind != "notify" || back[1].Kind != "reply" {
+		t.Fatalf("backlog newest-first limit 2: %+v", back)
+	}
+	if none, err := s.Events(store.EventQuery{Backlog: true, Limit: 0}); err != nil || len(none) != 0 {
+		t.Fatalf("backlog limit 0 must return no rows, got %d (%v)", len(none), err)
+	}
+	if _, err := s.Events(store.EventQuery{AfterID: -1}); err == nil {
+		t.Fatal("a negative AfterID must error")
+	}
+	maxID, err := s.MaxEventID()
+	if err != nil || maxID != back[0].ID {
+		t.Fatalf("MaxEventID = %d (%v), want %d", maxID, err, back[0].ID)
+	}
+}
+
+// testEventsByAgent is the finding-1 regression: a reply row carries an empty
+// target, so only the thread-concern arm can match the originator.
+func testEventsByAgent(t *testing.T, s store.API) {
+	id := mustThread(t, s, store.Thread{
+		Kind: "message", FromAgent: "web", ToKind: "agent", ToTarget: "api",
+	}, "req")
+	for _, e := range []store.Event{
+		{Kind: "send", Agent: "web", Target: "agent:api", ThreadID: id, Detail: "req"},
+		{Kind: "reply", Agent: "api", ThreadID: id},
+		{Kind: "nudge", Target: "web"},
+		{Kind: "send", Agent: "x", Target: "agent:zzz", ThreadID: 999},
+	} {
+		if err := s.AppendEvent(e); err != nil {
+			t.Fatalf("AppendEvent: %v", err)
+		}
+	}
+	got, err := s.Events(store.EventQuery{Agent: "web", Backlog: true, Limit: 10})
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	// Its own send (actor), api's reply (thread concern), the nudge (bare
+	// target).
+	if len(got) != 3 {
+		t.Fatalf("agent=web should match 3 events, got %d: %+v", len(got), got)
+	}
+	for _, e := range got {
+		if e.Agent == "x" {
+			t.Fatalf("an unrelated event leaked through the agent filter: %+v", e)
+		}
+	}
+}
+
+// testEventsByAgentRole covers the arm the actor and target arms cannot: a
+// role-addressed thread concerns whoever currently HOLDS that role, so the
+// filter has to read the alias's role exactly like Inbox does.
+func testEventsByAgentRole(t *testing.T, s store.API) {
+	mustRegister(t, s, store.Agent{Alias: "api", Role: "worker"})
+	id := mustThread(t, s, store.Thread{
+		Kind: "task", FromAgent: "web", ToKind: "role", ToTarget: "worker", Status: "open",
+	}, "do it")
+	if err := s.AppendEvent(store.Event{
+		Kind: "task", Agent: "web", Target: "role:worker", ThreadID: id,
+	}); err != nil {
+		t.Fatalf("AppendEvent: %v", err)
+	}
+	got, err := s.Events(store.EventQuery{Agent: "api", Backlog: true, Limit: 10})
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("api holds role worker, so the role-addressed thread's event concerns it: got %d: %+v",
+			len(got), got)
+	}
+}
+
+func testEventsByKindAndThread(t *testing.T, s store.API) {
+	for _, e := range []store.Event{
+		{Kind: "send", Agent: "web", ThreadID: 1},
+		{Kind: "reply", Agent: "api", ThreadID: 1},
+		{Kind: "reply", Agent: "api", ThreadID: 2},
+	} {
+		if err := s.AppendEvent(e); err != nil {
+			t.Fatalf("AppendEvent: %v", err)
+		}
+	}
+	byKind, err := s.Events(store.EventQuery{Kind: "reply", Backlog: true, Limit: 10})
+	if err != nil || len(byKind) != 2 {
+		t.Fatalf("kind=reply: %d rows (%v)", len(byKind), err)
+	}
+	byThread, err := s.Events(store.EventQuery{ThreadID: 1, Backlog: true, Limit: 10})
+	if err != nil || len(byThread) != 2 {
+		t.Fatalf("thread_id=1: %d rows (%v)", len(byThread), err)
+	}
+	both, err := s.Events(store.EventQuery{Kind: "reply", ThreadID: 2, Backlog: true, Limit: 10})
+	if err != nil || len(both) != 1 {
+		t.Fatalf("kind=reply thread_id=2: %d rows (%v)", len(both), err)
+	}
+}
+
+// testEventsJoin: subject and effective intent are joined at query time, and a
+// thread-less event carries neither.
+func testEventsJoin(t *testing.T, s store.API) {
+	id := mustThread(t, s, store.Thread{
+		Kind: "task", FromAgent: "web", ToKind: "agent", ToTarget: "api", Subject: "hello subj",
+	}, "b")
+	if err := s.AppendEvent(store.Event{
+		Kind: "notify", Agent: "api", ThreadID: id, Count: 1, Detail: "lit",
+	}); err != nil {
+		t.Fatalf("AppendEvent: %v", err)
+	}
+	if err := s.AppendEvent(store.Event{Kind: "read", Agent: "api"}); err != nil {
+		t.Fatalf("AppendEvent: %v", err)
+	}
+	evs, err := s.Events(store.EventQuery{Backlog: true, Limit: 10})
+	if err != nil || len(evs) != 2 {
+		t.Fatalf("Events: %d rows (%v)", len(evs), err)
+	}
+	if evs[1].Subject != "hello subj" || evs[0].Subject != "" {
+		t.Fatalf("subject join: notify=%q (want hello subj), read=%q (want empty)",
+			evs[1].Subject, evs[0].Subject)
+	}
+	if evs[1].Intent != store.IntentAction {
+		t.Fatalf("a task stored with intent \"\" must read as action-requested, got %q", evs[1].Intent)
+	}
+	if evs[0].Intent != "" {
+		t.Fatalf("a thread-less event carries no intent, got %q", evs[0].Intent)
+	}
+}
+
+// testEventsJoinMissingThread pins the LEFT JOIN semantics: an event naming a
+// thread that does not exist still comes back, annotated with nothing, rather
+// than being dropped or erroring.
+func testEventsJoinMissingThread(t *testing.T, s store.API) {
+	if err := s.AppendEvent(store.Event{Kind: "send", Agent: "web", ThreadID: 4242}); err != nil {
+		t.Fatalf("AppendEvent: %v", err)
+	}
+	evs, err := s.Events(store.EventQuery{Backlog: true, Limit: 10})
+	if err != nil || len(evs) != 1 {
+		t.Fatalf("Events: %d rows (%v)", len(evs), err)
+	}
+	if evs[0].Subject != "" || evs[0].Intent != "" {
+		t.Fatalf("a missing thread should annotate nothing, got %+v", evs[0])
+	}
+}
