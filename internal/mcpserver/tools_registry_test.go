@@ -159,6 +159,50 @@ func TestRegisterAgentSameAliasStillUpserts(t *testing.T) {
 	}
 }
 
+// TestRegisterAgentStampsHarnessLinkAndReportsRevival covers the durable-alias
+// spec's MCP surface: the handler forwards the ambient harness session UUID
+// (so hook reclaim can find this row after a resume), and folds the daemon's
+// outcome/unread into the Detail so a re-registering agent learns its backlog.
+func TestRegisterAgentStampsHarnessLinkAndReportsRevival(t *testing.T) {
+	t.Setenv("TMUX", "/tmp/sock,1,0")
+	t.Setenv("TMUX_PANE", "%6")
+	t.Setenv("CLAUDE_CODE_SESSION_ID", "uuid-7")
+	prev := tmuxenv.Run
+	tmuxenv.Run = func(args ...string) (string, error) {
+		switch args[len(args)-1] {
+		case "#{session_id}":
+			return "$5", nil
+		case "#{session_name}":
+			return "muster-2", nil
+		default:
+			return "", nil
+		}
+	}
+	t.Cleanup(func() { tmuxenv.Run = prev })
+
+	var got map[string]any
+	prevDaemon := callDaemon
+	callDaemon = func(op string, args map[string]any) (json.RawMessage, error) {
+		if op == "register_agent" {
+			got = args
+			return []byte(`{"outcome":"revived","unread":3}`), nil
+		}
+		return []byte(`[]`), nil // paneRegistration's list_agents probe
+	}
+	t.Cleanup(func() { callDaemon = prevDaemon })
+
+	_, out, err := registerAgentHandler(context.TODO(), nil, RegisterAgentIn{Alias: "backend", Role: "peer", ModelType: "claude"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got["harness_session_id"] != "uuid-7" {
+		t.Fatalf("harness_session_id = %v, want uuid-7", got["harness_session_id"])
+	}
+	if !strings.Contains(out.Detail, "revived") || !strings.Contains(out.Detail, "3 unread") {
+		t.Fatalf("Detail = %q, want revival + unread notice", out.Detail)
+	}
+}
+
 func TestRegisterAgentFreshPaneRegisters(t *testing.T) {
 	t.Setenv("TMUX", "/tmp/sock,1,0")
 	t.Setenv("TMUX_PANE", "%14")
@@ -182,5 +226,139 @@ func TestRegisterAgentFreshPaneRegisters(t *testing.T) {
 	_, out, err := registerAgentHandler(context.Background(), nil, RegisterAgentIn{Alias: "fresh", ModelType: "claude"})
 	if err != nil || !out.OK || !registered {
 		t.Fatalf("fresh pane must register: registered=%v out=%+v err=%v", registered, out, err)
+	}
+}
+
+// TestRegisterAgentBecomeClaimsThroughPaneGuard: an already-registered pane
+// calling register_agent with become:true issues the become op instead of
+// the refusal, and the Detail reports the trade.
+func TestRegisterAgentBecomeClaimsThroughPaneGuard(t *testing.T) {
+	t.Setenv("TMUX", "/tmp/sock,1,0")
+	t.Setenv("TMUX_PANE", "%6")
+	prev := tmuxenv.Run
+	tmuxenv.Run = func(args ...string) (string, error) {
+		if args[len(args)-1] == "#{session_id}" {
+			return "$1", nil
+		}
+		return "", nil
+	}
+	t.Cleanup(func() { tmuxenv.Run = prev })
+
+	var becomeArgs map[string]any
+	prevDaemon := callDaemon
+	callDaemon = func(op string, args map[string]any) (json.RawMessage, error) {
+		switch op {
+		case "become":
+			becomeArgs = args
+			return []byte(`{"from":"muster-2","to":"alias-routing","unread":2}`), nil
+		default: // paneRegistration's roster probe: this pane already owns muster-2
+			return []byte(`[{"alias":"muster-2","socket_path":"/tmp/sock","session_id":"$1","pane_id":"%6"}]`), nil
+		}
+	}
+	t.Cleanup(func() { callDaemon = prevDaemon })
+
+	_, out, err := registerAgentHandler(context.TODO(), nil, RegisterAgentIn{
+		Alias: "alias-routing", Role: "peer", ModelType: "claude", Become: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if becomeArgs["from"] != "muster-2" || becomeArgs["to"] != "alias-routing" {
+		t.Fatalf("become args = %+v", becomeArgs)
+	}
+	if !strings.Contains(out.Detail, "you are now 'alias-routing' (was 'muster-2')") ||
+		!strings.Contains(out.Detail, "2 unread") {
+		t.Fatalf("Detail = %q", out.Detail)
+	}
+}
+
+// TestRegisterAgentRefusalAdvertisesBecome: the become:false refusal now
+// tells the agent how to claim instead of dead-ending.
+func TestRegisterAgentRefusalAdvertisesBecome(t *testing.T) {
+	t.Setenv("TMUX", "/tmp/sock,1,0")
+	t.Setenv("TMUX_PANE", "%6")
+	prev := tmuxenv.Run
+	tmuxenv.Run = func(args ...string) (string, error) {
+		if args[len(args)-1] == "#{session_id}" {
+			return "$1", nil
+		}
+		return "", nil
+	}
+	t.Cleanup(func() { tmuxenv.Run = prev })
+
+	prevDaemon := callDaemon
+	callDaemon = func(op string, _ map[string]any) (json.RawMessage, error) {
+		switch op {
+		case "become":
+			t.Fatalf("must not issue become op when become:false")
+			return nil, nil
+		default: // paneRegistration's roster probe: this pane already owns muster-2
+			return []byte(`[{"alias":"muster-2","socket_path":"/tmp/sock","session_id":"$1","pane_id":"%6"}]`), nil
+		}
+	}
+	t.Cleanup(func() { callDaemon = prevDaemon })
+
+	_, out, err := registerAgentHandler(context.TODO(), nil, RegisterAgentIn{
+		Alias: "alias-routing", Role: "peer", ModelType: "claude", Become: false,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.Detail, "pass become:true to claim 'alias-routing'") {
+		t.Fatalf("Detail = %q, want become-advertisement", out.Detail)
+	}
+}
+
+// TestListAgentsCarriesAddressableLabel pins the roster against the resolver
+// (internal/resolve): an address is BUILT from project + label — the
+// "proj:label" and bare-label rungs below exact-alias — and a label is
+// addressable only while it is manually pinned on a live row. list_agents
+// must therefore carry all four fields, or an MCP agent sees aliases alone
+// and concludes a working address does not exist. That is not hypothetical:
+// a live session whose operator had labeled it "nfl-3" reported to that
+// operator that "nfl-3" was a dead address and offered to retire its durable
+// alias to fix it, because list_agents could not show the label that was
+// already routing mail to it.
+func TestListAgentsCarriesAddressableLabel(t *testing.T) {
+	startTestDaemon(t)
+	for _, a := range []map[string]any{
+		{"alias": "bettor-help-workspace-2", "project": "bettor-help-workspace", "label": "nfl-3", "label_manual": true},
+		{"alias": "bettor-help-workspace-4", "project": "bettor-help-workspace", "label": "debug alarms", "label_manual": false},
+		{"alias": "bettor-help-workspace-5", "project": "bettor-help-workspace", "label": "corpus-rebuild", "label_manual": true},
+	} {
+		if _, err := callDaemon("register_agent", a); err != nil {
+			t.Fatalf("register %v: %v", a["alias"], err)
+		}
+	}
+	if _, err := callDaemon("deregister_agent", map[string]any{"alias": "bettor-help-workspace-5"}); err != nil {
+		t.Fatalf("deregister: %v", err)
+	}
+
+	_, out, err := listAgentsHandler(context.TODO(), nil, ListAgentsIn{})
+	if err != nil {
+		t.Fatalf("list_agents: %v", err)
+	}
+	byAlias := map[string]AgentView{}
+	for _, ag := range out.Agents {
+		byAlias[ag.Alias] = ag
+	}
+
+	// The addressable one: every field a caller needs to write
+	// "bettor-help-workspace:nfl-3" (or bare "nfl-3" from inside the project).
+	live := byAlias["bettor-help-workspace-2"]
+	if live.Project != "bettor-help-workspace" || live.Label != "nfl-3" || !live.LabelManual || live.Departed {
+		t.Fatalf("addressable row = %+v, want project/label carried with label_manual set and not departed", live)
+	}
+	// An auto-generated label is display-only — the resolver skips it, so the
+	// roster must say so rather than let a caller address it.
+	auto := byAlias["bettor-help-workspace-4"]
+	if auto.Label != "debug alarms" || auto.LabelManual {
+		t.Fatalf("auto-labeled row = %+v, want label carried with label_manual false", auto)
+	}
+	// A tombstone keeps its alias addressable (mail waits) but not its label;
+	// without Departed the caller cannot tell the two apart.
+	gone := byAlias["bettor-help-workspace-5"]
+	if !gone.Departed || gone.Label != "corpus-rebuild" {
+		t.Fatalf("departed row = %+v, want departed true with its label still visible", gone)
 	}
 }

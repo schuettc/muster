@@ -89,13 +89,19 @@ func (s *Store) RegisterAgent(a store.Agent) error {
 		"session_id":      attrS(a.SessionID),
 		"session_created": attrN(a.SessionCreated),
 		"device_id":       attrS(a.DeviceID),
-		"project":         attrS(a.Project),
-		"label":           attrS(a.Label),
-		"label_manual":    attrBool(a.LabelManual),
-		"last_seen":       attrN(now),
-		"departed":        attrBool(false),
-		"gsi1pk":          attrS(rosterPartition),
-		"gsi1sk":          attrN(0),
+		// superseded_by is reset to "" on every register, exactly like
+		// departed: a revived or re-registered alias is no longer superseded by
+		// whatever claimed it before (the operator may have purged the
+		// successor and re-registered the old name). See Become.
+		"harness_session_id": attrS(a.HarnessSessionID),
+		"superseded_by":      attrS(""),
+		"project":            attrS(a.Project),
+		"label":              attrS(a.Label),
+		"label_manual":       attrBool(a.LabelManual),
+		"last_seen":          attrN(now),
+		"departed":           attrBool(false),
+		"gsi1pk":             attrS(rosterPartition),
+		"gsi1sk":             attrN(0),
 	}
 	expr, names, values := setExpr(set)
 
@@ -210,6 +216,295 @@ func (s *Store) DepartAgent(alias string) error {
 		return fmt.Errorf("dynamostore: depart agent %q: %w", alias, err)
 	}
 	return nil
+}
+
+// SetHarnessSessionID stamps the harness session UUID onto an EXISTING row —
+// the repair half of the durable-alias spec. Identity, tuple, and read state
+// are untouched; unknown alias is a no-op, mirroring TouchAgent's contract.
+//
+// attribute_exists(pk) is load-bearing for the same reason it is on TouchAgent:
+// UpdateItem is an upsert, so without it, stamping an unknown alias would
+// CREATE a phantom row carrying nothing but a harness UUID — where the SQLite
+// UPDATE simply matches no rows. That phantom would then be a roster member
+// with an empty tuple, which is exactly the shape SessionUnread's empty-tuple
+// guard exists to keep out.
+func (s *Store) SetHarnessSessionID(alias, id string) error {
+	_, err := s.c.UpdateItem(backgroundCtx(), &dynamodb.UpdateItemInput{
+		TableName:                 aws.String(s.table),
+		Key:                       agentKey(alias),
+		UpdateExpression:          aws.String("SET #harness_session_id = :harness_session_id"),
+		ConditionExpression:       aws.String("attribute_exists(pk)"),
+		ExpressionAttributeNames:  map[string]string{"#harness_session_id": "harness_session_id"},
+		ExpressionAttributeValues: map[string]types.AttributeValue{":harness_session_id": attrS(id)},
+	})
+	if err != nil {
+		if isConditionFailed(err) {
+			return nil // unknown alias: no-op, matching the SQLite contract
+		}
+		return fmt.Errorf("dynamostore: set harness session id on %q: %w", alias, err)
+	}
+	return nil
+}
+
+// Become claims a new name for an existing identity: it writes `to` as a CLONE
+// of `from` — tuple, device, harness link, project, label, role, model, and the
+// READ WATERMARK, without which the claimed identity would see all of history
+// as unread — then retires `from` as a tombstone stamped superseded_by = to.
+//
+// # This is a compare-and-swap, not a read-then-write
+//
+// `to` must not exist AT ALL: a live row is someone else's identity and a
+// tombstone is another conversation's history, and merging identities is the
+// exact confusion the feature exists to kill. Checking with a GetItem and then
+// writing would leave a window in which two sessions both observe `to` absent
+// and both claim it — the second silently obliterating the first. The guard is
+// therefore attribute_not_exists(pk) ON THE WRITE ITSELF, which DynamoDB
+// evaluates atomically with it.
+//
+// # Both writes are one transaction
+//
+// The SQLite implementation is one BEGIN/COMMIT precisely so that a crash
+// mid-become never leaves both rows live. Sequential writes here could not
+// hold that line: a successful clone followed by a failed retire would leave
+// the seed live alongside its own successor. TransactWriteItems is the
+// equivalent — the clone (guarded attribute_not_exists) and the retire
+// (guarded attribute_exists) commit together or not at all, which also means
+// the from-must-exist check is evaluated at COMMIT time rather than trusted
+// from the read that built the clone.
+//
+// The item is cloned by copying `from`'s raw attributes and overriding only
+// what the spec says changes, so any attribute this backend gains later is
+// carried forward without touching this code. superseded_by is deliberately
+// dropped rather than copied: the successor starts unsuperseded even when the
+// seed was itself superseded (a chained become A→B→C must not inherit B's
+// pointer backward onto C).
+func (s *Store) Become(from, to string) error {
+	ctx := backgroundCtx()
+
+	// Strongly consistent: the clone's contents must reflect the seed as the
+	// caller just left it (a register or MarkRead moments earlier is exactly
+	// the read-your-writes case the package rule names). A miss here is the
+	// fast path for ErrBecomeFromMissing; the transaction below re-checks it
+	// at commit time, so a seed deleted in between still cannot slip through.
+	raw, err := s.rawAgentItem(ctx, from)
+	if err != nil {
+		return err
+	}
+	if raw == nil {
+		return store.ErrBecomeFromMissing
+	}
+
+	now := clock.NowMillis()
+	clone := make(map[string]types.AttributeValue, len(raw)+4)
+	for k, v := range raw {
+		clone[k] = v
+	}
+	clone["pk"] = attrS(pkAgent(to))
+	clone["sk"] = attrN(metaSK)
+	clone["alias"] = attrS(to)
+	clone["departed"] = attrBool(false)
+	clone["registered_at"] = attrN(now)
+	clone["last_seen"] = attrN(now)
+	delete(clone, "superseded_by")
+
+	_, err = s.c.TransactWriteItems(ctx, &dynamodb.TransactWriteItemsInput{
+		TransactItems: []types.TransactWriteItem{
+			{Put: &types.Put{
+				TableName:           aws.String(s.table),
+				Item:                clone,
+				ConditionExpression: aws.String("attribute_not_exists(pk)"),
+			}},
+			{Update: &types.Update{
+				TableName:           aws.String(s.table),
+				Key:                 agentKey(from),
+				UpdateExpression:    aws.String("SET #departed = :departed, #superseded_by = :superseded_by"),
+				ConditionExpression: aws.String("attribute_exists(pk)"),
+				ExpressionAttributeNames: map[string]string{
+					"#departed":      "departed",
+					"#superseded_by": "superseded_by",
+				},
+				ExpressionAttributeValues: map[string]types.AttributeValue{
+					":departed":      attrBool(true),
+					":superseded_by": attrS(to),
+				},
+			}},
+		},
+	})
+	if err != nil {
+		// CancellationReasons are positional: index 0 is the clone (to must
+		// not exist), index 1 is the retire (from must still exist). Mapping
+		// them back to the store's sentinels is what lets the daemon render
+		// the two guard failures as the distinct, hint-carrying errors the
+		// operator sees.
+		if codes := transactCancelCodes(err); codes != nil {
+			if len(codes) > 0 && codes[0] == conditionFailedCode {
+				return store.ErrBecomeToExists
+			}
+			if len(codes) > 1 && codes[1] == conditionFailedCode {
+				return store.ErrBecomeFromMissing
+			}
+		}
+		return fmt.Errorf("dynamostore: become %q -> %q: %w", from, to, err)
+	}
+	return nil
+}
+
+// rawAgentItem reads an agent's UNMAPPED attributes, strongly consistent.
+// Become needs the raw item rather than the store.Agent itemToAgent projects:
+// cloning through the struct would silently drop every attribute the struct
+// does not name (gsi1pk/gsi1sk, last_read_at), quietly unlisting the successor
+// from the roster and resetting display state the clone is supposed to inherit.
+func (s *Store) rawAgentItem(ctx context.Context, alias string) (map[string]types.AttributeValue, error) {
+	out, err := s.c.GetItem(ctx, &dynamodb.GetItemInput{
+		TableName:      aws.String(s.table),
+		Key:            agentKey(alias),
+		ConsistentRead: aws.Bool(true),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("dynamostore: get agent item %q: %w", alias, err)
+	}
+	if len(out.Item) == 0 {
+		return nil, nil
+	}
+	return out.Item, nil
+}
+
+// SessionAliasLineage returns every alias in a session's supersession lineage —
+// the same walk SessionUnread runs, projected to aliases. Both go through
+// sessionLineage so the two can never disagree about what a session is.
+// Departed aliases are included ON PURPOSE (their unread mail still needs
+// draining), and an empty sessionID matches nothing.
+func (s *Store) SessionAliasLineage(deviceID, socketPath, sessionID string) ([]string, error) {
+	members, err := s.sessionLineage(backgroundCtx(), deviceID, socketPath, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(members))
+	for _, a := range members {
+		out = append(out, a.Alias)
+	}
+	return out, nil
+}
+
+// sessionLineage is the ONE place this backend answers "which aliases are this
+// session" — the equivalent of the SQLite WITH RECURSIVE `sess` CTE, which both
+// SessionUnread and SessionAliasLineage share there and share here. Returned
+// rows are base-table reads, sorted by alias, so callers get trustworthy
+// per-alias state (watermarks) and not just names.
+//
+// Base case: every alias sitting on the queried (device, socket, session)
+// tuple. Recursive step, iterated to a fixpoint: any alias whose superseded_by
+// points at an alias already in the set — Become stamps the pointer on the SEED
+// aimed FORWARD at its successor, so the walk runs backward down the chain and
+// picks up retired seeds whose own rows still sit on long-dead tuples. That is
+// the "mail follows the name" rule.
+//
+// The device filter applies to the BASE CASE ONLY, matching store.Store: a
+// tuple can collide across machines, which is what deviceID defends against,
+// but superseded_by is an alias-valued pointer to a primary key, so there is no
+// coincidence to defend against and filtering it would break the legitimate
+// cross-device lineage the hosted backend exists to serve.
+//
+// # What eventual consistency does to the walk
+//
+// The roster is a GSI read and can never be strongly consistent, so it is used
+// for MEMBERSHIP ONLY — the universe of aliases that might be in the lineage.
+// Every edge and every accepted row is then re-read from the BASE table
+// (agentByAlias, cached so each alias costs at most one GetItem). That
+// distinction is not academic here: the daemon's become op runs Become and then
+// SessionUnread in the same round trip, and the superseded_by pointer Become
+// just wrote is precisely a decision the caller itself just caused. Reading the
+// edge off the index copy would miss it, drop the retired seed from its own
+// lineage, and report the seed's waiting mail as zero on the very call that is
+// supposed to announce it.
+//
+// The residual lag is confined to membership: an alias registered moments ago
+// may not be in the index yet and so cannot be walked to. That under-reports
+// rather than inventing lineage, and it does not affect the become path, where
+// the seed has been registered since long before the claim and only its
+// superseded_by attribute is fresh.
+//
+// Termination mirrors the SQLite UNION argument: an alias enters the set at
+// most once, so a malformed superseded_by cycle (A→B→A) simply adds nothing on
+// the round that would re-add a present alias, and the fixpoint loop exits.
+func (s *Store) sessionLineage(ctx context.Context, deviceID, socketPath, sessionID string) ([]store.Agent, error) {
+	if sessionID == "" {
+		return nil, nil
+	}
+	items, err := s.roster(ctx)
+	if err != nil {
+		return nil, err
+	}
+	candidates := make([]string, 0, len(items))
+	for _, item := range items {
+		if alias := strAttr(item, "alias"); alias != "" {
+			candidates = append(candidates, alias)
+		}
+	}
+	sort.Strings(candidates)
+
+	// Base-table re-read, memoized: every alias is fetched at most once, and
+	// nothing below ever consults the index copy of an agent's state.
+	fresh := make(map[string]store.Agent, len(candidates))
+	seen := make(map[string]bool, len(candidates))
+	get := func(alias string) (store.Agent, bool, error) {
+		if seen[alias] {
+			a, ok := fresh[alias]
+			return a, ok, nil
+		}
+		seen[alias] = true
+		a, found, err := s.agentByAlias(ctx, alias)
+		if err != nil {
+			return store.Agent{}, false, err
+		}
+		if !found {
+			return store.Agent{}, false, nil
+		}
+		fresh[alias] = a
+		return a, true, nil
+	}
+
+	inSet := make(map[string]bool)
+	var out []store.Agent
+	for _, alias := range candidates {
+		a, found, err := get(alias)
+		if err != nil {
+			return nil, err
+		}
+		// Re-confirm the tuple against the fresh item: the index copy may
+		// have been written before the alias moved to a different session.
+		if !found || !sameSession(a, deviceID, socketPath, sessionID) {
+			continue
+		}
+		inSet[a.Alias] = true
+		out = append(out, a)
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	for {
+		added := false
+		for _, alias := range candidates {
+			if inSet[alias] {
+				continue
+			}
+			a, found, err := get(alias)
+			if err != nil {
+				return nil, err
+			}
+			if !found || a.SupersededBy == "" || !inSet[a.SupersededBy] {
+				continue
+			}
+			inSet[a.Alias] = true
+			out = append(out, a)
+			added = true
+		}
+		if !added {
+			break
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Alias < out[j].Alias })
+	return out, nil
 }
 
 // DeleteAgent hard-deletes a registration — irreversible. Unknown alias is a
@@ -356,22 +651,24 @@ func agentKey(alias string) map[string]types.AttributeValue {
 
 func itemToAgent(item map[string]types.AttributeValue) store.Agent {
 	return store.Agent{
-		Alias:           strAttr(item, "alias"),
-		Role:            strAttr(item, "role"),
-		ModelType:       strAttr(item, "model_type"),
-		SocketPath:      strAttr(item, "socket_path"),
-		PaneID:          strAttr(item, "pane_id"),
-		SessionName:     strAttr(item, "session_name"),
-		SessionID:       strAttr(item, "session_id"),
-		SessionCreated:  numAttr(item, "session_created"),
-		DeviceID:        strAttr(item, "device_id"),
-		Project:         strAttr(item, "project"),
-		Label:           strAttr(item, "label"),
-		LabelManual:     boolAttr(item, "label_manual"),
-		RegisteredAt:    numAttr(item, "registered_at"),
-		LastSeen:        numAttr(item, "last_seen"),
-		LastReadEntryID: numAttr(item, "last_read_entry_id"),
-		Departed:        boolAttr(item, "departed"),
+		Alias:            strAttr(item, "alias"),
+		Role:             strAttr(item, "role"),
+		ModelType:        strAttr(item, "model_type"),
+		SocketPath:       strAttr(item, "socket_path"),
+		PaneID:           strAttr(item, "pane_id"),
+		SessionName:      strAttr(item, "session_name"),
+		SessionID:        strAttr(item, "session_id"),
+		SessionCreated:   numAttr(item, "session_created"),
+		DeviceID:         strAttr(item, "device_id"),
+		HarnessSessionID: strAttr(item, "harness_session_id"),
+		Project:          strAttr(item, "project"),
+		Label:            strAttr(item, "label"),
+		LabelManual:      boolAttr(item, "label_manual"),
+		RegisteredAt:     numAttr(item, "registered_at"),
+		LastSeen:         numAttr(item, "last_seen"),
+		LastReadEntryID:  numAttr(item, "last_read_entry_id"),
+		Departed:         boolAttr(item, "departed"),
+		SupersededBy:     strAttr(item, "superseded_by"),
 	}
 }
 
@@ -464,4 +761,30 @@ func boolAttr(item map[string]types.AttributeValue, name string) bool {
 func isConditionFailed(err error) bool {
 	var cf *types.ConditionalCheckFailedException
 	return errors.As(err, &cf)
+}
+
+// conditionFailedCode is the CancellationReason code DynamoDB reports for the
+// transaction item whose ConditionExpression failed.
+const conditionFailedCode = "ConditionalCheckFailed"
+
+// transactCancelCodes returns the per-item cancellation reason codes of a
+// cancelled TransactWriteItems, positionally aligned with the TransactItems
+// that were submitted, or nil if err is not a cancellation.
+//
+// A transaction failure does NOT surface as ConditionalCheckFailedException,
+// so isConditionFailed cannot see it — this is the transactional counterpart,
+// not a second copy of it. The codes are what let a caller tell WHICH guard
+// tripped when a transaction carries more than one (see Become).
+func transactCancelCodes(err error) []string {
+	var tc *types.TransactionCanceledException
+	if !errors.As(err, &tc) {
+		return nil
+	}
+	codes := make([]string, len(tc.CancellationReasons))
+	for i, r := range tc.CancellationReasons {
+		if r.Code != nil {
+			codes[i] = *r.Code
+		}
+	}
+	return codes
 }

@@ -61,7 +61,7 @@ func (s *Store) Events(q EventQuery) ([]Event, error) {
    OR events.target = ?
    OR (events.thread_id > 0 AND EXISTS (
         SELECT 1 FROM threads WHERE threads.id = events.thread_id AND `+threadConcerns+`)))`)
-		args = append(args, q.Agent, q.Agent, q.Agent, q.Agent, q.Agent, q.Agent)
+		args = append(args, q.Agent, q.Agent, q.Agent, q.Agent, q.Agent, q.Agent, q.Agent)
 	}
 	if q.Kind != "" {
 		where = append(where, "events.kind = ?")

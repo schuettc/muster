@@ -304,3 +304,13 @@ func TestStaleTickEventsMsgDiscarded(t *testing.T) {
 		t.Fatalf("stale gen-1 msg must not trigger a regression-reset status note, got %q", m2.status)
 	}
 }
+
+func TestDispToTargetScopedBroadcast(t *testing.T) {
+	var m Model
+	if got := m.dispToTarget(listThreadRow{ToKind: "broadcast", ToTarget: "web"}); got != "broadcast:web" {
+		t.Fatalf("got %q, want broadcast:web", got)
+	}
+	if got := m.dispToTarget(listThreadRow{ToKind: "broadcast"}); got != "broadcast" {
+		t.Fatalf("got %q, want broadcast", got)
+	}
+}

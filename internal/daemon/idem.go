@@ -36,6 +36,11 @@ var writeOps = map[string]bool{
 	"task_claim": true, "task_transition": true,
 	"kv_set": true, "log_event": true, "set_label": true,
 	"prune_events": true, "get_inbox": true,
+	// become is a CAS (it refuses an existing target), so it needs a key for
+	// the same reason task_claim does: a claim that succeeded but lost its
+	// response would replay into ErrBecomeToExists and tell the caller its own
+	// completed claim failed. stamp_harness_session is a plain attribute write.
+	"become": true, "stamp_harness_session": true,
 }
 
 // IsWriteOp reports whether op mutates state, and so whether an idempotency
@@ -65,6 +70,12 @@ var badgeOps = map[string]bool{
 	"register_agent": true, "deregister_agent": true, "purge_agent": true,
 	"send_message": true, "task_create": true, "reply": true,
 	"task_claim": true, "task_transition": true, "get_inbox": true,
+	// become calls reconcileBadge: the claimed identity inherits the seed's
+	// waiting mail, so the badge on its session has to be recomputed. Without
+	// this, a claim in remote mode would leave the badge showing the pre-claim
+	// count. stamp_harness_session is absent on purpose — it writes one
+	// attribute and reaches no badge sink.
+	"become": true,
 }
 
 // movesBadge reports whether op can change what a tmux badge shows. Only

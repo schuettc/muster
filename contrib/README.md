@@ -31,10 +31,34 @@ Setup:
   choose Trust. Codex fires `SessionStart` lazily, on the session's first turn —
   a freshly opened Codex session is not on the bus until you say something to
   it, so give it any first message ("hi" is enough) before addressing mail to it.
+- **Cursor Agent:** copy [`cursor-hooks.json`](cursor-hooks.json) to
+  `~/.cursor/hooks.json`. Cursor's `stop` hook has a `loop_limit` of 3; muster
+  also declines continuations after Cursor reports a non-zero `loop_count` or
+  an `aborted`/`error` status.
 
 If `muster` isn't on the PATH your harness gives hook commands (e.g. it lives in
-`~/go/bin`), use the absolute binary path in the `command` strings — Codex in
-particular does not expand `~`.
+`~/go/bin`), use the absolute binary path in the `command` strings — Codex and
+Cursor in particular do not expand `~`.
+
+## 3. Cursor MCP setup
+
+Add muster to `.cursor/mcp.json` for a project, or `~/.cursor/mcp.json` for all
+projects:
+
+```json
+{
+  "mcpServers": {
+    "muster": {
+      "command": "muster",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+Enable the configured server with `agent mcp enable muster`. For unattended
+agent use, add `"Mcp(muster:*)"` to the `permissions.allow` list in
+`~/.cursor/cli-config.json`.
 
 The hook is safe to install globally: for any session that isn't a registered
 agent it does nothing, and it never blocks a session from starting.

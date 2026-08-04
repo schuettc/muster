@@ -358,12 +358,16 @@ func TestCreateThreadRejectsInvalidIntent(t *testing.T) {
 	}
 }
 
-// TestSessionUnreadEmptyTupleNeverGroups: an empty socket path or session id is
-// never a group. The guard returns before any client call, so — like the intent
-// gate — this is pinned with a zero Store and no endpoint; a nil client would
-// panic if the short-circuit ever regressed.
-func TestSessionUnreadEmptyTupleNeverGroups(t *testing.T) {
-	for _, tc := range []struct{ sock, sess string }{{"", ""}, {"", "$1"}, {"/s", ""}} {
+// TestSessionUnreadEmptySessionNeverGroups: an empty SESSION ID is never a
+// group. The guard returns before any client call, so — like the intent gate —
+// this is pinned with a zero Store and no endpoint; a nil client would panic if
+// the short-circuit ever regressed.
+//
+// An empty socket path is deliberately NOT in this table: ("", harness session
+// UUID) is the paneless tuple, a real identity that must group, so it reaches
+// the client and belongs to the endpoint-backed conformance suite instead.
+func TestSessionUnreadEmptySessionNeverGroups(t *testing.T) {
+	for _, tc := range []struct{ sock, sess string }{{"", ""}, {"/s", ""}} {
 		total, action, err := (&Store{}).SessionUnread("", tc.sock, tc.sess)
 		if err != nil {
 			t.Fatalf("SessionUnread(%q,%q): %v", tc.sock, tc.sess, err)

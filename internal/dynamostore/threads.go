@@ -848,61 +848,41 @@ func (s *Store) readableThrough(ctx context.Context, alias, role string, after i
 // by someone who is not any alias of the session — so a session's own writes
 // under either alias never make its own threads unread, and a broadcast
 // concerning two sibling aliases counts once, never twice. action is the
-// subset whose effective intent is action-requested. An empty socketPath or
-// sessionID never groups.
+// subset whose effective intent is action-requested. An empty sessionID never
+// groups; socketPath MAY be empty — ("", harness session UUID) is the paneless
+// tuple, a real session identity whose siblings group exactly like a tmux
+// session's, and the sessionID guard alone is what keeps pre-harness no-tmux
+// rows (both fields empty) from grouping with each other.
 //
 // The session's identity is (deviceID, socketPath, sessionID), never the pair
 // alone — see store.API. In a hosted roster the device dimension is what keeps
 // the actor exclusion honest: an alias on another machine sharing this tuple
 // would otherwise count as a sibling, and its message to this session would be
 // dropped as one of the session's own writes.
+//
+// Membership — including the supersession lineage that makes mail follow a
+// claimed name, and the base-table re-read that keeps the watermarks
+// trustworthy — is sessionLineage's job, shared with SessionAliasLineage so the
+// two surfaces cannot disagree about what a session is. The rows it returns are
+// used here for their OWN watermarks: a superseded row's watermark is frozen at
+// the moment it was retired, so this stays per-row semantics, never a
+// session-wide max. Departed rows are deliberately not filtered — a tombstoned
+// alias is still part of the session's identity, and its mail still counts.
 func (s *Store) SessionUnread(deviceID, socketPath, sessionID string) (total, action int, err error) {
-	if socketPath == "" || sessionID == "" {
+	if sessionID == "" {
 		return 0, 0, nil
 	}
 	ctx := backgroundCtx()
-	items, err := s.roster(ctx)
+	session, err := s.sessionLineage(ctx, deviceID, socketPath, sessionID)
 	if err != nil {
 		return 0, 0, err
 	}
-	// The roster is a GSI query, which DynamoDB can never serve strongly
-	// consistently — so it is used ONLY to identify which aliases belong to the
-	// session. The watermark it projects is not trustworthy here: the daemon
-	// runs Inbox -> MarkRead -> setSessionBadge -> SessionUnread synchronously
-	// on get_inbox, so a stale watermark would return total > 0 and re-light
-	// the tmux badge the operator just drained — and nothing re-polls, so it
-	// would stay lit until the next notify or read.
-	//
-	// The SQLite "sess" CTE does not filter departed rows, so neither does
-	// this: a tombstoned alias is still part of the session's identity.
-	var candidates []string
-	for _, item := range items {
-		a := itemToAgent(item)
-		if !sameSession(a, deviceID, socketPath, sessionID) {
-			continue
-		}
-		candidates = append(candidates, a.Alias)
-	}
-	sort.Strings(candidates)
-
-	// Re-read each member from the BASE table, strongly consistent, and
-	// re-confirm the tuple against the fresh item — the index copy may have
-	// been written before the alias moved to a different session.
-	var session []store.Agent
-	aliases := make(map[string]bool)
-	for _, alias := range candidates {
-		a, found, err := s.agentByAlias(ctx, alias)
-		if err != nil {
-			return 0, 0, err
-		}
-		if !found || !sameSession(a, deviceID, socketPath, sessionID) {
-			continue
-		}
-		session = append(session, a)
-		aliases[a.Alias] = true
-	}
 	if len(session) == 0 {
 		return 0, 0, nil
+	}
+	aliases := make(map[string]bool, len(session))
+	for _, a := range session {
+		aliases[a.Alias] = true
 	}
 
 	unread := make(map[int64]map[string]types.AttributeValue)

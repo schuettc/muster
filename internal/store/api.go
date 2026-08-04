@@ -45,6 +45,16 @@ type API interface {
 	MarkRead(alias string) error
 	UnreadCount(alias string) (int, error)
 	SessionUnread(deviceID, socketPath, sessionID string) (total, action int, err error)
+	SessionAliasLineage(deviceID, socketPath, sessionID string) ([]string, error)
+	SetHarnessSessionID(alias, id string) error
+	// Become claims a new name for an existing identity: it clones from onto
+	// to and retires from, stamping from.superseded_by = to. It is a
+	// compare-and-swap, not a read-then-write — the to-must-not-exist guard
+	// and the clone are one atomic step, so two sessions racing for the same
+	// name cannot both win. Backends must return ErrBecomeToExists /
+	// ErrBecomeFromMissing for the two guard failures; the daemon maps them to
+	// hint-carrying wire errors.
+	Become(from, to string) error
 	DevicePoll(deviceID string, sinceEntryID int64) (DevicePollResult, error)
 	KVSet(key, value, updatedBy string) error
 	KVGet(key string) (KVPair, bool, error)

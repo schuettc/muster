@@ -3,10 +3,14 @@ package humancli
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/schuettc/muster/internal/harnessenv"
 	"github.com/schuettc/muster/internal/mustertest"
 	"github.com/schuettc/muster/internal/tmuxenv"
 )
@@ -22,8 +26,35 @@ func TestHookStopLoopGuard(t *testing.T) {
 	}
 }
 
+func TestHookStopCursorLoopGuard(t *testing.T) {
+	t.Setenv("TMUX", "/tmp/sock,1,0")
+	for _, input := range []string{
+		`{"loop_count":1}`,
+		`{"status":"aborted"}`,
+		`{"status":"error"}`,
+	} {
+		var buf bytes.Buffer
+		if err := cmdHook([]string{"Stop", "cursor"}, strings.NewReader(input), &buf); err != nil {
+			t.Fatalf("hook Stop input %s: %v", input, err)
+		}
+		if buf.Len() != 0 {
+			t.Fatalf("input %s: expected no output on loop guard, got %q", input, buf.String())
+		}
+	}
+}
+
 func TestHookStopNoTmux(t *testing.T) {
 	t.Setenv("TMUX", "")
+	// Pin the harness identity away: on a dev machine `go test` itself runs
+	// inside a Claude session whose CLAUDE_CODE_SESSION_ID would otherwise
+	// give this "no identity" scenario a paneless identity and a daemon dial.
+	t.Setenv("CLAUDE_CODE_SESSION_ID", "")
+	// Pin the ancestry-walk fallback away too (finding F1 made hookStop try
+	// it when $TMUX is empty): on a dev machine `go test` itself commonly
+	// runs inside a real tmux pane, and without this the walk could resolve
+	// that real pane and turn this "genuinely paneless" test into the tmux
+	// path.
+	pinAncestryWalkAway(t)
 	var buf bytes.Buffer
 	if err := cmdHook([]string{"Stop"}, strings.NewReader(`{}`), &buf); err != nil {
 		t.Fatal(err)
@@ -741,6 +772,8 @@ func TestHookSessionStartBestEffortWhenDaemonUnreachable(t *testing.T) {
 	t.Setenv("TMUX", "")
 	t.Setenv("TMUX_PANE", "")
 	t.Setenv("MUSTER_ALIAS", "")
+	t.Setenv("CLAUDE_CODE_SESSION_ID", "") // pin: a dev machine's own Claude session must not lend this test an identity
+	pinAncestryWalkAway(t)                 // pin: hookCapture's ancestry fallback must not resolve this test process's real tmux pane
 	var buf bytes.Buffer
 	if err := cmdHook([]string{"SessionStart"}, strings.NewReader(""), &buf); err != nil {
 		t.Fatalf("hook must never return an error, got %v", err)
@@ -856,6 +889,18 @@ func TestHookSessionEndUnresolvableIdentityNeverDialsDaemon(t *testing.T) {
 	t.Setenv("TMUX", "")
 	t.Setenv("TMUX_PANE", "")
 	t.Setenv("MUSTER_ALIAS", "")
+	// Pin the harness identity away: with a CLAUDE_CODE_SESSION_ID leaking in
+	// from a dev machine's own Claude session, SessionEnd legitimately HAS an
+	// identity (the paneless tuple) and dialing would be correct — this test
+	// is specifically about the no-identity-at-all branch.
+	t.Setenv("CLAUDE_CODE_SESSION_ID", "")
+	// Pin the ancestry-walk fallback away too (finding F2 routes SessionEnd
+	// through hookCapture, which tries this walk when $TMUX is empty): on a
+	// dev machine `go test` itself commonly runs inside a real tmux pane,
+	// and a resolved walk would legitimately have a tuple to dial the
+	// daemon about — this test is specifically about the walk ALSO coming
+	// back empty.
+	pinAncestryWalkAway(t)
 
 	done := make(chan error, 1)
 	go func() {
@@ -896,5 +941,297 @@ func TestHookReasonMultiAliasWithLabel(t *testing.T) {
 	got := hookReason(3, 0, []string{"timewalk-2", "timewalk-2002"}, "standard 2000")
 	if !strings.Contains(got, "You are 'standard 2000' — muster aliases 'timewalk-2', 'timewalk-2002'") {
 		t.Fatalf("multi-alias reason must lead with the label, got %q", got)
+	}
+}
+
+// TestHookStopStampsHarnessLink covers the repair half of the durable-alias
+// spec: a custom alias registered via the MCP tool (no harness link) gets the
+// payload's session_id stamped when the Stop hook fires for real mail — so a
+// later resume can find the row. The stamp piggybacks on the mail gate: no
+// mail, no daemon dials, no stamp.
+func TestHookStopStampsHarnessLink(t *testing.T) {
+	startTestDaemon(t)
+	t.Setenv("TMUX", "/tmp/sock,1,0")
+	t.Setenv("TMUX_PANE", "%1")
+	if _, err := callData("register_agent", map[string]any{
+		"alias": "backend", "socket_path": "/tmp/sock", "session_id": "$1", "pane_id": "%1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := callData("register_agent", map[string]any{
+		"alias": "sender", "socket_path": "/tmp/sock", "session_id": "$2",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := callData("send_message", map[string]any{
+		"from": "sender", "to_kind": "agent", "to_target": "backend", "subject": "s", "body": "b",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	prev := tmuxenv.Run
+	tmuxenv.Run = hookRun(map[string]string{
+		"@muster_inbox":   "1",
+		"#{session_id}":   "$1",
+		"#{session_name}": "backend",
+	})
+	t.Cleanup(func() { tmuxenv.Run = prev })
+
+	var buf bytes.Buffer
+	if err := cmdHook([]string{"Stop"}, strings.NewReader(`{"session_id":"uuid-9"}`), &buf); err != nil {
+		t.Fatal(err)
+	}
+	ag, ok := hookGetAgent("backend")
+	if !ok || ag.HarnessSessionID != "uuid-9" {
+		t.Fatalf("harness link after Stop = %q (found=%v), want uuid-9", ag.HarnessSessionID, ok)
+	}
+}
+
+// stubAncestryWalkToPane makes tmuxenv.CaptureFromAncestry resolve a single
+// fake pane on socket, the way a hook spawned env-stripped but still a
+// descendant of its pane's shell would (see ancestry_test.go's own
+// TestCaptureFromAncestryMatchesPanePID for the same list-panes shape). Any
+// display-message query not explicitly stubbed in extra falls through to "".
+// Returns the socket path CaptureFromAncestry will actually report — a
+// full temp-dir path, not the caller's nominal name, since the walk reports
+// whatever it globbed.
+func stubAncestryWalkToPane(t *testing.T, paneID, sessionID, sessionName string, sessionCreated int64, extra map[string]string) string {
+	t.Helper()
+	prevAnc, prevDir, prevRun := tmuxenv.AncestorPIDs, tmuxenv.SocketDir, tmuxenv.Run
+	t.Cleanup(func() { tmuxenv.AncestorPIDs, tmuxenv.SocketDir, tmuxenv.Run = prevAnc, prevDir, prevRun })
+
+	const fakePID = 4242
+	tmuxenv.AncestorPIDs = func() []int { return []int{fakePID} }
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "proj-walk"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tmuxenv.SocketDir = func() string { return dir }
+	sock := filepath.Join(dir, "proj-walk")
+
+	tmuxenv.Run = func(args ...string) (string, error) {
+		for _, a := range args {
+			if a == "list-panes" {
+				return fmt.Sprintf("%d\t%s\t%s\t%s\t%d", fakePID, paneID, sessionID, sessionName, sessionCreated), nil
+			}
+		}
+		last := args[len(args)-1]
+		if v, ok := extra[last]; ok {
+			return v, nil
+		}
+		return "", nil
+	}
+	return sock
+}
+
+// TestHookStopRepairsHarnessLinkViaAncestryWalk covers finding F1 end to end:
+// a harness spawns the Stop hook with $TMUX stripped (the production shape —
+// every harness hook runs env-stripped), and the ONLY way to resolve tmux
+// identity is the process-ancestry walk hookCapture already uses for
+// SessionStart. Before the fix, hookStop gated on the literal $TMUX env var
+// and ALWAYS took the paneless branch here, so it could never see the mail,
+// never emit the drain decision, and never run stampHarnessLinks (the
+// resume spec's repair path) — this alias would stay linkless forever.
+func TestHookStopRepairsHarnessLinkViaAncestryWalk(t *testing.T) {
+	startTestDaemon(t)
+	sock := stubAncestryWalkToPane(t, "%7", "$3", "muster-walk", 555, map[string]string{
+		"#{@muster_inbox}": "1",
+	})
+	if _, err := callData("register_agent", map[string]any{
+		"alias": "walked-backend", "socket_path": sock, "session_id": "$3", "pane_id": "%7",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := callData("register_agent", map[string]any{
+		"alias": "sender", "socket_path": "/tmp/otherWalk", "session_id": "$4",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := callData("send_message", map[string]any{
+		"from": "sender", "to_kind": "agent", "to_target": "walked-backend", "subject": "s", "body": "b",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("TMUX", "")
+	t.Setenv("TMUX_PANE", "")
+
+	var buf bytes.Buffer
+	if err := cmdHook([]string{"Stop"}, strings.NewReader(`{"session_id":"uuid-walk"}`), &buf); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(buf.String(), "alias 'walked-backend'") {
+		t.Fatalf("expected the walked pane's Stop to drain, got %q", buf.String())
+	}
+	ag, ok := hookGetAgent("walked-backend")
+	if !ok || ag.HarnessSessionID != "uuid-walk" {
+		t.Fatalf("harness link after walked Stop = %q (found=%v), want uuid-walk", ag.HarnessSessionID, ok)
+	}
+}
+
+// TestHookStopWalkedSilentWhenNoUnread covers the walked path's cheap gate
+// (finding F1): the @muster_inbox option read socket-aware against the
+// walked tuple must still gate the daemon calls — a walked pane with no mail
+// must produce no output and no stamp attempt.
+func TestHookStopWalkedSilentWhenNoUnread(t *testing.T) {
+	startTestDaemon(t)
+	stubAncestryWalkToPane(t, "%7", "$3", "muster-walk", 555, nil) // "@muster_inbox" unstubbed -> ""
+	t.Setenv("TMUX", "")
+	t.Setenv("TMUX_PANE", "")
+
+	var buf bytes.Buffer
+	if err := cmdHook([]string{"Stop"}, strings.NewReader(`{}`), &buf); err != nil {
+		t.Fatal(err)
+	}
+	if buf.Len() != 0 {
+		t.Fatalf("expected silence with no unread mail, got %q", buf.String())
+	}
+}
+
+// TestStampHarnessLinksScopesToOwnedPane covers finding F3: two agent panes
+// sharing one tmux session (a primary plus a subagent pane, say) must not
+// have one pane's Stop hook stamp its harness UUID onto a SIBLING pane's
+// link-less alias. Only the calling pane's own alias gets stamped; the
+// sibling's stays link-less.
+func TestStampHarnessLinksScopesToOwnedPane(t *testing.T) {
+	startTestDaemon(t)
+	t.Setenv("TMUX", "/tmp/sockPane,1,0")
+	t.Setenv("TMUX_PANE", "%1")
+	if _, err := callData("register_agent", map[string]any{
+		"alias": "mine", "socket_path": "/tmp/sockPane", "session_id": "$1", "pane_id": "%1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := callData("register_agent", map[string]any{
+		"alias": "sibling", "socket_path": "/tmp/sockPane", "session_id": "$1", "pane_id": "%2",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := callData("register_agent", map[string]any{
+		"alias": "sender", "socket_path": "/tmp/otherPane", "session_id": "$2",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := callData("send_message", map[string]any{
+		"from": "sender", "to_kind": "agent", "to_target": "mine", "subject": "s", "body": "b",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	prev := tmuxenv.Run
+	tmuxenv.Run = hookRun(map[string]string{
+		"@muster_inbox":   "1",
+		"#{session_id}":   "$1",
+		"#{session_name}": "mine",
+	})
+	t.Cleanup(func() { tmuxenv.Run = prev })
+
+	// stampHarnessLinks only ever looks at aliases session_aliases returns
+	// (both, since they share the tuple) — call it directly to isolate F3
+	// from Stop's ownership gate (hookStopOwnsAnyAlias), which is a separate
+	// concern already covered elsewhere.
+	stampHarnessLinks([]string{"mine", "sibling"}, harnessenv.Capture{SessionID: "uuid-pane"}, "/tmp/sockPane", "$1", "%1")
+
+	mine, _ := hookGetAgent("mine")
+	sibling, _ := hookGetAgent("sibling")
+	if mine.HarnessSessionID != "uuid-pane" {
+		t.Fatalf("my own alias must be stamped, got %+v", mine)
+	}
+	if sibling.HarnessSessionID != "" {
+		t.Fatalf("a sibling pane's alias must NOT be stamped, got %+v", sibling)
+	}
+}
+
+// TestHookSessionStartResumeReclaimsAlias is the durable-alias spec's core
+// scenario end to end: a conversation's alias was registered in a now-dead
+// tmux session (tombstoned), mail arrived, and the conversation is resumed
+// in a brand-new tmux session. The SessionStart hook with source:"resume"
+// must re-register the alias onto the NEW tuple and print a summary line
+// (which Claude Code injects into the session's context) naming the alias
+// and the backlog — and must NOT additionally register a fresh
+// session-name alias.
+func TestHookSessionStartResumeReclaimsAlias(t *testing.T) {
+	startTestDaemon(t)
+	t.Setenv("TMUX", "/tmp/sock,1,0")
+	t.Setenv("TMUX_PANE", "%9")
+	t.Setenv("MUSTER_ALIAS", "")
+	seed := func(op string, args map[string]any) {
+		t.Helper()
+		if _, err := callData(op, args); err != nil {
+			t.Fatal(err)
+		}
+	}
+	seed("register_agent", map[string]any{
+		"alias": "backend-2", "socket_path": "/tmp/sock", "session_id": "$OLD",
+		"session_created": 111, "harness_session_id": "uuid-42", "label": "lake", "label_manual": true,
+	})
+	seed("register_agent", map[string]any{"alias": "sender", "socket_path": "/tmp/sock", "session_id": "$2"})
+	seed("send_message", map[string]any{"from": "sender", "to_kind": "agent", "to_target": "backend-2", "subject": "s", "body": "b"})
+	seed("deregister_agent", map[string]any{"alias": "backend-2"})
+
+	prev := tmuxenv.Run
+	tmuxenv.Run = hookRun(map[string]string{
+		"#{session_id}":      "$NEW",
+		"#{session_name}":    "muster-3",
+		"#{session_created}": "222",
+	})
+	t.Cleanup(func() { tmuxenv.Run = prev })
+
+	var buf bytes.Buffer
+	if err := cmdHook([]string{"SessionStart"}, strings.NewReader(`{"source":"resume","session_id":"uuid-42"}`), &buf); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "backend-2") || !strings.Contains(out, "1 unread") {
+		t.Fatalf("resume summary missing alias/backlog:\n%s", out)
+	}
+	ag, ok := hookGetAgent("backend-2")
+	if !ok || ag.Departed || ag.SessionID != "$NEW" || ag.Label != "lake" {
+		t.Fatalf("reclaimed row = %+v (found=%v), want live on $NEW with label kept", ag, ok)
+	}
+	if _, exists := hookGetAgent("muster-3"); exists {
+		t.Fatalf("resume must not also register a fresh session-name alias")
+	}
+}
+
+// TestHookSessionStartResumeSkipsLiveCollision: a row still provably live in
+// another tmux session is reported, never clobbered — and with nothing
+// reclaimed the hook falls through to the normal session-name register.
+func TestHookSessionStartResumeSkipsLiveCollision(t *testing.T) {
+	startTestDaemon(t)
+	t.Setenv("TMUX", "/tmp/sock,1,0")
+	t.Setenv("TMUX_PANE", "%9")
+	t.Setenv("MUSTER_ALIAS", "")
+	if _, err := callData("register_agent", map[string]any{
+		"alias": "backend-2", "socket_path": "/other-sock", "session_id": "$OLD",
+		"session_created": 111, "harness_session_id": "uuid-42",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	prev := tmuxenv.Run
+	tmuxenv.Run = func(args ...string) (string, error) {
+		// The liveness probe against /other-sock/$OLD must confirm alive.
+		for _, a := range args {
+			if a == "/other-sock" {
+				return "111", nil
+			}
+		}
+		return hookRun(map[string]string{
+			"#{session_id}": "$NEW", "#{session_name}": "muster-3", "#{session_created}": "222",
+		})(args...)
+	}
+	t.Cleanup(func() { tmuxenv.Run = prev })
+
+	var buf bytes.Buffer
+	if err := cmdHook([]string{"SessionStart"}, strings.NewReader(`{"source":"resume","session_id":"uuid-42"}`), &buf); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(buf.String(), "not reclaimed") {
+		t.Fatalf("expected a collision notice, got:\n%s", buf.String())
+	}
+	ag, _ := hookGetAgent("backend-2")
+	if ag.SessionID != "$OLD" {
+		t.Fatalf("collision row moved to %q — must stay on $OLD", ag.SessionID)
+	}
+	if fallback, found := hookGetAgent("muster-3"); !found || fallback.Departed || fallback.SessionID != "$NEW" {
+		t.Fatalf("nothing reclaimed: expected the default session-name alias 'muster-3' registered on $NEW, got %+v found=%v", fallback, found)
 	}
 }

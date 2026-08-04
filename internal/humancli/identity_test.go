@@ -266,3 +266,176 @@ func TestGCRejectsNonPositiveEventsKeep(t *testing.T) {
 		t.Fatalf("expected --events-keep must be > 0 error, got %v", err)
 	}
 }
+
+// tmuxCaptureStub wires tmuxenv.Run to answer the register-path queries used
+// by cmdRegister's tmux-anchored branch: #{session_id} and #{session_name}
+// from the given values, everything else (the project/branch probe) with a
+// constant benign answer. Mirrors TestRegisterUsesAliasPrecedenceAndCaptures's
+// inline stub, factored out so the --if-absent tests can vary just the
+// session_id (the tuple's second half — socket_path comes from $TMUX itself).
+func tmuxCaptureStub(t *testing.T, sessionID, sessionName string) {
+	t.Helper()
+	prev := tmuxenv.Run
+	tmuxenv.Run = func(args ...string) (string, error) {
+		switch args[len(args)-1] {
+		case "#{session_id}":
+			return sessionID, nil
+		case "#{session_name}":
+			return sessionName, nil
+		default:
+			return "frontend\x1f1", nil
+		}
+	}
+	t.Cleanup(func() { tmuxenv.Run = prev })
+}
+
+// TestRegisterIfAbsentConflict covers the CAS the whole feature exists for: a
+// launch wrapper seeding a tmux-session-name alias must not silently steal it
+// out from under a LIVE claimed identity. Alias "seed" is already registered
+// to tuple A ($A); a --if-absent register capturing a DIFFERENT tuple ($B)
+// must fail with "if_absent conflict" and leave the row on tuple A untouched.
+func TestRegisterIfAbsentConflict(t *testing.T) {
+	startTestDaemon(t)
+	t.Setenv("TMUX", "/tmp/tmux-0/proj-muster,1,0")
+	t.Setenv("TMUX_PANE", "%0")
+	t.Setenv("MUSTER_ALIAS", "")
+	socketPath := "/tmp/tmux-0/proj-muster"
+	registerViaDaemon(t, "", "seed", socketPath, "$A")
+
+	tmuxCaptureStub(t, "$B", "seed")
+
+	var buf bytes.Buffer
+	err := cmdRegister([]string{"seed", "--if-absent"}, &buf)
+	if err == nil || !strings.Contains(err.Error(), "if_absent conflict") {
+		t.Fatalf("expected an if_absent conflict error, got %v", err)
+	}
+	agents := listAgentsForTest(t, "")
+	if len(agents) != 1 || agents[0].SessionID != "$A" {
+		t.Fatalf("expected the row to remain on tuple A untouched, got %+v", agents)
+	}
+}
+
+// TestRegisterIfAbsentRefusesForeignHarnessClaim pins the semantics the
+// whole feature exists for: a fresh session's --if-absent seed must NOT take
+// over an alias already LIVE-claimed by a different owner. Alias "seed-owned"
+// is registered on tuple A carrying a real harness link (harness_session_id
+// "uuid-owner" — a genuinely claimed identity, not a bare tmux row). A
+// --if-absent register from tuple B, itself linked to a DIFFERENT harness
+// UUID ("uuid-attacker"), must fail with "if_absent conflict" and leave the
+// row on tuple A untouched — including its harness link, which a successful
+// (bad) overwrite would have clobbered.
+func TestRegisterIfAbsentRefusesForeignHarnessClaim(t *testing.T) {
+	startTestDaemon(t)
+	t.Setenv("TMUX", "/tmp/tmux-0/proj-muster,1,0")
+	t.Setenv("TMUX_PANE", "%0")
+	t.Setenv("MUSTER_ALIAS", "")
+	socketPath := "/tmp/tmux-0/proj-muster"
+	if _, err := callData("register_agent", map[string]any{
+		"alias": "seed-owned", "socket_path": socketPath, "session_id": "$A",
+		"harness_session_id": "uuid-owner",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	tmuxCaptureStub(t, "$B", "seed-owned")
+
+	var buf bytes.Buffer
+	err := cmdRegister([]string{"seed-owned", "--if-absent", "--harness-session", "uuid-attacker"}, &buf)
+	if err == nil || !strings.Contains(err.Error(), "if_absent conflict") {
+		t.Fatalf("expected an if_absent conflict error refusing the foreign claim, got %v", err)
+	}
+	agents := listAgentsForTest(t, "")
+	if len(agents) != 1 || agents[0].SessionID != "$A" || agents[0].HarnessSessionID != "uuid-owner" {
+		t.Fatalf("expected the owned row to survive untouched (tuple A, harness uuid-owner), got %+v", agents)
+	}
+}
+
+// TestRegisterIfAbsentSameTupleIdempotent covers the non-conflicting case:
+// re-registering with --if-absent from the SAME (socket_path, session_id)
+// tuple already on the row is a no-op upsert, not a conflict — a launch
+// wrapper re-running against its own already-seeded identity must succeed.
+func TestRegisterIfAbsentSameTupleIdempotent(t *testing.T) {
+	startTestDaemon(t)
+	t.Setenv("TMUX", "/tmp/tmux-0/proj-muster,1,0")
+	t.Setenv("TMUX_PANE", "%0")
+	t.Setenv("MUSTER_ALIAS", "")
+	socketPath := "/tmp/tmux-0/proj-muster"
+	registerViaDaemon(t, "", "seed2", socketPath, "$SAME")
+
+	tmuxCaptureStub(t, "$SAME", "seed2")
+
+	var buf bytes.Buffer
+	if err := cmdRegister([]string{"seed2", "--if-absent"}, &buf); err != nil {
+		t.Fatalf("same-tuple --if-absent register should succeed idempotently, got %v", err)
+	}
+	agents := listAgentsForTest(t, "")
+	if len(agents) != 1 || agents[0].SessionID != "$SAME" {
+		t.Fatalf("expected the row unchanged on the same tuple, got %+v", agents)
+	}
+}
+
+// TestRegisterIfAbsentOnFreshAlias covers the absent case: --if-absent
+// against an alias with no existing row at all must succeed and create it —
+// the CAS only ever blocks a DIFFERENT-tuple collision, never a fresh claim.
+func TestRegisterIfAbsentOnFreshAlias(t *testing.T) {
+	startTestDaemon(t)
+	t.Setenv("TMUX", "/tmp/tmux-0/proj-muster,1,0")
+	t.Setenv("TMUX_PANE", "%0")
+	t.Setenv("MUSTER_ALIAS", "")
+	tmuxCaptureStub(t, "$FRESH", "freshalias")
+
+	var buf bytes.Buffer
+	if err := cmdRegister([]string{"freshalias", "--if-absent"}, &buf); err != nil {
+		t.Fatalf("--if-absent on a fresh alias should succeed, got %v", err)
+	}
+	agents := listAgentsForTest(t, "")
+	if len(agents) != 1 || agents[0].Alias != "freshalias" {
+		t.Fatalf("expected a fresh row to be created, got %+v", agents)
+	}
+}
+
+// TestRegisterIfAbsentRejectedForPaneless covers the paneless-path decision:
+// allocPanelessAlias already runs its own internal if_absent CAS per
+// candidate suffix, so layering the CLI flag on top has no clean meaning —
+// cmdRegister must reject it with a clear, actionable error rather than
+// silently ignoring it or picking an arbitrary interpretation.
+func TestRegisterIfAbsentRejectedForPaneless(t *testing.T) {
+	startTestDaemon(t)
+	panelessEnv(t, "hs-ifabsent", "wt-ifabsent")
+
+	var buf bytes.Buffer
+	err := cmdRegister([]string{"--if-absent"}, &buf)
+	if err == nil || !strings.Contains(err.Error(), "--if-absent is for the tmux-anchored seed path") {
+		t.Fatalf("expected a paneless rejection error, got %v", err)
+	}
+}
+
+// TestRegisterPrintsRevivalAndUnread covers the resume loop's CLI surface:
+// re-registering a departed alias that accrued mail must say so, so the
+// operator (or a resumed agent using the CLI) learns the backlog in the
+// same command.
+func TestRegisterPrintsRevivalAndUnread(t *testing.T) {
+	startTestDaemon(t)
+	t.Setenv("TMUX", "")
+	t.Setenv("CLAUDE_CODE_SESSION_ID", "")
+	t.Setenv("MUSTER_ALIAS", "")
+	seed := func(op string, args map[string]any) {
+		t.Helper()
+		if _, err := callData(op, args); err != nil {
+			t.Fatal(err)
+		}
+	}
+	seed("register_agent", map[string]any{"alias": "backend", "socket_path": "/s", "session_id": "$1"})
+	seed("register_agent", map[string]any{"alias": "sender", "socket_path": "/s", "session_id": "$2"})
+	seed("send_message", map[string]any{"from": "sender", "to_kind": "agent", "to_target": "backend", "subject": "hi", "body": "b"})
+	seed("deregister_agent", map[string]any{"alias": "backend"})
+
+	var buf bytes.Buffer
+	if err := cmdRegister([]string{"backend"}, &buf); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "revived") || !strings.Contains(out, "1 unread") {
+		t.Fatalf("register output missing revival/unread notice:\n%s", out)
+	}
+}

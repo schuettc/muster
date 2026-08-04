@@ -31,10 +31,21 @@ type agentFull struct {
 	PaneID      string `json:"pane_id"`
 	SessionID   string `json:"session_id"`
 	SessionName string `json:"session_name"`
+	// HarnessSessionID mirrors agentRow's own copy (see store.Agent.HarnessSessionID)
+	// — stampHarnessLinks reads it via hookGetAgent to skip a row that already
+	// has a link.
+	HarnessSessionID string `json:"harness_session_id"`
 	// Departed mirrors store.Agent.Departed (see agentRow's own copy above):
 	// get_agent returns tombstoned rows with found=true, so hook gates must
 	// decode this to tell a live owner from a dead one.
 	Departed bool `json:"departed"`
+	// Label mirrors agentRow's own copy — the resume reclaim test asserts a
+	// manually-pinned label survives the reclaim onto the new tuple.
+	Label string `json:"label"`
+	// SupersededBy mirrors store.Agent.SupersededBy — hookSessionStartResume
+	// reads it via hookGetAgent/harnessOwnedRows to tell a become-retired
+	// seed (never reclaim) from an ordinary tombstone (reclaim as before).
+	SupersededBy string `json:"superseded_by"`
 }
 
 type agentRow struct {
@@ -48,17 +59,27 @@ type agentRow struct {
 	SessionID string `json:"session_id"`
 	// SessionCreated feeds tmuxenv.IsSessionAlive's recycled-session-ID
 	// discrimination (see store.Agent.SessionCreated).
-	SessionCreated int64  `json:"session_created"`
-	SessionName    string `json:"session_name"`
-	Project        string `json:"project"`
-	Label          string `json:"label"`
-	LabelManual    bool   `json:"label_manual"`
-	LastSeen       int64  `json:"last_seen"`
+	SessionCreated int64 `json:"session_created"`
+	// HarnessSessionID links a row to its harness session (see
+	// store.Agent.HarnessSessionID) — how a daemon-hosted session's hooks,
+	// which see no tmux, find their own rows.
+	HarnessSessionID string `json:"harness_session_id"`
+	SessionName      string `json:"session_name"`
+	Project          string `json:"project"`
+	Label            string `json:"label"`
+	LabelManual      bool   `json:"label_manual"`
+	LastSeen         int64  `json:"last_seen"`
 	// Departed is true once the agent has been deregistered (tombstoned, not
 	// deleted — see store.Store.DepartAgent): gc's default reap and
 	// --purge-agents both key off this to decide whether a row still needs
 	// reaping or is already history.
 	Departed bool `json:"departed"`
+	// SupersededBy mirrors store.Agent.SupersededBy — non-empty on a row
+	// retired via `become`, naming the alias that now carries its identity
+	// forward. hookSessionStartResume uses this as ground truth: a departed
+	// row with SupersededBy set must never reclaim on resume, regardless of
+	// whether its successor is currently live.
+	SupersededBy string `json:"superseded_by"`
 }
 
 // threadRow decodes daemon thread responses (get_inbox, get_thread, list_tasks).
@@ -155,8 +176,14 @@ func cmdAgents(out io.Writer) error {
 			label = "(" + label + ")" // auto-topic: shown but not addressable
 		}
 		live := "✗"
-		if a.Live {
+		switch {
+		case a.Live:
 			live = "●"
+		case a.SocketPath == "" && !a.Departed:
+			// Paneless agents (harness daemon-hosted sessions) have no tmux
+			// session to probe: liveness is unknowable here, and rendering ✗
+			// would read as "dead" for what is usually a live session.
+			live = "◌"
 		}
 		if _, err := fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", proj, a.Alias, label, a.ModelType, live); err != nil {
 			return err
@@ -185,8 +212,8 @@ func validateIntent(intent string) error {
 
 // sendFlagVals holds cmdSend's parsed flag pointers.
 type sendFlagVals struct {
-	from, subject, ref, intent *string
-	role, broadcast            *bool
+	from, subject, ref, intent, project *string
+	role, broadcast                     *bool
 }
 
 // newSendFlagsWithVals declares send's flags and returns both the FlagSet
@@ -202,6 +229,7 @@ func newSendFlagsWithVals() (*flag.FlagSet, sendFlagVals) {
 	v.ref = fs.String("ref", "", "pointer to the work")
 	v.role = fs.Bool("role", false, "treat target as a role")
 	v.broadcast = fs.Bool("broadcast", false, "send to everyone")
+	v.project = fs.String("project", "", "with --broadcast: send only to this project's agents")
 	v.intent = fs.String("intent", "", "message intent: fyi, reply-requested, or action-requested")
 	return fs, v
 }
@@ -228,6 +256,9 @@ func cmdSend(args []string, out io.Writer) error {
 	if err := validateIntent(*v.intent); err != nil {
 		return err
 	}
+	if *v.project != "" && !*v.broadcast {
+		return fmt.Errorf("--project requires --broadcast")
+	}
 	toKind, toTarget := "agent", ""
 	switch {
 	case *v.broadcast:
@@ -238,8 +269,9 @@ func cmdSend(args []string, out io.Writer) error {
 	var body string
 	if *v.broadcast {
 		if len(rest) < 1 {
-			return fmt.Errorf("usage: muster send --broadcast <body> [--intent fyi|reply-requested|action-requested]")
+			return fmt.Errorf("usage: muster send --broadcast [--project <p>] <body> [--intent fyi|reply-requested|action-requested]")
 		}
+		toTarget = *v.project
 		body = strings.Join(rest, " ")
 	} else {
 		if len(rest) < 2 {

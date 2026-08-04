@@ -12,12 +12,15 @@ import (
 // departed is always reset to 0 by both the insert and the conflict update, so
 // re-registering a previously-departed alias (a returning session) revives it
 // cleanly — read-state (last_read_entry_id/last_read_at) is untouched by
-// either branch, so it survives the roundtrip intact.
+// either branch, so it survives the roundtrip intact. superseded_by is always
+// reset to ” too: a revived/re-registered alias is no longer superseded by
+// whatever claimed it before (e.g. the operator purged the successor and
+// re-registered the old name) — see Store.Become and hookSessionStartResume.
 func (s *Store) RegisterAgent(a Agent) error {
 	now := clock.NowMillis()
 	_, err := s.db.Exec(`
-INSERT INTO agents (alias, role, model_type, socket_path, pane_id, session_name, session_id, session_created, device_id, project, label, label_manual, departed, registered_at, last_seen)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+INSERT INTO agents (alias, role, model_type, socket_path, pane_id, session_name, session_id, session_created, device_id, harness_session_id, project, label, label_manual, departed, superseded_by, registered_at, last_seen)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, '', ?, ?)
 ON CONFLICT(alias) DO UPDATE SET
     role=excluded.role,
     model_type=excluded.model_type,
@@ -27,13 +30,15 @@ ON CONFLICT(alias) DO UPDATE SET
     session_id=excluded.session_id,
     session_created=excluded.session_created,
     device_id=excluded.device_id,
+    harness_session_id=excluded.harness_session_id,
     project=excluded.project,
     label=excluded.label,
     label_manual=excluded.label_manual,
     departed=0,
+    superseded_by='',
     last_seen=excluded.last_seen`,
 		a.Alias, a.Role, a.ModelType, a.SocketPath, a.PaneID, a.SessionName, a.SessionID, a.SessionCreated, a.DeviceID,
-		a.Project, a.Label, a.LabelManual, now, now)
+		a.HarnessSessionID, a.Project, a.Label, a.LabelManual, now, now)
 	return err
 }
 
@@ -41,7 +46,7 @@ ON CONFLICT(alias) DO UPDATE SET
 // agents included: their rows are history, not gone (see DepartAgent).
 func (s *Store) ListAgents() ([]Agent, error) {
 	rows, err := s.db.Query(`
-SELECT alias, role, model_type, socket_path, pane_id, session_name, session_id, session_created, device_id, project, label, label_manual, registered_at, last_seen, last_read_entry_id, departed
+SELECT alias, role, model_type, socket_path, pane_id, session_name, session_id, session_created, device_id, harness_session_id, project, label, label_manual, registered_at, last_seen, last_read_entry_id, departed, superseded_by
 FROM agents ORDER BY alias`)
 	if err != nil {
 		return nil, err
@@ -50,7 +55,7 @@ FROM agents ORDER BY alias`)
 	var out []Agent
 	for rows.Next() {
 		var a Agent
-		if err := rows.Scan(&a.Alias, &a.Role, &a.ModelType, &a.SocketPath, &a.PaneID, &a.SessionName, &a.SessionID, &a.SessionCreated, &a.DeviceID, &a.Project, &a.Label, &a.LabelManual, &a.RegisteredAt, &a.LastSeen, &a.LastReadEntryID, &a.Departed); err != nil {
+		if err := rows.Scan(&a.Alias, &a.Role, &a.ModelType, &a.SocketPath, &a.PaneID, &a.SessionName, &a.SessionID, &a.SessionCreated, &a.DeviceID, &a.HarnessSessionID, &a.Project, &a.Label, &a.LabelManual, &a.RegisteredAt, &a.LastSeen, &a.LastReadEntryID, &a.Departed, &a.SupersededBy); err != nil {
 			return nil, err
 		}
 		out = append(out, a)
@@ -64,9 +69,9 @@ FROM agents ORDER BY alias`)
 func (s *Store) GetAgent(alias string) (Agent, bool, error) {
 	var a Agent
 	err := s.db.QueryRow(`
-SELECT alias, role, model_type, socket_path, pane_id, session_name, session_id, session_created, device_id, project, label, label_manual, registered_at, last_seen, last_read_entry_id, departed
+SELECT alias, role, model_type, socket_path, pane_id, session_name, session_id, session_created, device_id, harness_session_id, project, label, label_manual, registered_at, last_seen, last_read_entry_id, departed, superseded_by
 FROM agents WHERE alias=?`, alias).
-		Scan(&a.Alias, &a.Role, &a.ModelType, &a.SocketPath, &a.PaneID, &a.SessionName, &a.SessionID, &a.SessionCreated, &a.DeviceID, &a.Project, &a.Label, &a.LabelManual, &a.RegisteredAt, &a.LastSeen, &a.LastReadEntryID, &a.Departed)
+		Scan(&a.Alias, &a.Role, &a.ModelType, &a.SocketPath, &a.PaneID, &a.SessionName, &a.SessionID, &a.SessionCreated, &a.DeviceID, &a.HarnessSessionID, &a.Project, &a.Label, &a.LabelManual, &a.RegisteredAt, &a.LastSeen, &a.LastReadEntryID, &a.Departed, &a.SupersededBy)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Agent{}, false, nil
 	}
@@ -79,6 +84,17 @@ FROM agents WHERE alias=?`, alias).
 // TouchAgent bumps last_seen. No error if the agent is unknown.
 func (s *Store) TouchAgent(alias string) error {
 	_, err := s.db.Exec(`UPDATE agents SET last_seen=? WHERE alias=?`, clock.NowMillis(), alias)
+	return err
+}
+
+// SetHarnessSessionID stamps the harness session UUID onto an existing row —
+// the repair half of the durable-alias spec: an alias registered without a
+// harness link (an MCP register in an env carrying no harness UUID) gets one
+// attached later by a hook that DOES see the UUID (every hook payload carries
+// it). Identity, tuple, and read-state are untouched; unknown alias is a
+// no-op, mirroring TouchAgent's contract.
+func (s *Store) SetHarnessSessionID(alias, id string) error {
+	_, err := s.db.Exec(`UPDATE agents SET harness_session_id=? WHERE alias=?`, id, alias)
 	return err
 }
 
@@ -200,7 +216,7 @@ WHERE `+threadConcerns+`
               WHERE e.thread_id = threads.id
                 AND e.id > COALESCE((SELECT last_read_entry_id FROM agents WHERE alias=?), 0)
                 AND e.from_agent != ?)`,
-		alias, alias, alias, alias, alias).Scan(&n)
+		alias, alias, alias, alias, alias, alias).Scan(&n)
 	return n, err
 }
 
@@ -228,6 +244,68 @@ func (s *Store) MarkRead(alias string) error {
 	return tx.Commit()
 }
 
+// ErrBecomeFromMissing / ErrBecomeToExists are become's guard sentinels —
+// the daemon maps them to loud, hint-carrying wire errors.
+var (
+	ErrBecomeFromMissing = errors.New("become: from alias not found")
+	ErrBecomeToExists    = errors.New("become: to alias already exists")
+)
+
+// Become claims a new name for an existing identity (spec:
+// become-claim-your-name): inserts to as a CLONE of from — tuple, DEVICE,
+// harness link, project, label, role, model, and the READ WATERMARK, without which
+// the claimed identity would see all of history as unread — then retires
+// from as a tombstone AND stamps from.superseded_by = to. to must not exist
+// at all: a live row is someone else's identity and a tombstone is some
+// other conversation's history; merging identities is exactly the confusion
+// this feature exists to kill. from may already be departed (a claim after
+// gc swept the seed). The clone's INSERT deliberately omits superseded_by
+// (it defaults to ”) — the successor starts unsuperseded even if from was
+// itself a superseded row (a chained become A→B→C leaves B's superseded_by
+// pointing at C, never inherited backward onto C). superseded_by is the
+// ground truth hookSessionStartResume uses to keep a retired seed from
+// resurrecting on resume, in place of inferring retirement from tuple
+// coincidence. One transaction: a crash mid-become never leaves both rows
+// live.
+//
+// device_id is part of the cloned tuple, not an afterthought: the successor
+// must land on the SAME device as the seed, because the session tuple that
+// addresses it is (device, socket, session). A clone that defaulted device_id
+// to "" would put the successor on a tuple no live session queries — the
+// claim would appear to succeed and the badge would go dark forever.
+func (s *Store) Become(from, to string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var n int
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM agents WHERE alias=?`, to).Scan(&n); err != nil {
+		return err
+	}
+	if n > 0 {
+		return ErrBecomeToExists
+	}
+	now := clock.NowMillis()
+	res, err := tx.Exec(`
+INSERT INTO agents (alias, role, model_type, socket_path, pane_id, session_name, session_id, session_created, device_id, harness_session_id, project, label, label_manual, departed, registered_at, last_seen, last_read_entry_id, last_read_at)
+SELECT ?, role, model_type, socket_path, pane_id, session_name, session_id, session_created, device_id, harness_session_id, project, label, label_manual, 0, ?, ?, last_read_entry_id, last_read_at
+FROM agents WHERE alias=?`, to, now, now, from)
+	if err != nil {
+		return err
+	}
+	if rows, err := res.RowsAffected(); err != nil {
+		return err
+	} else if rows == 0 {
+		return ErrBecomeFromMissing
+	}
+	if _, err := tx.Exec(`UPDATE agents SET departed=1, superseded_by=? WHERE alias=?`, to, from); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 // SessionUnread is the ONE canonical session-level unread query (spec §3):
 // all aliases sharing the exact (socketPath, sessionID) tuple are one actor
 // identity for unread math and actor exclusion. total is the count of
@@ -238,10 +316,13 @@ func (s *Store) MarkRead(alias string) error {
 // session — so a session's own writes under either alias never make its own
 // threads unread, and a broadcast concerning two sibling aliases counts once,
 // never twice (no summing of per-alias counts). action is the subset whose
-// effective intent (effectiveIntent) is action-requested. An empty
-// socketPath or sessionID never groups: it matches no agents, so both
-// results are 0 (per-alias identity is UnreadCount's job for such agents,
-// e.g. one registered without a live tmux pane).
+// effective intent (effectiveIntent) is action-requested. An empty sessionID
+// never groups: it matches no agents, so both results are 0 (per-alias
+// identity is UnreadCount's job for such agents). socketPath MAY be empty —
+// ("", harness session UUID) is the paneless tuple (see internal/harnessenv),
+// a real session identity whose sibling aliases group exactly like a tmux
+// session's; the sessionID guard alone keeps pre-harnessenv no-tmux rows
+// (both fields empty) from ever grouping with each other.
 //
 // The session's identity is (deviceID, socketPath, sessionID), never the pair
 // alone — see store.API. The device dimension is what makes the actor
@@ -250,11 +331,48 @@ func (s *Store) MarkRead(alias string) error {
 // session, so its message to this session is discarded as "one of my own
 // writes" and the badge never lights. That is the two-device miss the hosted
 // backend exists to make impossible.
+//
+// Mail follows the name, wherever the conversation moved (become-retired
+// lineage, found live: a straggler addressed to a retired seed alias must
+// still light the badge on the tuple its identity moved to). The sess CTE is
+// therefore a WITH RECURSIVE lineage walk, not a flat tuple match: the base
+// case is every alias currently sitting on the queried (device, socket,
+// session) tuple; each recursive step adds rows whose superseded_by points at
+// an alias already in the set. store.Become stamps superseded_by on the SEED
+// pointing FORWARD at its successor (from.superseded_by = to), so the walk goes
+// backward through the chain — for A→B→C (A became B, B became C: A's
+// superseded_by='B', B's superseded_by='C'), starting from C on the live
+// tuple the first step finds B (superseded_by='C') and the next step finds
+// A (superseded_by='B'), even though A's own row still sits on a
+// long-dead tuple. Each lineage row keeps ITS OWN
+// last_read_entry_id as the EXISTS watermark below — a superseded row's
+// watermark is frozen at the moment it was retired (exactly the read state
+// Become cloned forward onto its successor), so this stays per-row
+// semantics, never a session-wide max. UNION (not UNION ALL) dedups on the
+// full row; since alias is a primary key, that collapses to "one alias
+// enters the set at most once" — a malformed superseded_by cycle (A→B→A)
+// simply produces no new row on the step that would re-add an
+// already-present alias, so the recursion terminates instead of hanging
+// (see TestSessionUnreadLineageCycleGuard).
+//
+// The device filter applies to the BASE CASE ONLY, deliberately. The base case
+// is a tuple match, and a tuple can collide across machines — that is exactly
+// the hazard deviceID exists to close. The recursive step is not a tuple match:
+// it follows superseded_by, an alias-valued pointer, and alias is the agents
+// primary key, so each step lands on exactly the one row Become named. There is
+// no coincidence to defend against, and filtering it by device would instead
+// BREAK the legitimate case the hosted backend is for — a lineage whose seed
+// was claimed on one machine and whose successor resumed on another. Lineage is
+// identity, which crosses devices; the tuple is location, which does not.
 func (s *Store) SessionUnread(deviceID, socketPath, sessionID string) (total, action int, err error) {
 	err = s.db.QueryRow(`
-WITH sess AS (SELECT alias, last_read_entry_id FROM agents
-              WHERE device_id = ?3 AND socket_path = ?1 AND session_id = ?2
-                AND ?1 != '' AND ?2 != '')
+WITH RECURSIVE sess AS (
+  SELECT alias, last_read_entry_id, superseded_by FROM agents
+  WHERE device_id = ?3 AND socket_path = ?1 AND session_id = ?2 AND ?2 != ''
+  UNION
+  SELECT a.alias, a.last_read_entry_id, a.superseded_by
+  FROM agents a JOIN sess ON a.superseded_by = sess.alias
+)
 SELECT
   COUNT(DISTINCT threads.id),
   COUNT(DISTINCT CASE WHEN `+effectiveIntent+` = 'action-requested' THEN threads.id END)
@@ -266,4 +384,48 @@ WHERE EXISTS (SELECT 1 FROM entries e
                 AND e.from_agent NOT IN (SELECT alias FROM sess))`,
 		socketPath, sessionID, deviceID).Scan(&total, &action)
 	return total, action, err
+}
+
+// SessionAliasLineage returns every alias belonging to a session's
+// supersession lineage — the exact same WITH RECURSIVE walk SessionUnread
+// runs (see its doc comment for the "mail follows the name" rule and the
+// cycle-termination argument), projected down to just the alias column. It
+// backs the daemon's session_aliases op, which includes departed aliases ON
+// PURPOSE (their unread mail still needs draining) — lineage rows are
+// additive to that, never a filter: a become-retired seed on a long-dead
+// tuple belongs in the list precisely because it is departed, not despite
+// it. Result is sorted and deduplicated; an empty sessionID matches no
+// agents (mirrors SessionUnread's empty-tuple guard) and returns an empty
+// slice.
+//
+// Device-scoped on the base case exactly like SessionUnread, and for the same
+// two reasons: on a shared roster the (socket, session) pair alone would
+// advertise a colliding session on ANOTHER machine as one of this session's own
+// aliases — and this op's answer is what the hook drains and the nudge path
+// addresses — while the recursive superseded_by step stays unscoped because it
+// follows a primary-key pointer, not a tuple, and identity legitimately crosses
+// devices. See SessionUnread's comment for the full argument.
+func (s *Store) SessionAliasLineage(deviceID, socketPath, sessionID string) ([]string, error) {
+	rows, err := s.db.Query(`
+WITH RECURSIVE sess AS (
+  SELECT alias, superseded_by FROM agents
+  WHERE device_id = ?3 AND socket_path = ?1 AND session_id = ?2 AND ?2 != ''
+  UNION
+  SELECT a.alias, a.superseded_by
+  FROM agents a JOIN sess ON a.superseded_by = sess.alias
+)
+SELECT alias FROM sess ORDER BY alias`, socketPath, sessionID, deviceID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	out := []string{}
+	for rows.Next() {
+		var alias string
+		if err := rows.Scan(&alias); err != nil {
+			return nil, err
+		}
+		out = append(out, alias)
+	}
+	return out, rows.Err()
 }

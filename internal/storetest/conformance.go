@@ -108,6 +108,23 @@ var cases = []conformanceCase{
 	{"SessionUnreadUsesPerAliasWatermark", testSessionUnreadPerAliasWatermark},
 	{"SessionUnreadEmptyTupleNeverGroups", testSessionUnreadEmptyTuple},
 	{"SessionUnreadSeparatesCollidingDevices", testSessionUnreadDeviceCollision},
+	{"SessionUnreadGroupsThePanelessTuple", testSessionUnreadPaneless},
+
+	// Identity: harness link, become, and supersession lineage.
+	{"SetHarnessSessionIDStampsExistingRow", testSetHarnessSessionID},
+	{"SetHarnessSessionIDUnknownAliasIsNoOp", testSetHarnessSessionIDUnknown},
+	{"RegisterResetsSupersededBy", testRegisterResetsSupersededBy},
+	{"BecomeClonesIdentityAndRetiresSeed", testBecomeClonesAndRetires},
+	{"BecomeCarriesTheReadWatermark", testBecomeCarriesWatermark},
+	{"BecomeStampsSupersededBy", testBecomeStampsSupersededBy},
+	{"BecomeRefusesAnExistingTarget", testBecomeRefusesExistingTarget},
+	{"BecomeRefusesAMissingSource", testBecomeRefusesMissingSource},
+	{"BecomeIsAtomicOnRefusal", testBecomeAtomicOnRefusal},
+	{"SessionUnreadFollowsSupersessionLineage", testSessionUnreadLineage},
+	{"SessionUnreadFollowsChainedLineage", testSessionUnreadChainedLineage},
+	{"SessionAliasLineageWalksTheChain", testSessionAliasLineage},
+	{"SessionAliasLineageEmptySessionIsEmpty", testSessionAliasLineageEmpty},
+	{"SessionAliasLineageSeparatesCollidingDevices", testSessionAliasLineageDevices},
 
 	// Device poll.
 	{"DevicePollFindsNewMail", testDevicePollFindsNewMail},
@@ -1868,5 +1885,372 @@ func testEventsJoinMissingThread(t *testing.T, s store.API) {
 	}
 	if evs[0].Subject != "" || evs[0].Intent != "" {
 		t.Fatalf("a missing thread should annotate nothing, got %+v", evs[0])
+	}
+}
+
+// --- identity: harness link, become, supersession lineage -------------------
+
+// testSessionUnreadPaneless: ("", harness session UUID) is the PANELESS tuple —
+// a session with no tmux pane still has a real identity, and its sibling
+// aliases must group exactly like a tmux session's. This is the case an
+// "empty socket path never groups" guard silently swallows: the backend returns
+// 0 unread forever and the session never learns it has mail.
+func testSessionUnreadPaneless(t *testing.T, s store.API) {
+	const uuid = "9f1c2f6e-0000-4000-8000-000000000001"
+	for _, alias := range []string{"paneless-a", "paneless-b"} {
+		mustRegister(t, s, store.Agent{Alias: alias, SocketPath: "", SessionID: uuid})
+	}
+	mustThread(t, s, store.Thread{
+		Kind: "message", FromAgent: "peer", ToKind: "agent", ToTarget: "paneless-a",
+	}, "mail for a paneless session")
+
+	total, _, err := s.SessionUnread("", "", uuid)
+	if err != nil {
+		t.Fatalf("SessionUnread: %v", err)
+	}
+	if total != 1 {
+		t.Fatalf("paneless session unread = %d, want 1 — ('' , uuid) is a real tuple", total)
+	}
+}
+
+func testSetHarnessSessionID(t *testing.T, s store.API) {
+	mustRegister(t, s, store.Agent{Alias: "backend", SocketPath: "/s", SessionID: "$1"})
+	if err := s.SetHarnessSessionID("backend", "uuid-1"); err != nil {
+		t.Fatalf("SetHarnessSessionID: %v", err)
+	}
+	a, ok, err := s.GetAgent("backend")
+	if err != nil || !ok {
+		t.Fatalf("GetAgent: %v (ok=%v)", err, ok)
+	}
+	if a.HarnessSessionID != "uuid-1" {
+		t.Fatalf("harness_session_id = %q, want %q", a.HarnessSessionID, "uuid-1")
+	}
+	// Identity, tuple and read state are untouched by the stamp.
+	if a.SocketPath != "/s" || a.SessionID != "$1" {
+		t.Fatalf("stamp disturbed the tuple: %+v", a)
+	}
+}
+
+// testSetHarnessSessionIDUnknown is the phantom-row guard. A backend whose
+// update is an upsert (DynamoDB's UpdateItem is) will CREATE a row for an
+// alias that was never registered, where the SQLite UPDATE matches nothing.
+// The phantom is a roster member with an empty tuple and no identity.
+func testSetHarnessSessionIDUnknown(t *testing.T, s store.API) {
+	if err := s.SetHarnessSessionID("ghost", "uuid-2"); err != nil {
+		t.Fatalf("SetHarnessSessionID on an unknown alias must be a no-op, got %v", err)
+	}
+	if _, ok, err := s.GetAgent("ghost"); err != nil || ok {
+		t.Fatalf("stamping an unknown alias created a phantom row (ok=%v, err=%v)", ok, err)
+	}
+	agents, err := s.ListAgents()
+	if err != nil {
+		t.Fatalf("ListAgents: %v", err)
+	}
+	if len(agents) != 0 {
+		t.Fatalf("roster gained %d phantom row(s): %+v", len(agents), agents)
+	}
+}
+
+// testRegisterResetsSupersededBy: re-registering a claimed-away alias clears
+// its supersession pointer — the operator purged the successor and took the old
+// name back, so it is nobody's seed any more.
+func testRegisterResetsSupersededBy(t *testing.T, s store.API) {
+	mustRegister(t, s, store.Agent{Alias: "seed", SocketPath: "/s", SessionID: "$1"})
+	if err := s.Become("seed", "claimed"); err != nil {
+		t.Fatalf("Become: %v", err)
+	}
+	mustRegister(t, s, store.Agent{Alias: "seed", SocketPath: "/s", SessionID: "$1"})
+	a, ok, err := s.GetAgent("seed")
+	if err != nil || !ok {
+		t.Fatalf("GetAgent: %v (ok=%v)", err, ok)
+	}
+	if a.SupersededBy != "" {
+		t.Fatalf("re-registered alias still superseded by %q", a.SupersededBy)
+	}
+	if a.Departed {
+		t.Fatal("re-registering must revive the tombstone")
+	}
+}
+
+// testBecomeClonesAndRetires is the core claim: the successor inherits the
+// whole identity — tuple, DEVICE, harness link, project, label, role, model —
+// and the seed becomes a tombstone. The device matters as much as the rest: the
+// session tuple that addresses the successor is (device, socket, session), so a
+// clone that dropped the device would land on a tuple nothing queries.
+func testBecomeClonesAndRetires(t *testing.T, s store.API) {
+	mustRegister(t, s, store.Agent{
+		Alias: "seed", Role: "backend", ModelType: "claude",
+		DeviceID: "dev-a", SocketPath: "/s", SessionID: "$1", SessionCreated: 4242,
+		HarnessSessionID: "uuid-1", Project: "muster", Label: "alias-routing", LabelManual: true,
+	})
+	if err := s.Become("seed", "claimed"); err != nil {
+		t.Fatalf("Become: %v", err)
+	}
+
+	got, ok, err := s.GetAgent("claimed")
+	if err != nil || !ok {
+		t.Fatalf("GetAgent(claimed): %v (ok=%v)", err, ok)
+	}
+	for _, f := range []struct{ name, got, want string }{
+		{"role", got.Role, "backend"},
+		{"model_type", got.ModelType, "claude"},
+		{"device_id", got.DeviceID, "dev-a"},
+		{"socket_path", got.SocketPath, "/s"},
+		{"session_id", got.SessionID, "$1"},
+		{"harness_session_id", got.HarnessSessionID, "uuid-1"},
+		{"project", got.Project, "muster"},
+		{"label", got.Label, "alias-routing"},
+	} {
+		if f.got != f.want {
+			t.Errorf("clone %s = %q, want %q", f.name, f.got, f.want)
+		}
+	}
+	if got.SessionCreated != 4242 {
+		t.Errorf("clone session_created = %d, want 4242", got.SessionCreated)
+	}
+	if !got.LabelManual {
+		t.Error("clone lost label_manual")
+	}
+	if got.Departed {
+		t.Error("the successor must be live, not a tombstone")
+	}
+	if got.SupersededBy != "" {
+		t.Errorf("the successor must start unsuperseded, got %q", got.SupersededBy)
+	}
+
+	seed, ok, err := s.GetAgent("seed")
+	if err != nil || !ok {
+		t.Fatalf("the seed row must survive as history: %v (ok=%v)", err, ok)
+	}
+	if !seed.Departed {
+		t.Error("the seed must be retired")
+	}
+}
+
+// testBecomeCarriesWatermark: without the read watermark the claimed identity
+// would open on all of history as unread — the loudest possible regression.
+func testBecomeCarriesWatermark(t *testing.T, s store.API) {
+	mustRegister(t, s, store.Agent{Alias: "seed", SocketPath: "/s", SessionID: "$1"})
+	mustThread(t, s, store.Thread{
+		Kind: "message", FromAgent: "peer", ToKind: "agent", ToTarget: "seed",
+	}, "old news")
+	if err := s.MarkRead("seed"); err != nil {
+		t.Fatalf("MarkRead: %v", err)
+	}
+	seed, _, err := s.GetAgent("seed")
+	if err != nil {
+		t.Fatalf("GetAgent(seed): %v", err)
+	}
+	if seed.LastReadEntryID == 0 {
+		t.Fatal("test setup: MarkRead did not advance the watermark")
+	}
+	if err := s.Become("seed", "claimed"); err != nil {
+		t.Fatalf("Become: %v", err)
+	}
+	got, _, err := s.GetAgent("claimed")
+	if err != nil {
+		t.Fatalf("GetAgent(claimed): %v", err)
+	}
+	if got.LastReadEntryID != seed.LastReadEntryID {
+		t.Fatalf("clone watermark = %d, want %d — the claim must not re-open read history",
+			got.LastReadEntryID, seed.LastReadEntryID)
+	}
+}
+
+func testBecomeStampsSupersededBy(t *testing.T, s store.API) {
+	mustRegister(t, s, store.Agent{Alias: "seed", SocketPath: "/s", SessionID: "$1"})
+	if err := s.Become("seed", "claimed"); err != nil {
+		t.Fatalf("Become: %v", err)
+	}
+	seed, _, err := s.GetAgent("seed")
+	if err != nil {
+		t.Fatalf("GetAgent(seed): %v", err)
+	}
+	if seed.SupersededBy != "claimed" {
+		t.Fatalf("seed superseded_by = %q, want %q", seed.SupersededBy, "claimed")
+	}
+
+	// Chained: B→C must not write C's pointer backward onto the successor.
+	if err := s.Become("claimed", "final"); err != nil {
+		t.Fatalf("Become(chained): %v", err)
+	}
+	mid, _, err := s.GetAgent("claimed")
+	if err != nil {
+		t.Fatalf("GetAgent(claimed): %v", err)
+	}
+	if mid.SupersededBy != "final" {
+		t.Fatalf("mid superseded_by = %q, want %q", mid.SupersededBy, "final")
+	}
+	last, _, err := s.GetAgent("final")
+	if err != nil {
+		t.Fatalf("GetAgent(final): %v", err)
+	}
+	if last.SupersededBy != "" {
+		t.Fatalf("the head of a chain must be unsuperseded, got %q", last.SupersededBy)
+	}
+}
+
+// testBecomeRefusesExistingTarget: `to` must not exist AT ALL. A live row is
+// someone else's identity; a tombstone is another conversation's history.
+// Merging identities is the confusion the feature exists to kill, so this is a
+// compare-and-swap, not a read-then-write.
+func testBecomeRefusesExistingTarget(t *testing.T, s store.API) {
+	mustRegister(t, s, store.Agent{Alias: "seed", SocketPath: "/s", SessionID: "$1"})
+	mustRegister(t, s, store.Agent{Alias: "taken", SocketPath: "/other", SessionID: "$2"})
+
+	if err := s.Become("seed", "taken"); !errors.Is(err, store.ErrBecomeToExists) {
+		t.Fatalf("Become onto a live alias = %v, want ErrBecomeToExists", err)
+	}
+	// A tombstone is just as much of a refusal as a live row.
+	if err := s.DepartAgent("taken"); err != nil {
+		t.Fatalf("DepartAgent: %v", err)
+	}
+	if err := s.Become("seed", "taken"); !errors.Is(err, store.ErrBecomeToExists) {
+		t.Fatalf("Become onto a tombstone = %v, want ErrBecomeToExists", err)
+	}
+}
+
+func testBecomeRefusesMissingSource(t *testing.T, s store.API) {
+	if err := s.Become("ghost", "claimed"); !errors.Is(err, store.ErrBecomeFromMissing) {
+		t.Fatalf("Become from an unknown alias = %v, want ErrBecomeFromMissing", err)
+	}
+	if _, ok, err := s.GetAgent("claimed"); err != nil || ok {
+		t.Fatalf("a refused claim must write nothing, got ok=%v (%v)", ok, err)
+	}
+}
+
+// testBecomeAtomicOnRefusal: a refused claim leaves BOTH rows exactly as they
+// were. On a backend without a transaction, a clone that succeeded before the
+// retire failed would leave the seed live alongside its own successor.
+func testBecomeAtomicOnRefusal(t *testing.T, s store.API) {
+	mustRegister(t, s, store.Agent{Alias: "seed", SocketPath: "/s", SessionID: "$1", Project: "muster"})
+	mustRegister(t, s, store.Agent{Alias: "taken", SocketPath: "/other", SessionID: "$2", Project: "other"})
+
+	if err := s.Become("seed", "taken"); !errors.Is(err, store.ErrBecomeToExists) {
+		t.Fatalf("Become = %v, want ErrBecomeToExists", err)
+	}
+	seed, ok, err := s.GetAgent("seed")
+	if err != nil || !ok {
+		t.Fatalf("GetAgent(seed): %v (ok=%v)", err, ok)
+	}
+	if seed.Departed || seed.SupersededBy != "" {
+		t.Fatalf("a refused claim retired the seed anyway: departed=%v superseded_by=%q",
+			seed.Departed, seed.SupersededBy)
+	}
+	taken, _, err := s.GetAgent("taken")
+	if err != nil {
+		t.Fatalf("GetAgent(taken): %v", err)
+	}
+	if taken.Project != "other" || taken.SocketPath != "/other" {
+		t.Fatalf("a refused claim overwrote the existing alias: %+v", taken)
+	}
+}
+
+// testSessionUnreadLineage is the "mail follows the name" rule. become + resume
+// leaves the retired seed's row on its OLD, now-dead tuple while the identity
+// moved to a NEW one. A straggler addressed to the seed alias must still count
+// against the session its identity moved to — the lineage walk, not a flat
+// tuple match.
+func testSessionUnreadLineage(t *testing.T, s store.API) {
+	mustRegister(t, s, store.Agent{Alias: "seed", SocketPath: "/old", SessionID: "$old"})
+	if err := s.Become("seed", "claimed"); err != nil {
+		t.Fatalf("Become: %v", err)
+	}
+	// The claimed identity resumes on a new tuple; the seed's row stays put.
+	mustRegister(t, s, store.Agent{Alias: "claimed", SocketPath: "/new", SessionID: "$new"})
+	// A straggler still addressed to the retired seed alias.
+	mustThread(t, s, store.Thread{
+		Kind: "message", FromAgent: "peer", ToKind: "agent", ToTarget: "seed",
+	}, "addressed to the old name")
+
+	total, _, err := s.SessionUnread("", "/new", "$new")
+	if err != nil {
+		t.Fatalf("SessionUnread: %v", err)
+	}
+	if total != 1 {
+		t.Fatalf("unread on the new tuple = %d, want 1 — mail must follow the claimed name", total)
+	}
+}
+
+func testSessionUnreadChainedLineage(t *testing.T, s store.API) {
+	mustRegister(t, s, store.Agent{Alias: "a", SocketPath: "/old", SessionID: "$old"})
+	if err := s.Become("a", "b"); err != nil {
+		t.Fatalf("Become(a,b): %v", err)
+	}
+	if err := s.Become("b", "c"); err != nil {
+		t.Fatalf("Become(b,c): %v", err)
+	}
+	mustRegister(t, s, store.Agent{Alias: "c", SocketPath: "/new", SessionID: "$new"})
+	// Addressed to the ORIGINAL name, two claims back.
+	mustThread(t, s, store.Thread{
+		Kind: "message", FromAgent: "peer", ToKind: "agent", ToTarget: "a",
+	}, "addressed to the original name")
+
+	total, _, err := s.SessionUnread("", "/new", "$new")
+	if err != nil {
+		t.Fatalf("SessionUnread: %v", err)
+	}
+	if total != 1 {
+		t.Fatalf("unread across a two-step chain = %d, want 1", total)
+	}
+}
+
+// testSessionAliasLineage: the alias list the hook drains must include retired
+// seeds sitting on long-dead tuples, which is precisely what a flat tuple match
+// misses. Departed aliases are included ON PURPOSE — their mail still needs
+// draining.
+func testSessionAliasLineage(t *testing.T, s store.API) {
+	mustRegister(t, s, store.Agent{Alias: "a", SocketPath: "/old", SessionID: "$old"})
+	if err := s.Become("a", "b"); err != nil {
+		t.Fatalf("Become(a,b): %v", err)
+	}
+	if err := s.Become("b", "c"); err != nil {
+		t.Fatalf("Become(b,c): %v", err)
+	}
+	mustRegister(t, s, store.Agent{Alias: "c", SocketPath: "/new", SessionID: "$new"})
+	// A sibling on the same live tuple, plus an unrelated agent elsewhere.
+	mustRegister(t, s, store.Agent{Alias: "sibling", SocketPath: "/new", SessionID: "$new"})
+	mustRegister(t, s, store.Agent{Alias: "stranger", SocketPath: "/elsewhere", SessionID: "$x"})
+
+	got, err := s.SessionAliasLineage("", "/new", "$new")
+	if err != nil {
+		t.Fatalf("SessionAliasLineage: %v", err)
+	}
+	want := []string{"a", "b", "c", "sibling"}
+	if len(got) != len(want) {
+		t.Fatalf("lineage = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("lineage = %v, want %v (sorted, deduplicated)", got, want)
+		}
+	}
+}
+
+func testSessionAliasLineageEmpty(t *testing.T, s store.API) {
+	mustRegister(t, s, store.Agent{Alias: "a1", SocketPath: "", SessionID: ""})
+	got, err := s.SessionAliasLineage("", "", "")
+	if err != nil {
+		t.Fatalf("SessionAliasLineage: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("an empty session id must match nothing, got %v", got)
+	}
+}
+
+// testSessionAliasLineageDevices: this op's answer is what the hook drains and
+// the nudge path addresses, so a colliding tuple on ANOTHER machine must never
+// appear in it.
+func testSessionAliasLineageDevices(t *testing.T, s store.API) {
+	const sock, sess = "/private/tmp/tmux-501/default", "$1"
+	mustRegister(t, s, store.Agent{Alias: "mine", DeviceID: "dev-a", SocketPath: sock, SessionID: sess})
+	mustRegister(t, s, store.Agent{Alias: "theirs", DeviceID: "dev-b", SocketPath: sock, SessionID: sess})
+
+	got, err := s.SessionAliasLineage("dev-a", sock, sess)
+	if err != nil {
+		t.Fatalf("SessionAliasLineage: %v", err)
+	}
+	if len(got) != 1 || got[0] != "mine" {
+		t.Fatalf("dev-a lineage = %v, want [mine] — the tuple is not device-unique", got)
 	}
 }
