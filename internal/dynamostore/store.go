@@ -46,9 +46,60 @@
 // strongly consistent even if they wanted to be. Where one of them feeds a
 // consistency-sensitive decision, it is used for MEMBERSHIP only and the
 // per-item state is re-read from the base table — SessionUnread is the worked
-// example. maxEntryID is the one deliberate exception, documented at its
-// definition: its lag can only leave an entry unread slightly longer, never
-// mark an unseen one read.
+// example. maxEntryID is the one place that rule is knowingly broken, and the
+// break is not benign: the watermark MarkRead derives from it can overshoot an
+// entry that has not landed yet, and that entry is then never unread for
+// whoever marked read in the window. See the next section.
+//
+// # The MarkRead watermark can overshoot
+//
+// MarkRead stores the highest entry id maxEntryID can see, and unread is a
+// strict `id > watermark` bound (entriesAfter, unreadByThread), so an entry
+// that commits carrying an id at or below an already-written watermark is
+// never unread for that alias — not delayed, never. Nothing moves a watermark
+// back down over it, and the daemon's notifyForThread recompute runs the same
+// predicate, so the badge is CLEARED rather than lit. The thread itself is not
+// lost: Inbox lists every thread that concerns an alias whatever its unread
+// count, and the entry is in GetThread. What is lost is the signal — the
+// unread count and the tmux badge or wake hanging off it.
+//
+// Two independent windows let an entry commit under a live watermark.
+//
+// Allocation happens before the commit. nextID hands out an entry id in its
+// own round trip and the owning TransactWriteItems commits later, so two
+// writers can commit out of id order and the one holding the LOWER id can be
+// the one that lands second. AppendEntry allocates once, outside its
+// conflict-retry loop, so a retrying append holds its id across up to ~155ms
+// of backoff (appendBackoff over appendMaxRetries) plus the re-read on the
+// condition-failed branch. This window is not a DynamoDB consistency artifact
+// at all — it is there against DynamoDB Local too, which is exactly why the
+// endpoint tests are green.
+//
+// The two indexes propagate independently. One base write fans out to gsi1 and
+// to gsi2 as separate replications, so gsi2 can hold an entry gsi1 does not yet
+// — and Inbox reads gsi1 while MarkRead reads gsi2. A get_inbox landing inside
+// that skew misses the entry and then marks it read, with no second writer
+// involved at all.
+//
+// The SQLite backend can do neither. store.Open sets SetMaxOpenConns(1), so
+// its MarkRead transaction (SELECT MAX(id) FROM entries, then the UPDATE)
+// holds the only connection there is, and entry ids come from AUTOINCREMENT
+// inside the inserting transaction rather than ahead of it. This is a real
+// divergence between the two backends, not a limitation they share.
+//
+// None of the obvious repairs work. Reading the counter item is strongly
+// consistent but strictly worse — it marks ids never written at all as read. A
+// strongly consistent index read is not purchasable at any price. Deriving the
+// watermark from the entries the alias was actually shown would narrow the
+// first window to writers racing into the SAME recipient partition and close
+// the second outright, at the cost of MarkRead repeating Inbox's fan-out;
+// store.API.MarkRead(alias) has room to do that on its own (it can run
+// concerns/entriesAfter itself, no signature change), and it is the shape to
+// reach for if this ever shows up in practice. It is accepted for now: the
+// exposure is one entry's notification, it needs a get_inbox landing inside a
+// window measured in milliseconds, and it scales with concurrent writers —
+// which is precisely what this backend exists to allow, so revisit it as the
+// hosted bus grows.
 //
 // # The recipient denormalization is write-once
 //

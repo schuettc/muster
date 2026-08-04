@@ -684,6 +684,11 @@ func (s *Store) UnreadCount(alias string) (int, error) {
 // strict "after last read" comparison. last_read_at is stamped for display
 // only; no unread predicate consults it.
 //
+// "That exists right now" is the weak part, and it is weaker than the same
+// sentence over on the SQLite backend: maxEntryID can return an id whose
+// neighbours have not committed yet, and this write then buries them. See "The
+// MarkRead watermark can overshoot" in the package comment.
+//
 // The condition mirrors the SQLite UPDATE-matches-no-rows contract: DynamoDB's
 // UpdateItem is an upsert, so without it, marking an unknown alias read would
 // CREATE an agent row holding nothing but a watermark.
@@ -720,9 +725,16 @@ func (s *Store) MarkRead(alias string) error {
 // maxEntryID is the highest entry id that has actually been WRITTEN: the last
 // item of gsi2's global entry log. Deliberately not the entry counter — a
 // counter value can already be allocated to an entry still in flight, and
-// treating that as read would silently swallow the unread signal for it. The
-// index is eventually consistent, so this can only ever lag, which leaves an
-// entry unread a moment longer rather than marking an unseen one read.
+// treating that as read would silently swallow the unread signal for it.
+//
+// It is not a SAFE watermark, only a less unsafe one. Reading the index can
+// only lag the counter, but lag is not the failure mode that matters here: ids
+// are allocated before their transaction commits, and gsi1 and gsi2 propagate
+// independently, so an entry can commit after a MarkRead that already saw a
+// higher id — and unread's strict `id > watermark` bound then never surfaces
+// it, permanently. See "The MarkRead watermark can overshoot" in the package
+// comment for both windows, why the obvious repairs are worse, and why this is
+// accepted rather than fixed.
 func (s *Store) maxEntryID(ctx context.Context) (int64, error) {
 	out, err := s.c.Query(ctx, &dynamodb.QueryInput{
 		TableName:                 aws.String(s.table),
