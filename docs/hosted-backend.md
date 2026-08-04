@@ -70,9 +70,17 @@ after that. Neither is in this version.
 
 ## Before you start
 
-You need an AWS account, the `aws` CLI configured with credentials that can
-create IAM roles, and a region picked. Everything below assumes `us-east-1`;
-substitute freely, but keep the S3 bucket in the same region as the stack.
+You need an AWS account, the `aws` CLI configured, and a region picked. The
+credentials you deploy with need more than IAM: CloudFormation to run the
+stack, IAM to create the execution role, Lambda for the function, its URL and
+the invoke permission, DynamoDB to create the table and set its TTL, CloudWatch
+Logs for the log group, and S3 to stage the code. An administrator identity
+covers all of it; a scoped-down one that only grants IAM will fail partway
+through the stack. Everything below assumes `us-east-1`; substitute freely, but
+keep the S3 bucket in the same region as the stack.
+
+Devices need **muster v0.10.0 or newer** — see the device setup below for why
+that is not a soft requirement.
 
 You also need the release assets:
 `muster-lambda-arm64-<tag>.zip` from
@@ -96,6 +104,11 @@ Any bucket will do; if you do not have one:
 aws s3 mb s3://my-muster-artifacts --region us-east-1
 aws s3 cp muster-lambda-arm64-v0.10.0.zip s3://my-muster-artifacts/
 ```
+
+S3 bucket names are globally unique across every AWS account, so
+`my-muster-artifacts` is almost certainly taken and `mb` will tell you so.
+Pick your own name — suffixing your account id is the usual trick — and
+substitute it everywhere `my-muster-artifacts` appears below.
 
 Keep the version in the object key. CloudFormation only redeploys Lambda code
 when the S3 key or object version *changes*, so if you overwrite one fixed key
@@ -134,6 +147,21 @@ That URL is what goes in `MUSTER_REMOTE_URL` on every device.
 
 Do this on each machine that should join the bus.
 
+**0. Check the binary is new enough.** Remote mode arrived in **v0.10.0**.
+
+```sh
+muster --version
+```
+
+This is the one prerequisite worth checking before anything else, because
+getting it wrong fails silently in the worst possible way. On v0.9.1 and
+earlier `MUSTER_BACKEND` and `MUSTER_REMOTE_URL` are not variables muster
+knows about — they are simply ignored, no warning, no error — so the device
+comes up on its own local SQLite bus while you believe it joined the hosted
+one. Every symptom that follows (an empty roster, agents on other machines
+that never appear) looks like a configuration problem, and every configuration
+check you run will pass. Upgrade first.
+
 **1. Install the token.** The token is deliberately not an environment
 variable. muster runs alongside coding agents that read their own environment
 as a matter of course, so a token in the environment is one `env` call away
@@ -169,9 +197,17 @@ machine talks to the hosted one. Nothing errors; the roster is just empty.
 selection once at startup, so an already-running local-mode daemon will not
 switch.
 
+Editing your profile in step 2 did not change the shell you edited it in, and
+that shell is the one about to respawn the daemon — so pick up the new
+environment first. Otherwise you walk straight into the failure the previous
+paragraph describes: `muster agents` inherits a profile-free environment and
+brings up a *local* daemon, silently.
+
 ```sh
+exec $SHELL -l                      # or: open a fresh terminal
+env | grep MUSTER_                  # both variables must be here before you continue
 pkill -f 'muster serve'
-muster agents      # respawns the daemon, now in remote mode
+muster agents                       # respawns the daemon, now in remote mode
 ```
 
 `muster serve` logs one line to stderr when it starts. In remote mode, a
@@ -226,10 +262,13 @@ can be that stale immediately after a restart.
 did. Its journal-pruning half is a no-op on this backend, because DynamoDB's
 native TTL does that job instead, driven by `MUSTER_DDB_EVENT_RETENTION`.
 
-**The device binary is slightly larger.** Around 19.9MB rather than 17MB,
-because remote mode links `net/http` and `crypto/tls`. This is expected. The
-AWS SDK is *not* in there — it is compiled only into the Lambda artifact,
-behind a build tag.
+**The device binary is slightly larger.** About 13.7MB rather than 11.7MB,
+because remote mode links `net/http` and `crypto/tls`. Those are the release
+artifact's own numbers — darwin/arm64, built the way the release workflow
+builds it, with `-trimpath -ldflags "-s -w"`. Build it yourself without those
+flags and you will see roughly 20MB instead; that is the debug information, not
+something anyone downloads. The AWS SDK is *not* in either one — it is
+compiled only into the Lambda artifact, behind a build tag.
 
 ## Cost
 
@@ -269,7 +308,9 @@ by Lambda.
 
 Set an AWS Budgets alert anyway. The reserved concurrency cap of 10 bounds what
 a runaway poller or a stranger who finds your URL can cost you, but a budget
-alert is what tells you it happened.
+alert is what tells you it happened — and if you had to deploy with
+`ReservedConcurrency=0` because of the account quota floor (see
+troubleshooting), the alert is the only bound you have.
 
 ## Rotating the token
 
@@ -343,6 +384,24 @@ the same recipient's partition. The SQLite backend does not have this window at
 all, because it serializes on a single connection. The full analysis is in the
 package comment of `internal/dynamostore/store.go`.
 
+**A live journal feed can drop a line — on this backend only.** `muster events`
+in follow mode, and station's live feed, tail the journal by remembering the
+last id they saw and asking for everything after it. That query reads a
+DynamoDB global secondary index, which is eventually consistent and cannot be
+read strongly consistent at any price. If two events are written in order but
+replicate into the index out of order, a poll can return the later one, advance
+its watermark past the earlier one, and never see it again. The line is not
+delayed; it is gone from that feed. Nothing else is affected: the event is in
+the table, and a *backlog* read — `muster events` without `--follow`, which is
+ordered newest-first rather than bounded by a watermark — still returns it. So
+if you need a complete journal, read the backlog rather than trusting a feed
+you left running. The journal is observability only; no wake, badge, message,
+task or read-state depends on it. The SQLite backend does not have this window,
+because there ids are allocated by AUTOINCREMENT inside the inserting
+transaction on a single pinned connection, so a follow read cannot see a gap it
+will then skip past. The full analysis is above `Events` in
+`internal/dynamostore/events.go`.
+
 **There is no migration path.** A remote bus starts empty. There is no export
 from an existing local SQLite bus and no import into the hosted one. Your
 existing threads, tasks, and read state stay on whichever machine they are on.
@@ -365,6 +424,34 @@ against an accident, not against a deliberate delete.)
 
 ## Troubleshooting
 
+**The stack fails to create, naming `UnreservedConcurrentExecution`.** The
+error reads roughly:
+
+```
+CREATE_FAILED  MusterFunction  Specified ReservedConcurrentExecutions for
+function decreases account's UnreservedConcurrentExecution below its minimum
+value of [100]
+```
+
+This is not about your parameters being wrong. Lambda refuses any reservation
+that would leave the account with less than 100 unreserved concurrency, and a
+new AWS account's regional concurrency quota can be as low as 10 — below the
+floor before you reserve anything. On such an account *every* positive
+`ReservedConcurrency` fails, so there is no value you can retry your way into.
+
+Deploy with the reservation off:
+
+```sh
+aws cloudformation deploy ... --parameter-overrides ReservedConcurrency=0 ...
+```
+
+`0` omits the property rather than setting a limit of zero, so the function
+runs on the account's shared pool. Then request a Lambda concurrency quota
+increase (Service Quotas → Lambda → "Concurrent executions"; the usual grant is
+1000) and redeploy with `ReservedConcurrency=10` to get the cost guard back.
+Until you do, nothing bounds what a runaway poller or a stranger who found your
+URL can spend — so set an AWS Budgets alert, which you should have anyway.
+
 **Every request returns 403, and the function's logs are empty.** The function
 was never invoked. This is the Function URL's resource policy, not your token —
 the `AWS::Lambda::Permission` resource granting `lambda:InvokeFunctionUrl` to
@@ -372,11 +459,11 @@ the `AWS::Lambda::Permission` resource granting `lambda:InvokeFunctionUrl` to
 check it is still there.
 
 **Every request returns 401.** The token the device sent did not match. Check
-that `remote-token` on the device holds exactly the token you deployed, with no
-trailing newline surprises (`printf '%s'`, not `echo`), and that
-`MUSTER_TOKEN` is actually set on the function — if it is unset the function
-fails closed and rejects everything, and it says so once at cold start in
-CloudWatch.
+that `remote-token` on the device holds exactly the token you deployed —
+surrounding whitespace is not the problem, since the device trims it, so a
+trailing newline from `echo` is harmless — and that `MUSTER_TOKEN` is actually
+set on the function. If it is unset the function fails closed and rejects
+everything, and it says so once at cold start in CloudWatch.
 
 **The function fails at every cold start with an error about TTL.** Read the
 error carefully: this is usually an IAM problem wearing a TTL costume. The
@@ -392,9 +479,14 @@ out to a stub. Use the `muster-lambda-arm64-*.zip` from the release rather than
 a locally cross-compiled binary, or build it the way the release workflow does.
 
 **`muster agents` shows an empty roster on one device.** Almost always that
-device is running a local daemon. Confirm with `pkill -f 'muster serve'`,
-check that `MUSTER_BACKEND` and `MUSTER_REMOTE_URL` are exported in the
-environment the daemon will be spawned from, and try again.
+device is running a local daemon, and there are two ways to get one. First run
+`muster --version`: on anything older than **v0.10.0** there is no remote mode
+at all, both variables are ignored without complaint, and no amount of checking
+your exports will reveal it — the exports are fine, the binary is not. Upgrade
+and restart. If the version is new enough, the daemon was spawned from an
+environment missing the variables: check `env | grep MUSTER_` in the shell you
+are actually in, `pkill -f 'muster serve'`, and try again from a shell that has
+them.
 
 **The daemon refuses to start, naming the token file's mode.** `chmod 600` it.
 This is deliberate: a token file that others can read is not meaningfully safer

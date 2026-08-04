@@ -89,7 +89,7 @@ Parameters:
   ReservedConcurrency:
     Type: Number
     Default: 10
-    MinValue: 1
+    MinValue: 0
     MaxValue: 100
     Description: >-
       COST GUARD, not a correctness mechanism. It bounds the blast radius of a
@@ -97,6 +97,15 @@ Parameters:
       under concurrent writers comes from DynamoDB conditional writes and
       transactions in the store, not from this number — do not lower it to 1
       believing it serializes anything.
+      0 means "set no reservation at all" (the property is omitted), NOT "block
+      every invocation" — the escape hatch for an account whose regional
+      concurrency quota is too low to carve a reservation out of. Lambda
+      refuses any reservation that would drop the account's UNRESERVED
+      concurrency below 100, so on a fresh account with the default quota of 10
+      EVERY positive value here fails the deploy with "decreases account's
+      UnreservedConcurrentExecution below its minimum value of [100]". Deploy
+      with 0, raise the quota, then set it back — and keep an AWS Budgets alert
+      on either way, because 0 removes the cost bound entirely.
 
   MemorySize:
     Type: Number
@@ -128,6 +137,11 @@ Parameters:
 Conditions:
   HasCodeVersion: !Not [!Equals [!Ref CodeS3ObjectVersion, ""]]
   HasPreviousToken: !Not [!Equals [!Ref MusterTokenPrevious, ""]]
+  # ReservedConcurrency 0 omits ReservedConcurrentExecutions rather than
+  # setting it to zero. A literal 0 would throttle the function to nothing —
+  # the opposite of the escape hatch this is — so the property has to
+  # disappear, which only a Condition can do.
+  HasReservedConcurrency: !Not [!Equals [!Ref ReservedConcurrency, 0]]
 
 Resources:
   # Single-table design — threads, entries, agents, tasks, KV, events, id
@@ -211,11 +225,13 @@ Resources:
           PolicyDocument:
             Version: "2012-10-17"
             Statement:
-              # A log group's Arn attribute ALREADY ends in ":*" — appending
-              # another one yields "...:*:*", which matches no log stream, and
-              # the function then runs with every diagnostic silently
-              # discarded. CreateLogGroup is deliberately absent: the stack
-              # owns the group, so the function never needs to create one.
+              # A log group's Arn attribute ALREADY ends in ":*", which is the
+              # wildcard covering the group's streams — so !GetAtt alone is the
+              # whole resource and nothing needs appending. (An extra ":*"
+              # would still match, since IAM wildcards cross colons; it is
+              # redundant rather than broken. Do not "fix" it back in.)
+              # CreateLogGroup is deliberately absent: the stack owns the
+              # group, so the function never needs to create one.
               - Effect: Allow
                 Action: [logs:CreateLogStream, logs:PutLogEvents]
                 Resource: !GetAtt MusterLogGroup.Arn
@@ -283,7 +299,10 @@ Resources:
       Role: !GetAtt MusterRole.Arn
       MemorySize: !Ref MemorySize
       Timeout: 30
-      ReservedConcurrentExecutions: !Ref ReservedConcurrency
+      # Omitted entirely when the parameter is 0 — see HasReservedConcurrency.
+      # Set unconditionally this would make a first deploy unescapable on an
+      # account whose regional concurrency quota is below 100+the reservation.
+      ReservedConcurrentExecutions: !If [HasReservedConcurrency, !Ref ReservedConcurrency, !Ref "AWS::NoValue"]
       Code:
         S3Bucket: !Ref CodeS3Bucket
         S3Key: !Ref CodeS3Key
