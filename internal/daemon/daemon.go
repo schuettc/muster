@@ -22,39 +22,10 @@ import (
 // itself (the full body lives on the thread's entry).
 const replyPreviewWidth = 80
 
-// storeAPI is the slice of *store.Store the daemon depends on. It exists so
-// tests can substitute an error-injecting wrapper around a real *store.Store
-// (see wake_wiring_test.go) without the store package itself growing a fake —
-// *store.Store satisfies this interface as-is.
-type storeAPI interface {
-	RegisterAgent(store.Agent) error
-	ListAgents() ([]store.Agent, error)
-	GetAgent(alias string) (store.Agent, bool, error)
-	DepartAgent(alias string) error
-	DepartStaleSiblings(socketPath, sessionID string, created int64, keepAlias string) ([]string, error)
-	SetSessionLabel(socketPath, sessionID, label string, manual bool) (int64, error)
-	DeleteAgent(alias string) error
-	CreateThread(t store.Thread, firstBody string) (int64, error)
-	AppendEntry(threadID int64, fromAgent, body, statusChange string) (int64, error)
-	ClaimTask(threadID int64, byAgent string) error
-	TransitionTask(threadID int64, byAgent, newStatus, note string) error
-	GetThread(id int64) (store.Thread, []store.Entry, error)
-	Threads(limit int) ([]store.Thread, error)
-	Inbox(alias string) ([]store.Thread, error)
-	MarkRead(alias string) error
-	SessionUnread(socketPath, sessionID string) (total, action int, err error)
-	KVSet(key, value, updatedBy string) error
-	KVGet(key string) (store.KVPair, bool, error)
-	AppendEvent(e store.Event) error
-	Events(q store.EventQuery) ([]store.Event, error)
-	MaxEventID() (int64, error)
-	PruneEvents(olderThanMillis int64) (int64, error)
-}
-
 // Daemon owns the listener and the store.
 type Daemon struct {
 	ln net.Listener
-	s  storeAPI
+	s  store.API
 	n  wake.Notifier
 
 	// sessLocks serializes {SessionUnread recompute, tmux option write,
@@ -66,21 +37,34 @@ type Daemon struct {
 	sessLocks map[string]*sync.Mutex
 }
 
+// New builds a Daemon over s with no listener bound. Lambda mode uses this to
+// get a Dispatch target without a unix socket; n may be nil, in which case no
+// notifications are delivered.
+func New(s store.API, n wake.Notifier) *Daemon {
+	return &Daemon{s: s, n: n}
+}
+
 // Serve binds socketPath (replacing any stale socket) and serves in a
 // goroutine. n may be nil, in which case no notifications are delivered.
-func Serve(socketPath string, s storeAPI, n wake.Notifier) (*Daemon, error) {
+func Serve(socketPath string, s store.API, n wake.Notifier) (*Daemon, error) {
 	_ = os.Remove(socketPath) // clear a stale socket from a previous run
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {
 		return nil, err
 	}
-	d := &Daemon{ln: ln, s: s, n: n}
+	d := New(s, n)
+	d.ln = ln
 	go d.acceptLoop()
 	return d, nil
 }
 
-// Close stops accepting connections.
-func (d *Daemon) Close() error { return d.ln.Close() }
+// Close stops accepting connections. Safe on a Daemon built by New (no listener).
+func (d *Daemon) Close() error {
+	if d.ln == nil {
+		return nil
+	}
+	return d.ln.Close()
+}
 
 func (d *Daemon) acceptLoop() {
 	for {
@@ -103,7 +87,7 @@ func (d *Daemon) handle(conn net.Conn) {
 			_ = enc.Encode(proto.Response{Error: "bad request: " + err.Error()})
 			continue
 		}
-		_ = enc.Encode(d.dispatch(req))
+		_ = enc.Encode(d.Dispatch(req))
 	}
 }
 
@@ -456,7 +440,11 @@ func targetOf(toKind, toTarget string) string {
 	return toKind + ":" + toTarget
 }
 
-func (d *Daemon) dispatch(req proto.Request) proto.Response {
+// Dispatch runs one request against the store/notifier and returns its
+// response, with no socket or connection involved — the seam lambda mode
+// uses to route a request through the same op logic the socket-bound daemon
+// uses, and what handle calls per line read off the wire.
+func (d *Daemon) Dispatch(req proto.Request) proto.Response {
 	a := req.Args
 	switch req.Op {
 	case "register_agent":

@@ -196,6 +196,31 @@ func TestNilNotifierIsSafe(t *testing.T) {
 	}
 }
 
+// TestNilNotifierWritePathIsSafe is the assumption lambda mode rests on: a
+// Daemon built by New (no listener, and here no notifier) must survive the
+// write ops that touch the notifier — register_agent's reconcileBadge and
+// send_message's notifyForThread — without panicking. Both already guard on
+// d.n == nil before dereferencing it; this pins that behavior so a future
+// change to either can't regress it silently.
+func TestNilNotifierWritePathIsSafe(t *testing.T) {
+	s := newDaemonTestStore(t)
+	d := New(s, nil)
+
+	reg := d.Dispatch(proto.Request{Op: "register_agent", Args: map[string]any{
+		"alias": "a1", "role": "worker",
+	}})
+	if !reg.OK {
+		t.Fatalf("register: %s", reg.Error)
+	}
+	// send_message reaches notifyForThread, which reaches the notifier.
+	send := d.Dispatch(proto.Request{Op: "send_message", Args: map[string]any{
+		"from": "a1", "to_kind": "agent", "to_target": "a1", "body": "hello",
+	}})
+	if !send.OK {
+		t.Fatalf("send with nil notifier: %s", send.Error)
+	}
+}
+
 func TestGetInboxClearsFlag(t *testing.T) {
 	n := &fakeNotifier{}
 	sock := startWithNotifier(t, n)
