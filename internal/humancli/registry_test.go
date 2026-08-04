@@ -17,15 +17,15 @@ var wantCommandNames = []string{
 	"send", "nudge", "reply",
 	"agents", "inbox", "tasks", "thread", "events", "watch", "station",
 	"register", "deregister", "label", "gc",
-	"serve", "mcp", "hook", "debug",
+	"serve", "mcp", "lambda", "hook", "debug",
 }
 
 // mainOwnedCommands are the Registry names cmd/muster's main() dispatches
 // directly (never through humancli.Dispatch) — they need process-level setup
-// (daemon startup, MCP stdio framing, a one-off raw daemon call) this
-// package deliberately doesn't do. Every other Registry command must have a
-// non-nil Run.
-var mainOwnedCommands = map[string]bool{"serve": true, "mcp": true, "debug": true}
+// (daemon startup, MCP stdio framing, a one-off raw daemon call, the Lambda
+// runtime behind a build tag) this package deliberately doesn't do. Every
+// other Registry command must have a non-nil Run.
+var mainOwnedCommands = map[string]bool{"serve": true, "mcp": true, "lambda": true, "debug": true}
 
 func TestRegistryCompleteness(t *testing.T) {
 	got := append([]string(nil), commandNames()...)

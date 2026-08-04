@@ -274,6 +274,19 @@ protocol channel — all diagnostics go to stderr.`,
 			Group: GroupPlumbing,
 		},
 		{
+			Name:     "lambda",
+			Synopsis: "lambda",
+			Summary:  "Serve the hosted bus from an AWS Lambda Function URL.",
+			Help: `Runs the AWS Lambda runtime, adapting Function URL requests to the same
+daemon operations the unix socket serves, over a DynamoDB table
+($MUSTER_DDB_TABLE) instead of SQLite. Requests carry a bearer token in the
+Authorization header, matched against $MUSTER_TOKEN (and, during a rotation,
+$MUSTER_TOKEN_PREVIOUS); with no token configured every request is rejected.
+Only the Lambda release artifact is built with lambda mode compiled in (-tags
+lambda) — the binary devices run reports that and exits.`,
+			Group: GroupPlumbing,
+		},
+		{
 			Name:     "hook",
 			Synopsis: "hook <SessionStart|SessionEnd|Stop> [model]",
 			Summary:  "Session-lifecycle hook entry point for agent harness configs.",

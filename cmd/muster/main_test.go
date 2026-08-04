@@ -128,8 +128,12 @@ func TestVersionExitsZero(t *testing.T) {
 	}
 }
 
-func TestServeMcpDebugHelpExitZero(t *testing.T) {
-	for _, name := range []string{"serve", "mcp", "debug"} {
+// TestMainOwnedCommandHelpExitsZero covers the commands main() routes itself
+// rather than through humancli.Dispatch. They are also the ones whose help
+// text can silently go missing, since Dispatch never sees them — a Registry
+// row is the only thing that gives them a banner.
+func TestMainOwnedCommandHelpExitsZero(t *testing.T) {
+	for _, name := range []string{"serve", "mcp", "lambda", "debug"} {
 		for _, flag := range []string{"-h", "--help"} {
 			out, _, code := run(t, name, flag)
 			if code != 0 {
@@ -139,6 +143,22 @@ func TestServeMcpDebugHelpExitZero(t *testing.T) {
 				t.Errorf("%s %s: stdout missing command help banner:\n%s", name, flag, out)
 			}
 		}
+	}
+}
+
+// TestLambdaWithoutBuildTagExplainsItself pins the untagged half of the build
+// -tag indirection (lambda_off.go). `muster lambda` is advertised in usage on
+// every build, so on the binary devices actually run it has to say why it
+// can't serve — not fall through to "unknown command", and not link the AWS
+// SDK to answer. This test binary is built untagged, so it exercises exactly
+// that path.
+func TestLambdaWithoutBuildTagExplainsItself(t *testing.T) {
+	_, errOut, code := run(t, "lambda")
+	if code != 2 {
+		t.Errorf("exit code = %d, want 2", code)
+	}
+	if !strings.Contains(errOut, "-tags lambda") {
+		t.Errorf("stderr = %q, want it to name the -tags lambda rebuild", errOut)
 	}
 }
 

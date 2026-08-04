@@ -28,7 +28,10 @@ test:
 build:
     CGO_ENABLED=0 go build -ldflags "{{ ldflags }}" -o bin/muster ./cmd/muster
 
-# Cross-compile all release targets (no output, fail fast).
+# Cross-compile all release targets (no output, fail fast). The last line
+# builds the Lambda artifact's configuration (-tags lambda, the only build that
+# links the AWS SDK): it is not part of any other recipe, so without it here
+# the tagged code would rot silently until a release tried to ship it.
 cross:
     set -e; \
     for goos in darwin linux; do \
@@ -36,6 +39,7 @@ cross:
         CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" go build -ldflags "{{ ldflags }}" -o /dev/null ./cmd/muster; \
       done; \
     done
+    CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -tags lambda -ldflags "{{ ldflags }}" -o /dev/null ./cmd/muster
 
 # Full gate — what pre-push and CI run.
 verify: fmt-check lint test build cross

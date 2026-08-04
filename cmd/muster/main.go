@@ -45,6 +45,12 @@ func main() {
 			return
 		}
 		runMCP()
+	case "lambda":
+		if wantsHelp(os.Args[2:]) {
+			_ = humancli.HelpFor("lambda", os.Stdout)
+			return
+		}
+		os.Exit(runLambda())
 	default:
 		// humancli.Dispatch owns the CLI subcommand list (including
 		// help/version) and errors on an unknown one — routing everything
