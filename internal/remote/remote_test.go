@@ -418,6 +418,218 @@ func TestCallDoesNotMutateCallerArgs(t *testing.T) {
 	}
 }
 
+// TestCallRejectsUnhandledNon2xx: a 3xx the http.Client did not follow (a 304,
+// or a 300 carrying no Location) must not fall through to the success branch.
+// It would arrive as a zero proto.Response — not OK, no Error, no status — and
+// the caller would have nothing at all to diagnose.
+func TestCallRejectsUnhandledNon2xx(t *testing.T) {
+	for _, status := range []int{http.StatusNotModified, http.StatusMultipleChoices, http.StatusFound} {
+		rec := &recorder{}
+		// Written bare: a 3xx with a Location would just be followed, and a 304
+		// may not carry a body at all.
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			var req proto.Request
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			rec.record(req, r.Header.Get("Authorization"))
+			w.WriteHeader(status)
+		}))
+		t.Cleanup(srv.Close)
+
+		c := mustNew(t, srv.URL, fast()...)
+		resp, err := c.Call(context.Background(), proto.Request{Op: "send_message"})
+		if err == nil {
+			t.Fatalf("status %d returned resp=%+v with a nil error — an unhandled non-2xx must be an error", status, resp)
+		}
+		var he *remote.HTTPError
+		if !errors.As(err, &he) || he.StatusCode != status {
+			t.Fatalf("status %d: err = %v, want an *HTTPError carrying the status", status, err)
+		}
+		if n := len(rec.keys()); n != 1 {
+			t.Fatalf("status %d was sent %d times, want 1", status, n)
+		}
+	}
+}
+
+// TestCallReportsPendingAfterAnyConflictInTheSequence: once a 409 is seen the
+// write's outcome is unknown, and no later 5xx restores that certainty. A mixed
+// 409/5xx run that exhausts the attempt budget is the same wedge as a pure 409
+// loop, so it must reach the caller as ErrPending and not as a generic
+// gave-up error.
+func TestCallReportsPendingAfterAnyConflictInTheSequence(t *testing.T) {
+	seq := []int{
+		http.StatusConflict,
+		http.StatusServiceUnavailable,
+		http.StatusConflict,
+		http.StatusServiceUnavailable,
+		http.StatusServiceUnavailable,
+	}
+	rec := &recorder{}
+	srv := newServer(t, rec, func(n int) int { return seq[n-1] })
+
+	// The conflict bound is deliberately out of reach: it is the attempt bound
+	// that ends this run, and the last status seen is a 503, not the 409.
+	c := mustNew(t, srv.URL, append(fast(), remote.WithMaxAttempts(len(seq)), remote.WithMaxConflicts(9))...)
+	_, err := c.Call(context.Background(), proto.Request{Op: "send_message"})
+	if !errors.Is(err, remote.ErrPending) {
+		t.Fatalf("err = %v, want ErrPending — a 409 was observed, so the outcome is unknown", err)
+	}
+	if n := len(rec.keys()); n != len(seq) {
+		t.Fatalf("made %d attempts, want %d", n, len(seq))
+	}
+}
+
+// TestCallStillReportsPlainExhaustionWithoutAConflict is the other side of the
+// same rule: ErrPending must stay specific. A run that never saw a 409 has no
+// idempotency wedge to report.
+func TestCallStillReportsPlainExhaustionWithoutAConflict(t *testing.T) {
+	rec := &recorder{}
+	srv := newServer(t, rec, func(int) int { return http.StatusServiceUnavailable })
+
+	c := mustNew(t, srv.URL, append(fast(), remote.WithMaxAttempts(3))...)
+	_, err := c.Call(context.Background(), proto.Request{Op: "send_message"})
+	if err == nil {
+		t.Fatal("expected an error after the attempt bound")
+	}
+	if errors.Is(err, remote.ErrPending) {
+		t.Fatalf("err = %v, want a plain exhaustion error — no 409 was ever seen", err)
+	}
+}
+
+// TestNewAlwaysBoundsAnAttempt is the un-losable-timeout invariant. A custom
+// *http.Client with a zero Timeout is the ordinary way to write one, and
+// adopting it verbatim would leave every attempt unbounded — the retry ladder
+// would never advance and only the caller's context could end the Call.
+func TestNewAlwaysBoundsAnAttempt(t *testing.T) {
+	for name, opts := range map[string][]remote.Option{
+		"no options at all":         nil,
+		"bare custom client":        {remote.WithHTTPClient(&http.Client{})},
+		"custom client, zero after": {remote.WithHTTPClient(&http.Client{}), remote.WithTimeout(0)},
+	} {
+		c := mustNew(t, "https://example.invalid", opts...)
+		if got := c.HTTPTimeout(); got != remote.DefaultTimeout {
+			t.Fatalf("%s: per-attempt timeout = %v, want the default %v", name, got, remote.DefaultTimeout)
+		}
+	}
+}
+
+// TestTimeoutSurvivesOptionOrdering: WithTimeout and WithHTTPClient touch the
+// same field, and applying them in the wrong order used to silently discard the
+// timeout. Neither order may lose it now.
+func TestTimeoutSurvivesOptionOrdering(t *testing.T) {
+	const want = 5 * time.Second
+
+	h1 := &http.Client{}
+	c := mustNew(t, "https://example.invalid", remote.WithTimeout(want), remote.WithHTTPClient(h1))
+	if got := c.HTTPTimeout(); got != want {
+		t.Fatalf("WithTimeout before WithHTTPClient: timeout = %v, want %v", got, want)
+	}
+
+	h2 := &http.Client{}
+	c = mustNew(t, "https://example.invalid", remote.WithHTTPClient(h2), remote.WithTimeout(want))
+	if got := c.HTTPTimeout(); got != want {
+		t.Fatalf("WithHTTPClient before WithTimeout: timeout = %v, want %v", got, want)
+	}
+
+	// The caller's own client is not ours to write to — it may be shared.
+	if h1.Timeout != 0 || h2.Timeout != 0 {
+		t.Fatalf("New mutated the caller's *http.Client: h1=%v h2=%v", h1.Timeout, h2.Timeout)
+	}
+}
+
+// TestWithHTTPClientKeepsItsOwnTimeout: a caller who set a Timeout on their
+// client and passed no WithTimeout meant that number, not the package default.
+func TestWithHTTPClientKeepsItsOwnTimeout(t *testing.T) {
+	const want = 3 * time.Second
+	c := mustNew(t, "https://example.invalid", remote.WithHTTPClient(&http.Client{Timeout: want}))
+	if got := c.HTTPTimeout(); got != want {
+		t.Fatalf("timeout = %v, want the client's own %v", got, want)
+	}
+}
+
+// countingTransport proves the custom client is copied rather than replaced:
+// everything but Timeout must survive, or WithHTTPClient's whole purpose (a
+// proxy, a TLS config, a custom transport) would be quietly defeated.
+type countingTransport struct {
+	mu sync.Mutex
+	n  int
+}
+
+func (t *countingTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	t.mu.Lock()
+	t.n++
+	t.mu.Unlock()
+	return http.DefaultTransport.RoundTrip(r)
+}
+
+func (t *countingTransport) count() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.n
+}
+
+func TestWithHTTPClientKeepsItsTransport(t *testing.T) {
+	rec := &recorder{}
+	srv := newServer(t, rec, nil)
+
+	tr := &countingTransport{}
+	c := mustNew(t, srv.URL, remote.WithHTTPClient(&http.Client{Transport: tr}), remote.WithTimeout(2*time.Second))
+	if _, err := c.Call(context.Background(), proto.Request{Op: "list_agents"}); err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	if tr.count() != 1 {
+		t.Fatalf("custom transport saw %d requests, want 1 — resolving the timeout dropped it", tr.count())
+	}
+	if got := c.HTTPTimeout(); got != 2*time.Second {
+		t.Fatalf("timeout = %v, want 2s", got)
+	}
+}
+
+// TestBackoffIsJittered pins the jitter source so the assertion is exact rather
+// than timed: a test that measures a jittered sleep is a flaky test.
+func TestBackoffIsJittered(t *testing.T) {
+	base := 100 * time.Millisecond
+	opts := []remote.Option{remote.WithBackoff(base), remote.WithBackoffCap(5 * time.Second)}
+
+	lo := mustNew(t, "https://example.invalid", append(opts, remote.WithJitterFrac(func() float64 { return 0 }))...)
+	hi := mustNew(t, "https://example.invalid", append(opts, remote.WithJitterFrac(func() float64 { return 0.5 }))...)
+
+	for n := range 4 {
+		full := base << n
+		if got, want := lo.WaitFor(n), full/2; got != want {
+			t.Fatalf("retry %d: floor = %v, want %v (half the deterministic slot)", n, got, want)
+		}
+		if got, want := hi.WaitFor(n), full/2+full/4; got != want {
+			t.Fatalf("retry %d: mid = %v, want %v", n, got, want)
+		}
+	}
+
+	// The cap binds the jittered value too: the ladder must not climb past it.
+	if got, want := hi.WaitFor(30), 5*time.Second/2+5*time.Second/4; got != want {
+		t.Fatalf("capped retry: %v, want %v", got, want)
+	}
+}
+
+// TestBackoffJitterStaysInItsSlotAndVaries exercises the real (unpinned) source
+// against bounds, never against a clock. The variation check is what the jitter
+// is FOR: a fleet that all saw the same 5xx must not retry in lockstep.
+func TestBackoffJitterStaysInItsSlotAndVaries(t *testing.T) {
+	base := 200 * time.Millisecond
+	c := mustNew(t, "https://example.invalid", remote.WithBackoff(base), remote.WithBackoffCap(5*time.Second))
+
+	seen := map[time.Duration]bool{}
+	for range 64 {
+		got := c.WaitFor(2)
+		full := base << 2
+		if got < full/2 || got >= full {
+			t.Fatalf("wait = %v, outside the slot [%v, %v)", got, full/2, full)
+		}
+		seen[got] = true
+	}
+	if len(seen) < 2 {
+		t.Fatal("64 waits were all identical — the retry wave would stay synchronised")
+	}
+}
+
 func TestNewRejectsUnusableConfig(t *testing.T) {
 	for name, tc := range map[string]struct{ url, token string }{
 		"empty url":     {"", "t"},

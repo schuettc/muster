@@ -29,6 +29,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"net/http"
 	"net/url"
 	"os"
@@ -114,10 +115,21 @@ type Client struct {
 	token string
 	http  *http.Client
 
+	// timeout is what WithTimeout asked for, held separately from http.Timeout
+	// so that WithHTTPClient and WithTimeout cannot cancel each other out
+	// depending on the order they were passed in. New resolves the two into
+	// http.Timeout once, after every option has run.
+	timeout time.Duration
+
 	backoff      time.Duration
 	backoffCap   time.Duration
 	maxAttempts  int
 	maxConflicts int
+
+	// jitter returns a fraction in [0,1) and is the only source of randomness
+	// in the package. It is a field rather than a direct rand call so a test
+	// can pin it and assert the backoff exactly; see export_test.go.
+	jitter func() float64
 }
 
 // Option configures a Client.
@@ -126,10 +138,13 @@ type Option func(*Client)
 // WithTimeout sets the per-attempt HTTP timeout. It bounds one attempt, not
 // the whole Call — a Call that retries can take up to roughly maxAttempts
 // times this plus backoff, and the caller's context bounds that.
+//
+// It wins over any Timeout already set on a client passed to WithHTTPClient,
+// and the order the two options are passed in does not matter.
 func WithTimeout(d time.Duration) Option {
 	return func(c *Client) {
 		if d > 0 {
-			c.http.Timeout = d
+			c.timeout = d
 		}
 	}
 }
@@ -173,8 +188,13 @@ func WithMaxConflicts(n int) Option {
 }
 
 // WithHTTPClient replaces the underlying *http.Client — for a custom
-// transport, proxy, or TLS config. Its Timeout is overwritten by WithTimeout
-// (or the default) if that option is applied after this one.
+// transport, proxy, or TLS config.
+//
+// It cannot leave a Call unbounded. New shallow-copies the client given here
+// and resolves its Timeout after every option has run: WithTimeout wins if it
+// was passed at all, otherwise this client's own Timeout is kept, and a zero
+// Timeout falls back to the package default. Order does not matter, and the
+// caller's own *http.Client is never mutated.
 func WithHTTPClient(h *http.Client) Option {
 	return func(c *Client) {
 		if h != nil {
@@ -210,15 +230,33 @@ func New(rawURL, token string, opts ...Option) (*Client, error) {
 	c := &Client{
 		url:          rawURL,
 		token:        token,
-		http:         &http.Client{Timeout: defaultTimeout},
+		http:         &http.Client{},
 		backoff:      defaultBackoff,
 		backoffCap:   defaultBackoffCap,
 		maxAttempts:  defaultMaxAttempts,
 		maxConflicts: defaultMaxConflicts,
+		jitter:       rand.Float64,
 	}
 	for _, opt := range opts {
 		opt(c)
 	}
+
+	// Resolve the per-attempt timeout LAST, so no combination of options can
+	// leave an attempt unbounded. A Call with no client-side timeout is not a
+	// slow Call, it is a hung one: the retry ladder never advances and the
+	// caller's context is the only thing left that can end it.
+	//
+	// The copy is what lets this be safe. WithHTTPClient's argument belongs to
+	// the caller — it may be shared with other code — so its Timeout is read,
+	// not written.
+	hc := *c.http
+	switch {
+	case c.timeout > 0:
+		hc.Timeout = c.timeout
+	case hc.Timeout <= 0:
+		hc.Timeout = defaultTimeout
+	}
+	c.http = &hc
 	return c, nil
 }
 
@@ -250,6 +288,7 @@ func (c *Client) Call(ctx context.Context, req proto.Request) (proto.Response, e
 
 	var lastErr error
 	conflicts := 0
+	sawConflict := false
 	for attempt := 0; attempt < c.maxAttempts; attempt++ {
 		if attempt > 0 {
 			if err := sleep(ctx, c.wait(attempt-1)); err != nil {
@@ -268,6 +307,7 @@ func (c *Client) Call(ctx context.Context, req proto.Request) (proto.Response, e
 			lastErr = err
 		case status == http.StatusConflict:
 			conflicts++
+			sawConflict = true
 			if conflicts >= c.maxConflicts {
 				return proto.Response{}, fmt.Errorf("remote: %s (idem key %s): %w", req.Op, req.IdemKey, ErrPending)
 			}
@@ -277,16 +317,26 @@ func (c *Client) Call(ctx context.Context, req proto.Request) (proto.Response, e
 		case status >= 400:
 			// Permanent. Do not spend another attempt on it.
 			return proto.Response{}, fmt.Errorf("remote: %s: %w", req.Op, &HTTPError{StatusCode: status, Body: resp.Error})
+		case status/100 != 2:
+			// Anything left is a non-2xx no case above claimed: a 304, or a 3xx
+			// the http.Client declined to follow because it carried no Location.
+			// Falling through to the success branch would hand the caller a
+			// zero proto.Response — not OK, no Error, no status — which is the
+			// least diagnosable outcome the transport can produce. A captive
+			// portal or an interfering proxy is exactly where this shows up, so
+			// it must arrive as an *HTTPError carrying the status.
+			return proto.Response{}, fmt.Errorf("remote: %s: %w", req.Op, &HTTPError{StatusCode: status, Body: resp.Error})
 		default:
 			return resp, nil
 		}
 	}
-	// If the attempt budget ran out while the upstream was still answering 409,
-	// the diagnosis is the same wedge as hitting the conflict bound — a caller
+	// If ANY attempt saw a 409, the write's outcome is unknown and the
+	// diagnosis is the same wedge as hitting the conflict bound — a caller
 	// testing errors.Is(err, ErrPending) must not have to know which of the two
-	// bounds happened to trip first.
-	var he *HTTPError
-	if errors.As(lastErr, &he) && he.StatusCode == http.StatusConflict {
+	// bounds happened to trip first, nor whether the last attempt in a mixed
+	// 409/5xx sequence happened to be the 5xx. Once a 409 is observed, no later
+	// status can restore the certainty it took away.
+	if sawConflict {
 		return proto.Response{}, fmt.Errorf("remote: %s (idem key %s): %w", req.Op, req.IdemKey, ErrPending)
 	}
 	return proto.Response{}, fmt.Errorf("remote: %s: gave up after %d attempts: %w", req.Op, c.maxAttempts, lastErr)
@@ -329,16 +379,25 @@ func (c *Client) attempt(ctx context.Context, body []byte) (proto.Response, int,
 	return resp, httpResp.StatusCode, nil
 }
 
-// wait is the backoff before retry n (0-based), capped.
+// wait is the backoff before retry n (0-based), capped, and jittered into
+// [d/2, d).
+//
+// The jitter is not decoration. Every device in a fleet talks to the SAME
+// Lambda, so a 5xx or a throttle is something they all see at the same instant;
+// a purely deterministic base<<n then has them retry in lockstep, rebuilding
+// the herd that caused the failure at every rung of the ladder. Spreading each
+// wait over the lower half of its slot desynchronises the wave while keeping
+// the ceiling and the shape of the ladder intact.
 func (c *Client) wait(n int) time.Duration {
 	d := c.backoff
 	for i := 0; i < n && d < c.backoffCap; i++ {
 		d *= 2
 	}
 	if d > c.backoffCap {
-		return c.backoffCap
+		d = c.backoffCap
 	}
-	return d
+	half := d / 2
+	return half + time.Duration(c.jitter()*float64(half))
 }
 
 // sleep waits for d, or returns early if the context ends first. The caller's
