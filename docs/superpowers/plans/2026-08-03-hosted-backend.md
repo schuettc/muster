@@ -1484,10 +1484,10 @@ Run: `just verify-dynamo` — both pass.
 Any divergence is a **DynamoDB bug**, not a reason to weaken the test. The
 SQLite implementation is the specification.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
-git add internal/storetest/ internal/dynamostore/ internal/store/
+git add internal/storetest/ internal/dynamostore/ internal/store/ .github/ justfile
 git commit -m "test: backend conformance suite over store.API
 
 One behavioral suite run against both backends so they cannot drift. The
@@ -2713,6 +2713,16 @@ Lambda function (runtime `provided.al2023`, architecture `arm64`, handler
 `MUSTER_TOKEN_PREVIOUS`, memory 256MB, timeout 30s, reserved concurrency 10);
 the Function URL with `AuthType: NONE`; and the execution role granting only the
 table actions the store uses.
+
+**The role MUST grant `dynamodb:DescribeTimeToLive` and
+`dynamodb:UpdateTimeToLive`, not only the data-plane actions.** Task 8's fix
+made `EnsureTable` verify TTL on every `Open`, including for a table that
+already exists, because `PruneEvents` is a no-op on this backend and its
+correctness depends on TTL actually being enabled. Without these two actions the
+hosted bus fails at **every Lambda cold start**, with an error that reads like a
+TTL problem rather than a policy one. `DescribeTimeToLive` is a distinct IAM
+action from the `DescribeTable` the code already needed — granting the latter
+does not imply the former.
 
 The bearer token is a stack **`Parameter` with `NoEcho: true`**, so it does not
 appear in stack events, the console, or `describe-stacks` output.
