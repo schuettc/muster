@@ -27,12 +27,17 @@ type Agent struct {
 	// (registered outside tmux, or before this column existed) — liveness
 	// then falls back to bare session existence. See tmuxenv.IsSessionAlive
 	// and Store.DepartStaleSiblings.
-	SessionCreated int64  `json:"session_created"`
-	Project        string `json:"project"`
-	Label          string `json:"label"`
-	LabelManual    bool   `json:"label_manual"`
-	RegisteredAt   int64  `json:"registered_at"`
-	LastSeen       int64  `json:"last_seen"`
+	SessionCreated int64 `json:"session_created"`
+	// DeviceID identifies the machine this agent registered from — the
+	// wake-routing key once a bus spans devices. SocketPath cannot serve
+	// this purpose (two machines can both have /tmp/tmux-501/default).
+	// '' = unknown (registered before this column existed).
+	DeviceID     string `json:"device_id"`
+	Project      string `json:"project"`
+	Label        string `json:"label"`
+	LabelManual  bool   `json:"label_manual"`
+	RegisteredAt int64  `json:"registered_at"`
+	LastSeen     int64  `json:"last_seen"`
 	// LastReadEntryID is the entry-ID read watermark (see MarkRead/UnreadCount
 	// in agents.go): the highest entries.id visible the last time this
 	// agent's inbox was read. Supersedes the wall-clock last_read_at for

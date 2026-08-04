@@ -428,3 +428,17 @@ func TestSessionUnreadPerAliasWatermarks(t *testing.T) {
 		t.Fatalf("after MarkRead(aliasB): expected 0 unread, got %d", total)
 	}
 }
+
+func TestRegisterAgentPersistsDeviceID(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.RegisterAgent(Agent{Alias: "a1", DeviceID: "dev-abc"}); err != nil {
+		t.Fatalf("RegisterAgent: %v", err)
+	}
+	got, ok, err := s.GetAgent("a1")
+	if err != nil || !ok {
+		t.Fatalf("GetAgent: %v ok=%v", err, ok)
+	}
+	if got.DeviceID != "dev-abc" {
+		t.Fatalf("DeviceID = %q, want dev-abc", got.DeviceID)
+	}
+}

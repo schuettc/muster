@@ -7,6 +7,7 @@ CREATE TABLE IF NOT EXISTS agents (
     session_name  TEXT NOT NULL DEFAULT '',
     session_id    TEXT NOT NULL DEFAULT '',
     session_created INTEGER NOT NULL DEFAULT 0, -- tmux #{session_created} (unix seconds) at register time: discriminates recycled session IDs across tmux server restarts (0 = unknown/pre-upgrade); see tmuxenv.IsSessionAlive and Store.DepartStaleSiblings
+    device_id     TEXT NOT NULL DEFAULT '', -- the machine this agent registered from (wake-routing key across devices); '' = unknown/pre-upgrade; see internal/device
     project       TEXT NOT NULL DEFAULT '',
     label         TEXT NOT NULL DEFAULT '',
     label_manual  INTEGER NOT NULL DEFAULT 0,
