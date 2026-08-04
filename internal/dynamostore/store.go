@@ -8,7 +8,8 @@
 // access patterns the SQLite backend gets from joins:
 //
 //	gsi1 — partitioned by recipient (RCPT#agent#<alias>, RCPT#role#<role>,
-//	       RCPT#broadcast) and sorted by entry id, so "what is unread for me"
+//	       RCPT#broadcast, RCPT#broadcast#<project>) and sorted by entry id,
+//	       so "what is unread for me"
 //	       is a sort-key-bounded query with no join. Entries carry their
 //	       thread's recipient denormalized for exactly this reason, and a
 //	       thread's metadata item sits at sort key 0 of the same partition, so
@@ -400,9 +401,23 @@ func pkIdem(key string) string     { return "IDEM#" + key }
 
 // rcpt is the gsi1 partition for a thread's recipient. Entries carry their
 // thread's value so unread math is a bounded query rather than a join.
-// A broadcast has no target, so every broadcast shares one partition.
+//
+// A broadcast is partitioned by its TARGET like every other address, NOT
+// collapsed into one partition. A broadcast may be scoped to a project
+// (daemon.validateBroadcastTarget), and store.threadConcerns says a scoped one
+// concerns only agents whose registered project matches it exactly — so
+// `muster send --broadcast --project web` gets its own partition and a reader
+// queries the global partition plus the one named by its OWN project. The
+// collapsed form made every scoped broadcast reach every agent on the bus.
+//
+// Only the global broadcast keeps the bare "RCPT#broadcast" key, so it stays
+// distinguishable from a broadcast scoped to a project literally named "".
+// Read-time semantics survive the move: the partition a thread lands in is
+// fixed by its target, but WHICH partitions an alias reads is recomputed from
+// its current project on every query (concerns), so re-registering into
+// another project changes what it sees, exactly as the SQL subquery does.
 func rcpt(toKind, toTarget string) string {
-	if toKind == "broadcast" {
+	if toKind == "broadcast" && toTarget == "" {
 		return "RCPT#broadcast"
 	}
 	return "RCPT#" + toKind + "#" + toTarget

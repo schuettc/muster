@@ -31,8 +31,44 @@ import (
 //
 // The membership-vs-state rule in the package comment is honoured the same
 // way SessionUnread honours it: the roster identifies WHICH aliases are on the
-// device, and each one's role — the per-item state the concern predicate turns
-// on — is re-read from the base table.
+// device, and each one's role and project — the per-item state the concern
+// predicate turns on — are re-read from the base table.
+//
+// # Attribution must not cross indexes
+//
+// The watermark moves over every id seen in gsi2, and it only moves forward
+// (pollLoop refuses a backwards one), so an entry this poll fails to attribute
+// to a session is an entry NO LATER POLL WILL EXAMINE. Attribution therefore
+// has to be at least as fresh as the read that advanced the watermark, and
+// gsi1 is not: CreateThread writes the metadata item and its first entry as
+// two items in one transaction, and DynamoDB gives no mutual ordering between
+// the two indexes those items land in. So a poll can hold a thread's first
+// entry from gsi2 while gsi1 has not yet been told the thread is addressed to
+// anybody — and "which threads concern me", read from gsi1, would answer
+// nothing for it. That is a cross-device task handoff, whose sender is by then
+// blocking on a reply, silently dropped: not late, never.
+//
+// The fix is that the entry item ALREADY CARRIES its address. entryItem
+// denormalizes the thread's rcpt() into gsi1pk (this is the same
+// denormalization unread math is built on), and gsi2 projects ALL — so the
+// three address arms are decided by matching that attribute against
+// directParts(a), which is computed from the agent's own row. Same read as the
+// watermark, no second index, nothing to be stale.
+//
+// The originator arm still reads gsi1 through concerns, and is safe for a
+// reason that does not generalise to the others: on a thread the local alias
+// ORIGINATED, the local alias is the actor on the first entry, so there is
+// nothing to wake it for during the window when only the first entry exists.
+// By the time a peer replies, the metadata item is long since indexed.
+//
+// What is NOT closed by this: DevicePoll only names the session. The daemon
+// then recomputes its badge through SessionUnread (ReconcileLocalSessions),
+// which reads gsi1 unavoidably, so a reconcile that lands inside the same skew
+// window computes zero unread and leaves the badge dark with the watermark
+// already past. That window is narrower — it opens after this poll's read and
+// closes on the next reconcile, which the poller runs again on the next tick
+// that sees mail — but it is real, and closing it means SessionUnread
+// answering without gsi1, not a change here.
 func (s *Store) DevicePoll(deviceID string, sinceEntryID int64) (store.DevicePollResult, error) {
 	ctx := backgroundCtx()
 	out := store.DevicePollResult{MaxEntryID: sinceEntryID, Sessions: []store.SessionRef{}}
@@ -55,10 +91,16 @@ func (s *Store) DevicePoll(deviceID string, sinceEntryID int64) (store.DevicePol
 	// decision, not "the highest id in this page".
 	ids := make([]int64, 0, len(items))
 	touched := make(map[int64]bool)
+	touchedParts := make(map[string]bool)
 	for _, item := range items {
 		e := itemToEntry(item)
 		ids = append(ids, e.ID)
 		touched[e.ThreadID] = true
+		// The entry's own denormalized recipient partition. gsi2 projects ALL
+		// (secondaryIndex), so this poll ALREADY HOLDS the address of every
+		// entry it saw, from the same read that produced the watermark. That is
+		// what makes attribution below skew-free; see the doc comment.
+		touchedParts[strAttr(item, "gsi1pk")] = true
 	}
 	out.MaxEntryID = pollWatermark(sinceEntryID, ids)
 	if len(touched) == 0 {
@@ -76,20 +118,41 @@ func (s *Store) DevicePoll(deviceID string, sinceEntryID int64) (store.DevicePol
 		if seen[ref] {
 			continue // a sibling alias already put this session on the list
 		}
-		// concerns is the four-arm predicate itself — the SAME one Inbox and
-		// UnreadCount reach through unreadFor. Calling it rather than
-		// re-deriving "addressed to me" here is what stops the poller and the
-		// inbox from disagreeing about what a wake means.
-		threads, _, err := s.concerns(ctx, a.Alias, a.Role)
-		if err != nil {
-			return store.DevicePollResult{MaxEntryID: sinceEntryID}, err
-		}
-		for id := range threads {
-			if touched[id] {
-				seen[ref] = true
-				out.Sessions = append(out.Sessions, ref)
+		// The three ADDRESS arms, matched on the partition the entry itself
+		// carries rather than on a set of threads read back out of gsi1. This
+		// is the arm that must not depend on a second index — see the doc
+		// comment's cross-index skew section — and directParts is derived from
+		// a's own base-table row, so nothing here can be stale.
+		hit := false
+		for part := range directParts(a) {
+			if touchedParts[part] {
+				hit = true
 				break
 			}
+		}
+		if !hit {
+			// The ORIGINATOR arm, which has no partition of its own: an entry
+			// on a thread this alias originated lands in the RECIPIENT's
+			// partition, so it can only be recognised by thread id. concerns is
+			// the four-arm predicate itself — the SAME one Inbox and
+			// UnreadCount reach through unreadFor — so calling it here is what
+			// stops the poller and the inbox from disagreeing about what a wake
+			// means. Its gsi1 read is safe for THIS arm specifically: see the
+			// doc comment.
+			threads, _, err := s.concerns(ctx, a)
+			if err != nil {
+				return store.DevicePollResult{MaxEntryID: sinceEntryID}, err
+			}
+			for id := range threads {
+				if touched[id] {
+					hit = true
+					break
+				}
+			}
+		}
+		if hit {
+			seen[ref] = true
+			out.Sessions = append(out.Sessions, ref)
 		}
 	}
 	sort.Slice(out.Sessions, func(i, j int) bool {
@@ -162,6 +225,17 @@ const pollOverlap = 64
 // a never-arriving id cannot stall it for ever. It never returns less than
 // since: a backwards watermark would make a device re-read history (the poller
 // refuses one anyway, see pollLoop).
+//
+// Note what this does and does not buy, because the property it guarantees is
+// narrower than "no entry is missed" and stating it as the latter is how the
+// cross-index bug got in. What it guarantees is that every id is SEEN by some
+// poll before the watermark passes it. Whether seeing it produces a wake is a
+// separate question answered by attribution, and if attribution reads any
+// source that can be staler than this poll's own gsi2 read, this rule does not
+// save it: the id was seen, the watermark moved, and the entry is gone. That
+// is precisely why the address arms in DevicePoll match on the entry's own
+// projected gsi1pk rather than on a gsi1 lookup. Any new attribution path
+// added here owes the same question an answer.
 //
 // Re-scanning is free where it matters: an entry reported twice costs one
 // reconcile, and reconcile recomputes the badge from stored state and writes

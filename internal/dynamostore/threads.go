@@ -550,6 +550,33 @@ func (s *Store) Threads(limit int) ([]store.Thread, error) {
 	return out, nil
 }
 
+// directParts is the set of gsi1 recipient partitions a thread must be
+// addressed to for it to concern a — the three ADDRESS arms of
+// store.threadConcerns (agent, role, broadcast), with the originator arm
+// deliberately left out.
+//
+// It is derived entirely from the agent's own row: no index read, and
+// therefore nothing an index can be stale about. That is why DevicePoll
+// attributes an entry by matching its denormalized gsi1pk against this set —
+// the attribution then comes from the same read as the entry itself.
+//
+// The SQL guards the role arm with to_target != ”, so an agent with no role
+// never matches role-addressed threads; the same guard is why an agent with no
+// project reads only the GLOBAL broadcast partition and never a scoped one.
+func directParts(a store.Agent) map[string]bool {
+	parts := map[string]bool{
+		rcpt("agent", a.Alias): true,
+		rcpt("broadcast", ""):  true,
+	}
+	if a.Role != "" {
+		parts[rcpt("role", a.Role)] = true
+	}
+	if a.Project != "" {
+		parts[rcpt("broadcast", a.Project)] = true
+	}
+	return parts
+}
+
 // concerns is the ONE canonical DynamoDB expression of the SQLite backend's
 // threadConcerns predicate — "does this thread concern alias": addressed to it
 // directly, to its role, broadcast, or ORIGINATED by it. Inbox, UnreadCount
@@ -563,16 +590,17 @@ func (s *Store) Threads(limit int) ([]store.Thread, error) {
 // thread this alias originated lives in the RECIPIENT's partition, not the
 // alias's, so the originator arm contributes its threads' recipients to the
 // set rather than forcing a per-thread query.
-func (s *Store) concerns(ctx context.Context, alias, role string) (map[int64]map[string]types.AttributeValue, []string, error) {
-	parts := map[string]bool{
-		rcpt("agent", alias):  true,
-		rcpt("broadcast", ""): true,
-	}
-	// The SQL guards the role arm with to_target != '', so an agent with no
-	// role never matches role-addressed threads.
-	if role != "" {
-		parts[rcpt("role", role)] = true
-	}
+//
+// It takes the whole agent rather than (alias, role) because the broadcast arm
+// turns on the agent's PROJECT as well: a scoped broadcast concerns only
+// agents registered under exactly that project. Callers must pass a row read
+// from the base table (agentByAlias / localSessionAgents), never an index
+// copy — see the membership-vs-state rule in the package comment; a stale
+// project or role silently changes which threads count as mail. A zero Agent
+// carrying only an Alias is the right thing to pass for an UNREGISTERED alias:
+// no role and no project is exactly what the SQL's subqueries yield for one.
+func (s *Store) concerns(ctx context.Context, a store.Agent) (map[int64]map[string]types.AttributeValue, []string, error) {
+	parts := directParts(a)
 
 	threads := make(map[int64]map[string]types.AttributeValue)
 	for part := range parts {
@@ -606,11 +634,11 @@ func (s *Store) concerns(ctx context.Context, alias, role string) (map[int64]map
 		FilterExpression:         aws.String("#from_agent = :alias"),
 		ExpressionAttributeNames: map[string]string{"#from_agent": "from_agent"},
 		ExpressionAttributeValues: map[string]types.AttributeValue{
-			":pk": attrS(threadsPartition), ":alias": attrS(alias),
+			":pk": attrS(threadsPartition), ":alias": attrS(a.Alias),
 		},
 	})
 	if err != nil {
-		return nil, nil, fmt.Errorf("dynamostore: threads originated by %q: %w", alias, err)
+		return nil, nil, fmt.Errorf("dynamostore: threads originated by %q: %w", a.Alias, err)
 	}
 	for _, item := range originated {
 		threads[numAttr(item, "id")] = item
@@ -684,10 +712,13 @@ func (s *Store) unreadFor(ctx context.Context, alias string) (map[int64]map[stri
 	if err != nil {
 		return nil, nil, err
 	}
-	// An unregistered alias has no role and no watermark — the SQL's role
-	// subquery yields NULL and its watermark COALESCEs to 0, so everything
-	// addressed to it or originated by it is unread.
-	threads, parts, err := s.concerns(ctx, alias, agent.Role)
+	// An unregistered alias has no role, no project and no watermark — the
+	// SQL's role and project subqueries yield NULL and its watermark COALESCEs
+	// to 0, so everything addressed to it or originated by it is unread.
+	// agentByAlias zeroes those fields for one, so agent carries the alias and
+	// nothing else here.
+	agent.Alias = alias
+	threads, parts, err := s.concerns(ctx, agent)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -784,7 +815,7 @@ func (s *Store) MarkRead(alias string) error {
 	if !ok {
 		return nil // unknown alias: no-op, matching the SQLite contract
 	}
-	watermark, err := s.readableThrough(ctx, alias, agent.Role, agent.LastReadEntryID)
+	watermark, err := s.readableThrough(ctx, agent, agent.LastReadEntryID)
 	if err != nil {
 		return err
 	}
@@ -822,8 +853,8 @@ func (s *Store) MarkRead(alias string) error {
 // on a thread that does not concern alias can never be unread for it
 // (unreadByThread filters on exactly this set), so counting it would raise the
 // watermark over in-flight ids for no signal at all.
-func (s *Store) readableThrough(ctx context.Context, alias, role string, after int64) (int64, error) {
-	threads, parts, err := s.concerns(ctx, alias, role)
+func (s *Store) readableThrough(ctx context.Context, a store.Agent, after int64) (int64, error) {
+	threads, parts, err := s.concerns(ctx, a)
 	if err != nil {
 		return 0, err
 	}
@@ -887,7 +918,7 @@ func (s *Store) SessionUnread(deviceID, socketPath, sessionID string) (total, ac
 
 	unread := make(map[int64]map[string]types.AttributeValue)
 	for _, a := range session {
-		threads, parts, err := s.concerns(ctx, a.Alias, a.Role)
+		threads, parts, err := s.concerns(ctx, a)
 		if err != nil {
 			return 0, 0, err
 		}

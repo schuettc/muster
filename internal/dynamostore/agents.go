@@ -527,6 +527,15 @@ func (s *Store) DeleteAgent(alias string) error {
 // rows changed; 0 with an empty tuple component.
 // deviceID scopes the session to one machine (see store.API): a label is an
 // address, and the tuple alone is not device-unique in a shared roster.
+//
+// attribute_exists(pk) is load-bearing here for the same reason it is on
+// TouchAgent and SetHarnessSessionID, and more so: membership comes from
+// roster(), a GSI, so a purge_agent that already removed the base item can
+// still be lagging in the index. Without the condition this upsert would
+// RECREATE the deleted alias as a phantom base item holding only label and
+// label_manual — no gsi1pk, so ListAgents could never see it again to clean it
+// up, while GetAgent answered ok=true with an empty identity. Skipping is also
+// the SQLite contract: its UPDATE matches no rows for a deleted alias.
 func (s *Store) SetSessionLabel(deviceID, socketPath, sessionID, label string, manual bool) (int64, error) {
 	if socketPath == "" || sessionID == "" {
 		return 0, nil
@@ -543,9 +552,10 @@ func (s *Store) SetSessionLabel(deviceID, socketPath, sessionID, label string, m
 			continue
 		}
 		_, err := s.c.UpdateItem(ctx, &dynamodb.UpdateItemInput{
-			TableName:        aws.String(s.table),
-			Key:              agentKey(a.Alias),
-			UpdateExpression: aws.String("SET #label = :label, #label_manual = :label_manual"),
+			TableName:           aws.String(s.table),
+			Key:                 agentKey(a.Alias),
+			UpdateExpression:    aws.String("SET #label = :label, #label_manual = :label_manual"),
+			ConditionExpression: aws.String("attribute_exists(pk)"),
 			ExpressionAttributeNames: map[string]string{
 				"#label":        "label",
 				"#label_manual": "label_manual",
@@ -556,6 +566,12 @@ func (s *Store) SetSessionLabel(deviceID, socketPath, sessionID, label string, m
 			},
 		})
 		if err != nil {
+			if isConditionFailed(err) {
+				// The alias was deleted between the roster read and this
+				// write. Skip it — and do NOT count it, since the SQLite
+				// UPDATE would have matched no rows either.
+				continue
+			}
 			return n, fmt.Errorf("dynamostore: set label on %q: %w", a.Alias, err)
 		}
 		n++

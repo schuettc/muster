@@ -202,16 +202,19 @@ func TestDropTableRefusesNonTestTable(t *testing.T) {
 }
 
 func TestRcptPartitioning(t *testing.T) {
-	// Broadcasts share one partition regardless of target; addressed threads
-	// are partitioned by kind and target. Unread math depends on an entry
-	// landing in the same partition its recipient queries.
+	// Threads are partitioned by kind and target — INCLUDING broadcasts, whose
+	// target is the project they are scoped to. Only the global broadcast
+	// (empty target) gets a partition of its own shape. Unread math depends on
+	// an entry landing in the same partition its recipient queries, so
+	// collapsing scoped broadcasts here is what delivered them bus-wide.
 	tests := []struct {
 		toKind, toTarget, want string
 	}{
 		{"agent", "backend-2", "RCPT#agent#backend-2"},
 		{"role", "worker", "RCPT#role#worker"},
 		{"broadcast", "", "RCPT#broadcast"},
-		{"broadcast", "ignored", "RCPT#broadcast"},
+		{"broadcast", "web", "RCPT#broadcast#web"},
+		{"broadcast", "api", "RCPT#broadcast#api"},
 	}
 	for _, tc := range tests {
 		if got := rcpt(tc.toKind, tc.toTarget); got != tc.want {

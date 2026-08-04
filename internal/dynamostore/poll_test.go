@@ -1,7 +1,12 @@
 package dynamostore
 
 import (
+	"context"
 	"testing"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 
 	"github.com/schuettc/muster/internal/clock"
 	"github.com/schuettc/muster/internal/store"
@@ -156,5 +161,113 @@ func TestDevicePollSurfacesAnEntryCommittingBelowTheWatermark(t *testing.T) {
 	}
 	if len(quiet.Sessions) != 0 {
 		t.Fatalf("sessions = %+v, want none — a filled gap must let the poll go quiet", quiet.Sessions)
+	}
+}
+
+// TestDevicePollAttributesEntriesWithoutReadingGSI1 is the pin on Critical 1:
+// DevicePoll must decide "whose mail is this" from the read that produced its
+// watermark, never from a second index that can be staler.
+//
+// The interleaving it reproduces is CreateThread's. The metadata item and the
+// thread's first entry go in one transaction, but they land in DIFFERENT
+// indexes — metadata in gsi1 (the recipient partition), entry in gsi2 (the
+// global entry log) — and DynamoDB promises no ordering between the two. So a
+// poll can hold the entry while gsi1 still does not know the thread exists.
+// The watermark then advances over that id and pollLoop never goes back: the
+// wake is not late, it is gone. A cross-device task handoff is exactly this
+// shape, with the sender blocking on a reply that will never come.
+//
+// DynamoDB Local replicates its indexes synchronously, so the skew has to be
+// constructed rather than waited for: removing gsi1pk from the metadata item
+// takes it out of gsi1 while leaving the base item and the entry untouched —
+// precisely the state gsi1 is in during the window, and precisely what
+// concerns() would read there. With the fix the poll never asks gsi1 about the
+// address arms at all; it matches the entry's OWN denormalized gsi1pk, which
+// gsi2 projects, against the partitions derived from the agent's row.
+//
+// Mutating DevicePoll back to `threads, _, err := s.concerns(...)` +
+// `touched[id]` alone makes this fail with zero sessions.
+func TestDevicePollAttributesEntriesWithoutReadingGSI1(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	if err := s.RegisterAgent(store.Agent{
+		Alias: "local", DeviceID: "dev-1",
+		SocketPath: "/tmp/tmux-501/default", SessionID: "$1",
+	}); err != nil {
+		t.Fatalf("RegisterAgent: %v", err)
+	}
+	drained, err := s.DevicePoll("dev-1", 0)
+	if err != nil {
+		t.Fatalf("DevicePoll (drain): %v", err)
+	}
+
+	id, err := s.CreateThread(store.Thread{
+		Kind: "task", FromAgent: "peer", ToKind: "agent", ToTarget: "local",
+		Status: "open", Intent: store.IntentAction,
+	}, "please take this")
+	if err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+
+	// Take the metadata item out of gsi1, leaving the entry and the base item
+	// exactly as the transaction wrote them: gsi1 as it looks mid-window.
+	if _, err := s.c.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName:        aws.String(s.table),
+		Key:              map[string]types.AttributeValue{"pk": attrS(pkThread(id)), "sk": attrN(metaSK)},
+		UpdateExpression: aws.String("REMOVE gsi1pk"),
+	}); err != nil {
+		t.Fatalf("un-index the metadata item: %v", err)
+	}
+	// Confirm the fixture actually built the skew — otherwise this test could
+	// pass for the wrong reason.
+	threads, _, err := s.concerns(ctx, store.Agent{Alias: "local"})
+	if err != nil {
+		t.Fatalf("concerns: %v", err)
+	}
+	if threads[id] != nil {
+		t.Fatal("fixture did not remove the thread from gsi1; the skew is not being tested")
+	}
+
+	got, err := s.DevicePoll("dev-1", drained.MaxEntryID)
+	if err != nil {
+		t.Fatalf("DevicePoll: %v", err)
+	}
+	if len(got.Sessions) != 1 || got.Sessions[0].SessionID != "$1" {
+		t.Fatalf("sessions = %+v, want one $1 — the first entry of a new thread was seen "+
+			"in gsi2 but attributed through gsi1, so its wake was dropped and the "+
+			"watermark moved past it for good", got.Sessions)
+	}
+	if got.MaxEntryID <= drained.MaxEntryID {
+		t.Fatalf("watermark did not advance: %d -> %d", drained.MaxEntryID, got.MaxEntryID)
+	}
+}
+
+// TestDevicePollScopedBroadcastSkipsOtherProjects is the DynamoDB-level pin on
+// Critical 2's wake half, complementing the conformance case: the address arms
+// now match on the entry's denormalized partition, so a broadcast scoped to
+// one project must not even be a candidate for another project's device.
+func TestDevicePollScopedBroadcastSkipsOtherProjects(t *testing.T) {
+	s := newTestStore(t)
+
+	if err := s.RegisterAgent(store.Agent{
+		Alias: "api-agent", Project: "api", DeviceID: "dev-api",
+		SocketPath: "/tmp/tmux-501/default", SessionID: "$1",
+	}); err != nil {
+		t.Fatalf("RegisterAgent: %v", err)
+	}
+	if _, err := s.CreateThread(store.Thread{
+		Kind: "message", FromAgent: "sender", ToKind: "broadcast", ToTarget: "web",
+	}, "web only"); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+
+	got, err := s.DevicePoll("dev-api", 0)
+	if err != nil {
+		t.Fatalf("DevicePoll: %v", err)
+	}
+	if len(got.Sessions) != 0 {
+		t.Fatalf("sessions = %+v, want none — a broadcast scoped to project web "+
+			"must not wake a device that has only project api on it", got.Sessions)
 	}
 }

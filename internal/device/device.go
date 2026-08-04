@@ -2,6 +2,7 @@
 package device
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,10 +25,22 @@ func ID() (string, error) {
 		return v, nil
 	}
 	p := filepath.Join(paths.Home(), FileName)
-	if b, err := os.ReadFile(p); err == nil {
-		if v := strings.TrimSpace(string(b)); v != "" {
-			return v, nil
-		}
+	b, err := os.ReadFile(p)
+	// Only "no such file" means "not generated yet". Any OTHER read error —
+	// EACCES on a file whose directory is still writable, EIO, a directory
+	// where the file should be — must NOT fall through to generation, because
+	// generation ROTATES this device's identity, and the device id is the
+	// wake-routing key: every agent already registered from this machine would
+	// suddenly look like another device's, so ReconcileLocalSessions and
+	// DevicePoll would filter all of them out and every badge on the machine
+	// would go dark until each agent re-registered. Failing loudly on a
+	// transient read error costs one command; rotating costs the machine's
+	// wake path with no error anywhere.
+	if err != nil && !os.IsNotExist(err) {
+		return "", fmt.Errorf("device: read %s: %w", p, err)
+	}
+	if v := strings.TrimSpace(string(b)); v != "" {
+		return v, nil
 	}
 	if err := os.MkdirAll(paths.Home(), 0o755); err != nil {
 		return "", err

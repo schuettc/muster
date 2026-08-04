@@ -6,8 +6,10 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"os"
 	"sort"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/schuettc/muster/internal/proto"
@@ -324,18 +326,70 @@ var readOps = map[string]bool{
 	"list_events": true, "get_agent": true, "device_poll": true,
 }
 
-// dispatchOps extracts the op names from dispatch's `switch req.Op` in
-// daemon.go, so the classification is checked against the code rather than
-// against a second hand-written list that can drift with it.
+// packageFiles parses EVERY non-test .go file of package daemon, which is what
+// the three drift guards below walk.
+//
+// Parsing daemon.go alone is not enough, and fails in the silent direction.
+// The call graph these guards walk is name-based: a callee whose declaration
+// is not in the parsed set simply resolves to nothing, and "resolves to
+// nothing" reads identically to "reaches no badge sink" and "reads no
+// device-scoped arg" — so a handler that moves out of daemon.go (the package
+// already keeps dispatch helpers in resolve.go) would quietly stop being
+// classified as badge-moving or session-scoped, with no test failing. The
+// len(derived) floors cannot catch that: they only fire when the walk breaks
+// wholesale, never when it loses one op.
+//
+// Build tags are deliberately ignored (parser mode 0 does not evaluate them):
+// every file that could contribute a handler should be walked, whatever
+// configuration it builds under.
+func packageFiles(t *testing.T) []*ast.File {
+	t.Helper()
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatalf("read package dir: %v", err)
+	}
+	fset := token.NewFileSet()
+	var files []*ast.File
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		f, err := parser.ParseFile(fset, name, nil, 0)
+		if err != nil {
+			t.Fatalf("parse %s: %v", name, err)
+		}
+		files = append(files, f)
+	}
+	if len(files) == 0 {
+		t.Fatal("parsed no package files — the walk below would derive nothing and pass vacuously")
+	}
+	return files
+}
+
+// packageCallees maps every function declared in the package to the names it
+// calls, so reachability can be walked across files rather than within one.
+func packageCallees(files []*ast.File) map[string][]string {
+	callees := map[string][]string{}
+	for _, f := range files {
+		for _, decl := range f.Decls {
+			fn, isFn := decl.(*ast.FuncDecl)
+			if !isFn || fn.Body == nil {
+				continue
+			}
+			callees[fn.Name.Name] = calleeNames(fn.Body)
+		}
+	}
+	return callees
+}
+
+// dispatchOps extracts the op names from dispatch's `switch req.Op`, so the
+// classification is checked against the code rather than against a second
+// hand-written list that can drift with it.
 func dispatchOps(t *testing.T) []string {
 	t.Helper()
-	fset := token.NewFileSet()
-	f, err := parser.ParseFile(fset, "daemon.go", nil, 0)
-	if err != nil {
-		t.Fatalf("parse daemon.go: %v", err)
-	}
 	var ops []string
-	ast.Inspect(f, func(n ast.Node) bool {
+	inspectPackage(packageFiles(t), func(n ast.Node) bool {
 		sw, isSwitch := n.(*ast.SwitchStmt)
 		if !isSwitch {
 			return true
@@ -426,27 +480,18 @@ func calleeNames(n ast.Node) []string {
 
 // TestBadgeOpsMatchDispatch is the drift guard for badgeOps, remote mode's
 // reconcile trigger. It derives the badge-moving set from dispatch's own
-// switch — walking the call graph within daemon.go, so a case that reaches the
-// badge through a handler (register_agent → handleRegisterAgent →
-// reconcileBadge) still counts — and demands the map say the same thing.
+// switch — walking the call graph across the whole package, so a case that
+// reaches the badge through a handler (register_agent → handleRegisterAgent →
+// reconcileBadge) still counts wherever that handler is declared — and demands
+// the map say the same thing.
 //
 // Without this, a new notifying op would keep working in local mode and
 // silently never light a badge in remote mode: the wrong half of the failure,
 // and invisible until an operator noticed mail they were never told about.
+// Package-wide parsing is part of the guard, not a detail — see packageFiles.
 func TestBadgeOpsMatchDispatch(t *testing.T) {
-	fset := token.NewFileSet()
-	f, err := parser.ParseFile(fset, "daemon.go", nil, 0)
-	if err != nil {
-		t.Fatalf("parse daemon.go: %v", err)
-	}
-	callees := map[string][]string{}
-	for _, decl := range f.Decls {
-		fn, isFn := decl.(*ast.FuncDecl)
-		if !isFn || fn.Body == nil {
-			continue
-		}
-		callees[fn.Name.Name] = calleeNames(fn.Body)
-	}
+	files := packageFiles(t)
+	callees := packageCallees(files)
 	var reaches func(name string, seen map[string]bool) bool
 	reaches = func(name string, seen map[string]bool) bool {
 		if badgeSinks[name] {
@@ -465,43 +510,21 @@ func TestBadgeOpsMatchDispatch(t *testing.T) {
 	}
 
 	derived := map[string]bool{}
-	ast.Inspect(f, func(n ast.Node) bool {
-		sw, isSwitch := n.(*ast.SwitchStmt)
-		if !isSwitch {
-			return true
-		}
-		if sel, isSel := sw.Tag.(*ast.SelectorExpr); !isSel || sel.Sel.Name != "Op" {
-			return true
-		}
-		for _, stmt := range sw.Body.List {
-			cc, isCase := stmt.(*ast.CaseClause)
-			if !isCase {
-				continue
-			}
-			hit := false
-			for _, callee := range calleeNames(&ast.BlockStmt{List: cc.Body}) {
-				if reaches(callee, map[string]bool{}) {
-					hit = true
-					break
-				}
-			}
-			if !hit {
-				continue
-			}
-			for _, e := range cc.List {
-				lit, isLit := e.(*ast.BasicLit)
-				if !isLit || lit.Kind != token.STRING {
-					continue
-				}
-				op, err := strconv.Unquote(lit.Value)
-				if err != nil {
-					t.Fatalf("unquote case %s: %v", lit.Value, err)
-				}
-				derived[op] = true
+	for _, cc := range dispatchCases(t, files) {
+		hit := false
+		for _, callee := range calleeNames(&ast.BlockStmt{List: cc.Body}) {
+			if reaches(callee, map[string]bool{}) {
+				hit = true
+				break
 			}
 		}
-		return true
-	})
+		if !hit {
+			continue
+		}
+		for _, op := range caseOps(t, cc) {
+			derived[op] = true
+		}
+	}
 
 	if len(derived) < 5 {
 		t.Fatalf("derived only %v as badge-moving — the AST walk is broken, not the classification", derived)
@@ -540,9 +563,10 @@ var stampedOutsideForward = map[string]string{
 
 // TestDeviceOpsMatchDispatch is the drift guard for deviceOps, the set forward
 // stamps this device's id onto. It derives the session-scoped ops from
-// dispatch's own switch — a case counts when its reachable call graph inside
-// daemon.go reads one of deviceArgKeys out of the args map, so register_agent
-// still counts through handleRegisterAgent — and demands the map agree.
+// dispatch's own switch — a case counts when its reachable call graph across
+// the package reads one of deviceArgKeys out of the args map, so
+// register_agent still counts through handleRegisterAgent wherever that is
+// declared — and demands the map agree.
 //
 // The failure it exists to catch is silent and one-directional: a new
 // session-scoped op left out of deviceOps works perfectly in local mode (where
@@ -551,19 +575,17 @@ var stampedOutsideForward = map[string]string{
 // wrong answer about another laptop, not an error anyone sees. writeOps and
 // badgeOps are pinned this way for the same reason; this is the third.
 func TestDeviceOpsMatchDispatch(t *testing.T) {
-	fset := token.NewFileSet()
-	f, err := parser.ParseFile(fset, "daemon.go", nil, 0)
-	if err != nil {
-		t.Fatalf("parse daemon.go: %v", err)
-	}
-	callees, reads := map[string][]string{}, map[string]bool{}
-	for _, decl := range f.Decls {
-		fn, isFn := decl.(*ast.FuncDecl)
-		if !isFn || fn.Body == nil {
-			continue
+	files := packageFiles(t)
+	callees := packageCallees(files)
+	reads := map[string]bool{}
+	for _, f := range files {
+		for _, decl := range f.Decls {
+			fn, isFn := decl.(*ast.FuncDecl)
+			if !isFn || fn.Body == nil {
+				continue
+			}
+			reads[fn.Name.Name] = readsDeviceArg(t, fn.Body)
 		}
-		callees[fn.Name.Name] = calleeNames(fn.Body)
-		reads[fn.Name.Name] = readsDeviceArg(t, fn.Body)
 	}
 	var reaches func(name string, seen map[string]bool) bool
 	reaches = func(name string, seen map[string]bool) bool {
@@ -583,7 +605,7 @@ func TestDeviceOpsMatchDispatch(t *testing.T) {
 	}
 
 	derived := map[string]bool{}
-	for _, cc := range dispatchCases(t, f) {
+	for _, cc := range dispatchCases(t, files) {
 		hit := readsDeviceArg(t, &ast.BlockStmt{List: cc.Body})
 		if !hit {
 			for _, callee := range calleeNames(&ast.BlockStmt{List: cc.Body}) {
@@ -631,35 +653,139 @@ func TestDeviceOpsMatchDispatch(t *testing.T) {
 	}
 }
 
-// readsDeviceArg reports whether n contains a string literal naming one of
-// deviceArgKeys — how every args read in dispatch is spelled (str(a, "…")).
-// Coarse in the safe direction: a false hit demands MORE ops be classified as
-// session-scoped, never fewer.
+// argsAccessors are the functions that pull a value OUT of a request's args
+// map. readsDeviceArg counts a deviceArgKeys literal only when it is passed to
+// one of these.
+//
+// The narrowing matters once the walk covers the whole package rather than
+// daemon.go: remote mode BUILDS outgoing requests whose args maps name the
+// same keys (sessionUnread's `{"device_id": d.deviceID, …}`, stampDevice's
+// `args["device_id"] = …`), and a bare literal scan cannot tell "this case
+// decides something about one machine's session" from "the daemon stamped its
+// own id onto a call it is making". Left bare, get_inbox and eight other ops
+// were derived as session-scoped through setSessionBadge → sessionUnread.
+//
+// TestArgsAccessorsMatchThePackage is what keeps this narrowing from becoming
+// the silent direction: a new accessor spelled some other way would make
+// readsDeviceArg miss reads, so the package is checked for accessors this list
+// does not name.
+var argsAccessors = map[string]bool{"str": true, "boolArg": true, "i64": true}
+
+// readsDeviceArg reports whether n reads one of deviceArgKeys out of an args
+// map — how every args read in dispatch is spelled (str(a, "…")). Still coarse
+// in the safe direction within that: it does not check WHICH map is being
+// read, so a false hit demands MORE ops be classified as session-scoped, never
+// fewer.
 func readsDeviceArg(t *testing.T, n ast.Node) bool {
 	t.Helper()
 	found := false
 	ast.Inspect(n, func(node ast.Node) bool {
-		lit, isLit := node.(*ast.BasicLit)
-		if !isLit || lit.Kind != token.STRING {
+		call, isCall := node.(*ast.CallExpr)
+		if !isCall {
 			return true
 		}
-		v, err := strconv.Unquote(lit.Value)
-		if err != nil {
-			t.Fatalf("unquote %s: %v", lit.Value, err)
+		name := ""
+		switch fn := call.Fun.(type) {
+		case *ast.Ident:
+			name = fn.Name
+		case *ast.SelectorExpr:
+			name = fn.Sel.Name
 		}
-		if deviceArgKeys[v] {
-			found = true
+		if !argsAccessors[name] {
+			return true
+		}
+		for _, arg := range call.Args {
+			lit, isLit := arg.(*ast.BasicLit)
+			if !isLit || lit.Kind != token.STRING {
+				continue
+			}
+			v, err := strconv.Unquote(lit.Value)
+			if err != nil {
+				t.Fatalf("unquote %s: %v", lit.Value, err)
+			}
+			if deviceArgKeys[v] {
+				found = true
+			}
 		}
 		return true
 	})
 	return found
 }
 
-// dispatchCases returns every case clause of the switch on a request's Op.
-func dispatchCases(t *testing.T, f *ast.File) []*ast.CaseClause {
+// TestArgsAccessorsMatchThePackage keeps argsAccessors from silently going
+// stale. Every function in the package taking (map[string]any, string) is an
+// args accessor by construction, so one missing from the list would make
+// readsDeviceArg blind to every read spelled through it — and a session-scoped
+// op left out of deviceOps fails silently, addressing another machine's
+// session (see TestDeviceOpsMatchDispatch).
+func TestArgsAccessorsMatchThePackage(t *testing.T) {
+	found := map[string]bool{}
+	for _, f := range packageFiles(t) {
+		for _, decl := range f.Decls {
+			fn, isFn := decl.(*ast.FuncDecl)
+			if !isFn || fn.Recv != nil || fn.Type.Params == nil {
+				continue
+			}
+			var params []ast.Expr
+			for _, field := range fn.Type.Params.List {
+				for range max(len(field.Names), 1) {
+					params = append(params, field.Type)
+				}
+			}
+			if len(params) != 2 || !isArgsMap(params[0]) || !isIdentNamed(params[1], "string") {
+				continue
+			}
+			found[fn.Name.Name] = true
+		}
+	}
+	if len(found) == 0 {
+		t.Fatal("found no args accessors at all — this guard is not looking at the package it thinks it is")
+	}
+	for name := range found {
+		if !argsAccessors[name] {
+			t.Errorf("%s reads a request's args but is not in argsAccessors: "+
+				"every device-scoped read spelled through it is invisible to readsDeviceArg", name)
+		}
+	}
+	for name := range argsAccessors {
+		if !found[name] {
+			t.Errorf("argsAccessors names %q, which the package does not declare as an args accessor", name)
+		}
+	}
+}
+
+// isArgsMap reports whether e is the type map[string]any (or its
+// map[string]interface{} spelling).
+func isArgsMap(e ast.Expr) bool {
+	m, isMap := e.(*ast.MapType)
+	if !isMap || !isIdentNamed(m.Key, "string") {
+		return false
+	}
+	if isIdentNamed(m.Value, "any") {
+		return true
+	}
+	iface, isIface := m.Value.(*ast.InterfaceType)
+	return isIface && (iface.Methods == nil || len(iface.Methods.List) == 0)
+}
+
+func isIdentNamed(e ast.Expr, name string) bool {
+	id, isIdent := e.(*ast.Ident)
+	return isIdent && id.Name == name
+}
+
+// inspectPackage runs ast.Inspect over every parsed file of the package.
+func inspectPackage(files []*ast.File, fn func(ast.Node) bool) {
+	for _, f := range files {
+		ast.Inspect(f, fn)
+	}
+}
+
+// dispatchCases returns every case clause of the switch on a request's Op,
+// wherever in the package that switch is declared.
+func dispatchCases(t *testing.T, files []*ast.File) []*ast.CaseClause {
 	t.Helper()
 	var cases []*ast.CaseClause
-	ast.Inspect(f, func(n ast.Node) bool {
+	inspectPackage(files, func(n ast.Node) bool {
 		sw, isSwitch := n.(*ast.SwitchStmt)
 		if !isSwitch {
 			return true

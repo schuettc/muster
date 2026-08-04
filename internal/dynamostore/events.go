@@ -236,9 +236,10 @@ func (s *Store) Events(q store.EventQuery) ([]store.Event, error) {
 		if err != nil {
 			return nil, err
 		}
-		// An unregistered alias has no role, exactly as the SQL's role
-		// subquery yields NULL for one.
-		threads, _, err := s.concerns(ctx, q.Agent, agent.Role)
+		// An unregistered alias has no role and no project, exactly as the
+		// SQL's role and project subqueries yield NULL for one.
+		agent.Alias = q.Agent
+		threads, _, err := s.concerns(ctx, agent)
 		if err != nil {
 			return nil, err
 		}
@@ -412,8 +413,25 @@ func (s *Store) threadMetas(ctx context.Context, ids []int64) (map[int64]map[str
 // watermark over an unwritten id skips that event permanently — the same defect
 // class as the MarkRead overshoot documented in the package comment.
 //
-// The index read is eventually consistent, so this can lag a just-written
-// event. That direction is safe: the caller's next follow poll picks it up.
+// The index read is eventually consistent, and that is NOT free here — the
+// hazard is SKIPPING, not lagging. Lagging is the safe direction (a caller
+// that reads a smaller max simply re-asks and sees the event next poll); what
+// is unsafe is returning an id with an unwritten one BELOW it, because the
+// consumers use this value as their cursor verbatim (humancli/watch.go's
+// follow loop and station/model.go both take max_id and pass it back as
+// AfterID), so a skipped event is never emitted to them at all. Two things
+// produce exactly that: allocate-before-commit, which this is the THIRD
+// instance of on the DynamoDB backend (MarkRead's overshoot and DevicePoll's
+// watermark are the others, see the package comment), and gsi2 replication,
+// which can make a higher id visible before a lower one. So this can and does
+// name an id whose predecessor no reader has seen.
+//
+// That is knowingly accepted rather than repaired: the journal is a feed, and
+// a missing line is the whole cost (see Events). If it is ever repaired, the
+// fix is not a bigger read but pollWatermark's rule from Task 14 — refuse to
+// pass an id whose predecessors have not been seen, with an overlap floor so a
+// never-committed id cannot stall the cursor for ever — and that rule applies
+// here unchanged.
 func (s *Store) MaxEventID() (int64, error) {
 	out, err := s.c.Query(backgroundCtx(), &dynamodb.QueryInput{
 		TableName:              aws.String(s.table),

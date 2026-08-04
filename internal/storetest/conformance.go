@@ -100,6 +100,8 @@ var cases = []conformanceCase{
 	{"InboxAnnotatesLastFromAndUnread", testInboxAnnotations},
 	{"InboxUnreadDropsAfterMarkRead", testInboxUnreadDrops},
 	{"InboxOrdersMostRecentlyUpdatedFirst", testInboxOrder},
+	{"ScopedBroadcastReachesItsProjectOnly", testScopedBroadcastProjectOnly},
+	{"ScopedBroadcastConcernsADepartedAgentsProject", testScopedBroadcastDeparted},
 
 	// Session-scoped unread.
 	{"SessionUnreadCountsDistinctThreads", testSessionUnreadDistinct},
@@ -132,6 +134,7 @@ var cases = []conformanceCase{
 	{"DevicePollWakesAnOriginator", testDevicePollWakesOriginator},
 	{"DevicePollWatermarkAdvancesPastUnrelatedMail", testDevicePollWatermarkAdvances},
 	{"DevicePollSkipsDepartedAndTuplelessAgents", testDevicePollSkipsUnbadgeable},
+	{"DevicePollWakesOnlyTheScopedBroadcastsProject", testDevicePollScopedBroadcast},
 
 	// Tasks.
 	{"ClaimTaskSucceedsOnceThenFails", testClaimOnce},
@@ -1103,6 +1106,78 @@ func testInboxOrder(t *testing.T, s store.API) {
 	}
 }
 
+// testScopedBroadcastProjectOnly pins the scoped-broadcast arm of
+// threadConcerns: a broadcast with a non-empty to_target concerns ONLY agents
+// whose registered project matches it exactly, while a global one (empty
+// target) still reaches everybody.
+//
+// Promoted here from the SQLite package's own tests, which is where the
+// semantics landed and where they stayed pinned to one backend. Every other
+// fixture in this suite creates broadcasts with ToTarget "", so the suite had
+// zero scoped coverage — and the DynamoDB backend collapsed every broadcast
+// into one recipient partition regardless of target, delivering
+// `muster send --broadcast --project web` to every agent on the bus. That is
+// silent cross-project delivery in exactly the shared-roster deployment the
+// hosted backend exists for, and it survived precisely because this suite
+// could not see it. A divergence this suite does not cover is a divergence
+// that ships.
+func testScopedBroadcastProjectOnly(t *testing.T, s store.API) {
+	mustRegister(t, s, store.Agent{Alias: "in-proj", Project: "web"})
+	mustRegister(t, s, store.Agent{Alias: "other-proj", Project: "api"})
+	mustRegister(t, s, store.Agent{Alias: "no-proj"})
+
+	mustThread(t, s, store.Thread{
+		Kind: "message", FromAgent: "sender", ToKind: "broadcast", ToTarget: "web",
+	}, "web only")
+	mustThread(t, s, store.Thread{
+		Kind: "message", FromAgent: "sender", ToKind: "broadcast",
+	}, "everyone")
+
+	for alias, want := range map[string]int{"in-proj": 2, "other-proj": 1, "no-proj": 1} {
+		in, err := s.Inbox(alias)
+		if err != nil {
+			t.Fatalf("Inbox(%s): %v", alias, err)
+		}
+		if len(in) != want {
+			t.Errorf("Inbox(%s) = %d threads, want %d — a scoped broadcast must reach "+
+				"only its own project", alias, len(in), want)
+		}
+		// UnreadCount must agree: same canonical predicate, and a badge that
+		// disagrees with the inbox is the divergence that predicate exists to
+		// prevent.
+		n, err := s.UnreadCount(alias)
+		if err != nil {
+			t.Fatalf("UnreadCount(%s): %v", alias, err)
+		}
+		if n != want {
+			t.Errorf("UnreadCount(%s) = %d, want %d (Inbox says %d)", alias, n, want, len(in))
+		}
+	}
+}
+
+// testScopedBroadcastDeparted pins the READ-TIME half of the same rule: the
+// project comes from the agent's row when the query runs, not from anything
+// captured when the thread was written. A tombstoned row preserves its
+// project, so a departed agent still matches, and one that re-registers into
+// the same alias sees the scoped broadcast waiting.
+func testScopedBroadcastDeparted(t *testing.T, s store.API) {
+	mustRegister(t, s, store.Agent{Alias: "ghost", Project: "web"})
+	if err := s.DepartAgent("ghost"); err != nil {
+		t.Fatalf("DepartAgent: %v", err)
+	}
+	mustThread(t, s, store.Thread{
+		Kind: "message", FromAgent: "sender", ToKind: "broadcast", ToTarget: "web",
+	}, "web only")
+
+	in, err := s.Inbox("ghost")
+	if err != nil {
+		t.Fatalf("Inbox: %v", err)
+	}
+	if len(in) != 1 {
+		t.Fatalf("departed ghost's inbox = %d threads, want 1", len(in))
+	}
+}
+
 // --- session-scoped unread -------------------------------------------------
 
 func testSessionUnreadDistinct(t *testing.T, s store.API) {
@@ -1354,6 +1429,49 @@ func testDevicePollSkipsUnbadgeable(t *testing.T, s store.API) {
 	}
 	if len(got.Sessions) != 0 {
 		t.Fatalf("sessions = %+v, want none — neither agent has a badge to light", got.Sessions)
+	}
+}
+
+// testDevicePollScopedBroadcast carries the scoped-broadcast rule all the way
+// to the wake path, which is where getting it wrong is loudest: DevicePoll is
+// how cross-device mail lights a pane, so a broadcast that concerns only
+// project "web" must wake only the devices with a "web" agent on them. Under
+// the collapsed-partition bug this woke every device on the bus, lighting
+// every operator's badge for a message their inbox would not even list.
+func testDevicePollScopedBroadcast(t *testing.T, s store.API) {
+	mustRegister(t, s, store.Agent{
+		Alias: "web-agent", Project: "web", DeviceID: "dev-web",
+		SocketPath: "/tmp/tmux-501/default", SessionID: "$1",
+	})
+	mustRegister(t, s, store.Agent{
+		Alias: "api-agent", Project: "api", DeviceID: "dev-api",
+		SocketPath: "/tmp/tmux-501/default", SessionID: "$2",
+	})
+	mustThread(t, s, store.Thread{
+		Kind: "message", FromAgent: "sender", ToKind: "broadcast", ToTarget: "web",
+	}, "web only")
+
+	web, err := s.DevicePoll("dev-web", 0)
+	if err != nil {
+		t.Fatalf("DevicePoll(dev-web): %v", err)
+	}
+	if len(web.Sessions) != 1 || web.Sessions[0].SessionID != "$1" {
+		t.Errorf("dev-web sessions = %+v, want one $1 — the broadcast is scoped to its project",
+			web.Sessions)
+	}
+
+	api, err := s.DevicePoll("dev-api", 0)
+	if err != nil {
+		t.Fatalf("DevicePoll(dev-api): %v", err)
+	}
+	if len(api.Sessions) != 0 {
+		t.Errorf("dev-api sessions = %+v, want none — project api was never addressed",
+			api.Sessions)
+	}
+	// The watermark still moves on the device that was not concerned: mail for
+	// somebody else must not be re-examined for ever.
+	if api.MaxEntryID == 0 {
+		t.Error("dev-api's watermark stayed at 0 over an entry that did not concern it")
 	}
 }
 
