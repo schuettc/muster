@@ -22,11 +22,22 @@ import (
 // itself (the full body lives on the thread's entry).
 const replyPreviewWidth = 80
 
-// Daemon owns the listener and the store.
+// Daemon owns the listener and, depending on the mode it was built in, either
+// a local store (Serve/New) or an upstream to forward to (ServeRemote).
+// Exactly one of s and up is set; up != nil IS the mode flag — see remotemode.go.
 type Daemon struct {
 	ln net.Listener
 	s  store.API
 	n  wake.Notifier
+
+	// up, deviceID and the reconcile coalescer are the remote-mode half; all
+	// are zero in local mode, which is what keeps local behaviour identical.
+	up       Upstream
+	deviceID string
+
+	recMu      sync.Mutex
+	recRunning bool
+	recPending bool
 
 	// sessLocks serializes {SessionUnread recompute, tmux option write,
 	// journal} per (socket_path, session_id) tuple (spec §3): a concurrent
@@ -87,7 +98,7 @@ func (d *Daemon) handle(conn net.Conn) {
 			_ = enc.Encode(proto.Response{Error: "bad request: " + err.Error()})
 			continue
 		}
-		_ = enc.Encode(d.Dispatch(req))
+		_ = enc.Encode(d.serve(req))
 	}
 }
 
@@ -192,7 +203,11 @@ func (d *Daemon) handleRegisterAgent(a map[string]any) proto.Response {
 		Alias: alias, Role: str(a, "role"), ModelType: str(a, "model_type"),
 		SocketPath: str(a, "socket_path"), PaneID: str(a, "pane_id"), SessionName: str(a, "session_name"),
 		SessionID: str(a, "session_id"), SessionCreated: i64(a, "session_created"),
-		Project: str(a, "project"), Label: str(a, "label"), LabelManual: boolArg(a, "label_manual"),
+		// device_id is stamped by the forwarding daemon in remote mode (see
+		// remotemode.go) and absent from every local client's args, so local
+		// mode records "" exactly as it did before this column existed.
+		DeviceID: str(a, "device_id"),
+		Project:  str(a, "project"), Label: str(a, "label"), LabelManual: boolArg(a, "label_manual"),
 	}
 
 	var mu *sync.Mutex
@@ -236,7 +251,8 @@ func (d *Daemon) handleRegisterAgent(a map[string]any) proto.Response {
 
 // setSessionBadge is the ONE canonical {recompute, push} sequence for a
 // session's tmux badge (spec §3): under the session's lock, recompute the
-// total unread via store.SessionUnread (never sum per-alias UnreadCount —
+// total unread via d.sessionUnread — the local store's SessionUnread in local
+// mode, the same op upstream in remote mode (never sum per-alias UnreadCount —
 // that double-counts threads shared by sibling aliases), then push it to the
 // notifier — Notify(total) when total > 0, Clear otherwise. Both notify's
 // fan-out and get_inbox's drain funnel through this so a concurrent pair
@@ -247,7 +263,7 @@ func (d *Daemon) setSessionBadge(socketPath, sessionID string) (total int, err e
 	mu := d.sessionLock(socketPath, sessionID)
 	mu.Lock()
 	defer mu.Unlock()
-	total, _, err = d.s.SessionUnread(socketPath, sessionID)
+	total, err = d.sessionUnread(socketPath, sessionID)
 	if err != nil {
 		return 0, err
 	}
@@ -284,6 +300,14 @@ func (d *Daemon) sessionAliasesFor(socketPath, sessionID string) ([]string, erro
 	if err != nil {
 		return nil, err
 	}
+	return liveAliasesFor(agents, socketPath, sessionID), nil
+}
+
+// liveAliasesFor is sessionAliasesFor's filter over a roster already in hand —
+// the one place the "live aliases of this session tuple" rule is written, so
+// the local path (which reads the roster from the store) and the remote one
+// (which reads it upstream) cannot disagree about who the badge advertises.
+func liveAliasesFor(agents []store.Agent, socketPath, sessionID string) []string {
 	aliases := []string{}
 	for _, ag := range agents {
 		if ag.SocketPath == socketPath && ag.SessionID == sessionID && !ag.Departed {
@@ -291,7 +315,7 @@ func (d *Daemon) sessionAliasesFor(socketPath, sessionID string) ([]string, erro
 		}
 	}
 	sort.Strings(aliases)
-	return compactStrings(aliases), nil
+	return compactStrings(aliases)
 }
 
 // pushSessionAgents recomputes and pushes the agent badge under the session's
@@ -306,6 +330,20 @@ func (d *Daemon) pushSessionAgents(socketPath, sessionID string) {
 	if err != nil {
 		return
 	}
+	_ = d.n.SetAgents(socketPath, sessionID, aliases)
+}
+
+// pushAgentBadge writes an already-computed alias list to the agent badge
+// under the session's lock — remote mode's counterpart to pushSessionAgents,
+// which recomputes inside the lock. It reads its roster once per reconcile
+// rather than once per session, so the recompute cannot sit inside the
+// per-session lock; ReconcileLocalSessions' coalescer is what keeps two
+// reconciles from interleaving a stale roster over a fresh one (see
+// triggerReconcile).
+func (d *Daemon) pushAgentBadge(socketPath, sessionID string, aliases []string) {
+	mu := d.sessionLock(socketPath, sessionID)
+	mu.Lock()
+	defer mu.Unlock()
 	_ = d.n.SetAgents(socketPath, sessionID, aliases)
 }
 

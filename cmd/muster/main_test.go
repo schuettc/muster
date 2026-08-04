@@ -162,6 +162,68 @@ func TestLambdaWithoutBuildTagExplainsItself(t *testing.T) {
 	}
 }
 
+// runEnv is run with extra environment variables, for the backend-selection
+// tests below. Each entry is "KEY=value".
+func runEnv(t *testing.T, env []string, args ...string) (stdout, stderr string, code int) {
+	t.Helper()
+	cmd := exec.Command(builtBinary(t), args...)
+	cmd.Env = append(os.Environ(), env...)
+	var outBuf, errBuf bytes.Buffer
+	cmd.Stdout = &outBuf
+	cmd.Stderr = &errBuf
+	err := cmd.Run()
+	if err != nil {
+		exitErr, ok := err.(*exec.ExitError)
+		if !ok {
+			t.Fatalf("running %v: %v", args, err)
+		}
+		code = exitErr.ExitCode()
+	}
+	return outBuf.String(), errBuf.String(), code
+}
+
+// TestUnknownBackendIsAnErrorNotAFallback: a typo in MUSTER_BACKEND must stop
+// the daemon. Falling back to local would strand the device on a private bus
+// while every other device talked to the hosted one, and nothing would say so.
+func TestUnknownBackendIsAnErrorNotAFallback(t *testing.T) {
+	_, errOut, code := runEnv(t, []string{"MUSTER_HOME=" + t.TempDir(), "MUSTER_BACKEND=hosted"}, "serve")
+	if code == 0 {
+		t.Fatal("an unknown backend must not start the daemon")
+	}
+	if !strings.Contains(errOut, "unknown MUSTER_BACKEND") {
+		t.Errorf("stderr = %q, want it to name the unknown backend", errOut)
+	}
+}
+
+// TestRemoteBackendRequiresItsURL: remote mode with no endpoint has nowhere to
+// forward to, and must say which variable is missing rather than start and
+// fail on the first op.
+func TestRemoteBackendRequiresItsURL(t *testing.T) {
+	_, errOut, code := runEnv(t, []string{"MUSTER_HOME=" + t.TempDir(), "MUSTER_BACKEND=remote"}, "serve")
+	if code == 0 {
+		t.Fatal("remote mode without a URL must not start the daemon")
+	}
+	if !strings.Contains(errOut, "MUSTER_REMOTE_URL") {
+		t.Errorf("stderr = %q, want it to name MUSTER_REMOTE_URL", errOut)
+	}
+}
+
+// TestRemoteBackendRequiresItsToken: the URL alone is not enough, and the
+// missing-token message has to name the file the operator must write.
+func TestRemoteBackendRequiresItsToken(t *testing.T) {
+	_, errOut, code := runEnv(t, []string{
+		"MUSTER_HOME=" + t.TempDir(),
+		"MUSTER_BACKEND=remote",
+		"MUSTER_REMOTE_URL=https://example.invalid/",
+	}, "serve")
+	if code == 0 {
+		t.Fatal("remote mode without a token must not start the daemon")
+	}
+	if !strings.Contains(errOut, "remote-token") {
+		t.Errorf("stderr = %q, want it to name the token file", errOut)
+	}
+}
+
 func TestDebugMissingOpStillExitsNonzero(t *testing.T) {
 	// Sanity check that fixing debug's -h handling didn't disturb its
 	// existing "no args" error path.

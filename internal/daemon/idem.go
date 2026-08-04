@@ -59,6 +59,38 @@ func IsRetryableIdemError(respErr string) bool {
 	return strings.HasPrefix(respErr, idemRetryPrefix)
 }
 
+// idemNewKeyPrefix marks the idempotency outcomes whose write MAY OR MAY NOT
+// have executed: the claim errored (it may have committed with its
+// acknowledgement lost), or the recorded response is corrupt (the op ran, but
+// what it answered is unrecoverable). Both are unknown rather than failed —
+// the client learns nothing about whether its state changed.
+//
+// The same key can never answer either of them (a same-key retry reads the
+// orphaned or unreadable record and sits wedged until its TTL), so the only
+// reissue available is under a NEW key. Whether reissuing is SAFE is a
+// separate question and an op-specific one — under a corrupt record the write
+// provably ran, so a reissue duplicates it — which is why nothing below the
+// caller ever reissues on its behalf.
+//
+// Both messages are BUILT from this constant so the predicate below and the
+// strings it classifies cannot drift apart.
+const idemNewKeyPrefix = "idempotency: unknown outcome, reissue under a new key: "
+
+// IsNewKeyReissueError reports whether a Response.Error is one of the
+// unknown-outcome idempotency results described on idemNewKeyPrefix. It is
+// disjoint from IsRetryableIdemError by construction (different prefixes), and
+// the two mean opposite things: that one says retry the SAME key, this one says
+// the same key is dead and the outcome is unknown.
+//
+// It is exported for the same reason IsRetryableIdemError is: internal/daemon
+// owns these strings, and a transport or a forwarding path that re-derived the
+// prefix would be a second copy to keep in sync. lambdamode answers HTTP 200
+// for these (they are NOT same-key retryable), so a remote client sees them as
+// an ordinary failed Response and needs this to tell them apart.
+func IsNewKeyReissueError(respErr string) bool {
+	return strings.HasPrefix(respErr, idemNewKeyPrefix)
+}
+
 // Dispatch executes one request. When req.IdemKey is set on a write op, the op
 // runs AT MOST ONCE: a replay returns the recorded response verbatim, and a
 // collision with an identical request still in flight returns a retryable
@@ -100,14 +132,14 @@ func (d *Daemon) Dispatch(req proto.Request) proto.Response {
 	recorded, done, found, err := d.s.IdemBegin(req.IdemKey)
 	switch {
 	case err != nil:
-		return proto.Response{Error: "idempotency: claim failed, reissue under a new key: " + err.Error()}
+		return proto.Response{Error: idemNewKeyPrefix + "claim failed: " + err.Error()}
 	case found && done:
 		var resp proto.Response
 		// The record is one marshalled proto.Response, so it is never empty
 		// and never anything else; if it does not decode, the client must
 		// reissue under a new key rather than be handed a fabricated answer.
 		if err := json.Unmarshal(recorded, &resp); err != nil {
-			return proto.Response{Error: "idempotency: corrupt record, reissue under a new key: " + err.Error()}
+			return proto.Response{Error: idemNewKeyPrefix + "corrupt record: " + err.Error()}
 		}
 		return resp
 	case found:
