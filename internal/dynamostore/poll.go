@@ -61,14 +61,40 @@ import (
 // nothing to wake it for during the window when only the first entry exists.
 // By the time a peer replies, the metadata item is long since indexed.
 //
-// What is NOT closed by this: DevicePoll only names the session. The daemon
-// then recomputes its badge through SessionUnread (ReconcileLocalSessions),
-// which reads gsi1 unavoidably, so a reconcile that lands inside the same skew
-// window computes zero unread and leaves the badge dark with the watermark
-// already past. That window is narrower — it opens after this poll's read and
-// closes on the next reconcile, which the poller runs again on the next tick
-// that sees mail — but it is real, and closing it means SessionUnread
-// answering without gsi1, not a change here.
+// # What is NOT closed by this, and is NOT self-healing
+//
+// DevicePoll only NAMES the session. The daemon then recomputes that session's
+// badge through SessionUnread (daemon.reconcileSessions -> setSessionBadge),
+// which reads gsi1 unavoidably — both the thread's metadata item and the entry
+// have to have replicated there for the count to be right. So a reconcile that
+// lands while gsi1 is still behind counts zero, and setSessionBadge on zero
+// does not merely leave the badge dark: it calls Notify's Clear. The watermark
+// is already past the entry by then, so this poll will not name that session
+// for it again.
+//
+// Nothing recovers that on its own. daemon.pollLoop reconciles only when a tick
+// returns a non-empty Sessions list, and the only other reconcile trigger is a
+// badge-moving write made ON THIS DEVICE (daemon.forward's triggerReconcile).
+// So the badge relights only if more mail happens to arrive or the operator
+// happens to write something — and the case this whole section is about, a
+// cross-device handoff into an otherwise idle device whose sender is blocking
+// on the reply, is precisely the case where neither happens. Do not describe
+// this as "late": for that operator it is permanent.
+//
+// It is a much narrower window than the one above — it opens when this poll
+// reads gsi2 and has to still be open one Lambda response plus one device
+// round trip later, rather than any time after the transaction commits — but
+// narrow is an empirical claim about replication speed, and DynamoDB bounds
+// GSI lag at nothing at all. Treat it as a real hole, not a rounding error.
+//
+// Closing it is not a change here. The candidates, cheapest first: have the
+// poller distrust a zero (DevicePoll asserted this session has mail, so a
+// SessionUnread of zero is a contradiction, and the session should be
+// re-reconciled on the next tick regardless of the watermark); or have
+// DevicePoll answer with the unread counts it can already derive from the
+// entries it holds, which removes the second read entirely but has to
+// reproduce SessionUnread's per-alias watermarks, sibling exclusion and action
+// counts to do it.
 func (s *Store) DevicePoll(deviceID string, sinceEntryID int64) (store.DevicePollResult, error) {
 	ctx := backgroundCtx()
 	out := store.DevicePollResult{MaxEntryID: sinceEntryID, Sessions: []store.SessionRef{}}
