@@ -110,8 +110,22 @@ func (s *Store) DevicePoll(deviceID string, sinceEntryID int64) (store.DevicePol
 // writer that dies (or exhausts appendMaxRetries, or fails its condition) burns
 // its id permanently, and a watermark that refuses to pass any hole would then
 // re-scan the whole entry log on every tick, for ever. The floor is what makes
-// that self-healing: the watermark steps over a hole once pollOverlap later ids
-// are visible above it, and contiguity resumes from there.
+// that self-healing: the watermark steps over a hole once the HIGHEST id seen
+// is more than pollOverlap above it, and contiguity resumes from there.
+//
+// Say that precisely, because the looser phrasing ("once pollOverlap later ids
+// are visible") states a stronger property than the code implements and this
+// file exists because of a comment that did exactly that. The floor keys off
+// max(seen), not off how many ids between the hole and the max were actually
+// returned — so a poll that saw ONLY id 1000 with since=0 would floor at 936
+// and skip 1..936 having never reported them. What rules that out is not the
+// rule below but a fact about the id space: nextID keeps a PER-NAME counter
+// (agents.go), the "entry" counter is drawn only by CreateThread's opener,
+// AppendEntry and ClaimTask, threads and events use their own, and no path
+// ever deletes an entry item. Entry ids are therefore dense, so a run that
+// wide being invisible at once cannot happen. If the entry id space ever stops
+// being dense — a delete path, a shared counter, a reserved block — this floor
+// stops being safe and the contiguity rule has to carry the whole weight.
 //
 // 64 is chosen from what has to fit inside it: every entry allocated-and-
 // committed while one earlier allocation is still in flight. An in-flight
