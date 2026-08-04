@@ -215,18 +215,33 @@ func Open(ctx context.Context, table string) (*Store, error) {
 	return s, nil
 }
 
-// EnsureTable creates the table and its indexes if absent, then waits for it
-// to become ACTIVE. It is idempotent: an existing table is left alone.
+// EnsureTable creates the table and its indexes if absent, waits for it to
+// become ACTIVE, and makes sure TTL is enabled on the `ttl` attribute. It is
+// idempotent, and that includes the TTL: an existing table is checked, not
+// assumed.
+//
+// The check is not decoration. PruneEvents is a no-op on this backend BECAUSE
+// TTL reaps events, and that precondition has to be true of every table this
+// Store opens, not just the ones it created. Against a table created by hand,
+// by CloudFormation, or by an older build of this package, AppendEvent would
+// keep stamping `ttl`, nothing would reap it, and PruneEvents would keep
+// reporting (0, nil) — an unbounded journal with no error anywhere to say so.
 func (s *Store) EnsureTable(ctx context.Context) error {
 	exists, err := s.TableExists(ctx)
 	if err != nil {
 		return err
 	}
-	if exists {
-		return nil
+	if !exists {
+		if err := s.createTable(ctx); err != nil {
+			return err
+		}
 	}
+	return s.ensureTTL(ctx)
+}
 
-	_, err = s.c.CreateTable(ctx, &dynamodb.CreateTableInput{
+// createTable creates the table and its indexes and waits for it to go ACTIVE.
+func (s *Store) createTable(ctx context.Context) error {
+	_, err := s.c.CreateTable(ctx, &dynamodb.CreateTableInput{
 		TableName:   aws.String(s.table),
 		BillingMode: types.BillingModePayPerRequest,
 		AttributeDefinitions: []types.AttributeDefinition{
@@ -247,12 +262,13 @@ func (s *Store) EnsureTable(ctx context.Context) error {
 		},
 	})
 	if err != nil {
-		// A concurrent Open won the race; that is success, not failure.
+		// A concurrent Open won the race; that is success, not failure — but
+		// still fall through to the waiter, because the winner may not have
+		// finished creating it and the caller is about to write to it.
 		var inUse *types.ResourceInUseException
-		if errors.As(err, &inUse) {
-			return nil
+		if !errors.As(err, &inUse) {
+			return fmt.Errorf("dynamostore: create table %q: %w", s.table, err)
 		}
-		return fmt.Errorf("dynamostore: create table %q: %w", s.table, err)
 	}
 
 	if err := dynamodb.NewTableExistsWaiter(s.c).Wait(ctx,
@@ -260,13 +276,52 @@ func (s *Store) EnsureTable(ctx context.Context) error {
 		2*time.Minute); err != nil {
 		return fmt.Errorf("dynamostore: wait for table %q: %w", s.table, err)
 	}
+	return nil
+}
+
+// ttlAttr is the attribute DynamoDB's native TTL expires items on. AppendEvent
+// stamps it; ensureTTL is what makes the service honour it.
+const ttlAttr = "ttl"
+
+// ensureTTL turns TTL on for ttlAttr unless it is already on.
+//
+// The DescribeTimeToLive is required, not an optimization: UpdateTimeToLive
+// with Enabled=true against a table where TTL is ALREADY enabled is a
+// ValidationException, not a no-op, so calling it unconditionally would make
+// every Open after the first fail. Describe-then-update is what makes this
+// idempotent.
+//
+// A table whose TTL is enabled on some OTHER attribute is a hard error rather
+// than something to silently re-point (switching attributes requires disabling
+// TTL first, and DynamoDB rate-limits that to roughly one change per hour).
+// Failing at Open is the honest outcome: the alternative is a bus that runs
+// with a journal nothing reaps and no signal that anything is wrong.
+func (s *Store) ensureTTL(ctx context.Context) error {
+	out, err := s.c.DescribeTimeToLive(ctx, &dynamodb.DescribeTimeToLiveInput{
+		TableName: aws.String(s.table),
+	})
+	if err != nil {
+		return fmt.Errorf("dynamostore: describe ttl on %q: %w", s.table, err)
+	}
+	if d := out.TimeToLiveDescription; d != nil {
+		switch d.TimeToLiveStatus {
+		case types.TimeToLiveStatusEnabled, types.TimeToLiveStatusEnabling:
+			if name := aws.ToString(d.AttributeName); name != "" && name != ttlAttr {
+				return fmt.Errorf(
+					"dynamostore: table %q has ttl enabled on %q, not %q — "+
+						"events would never expire; disable ttl on that table and reopen",
+					s.table, name, ttlAttr)
+			}
+			return nil
+		}
+	}
 
 	// TTL is how events expire on this backend — it supersedes PruneEvents,
 	// which the SQLite backend still needs.
 	if _, err := s.c.UpdateTimeToLive(ctx, &dynamodb.UpdateTimeToLiveInput{
 		TableName: aws.String(s.table),
 		TimeToLiveSpecification: &types.TimeToLiveSpecification{
-			AttributeName: aws.String("ttl"),
+			AttributeName: aws.String(ttlAttr),
 			Enabled:       aws.Bool(true),
 		},
 	}); err != nil {

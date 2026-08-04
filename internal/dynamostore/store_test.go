@@ -6,6 +6,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+
 	"github.com/schuettc/muster/internal/store"
 )
 
@@ -15,7 +19,13 @@ import (
 // The skip is deliberate rather than a failure: `just verify` is the gate CI
 // and every developer runs, and it must stay fast and free of a container
 // dependency. `just verify-dynamo` is the recipe that guarantees the endpoint
-// is up, and CI runs these against a DynamoDB Local service container.
+// is up.
+//
+// Nothing in CI runs these today — `just verify` compiles and vets them and
+// then skips every one. Task 9 adds the CI job that stands a DynamoDB Local
+// service container up; until it lands, the only thing exercising this
+// backend's real semantics is a developer running `just verify-dynamo` by
+// hand, so a green CI run is NOT evidence that these passed.
 func newTestStore(t *testing.T) *Store {
 	t.Helper()
 	if os.Getenv(EndpointEnv) == "" {
@@ -80,6 +90,99 @@ func TestEnsureTableIsIdempotent(t *testing.T) {
 	// than a ResourceInUseException surfacing to the caller.
 	if err := s.EnsureTable(context.Background()); err != nil {
 		t.Fatalf("second EnsureTable: %v", err)
+	}
+}
+
+// TestEnsureTableEnablesTTLOnAPreexistingTable is the guard under PruneEvents'
+// no-op. That no-op is only honest while DynamoDB's native TTL is actually
+// reaping events, and EnsureTable used to return early the moment the table
+// existed — so a table created by hand, by CloudFormation, or by an older
+// build got its events stamped with a `ttl` nothing honoured and PruneEvents
+// still reported (0, nil). The journal grew without bound and nothing said so.
+//
+// The second EnsureTable is not padding: UpdateTimeToLive against an
+// already-enabled table is a ValidationException, not a no-op, so a check-free
+// version of this fix would break every Open after the first.
+func TestEnsureTableEnablesTTLOnAPreexistingTable(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	// A table that exists with no TTL: exactly what createTable leaves behind
+	// before ensureTTL runs.
+	pre := &Store{c: s.c, table: s.table + "-pre", writer: s.writer, eventTTL: s.eventTTL}
+	if err := pre.createTable(ctx); err != nil {
+		t.Fatalf("createTable: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := pre.DropTable(ctx); err != nil {
+			t.Errorf("DropTable: %v", err)
+		}
+	})
+	if st := ttlStatus(t, pre); st == types.TimeToLiveStatusEnabled {
+		t.Fatalf("createTable must not enable ttl on its own; status = %s", st)
+	}
+
+	if err := pre.EnsureTable(ctx); err != nil {
+		t.Fatalf("EnsureTable over a pre-existing table: %v", err)
+	}
+	if st := ttlStatus(t, pre); st != types.TimeToLiveStatusEnabled {
+		t.Fatalf("ttl status = %s, want ENABLED — PruneEvents' no-op rests on this", st)
+	}
+	if err := pre.EnsureTable(ctx); err != nil {
+		t.Fatalf("EnsureTable must stay idempotent once ttl is on: %v", err)
+	}
+	if st := ttlStatus(t, pre); st != types.TimeToLiveStatusEnabled {
+		t.Fatalf("ttl status after the second EnsureTable = %s, want ENABLED", st)
+	}
+}
+
+func ttlStatus(t *testing.T, s *Store) types.TimeToLiveStatus {
+	t.Helper()
+	out, err := s.c.DescribeTimeToLive(context.Background(),
+		&dynamodb.DescribeTimeToLiveInput{TableName: &s.table})
+	if err != nil {
+		t.Fatalf("DescribeTimeToLive: %v", err)
+	}
+	if out.TimeToLiveDescription == nil {
+		return ""
+	}
+	return out.TimeToLiveDescription.TimeToLiveStatus
+}
+
+// TestEnsureTableRejectsTTLOnAnotherAttribute pins the one case ensureTTL
+// refuses rather than repairs: TTL already on, but expiring some other
+// attribute. Re-pointing it needs a disable first and DynamoDB rate-limits
+// that change, so opening anyway would mean running a bus whose journal
+// nothing reaps — with PruneEvents cheerfully reporting 0.
+func TestEnsureTableRejectsTTLOnAnotherAttribute(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	other := &Store{c: s.c, table: s.table + "-other", writer: s.writer, eventTTL: s.eventTTL}
+	if err := other.createTable(ctx); err != nil {
+		t.Fatalf("createTable: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := other.DropTable(ctx); err != nil {
+			t.Errorf("DropTable: %v", err)
+		}
+	})
+	if _, err := s.c.UpdateTimeToLive(ctx, &dynamodb.UpdateTimeToLiveInput{
+		TableName: &other.table,
+		TimeToLiveSpecification: &types.TimeToLiveSpecification{
+			AttributeName: aws.String("expires_at"),
+			Enabled:       aws.Bool(true),
+		},
+	}); err != nil {
+		t.Fatalf("seed ttl on the wrong attribute: %v", err)
+	}
+
+	err := other.EnsureTable(ctx)
+	if err == nil {
+		t.Fatal("EnsureTable must refuse a table whose ttl expires another attribute")
+	}
+	if !strings.Contains(err.Error(), "expires_at") {
+		t.Fatalf("the error should name the offending attribute, got: %v", err)
 	}
 }
 

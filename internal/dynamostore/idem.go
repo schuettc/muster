@@ -59,7 +59,7 @@ func idemKey(key string) map[string]types.AttributeValue {
 // read could return no item at all for a record DynamoDB has just told us
 // exists, and there is no answer to give from that state that is not wrong.
 //
-// The `claim` attribute closes a hazard the SQLite backend does not have. A
+// The `claim` attribute NARROWS a hazard the SQLite backend does not have. A
 // conditional PutItem is NOT idempotent under retry and, unlike
 // TransactWriteItems, it takes no ClientRequestToken — so when the write
 // COMMITS and the acknowledgement is lost, the SDK's own retry re-evaluates
@@ -72,10 +72,34 @@ func idemKey(key string) map[string]types.AttributeValue {
 // commit — and hands the claim back. It must be per call, not per Store: a
 // genuine redelivery to the same process has to see found=true.
 //
+// # The token narrows that hazard, it does not close it
+//
+// The token only helps when the SDK's retry REACHES the service and is told
+// ConditionalCheckFailed. If the write commits and the SDK then exhausts its
+// retries against a transport failure, isConditionFailed is false and this
+// returns an error — leaving a pending record stamped with a token no live
+// caller holds. Every later IdemBegin on that key mints a FRESH token, so it
+// matches neither the claim arm nor idemDone and falls through to
+// found=true, done=false. The 24-hour wedge, one level up.
+//
+// So, for callers: AN IdemBegin THAT RETURNS AN ERROR MAY HAVE POISONED THAT
+// KEY FOR UP TO idemTTL. An error is not "not claimed" and it is not "claimed"
+// — it is unknown. Do not blindly re-issue the same key and read the resulting
+// in-flight answer as a live peer executing the op; it may be this call's own
+// orphaned record, and no amount of retrying will clear it before the TTL
+// does. Surface the error to the client so it can retry under a NEW
+// idempotency key.
+//
+// That is the deliberate trade and it should stay. The only alternative — read
+// an unrecognised pending record as claimable — hands a second caller the
+// claim for an op that may still be running, which is the double execution
+// this record exists to prevent. A wedged key is a stuck request the client
+// can see and reissue; a double execution is silent and irreversible.
+//
 // A record that has genuinely vanished between the two calls — the TTL reaped
-// it in the gap — reports in-flight rather than claimable. Reporting it
-// claimable would let this caller execute an op that may still be running.
-// A retry claims it cleanly, and the SQLite backend answers the same way.
+// it in the gap — reports in-flight rather than claimable, for the same
+// reason. A retry claims it cleanly, and the SQLite backend answers the same
+// way.
 func (s *Store) IdemBegin(key string) (resp []byte, done bool, found bool, err error) {
 	ctx := backgroundCtx()
 	now := clock.NowMillis()

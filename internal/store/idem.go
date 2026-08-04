@@ -63,8 +63,16 @@ ON CONFLICT(key) DO NOTHING`, key, idemPending, clock.NowMillis())
 }
 
 // IdemComplete records resp as key's response and marks the record done, so a
-// redelivery replays it. An unknown key is a no-op: only the caller that won
-// the claim may complete it, and the UPDATE simply matches no rows otherwise.
+// redelivery replays it. An unknown key is a no-op: the UPDATE simply matches
+// no rows.
+//
+// Completing is NOT owner-checked. The record carries no owner on either
+// backend, so any caller holding the key can record a response over a claim it
+// did not win — this only guards against completing a key that was never
+// claimed at all. That is a property of the primitive rather than a divergence
+// (the DynamoDB backend's attribute_exists(pk) condition is exactly as
+// permissive), and what keeps a key to one execution is IdemBegin's claim, not
+// this call.
 func (s *Store) IdemComplete(key string, resp []byte) error {
 	_, err := s.db.Exec(`UPDATE idem SET state=?, resp=? WHERE key=?`, idemDone, resp, key)
 	return err

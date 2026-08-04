@@ -184,6 +184,32 @@ func eventConcerns(e store.Event, alias string, concerning map[int64]bool) bool 
 // concerning-thread set, which is itself the result of several queries. That
 // arm runs in memory (eventConcerns) over the same canonical concerns() set
 // Inbox uses.
+//
+// # A follow poll can permanently SKIP an event
+//
+// The query reads gsi2, which is eventually consistent and carries no
+// cross-item ordering guarantee — a global secondary index cannot be read
+// strongly consistent at any price, so this is not a knob that was left
+// unturned. If events 6 and 7 are written in that order but 7 replicates into
+// the index first, a follow poll with AfterID=5 returns 7 and not 6. The
+// caller advances its watermark to 7, the follow bound is strict (gsi2sk >
+// :after), and 6 is never returned again. Not delayed — lost.
+//
+// This is the same defect class MaxEventID deliberately avoids by reading the
+// journal instead of the counter, reintroduced one level down through the
+// query itself. It is accepted rather than fixed: the journal is
+// observability only — station's live feed — the cost is a missing line in a
+// feed, and every repair costs durable in-flight state plus its own
+// crash-recovery story for a surface where AppendEvent is already best-effort.
+// A reader who needs completeness should re-read as a BACKLOG query, which is
+// bounded by newest-first order rather than by a watermark it has already
+// advanced past.
+//
+// It is a REAL DIVERGENCE from the SQLite backend, not a limitation the two
+// share. There ids come from AUTOINCREMENT inside the inserting transaction,
+// over the single connection store.Open pins, so a follow read cannot see a
+// gap it will then skip past. A conformance suite must NOT assert that
+// successive follow polls return every event that was written.
 func (s *Store) Events(q store.EventQuery) ([]store.Event, error) {
 	if q.AfterID < 0 || q.ThreadID < 0 {
 		return nil, fmt.Errorf("negative id in event query")
@@ -404,7 +430,9 @@ func (s *Store) MaxEventID() (int64, error) {
 // PruneEvents is a deliberate no-op on this backend and always returns (0, nil).
 //
 // It is not unimplemented and it is not a stub. Event expiry here is DynamoDB's
-// NATIVE TTL: EnsureTable enables TTL on the `ttl` attribute, AppendEvent
+// NATIVE TTL: EnsureTable enables TTL on the `ttl` attribute — and verifies it
+// on a table it did not create, so this no-op's precondition is checked at
+// Open rather than assumed — AppendEvent
 // stamps every item with now + the EventRetentionEnv window, and the service
 // deletes expired items itself at no write cost. Issuing deletes from here
 // would duplicate that at full write-capacity price, and a cutoff-driven scan

@@ -1439,7 +1439,44 @@ func TestDynamoConformance(t *testing.T) {
 }
 ```
 
-- [ ] **Step 3: Run both**
+- [ ] **Step 3: Add the DynamoDB CI job — MOVED HERE FROM TASK 15**
+
+**Why this moved:** Task 8's review found that `ci.yml` runs only `just verify`,
+which excludes `verify-dynamo`, so **no DynamoDB test has ever run in CI**. By
+Task 8 that was already 18 endpoint-backed tests with zero automated coverage,
+including the exactly-one concurrency proof for the idempotency contract Task 10
+builds on. Leaving this until Task 15 means five more tasks land hand-verified
+only. It belongs with the conformance suite regardless.
+
+Add to `.github/workflows/ci.yml`, as a job **separate** from the `just verify`
+gate:
+
+```yaml
+  dynamo:
+    runs-on: ubuntu-latest
+    services:
+      dynamodb:
+        image: amazon/dynamodb-local
+        ports: ['8000:8000']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version-file: go.mod }
+      - run: MUSTER_DDB_ENDPOINT=http://localhost:8000 go test -race ./internal/dynamostore/... ./internal/storetest/...
+```
+
+`just verify` stays the required gate and stays container-free. This job is
+additional coverage, not a replacement.
+
+Also restore `./internal/storetest/...` to the `verify-dynamo` recipe in the
+`justfile` — Task 4 scoped it to `dynamostore` only because `storetest` did not
+exist yet, and this task creates it.
+
+And fix the stale claim in `internal/dynamostore/store_test.go`: its doc comment
+says CI runs these against a DynamoDB Local service container, which was untrue
+from Task 4 until this step. Make it true, or make it say what is.
+
+- [ ] **Step 4: Run both**
 
 Run: `just verify` — SQLite conformance passes, Dynamo skips.
 Run: `just verify-dynamo` — both pass.
