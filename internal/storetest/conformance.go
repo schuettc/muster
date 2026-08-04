@@ -69,8 +69,10 @@ var cases = []conformanceCase{
 	{"DepartAgentTombstonesPreservingFields", testDepartAgentTombstone},
 	{"SetSessionLabelMovesSiblingsTogether", testSetSessionLabel},
 	{"SetSessionLabelNoOpsOnEmptyTuple", testSetSessionLabelEmptyTuple},
+	{"SetSessionLabelSparesACollidingDevice", testSetSessionLabelDeviceCollision},
 	{"DepartStaleSiblingsGhostGuard", testDepartStaleSiblings},
 	{"DepartStaleSiblingsNoOpsOnEmptyTuple", testDepartStaleSiblingsEmptyTuple},
+	{"DepartStaleSiblingsSparesACollidingDevice", testDepartStaleSiblingsDeviceCollision},
 
 	// Threads and entries.
 	{"CreateThreadAndGetThread", testCreateThread},
@@ -105,6 +107,14 @@ var cases = []conformanceCase{
 	{"SessionUnreadActionCount", testSessionUnreadAction},
 	{"SessionUnreadUsesPerAliasWatermark", testSessionUnreadPerAliasWatermark},
 	{"SessionUnreadEmptyTupleNeverGroups", testSessionUnreadEmptyTuple},
+	{"SessionUnreadSeparatesCollidingDevices", testSessionUnreadDeviceCollision},
+
+	// Device poll.
+	{"DevicePollFindsNewMail", testDevicePollFindsNewMail},
+	{"DevicePollIgnoresOtherDevices", testDevicePollIgnoresOtherDevices},
+	{"DevicePollWakesAnOriginator", testDevicePollWakesOriginator},
+	{"DevicePollWatermarkAdvancesPastUnrelatedMail", testDevicePollWatermarkAdvances},
+	{"DevicePollSkipsDepartedAndTuplelessAgents", testDevicePollSkipsUnbadgeable},
 
 	// Tasks.
 	{"ClaimTaskSucceedsOnceThenFails", testClaimOnce},
@@ -378,7 +388,7 @@ func testSetSessionLabel(t *testing.T, s store.API) {
 		t.Fatalf("DepartAgent: %v", err)
 	}
 
-	n, err := s.SetSessionLabel(sock, sess, "backend", true)
+	n, err := s.SetSessionLabel("", sock, sess, "backend", true)
 	if err != nil {
 		t.Fatalf("SetSessionLabel: %v", err)
 	}
@@ -400,7 +410,7 @@ func testSetSessionLabel(t *testing.T, s store.API) {
 
 func testSetSessionLabelEmptyTuple(t *testing.T, s store.API) {
 	for _, tc := range []struct{ sock, sess string }{{"", "$1"}, {"/tmp/s", ""}, {"", ""}} {
-		n, err := s.SetSessionLabel(tc.sock, tc.sess, "x", true)
+		n, err := s.SetSessionLabel("", tc.sock, tc.sess, "x", true)
 		if err != nil {
 			t.Fatalf("SetSessionLabel(%q,%q): %v", tc.sock, tc.sess, err)
 		}
@@ -433,7 +443,7 @@ func testDepartStaleSiblings(t *testing.T, s store.API) {
 		Alias: "elsewhere", SocketPath: sock, SessionID: "$2", SessionCreated: 1700000000,
 	})
 
-	stale, err := s.DepartStaleSiblings(sock, sess, nowCreated, "keeper")
+	stale, err := s.DepartStaleSiblings("", sock, sess, nowCreated, "keeper")
 	if err != nil {
 		t.Fatalf("DepartStaleSiblings: %v", err)
 	}
@@ -456,7 +466,7 @@ func testDepartStaleSiblingsEmptyTuple(t *testing.T, s store.API) {
 		sock, sess string
 		created    int64
 	}{{"", "$1", 1}, {"/tmp/s", "", 1}, {"/tmp/s", "$1", 0}} {
-		got, err := s.DepartStaleSiblings(tc.sock, tc.sess, tc.created, "keeper")
+		got, err := s.DepartStaleSiblings("", tc.sock, tc.sess, tc.created, "keeper")
 		if err != nil {
 			t.Fatalf("DepartStaleSiblings(%q,%q,%d): %v", tc.sock, tc.sess, tc.created, err)
 		}
@@ -464,6 +474,62 @@ func testDepartStaleSiblingsEmptyTuple(t *testing.T, s store.API) {
 			t.Errorf("DepartStaleSiblings(%q,%q,%d) = %v, want none",
 				tc.sock, tc.sess, tc.created, got)
 		}
+	}
+}
+
+// testSetSessionLabelDeviceCollision: a label is a session-level property of a
+// session on ONE machine. Two devices sharing the identical tuple (the default
+// tmux socket plus $1, which every first-user macOS laptop produces) must not
+// relabel each other — a label IS an address, so a stray relabel readdresses a
+// peer's agent.
+func testSetSessionLabelDeviceCollision(t *testing.T, s store.API) {
+	const sock, sess = "/private/tmp/tmux-501/default", "$1"
+	mustRegister(t, s, store.Agent{Alias: "mine", DeviceID: "dev-a", SocketPath: sock, SessionID: sess})
+	mustRegister(t, s, store.Agent{Alias: "theirs", DeviceID: "dev-b", SocketPath: sock, SessionID: sess})
+
+	n, err := s.SetSessionLabel("dev-a", sock, sess, "backend", true)
+	if err != nil {
+		t.Fatalf("SetSessionLabel: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("labelled %d rows, want 1 — the colliding tuple on dev-b is another machine's session", n)
+	}
+	got, _, err := s.GetAgent("theirs")
+	if err != nil {
+		t.Fatalf("GetAgent theirs: %v", err)
+	}
+	if got.Label != "" {
+		t.Errorf("dev-b's agent was relabelled %q by dev-a's set_label", got.Label)
+	}
+}
+
+// testDepartStaleSiblingsDeviceCollision: the ghost reaper's evidence —
+// "another row claims my session id under a different creation time" — is only
+// evidence on MY machine. Two laptops' sessions have unrelated creation times,
+// so without a device dimension registering on one tombstones the other's LIVE
+// agent, which is a destroyed registration rather than a stale badge.
+func testDepartStaleSiblingsDeviceCollision(t *testing.T, s store.API) {
+	const sock, sess = "/private/tmp/tmux-501/default", "$1"
+	mustRegister(t, s, store.Agent{
+		Alias: "mine", DeviceID: "dev-a", SocketPath: sock, SessionID: sess, SessionCreated: 1700000200,
+	})
+	mustRegister(t, s, store.Agent{
+		Alias: "theirs", DeviceID: "dev-b", SocketPath: sock, SessionID: sess, SessionCreated: 1700000000,
+	})
+
+	stale, err := s.DepartStaleSiblings("dev-a", sock, sess, 1700000200, "mine")
+	if err != nil {
+		t.Fatalf("DepartStaleSiblings: %v", err)
+	}
+	if len(stale) != 0 {
+		t.Fatalf("departed %v — a live agent on ANOTHER device is not a ghost of this one", stale)
+	}
+	got, _, err := s.GetAgent("theirs")
+	if err != nil {
+		t.Fatalf("GetAgent theirs: %v", err)
+	}
+	if got.Departed {
+		t.Error("dev-b's live agent was tombstoned by dev-a's registration")
 	}
 }
 
@@ -558,7 +624,7 @@ func testExplicitTaskIntent(t *testing.T, s store.API) {
 	}
 	// The action count keys off the EFFECTIVE intent, not off kind: a task
 	// explicitly marked fyi is unread but is not asking for anything.
-	total, action, err := s.SessionUnread("/s", "$1")
+	total, action, err := s.SessionUnread("", "/s", "$1")
 	if err != nil {
 		t.Fatalf("SessionUnread: %v", err)
 	}
@@ -1027,7 +1093,7 @@ func testSessionUnreadDistinct(t *testing.T, s store.API) {
 		mustRegister(t, s, store.Agent{Alias: alias, SocketPath: "/s", SessionID: "$1"})
 	}
 	mustThread(t, s, store.Thread{Kind: "message", FromAgent: "peer", ToKind: "broadcast"}, "hi all")
-	total, action, err := s.SessionUnread("/s", "$1")
+	total, action, err := s.SessionUnread("", "/s", "$1")
 	if err != nil {
 		t.Fatalf("SessionUnread: %v", err)
 	}
@@ -1046,7 +1112,7 @@ func testSessionUnreadSiblingAuthors(t *testing.T, s store.API) {
 	mustThread(t, s, store.Thread{
 		Kind: "message", FromAgent: "a1", ToKind: "agent", ToTarget: "outsider",
 	}, "hello")
-	total, action, err := s.SessionUnread("/s", "$1")
+	total, action, err := s.SessionUnread("", "/s", "$1")
 	if err != nil {
 		t.Fatalf("SessionUnread: %v", err)
 	}
@@ -1060,7 +1126,7 @@ func testSessionUnreadAction(t *testing.T, s store.API) {
 	mustThread(t, s, store.Thread{
 		Kind: "task", FromAgent: "backend", ToKind: "agent", ToTarget: "worker", Status: "open",
 	}, "please do X")
-	total, action, err := s.SessionUnread("/s", "$1")
+	total, action, err := s.SessionUnread("", "/s", "$1")
 	if err != nil {
 		t.Fatalf("SessionUnread: %v", err)
 	}
@@ -1079,20 +1145,20 @@ func testSessionUnreadPerAliasWatermark(t *testing.T, s store.API) {
 	mustThread(t, s, store.Thread{
 		Kind: "message", FromAgent: "peer", ToKind: "agent", ToTarget: "a1",
 	}, "for a1")
-	if total, _, err := s.SessionUnread("/s", "$1"); err != nil || total != 1 {
+	if total, _, err := s.SessionUnread("", "/s", "$1"); err != nil || total != 1 {
 		t.Fatalf("before any read: total=%d (%v), want 1", total, err)
 	}
 	if err := s.MarkRead("a2"); err != nil {
 		t.Fatalf("MarkRead a2: %v", err)
 	}
-	if total, _, err := s.SessionUnread("/s", "$1"); err != nil || total != 1 {
+	if total, _, err := s.SessionUnread("", "/s", "$1"); err != nil || total != 1 {
 		t.Fatalf("after a sibling's MarkRead: total=%d (%v), want 1 — each alias is judged against its OWN watermark",
 			total, err)
 	}
 	if err := s.MarkRead("a1"); err != nil {
 		t.Fatalf("MarkRead a1: %v", err)
 	}
-	if total, _, err := s.SessionUnread("/s", "$1"); err != nil || total != 0 {
+	if total, _, err := s.SessionUnread("", "/s", "$1"); err != nil || total != 0 {
 		t.Fatalf("after the concerned alias's MarkRead: total=%d (%v), want 0", total, err)
 	}
 }
@@ -1101,7 +1167,7 @@ func testSessionUnreadEmptyTuple(t *testing.T, s store.API) {
 	mustRegister(t, s, store.Agent{Alias: "a1", SocketPath: "", SessionID: ""})
 	mustThread(t, s, store.Thread{Kind: "message", FromAgent: "peer", ToKind: "broadcast"}, "hi")
 	for _, tc := range []struct{ sock, sess string }{{"", ""}, {"", "$1"}, {"/s", ""}} {
-		total, action, err := s.SessionUnread(tc.sock, tc.sess)
+		total, action, err := s.SessionUnread("", tc.sock, tc.sess)
 		if err != nil {
 			t.Fatalf("SessionUnread(%q,%q): %v", tc.sock, tc.sess, err)
 		}
@@ -1109,6 +1175,168 @@ func testSessionUnreadEmptyTuple(t *testing.T, s store.API) {
 			t.Fatalf("SessionUnread(%q,%q) = %d,%d, want 0,0 — an empty tuple is never a group",
 				tc.sock, tc.sess, total, action)
 		}
+	}
+}
+
+// testSessionUnreadDeviceCollision is the two-device milestone in one case.
+// (socket_path, session_id) is NOT device-unique in a shared store: two macOS
+// laptops both run tmux on /private/tmp/tmux-501/default (501 is the default
+// first-user uid) and each numbers its own sessions from $1. Without a device
+// dimension the session's self-exclusion — "entries written by any alias of
+// this session are my own writes" — swallows the REMOTE device's alias, and
+// the receiving device's badge never lights.
+func testSessionUnreadDeviceCollision(t *testing.T, s store.API) {
+	const sock, sess = "/private/tmp/tmux-501/default", "$1"
+	mustRegister(t, s, store.Agent{Alias: "backend", DeviceID: "dev-a", SocketPath: sock, SessionID: sess})
+	mustRegister(t, s, store.Agent{Alias: "frontend", DeviceID: "dev-b", SocketPath: sock, SessionID: sess})
+
+	mustThread(t, s, store.Thread{
+		Kind: "message", FromAgent: "frontend", ToKind: "agent", ToTarget: "backend",
+	}, "ping from the other laptop")
+
+	total, _, err := s.SessionUnread("dev-a", sock, sess)
+	if err != nil {
+		t.Fatalf("SessionUnread(dev-a): %v", err)
+	}
+	if total != 1 {
+		t.Fatalf("dev-a unread = %d, want 1 — the sender is on ANOTHER device, so its write is not dev-a's own", total)
+	}
+
+	// The mirror image, which is what makes the exclusion still an exclusion:
+	// on the sending device the same entry IS its own write.
+	total, _, err = s.SessionUnread("dev-b", sock, sess)
+	if err != nil {
+		t.Fatalf("SessionUnread(dev-b): %v", err)
+	}
+	if total != 0 {
+		t.Fatalf("dev-b unread = %d, want 0 — a session's own write never flags its own badge", total)
+	}
+}
+
+// --- device poll -----------------------------------------------------------
+
+func testDevicePollFindsNewMail(t *testing.T, s store.API) {
+	mustRegister(t, s, store.Agent{
+		Alias: "a2", DeviceID: "dev-1", SocketPath: "/tmp/tmux-501/default", SessionID: "$1",
+	})
+	before, err := s.DevicePoll("dev-1", 0)
+	if err != nil {
+		t.Fatalf("DevicePoll: %v", err)
+	}
+	if len(before.Sessions) != 0 {
+		t.Fatalf("no mail yet, got sessions %+v", before.Sessions)
+	}
+	mustThread(t, s, store.Thread{
+		Kind: "message", FromAgent: "a1", ToKind: "agent", ToTarget: "a2",
+	}, "wake up")
+
+	after, err := s.DevicePoll("dev-1", before.MaxEntryID)
+	if err != nil {
+		t.Fatalf("DevicePoll: %v", err)
+	}
+	if len(after.Sessions) != 1 || after.Sessions[0].SessionID != "$1" {
+		t.Fatalf("sessions = %+v, want one $1", after.Sessions)
+	}
+	if after.MaxEntryID <= before.MaxEntryID {
+		t.Fatalf("watermark did not advance: %d -> %d", before.MaxEntryID, after.MaxEntryID)
+	}
+	// Resuming from the new watermark must be quiet: the same entry is not
+	// mail twice, or every tick would re-reconcile for ever.
+	again, err := s.DevicePoll("dev-1", after.MaxEntryID)
+	if err != nil {
+		t.Fatalf("DevicePoll: %v", err)
+	}
+	if len(again.Sessions) != 0 {
+		t.Fatalf("polling from the new watermark re-reported %+v", again.Sessions)
+	}
+}
+
+func testDevicePollIgnoresOtherDevices(t *testing.T, s store.API) {
+	mustRegister(t, s, store.Agent{
+		Alias: "a2", DeviceID: "dev-1", SocketPath: "/tmp/tmux-501/default", SessionID: "$1",
+	})
+	mustThread(t, s, store.Thread{
+		Kind: "message", FromAgent: "a1", ToKind: "agent", ToTarget: "a2",
+	}, "for dev-1 only")
+
+	got, err := s.DevicePoll("dev-2", 0)
+	if err != nil {
+		t.Fatalf("DevicePoll: %v", err)
+	}
+	if len(got.Sessions) != 0 {
+		t.Fatalf("dev-2 was told to wake for dev-1's mail: %+v", got.Sessions)
+	}
+}
+
+// testDevicePollWakesOriginator pins the four-arm concern predicate: a reply
+// on a thread the local agent ORIGINATED lands in its inbox, so it must light
+// its pane too. A poller that matched only the recipient arm would leave a
+// peer's answer sitting unread in `muster inbox` with the badge dark — and
+// only on the hosted backend, which is the worst kind of divergence.
+func testDevicePollWakesOriginator(t *testing.T, s store.API) {
+	mustRegister(t, s, store.Agent{
+		Alias: "asker", DeviceID: "dev-1", SocketPath: "/tmp/tmux-501/default", SessionID: "$1",
+	})
+	id := mustThread(t, s, store.Thread{
+		Kind: "message", FromAgent: "asker", ToKind: "agent", ToTarget: "answerer",
+	}, "question")
+	mark, err := s.DevicePoll("dev-1", 0)
+	if err != nil {
+		t.Fatalf("DevicePoll: %v", err)
+	}
+	mustAppend(t, s, id, "answerer", "here is the answer", "")
+
+	got, err := s.DevicePoll("dev-1", mark.MaxEntryID)
+	if err != nil {
+		t.Fatalf("DevicePoll: %v", err)
+	}
+	if len(got.Sessions) != 1 || got.Sessions[0].SessionID != "$1" {
+		t.Fatalf("sessions = %+v, want one $1 — a reply on an originated thread concerns its originator", got.Sessions)
+	}
+}
+
+// testDevicePollWatermarkAdvances: mail for somebody else still moves the
+// watermark. If it did not, every tick would re-read the same entries for ever
+// and the poll would never go quiet on a busy bus.
+func testDevicePollWatermarkAdvances(t *testing.T, s store.API) {
+	mustRegister(t, s, store.Agent{
+		Alias: "mine", DeviceID: "dev-1", SocketPath: "/tmp/tmux-501/default", SessionID: "$1",
+	})
+	mustThread(t, s, store.Thread{
+		Kind: "message", FromAgent: "x", ToKind: "agent", ToTarget: "y",
+	}, "not for this device")
+
+	got, err := s.DevicePoll("dev-1", 0)
+	if err != nil {
+		t.Fatalf("DevicePoll: %v", err)
+	}
+	if len(got.Sessions) != 0 {
+		t.Fatalf("sessions = %+v, want none", got.Sessions)
+	}
+	if got.MaxEntryID == 0 {
+		t.Fatal("watermark stayed at 0 over an entry that did not concern this device")
+	}
+}
+
+// testDevicePollSkipsUnbadgeable: a departed agent and an agent with no tmux
+// tuple have no badge anyone is watching, so neither can produce a session to
+// reconcile — the same rule ReconcileLocalSessions applies on the device.
+func testDevicePollSkipsUnbadgeable(t *testing.T, s store.API) {
+	mustRegister(t, s, store.Agent{
+		Alias: "gone", DeviceID: "dev-1", SocketPath: "/tmp/tmux-501/default", SessionID: "$1",
+	})
+	if err := s.DepartAgent("gone"); err != nil {
+		t.Fatalf("DepartAgent: %v", err)
+	}
+	mustRegister(t, s, store.Agent{Alias: "headless", DeviceID: "dev-1"})
+	mustThread(t, s, store.Thread{Kind: "message", FromAgent: "peer", ToKind: "broadcast"}, "hi all")
+
+	got, err := s.DevicePoll("dev-1", 0)
+	if err != nil {
+		t.Fatalf("DevicePoll: %v", err)
+	}
+	if len(got.Sessions) != 0 {
+		t.Fatalf("sessions = %+v, want none — neither agent has a badge to light", got.Sessions)
 	}
 }
 

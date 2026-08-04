@@ -230,7 +230,9 @@ func (s *Store) DeleteAgent(alias string) error {
 // registered to the (socketPath, sessionID) tuple — a label is a
 // session-level property, so sibling aliases move together. Returns how many
 // rows changed; 0 with an empty tuple component.
-func (s *Store) SetSessionLabel(socketPath, sessionID, label string, manual bool) (int64, error) {
+// deviceID scopes the session to one machine (see store.API): a label is an
+// address, and the tuple alone is not device-unique in a shared roster.
+func (s *Store) SetSessionLabel(deviceID, socketPath, sessionID, label string, manual bool) (int64, error) {
 	if socketPath == "" || sessionID == "" {
 		return 0, nil
 	}
@@ -242,7 +244,7 @@ func (s *Store) SetSessionLabel(socketPath, sessionID, label string, manual bool
 	var n int64
 	for _, item := range items {
 		a := itemToAgent(item)
-		if a.Departed || a.SocketPath != socketPath || a.SessionID != sessionID {
+		if a.Departed || !sameSession(a, deviceID, socketPath, sessionID) {
 			continue
 		}
 		_, err := s.c.UpdateItem(ctx, &dynamodb.UpdateItemInput{
@@ -281,7 +283,11 @@ func (s *Store) SetSessionLabel(socketPath, sessionID, label string, manual bool
 //
 // No-op when any tuple component is empty or zero. Returns the tombstoned
 // aliases so the caller can reconcile their badges.
-func (s *Store) DepartStaleSiblings(socketPath, sessionID string, created int64, keepAlias string) ([]string, error) {
+// deviceID scopes the reaping to one machine (see store.API): differing
+// session_created is evidence of a recycled session id only among rows from
+// the SAME machine, so without it this would tombstone another device's live
+// agent on a colliding tuple.
+func (s *Store) DepartStaleSiblings(deviceID, socketPath, sessionID string, created int64, keepAlias string) ([]string, error) {
 	if socketPath == "" || sessionID == "" || created == 0 {
 		return nil, nil
 	}
@@ -293,7 +299,7 @@ func (s *Store) DepartStaleSiblings(socketPath, sessionID string, created int64,
 	var stale []string
 	for _, item := range items {
 		a := itemToAgent(item)
-		if a.Departed || a.SocketPath != socketPath || a.SessionID != sessionID {
+		if a.Departed || !sameSession(a, deviceID, socketPath, sessionID) {
 			continue
 		}
 		if a.SessionCreated == 0 || a.SessionCreated == created || a.Alias == keepAlias {
@@ -330,6 +336,15 @@ func (s *Store) roster(ctx context.Context) ([]map[string]types.AttributeValue, 
 		return nil, fmt.Errorf("dynamostore: query roster: %w", err)
 	}
 	return items, nil
+}
+
+// sameSession is the ONE place this backend answers "is this agent in that
+// session": the full (device, socket_path, session_id) identity, never the
+// pair alone (see store.API's note — the pair collides across machines in a
+// shared roster). Every session-scoped surface here goes through it so none of
+// them can quietly drop the device dimension again.
+func sameSession(a store.Agent, deviceID, socketPath, sessionID string) bool {
+	return a.DeviceID == deviceID && a.SocketPath == socketPath && a.SessionID == sessionID
 }
 
 func agentKey(alias string) map[string]types.AttributeValue {

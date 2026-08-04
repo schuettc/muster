@@ -43,6 +43,20 @@ type Daemon struct {
 	recPending bool
 	recClosed  bool
 	recWG      sync.WaitGroup
+	// recStop is closed by Close so a goroutine PARKED on a timer (the poller
+	// between ticks) wakes immediately instead of holding Close open for a
+	// whole poll interval. recClosed is still the authority on "stopped"; this
+	// is only how a sleeper hears about it promptly.
+	recStop chan struct{}
+
+	// localAgents is which aliases have registered through THIS daemon and
+	// which session each sits in — the device-local roster remote mode's
+	// poller consults before spending an upstream call. Populated by forward
+	// (the only path a registration can take on this device) and seeded once
+	// from upstream, so a daemon restarted under live agents still polls.
+	localMu     sync.Mutex
+	localAgents map[string]store.SessionRef
+	localSeeded bool
 
 	// sessLocks serializes {SessionUnread recompute, tmux option write,
 	// journal} per (socket_path, session_id) tuple (spec §3): a concurrent
@@ -57,7 +71,7 @@ type Daemon struct {
 // get a Dispatch target without a unix socket; n may be nil, in which case no
 // notifications are delivered.
 func New(s store.API, n wake.Notifier) *Daemon {
-	return &Daemon{s: s, n: n}
+	return &Daemon{s: s, n: n, recStop: make(chan struct{})}
 }
 
 // Serve binds socketPath (replacing any stale socket) and serves in a
@@ -93,7 +107,11 @@ func (d *Daemon) Close() error {
 // takes before recWG.Add — so no new reconcile can be added after Wait begins.
 func (d *Daemon) stopReconcile() {
 	d.recMu.Lock()
+	alreadyClosed := d.recClosed
 	d.recClosed = true
+	if !alreadyClosed && d.recStop != nil {
+		close(d.recStop) // wake the poller out of its inter-tick sleep
+	}
 	d.recMu.Unlock()
 	d.recWG.Wait()
 }
@@ -249,7 +267,12 @@ func (d *Daemon) handleRegisterAgent(a map[string]any) proto.Response {
 	if err != nil {
 		return fail(err)
 	}
-	if ifAbsent && hadOld && (old.SocketPath != newAgent.SocketPath || old.SessionID != newAgent.SessionID) {
+	// The CAS compares the FULL session identity, device included (see
+	// store.API): on a shared roster a colliding tuple on another machine
+	// would otherwise read as "the same session", and the guard whose whole
+	// job is refusing a silent takeover would wave one through.
+	if ifAbsent && hadOld && (old.DeviceID != newAgent.DeviceID ||
+		old.SocketPath != newAgent.SocketPath || old.SessionID != newAgent.SessionID) {
 		return fail(fmt.Errorf("register_agent: if_absent conflict: alias %q is already registered to a different session", alias))
 	}
 	if err := d.s.RegisterAgent(newAgent); err != nil {
@@ -264,7 +287,12 @@ func (d *Daemon) handleRegisterAgent(a map[string]any) proto.Response {
 	// pure stored-data inference, keeping the daemon tmux-agnostic. Must run
 	// before the badge reconciliation below so the pushed alias list never
 	// includes a ghost.
-	if _, err := d.s.DepartStaleSiblings(newAgent.SocketPath, newAgent.SessionID, newAgent.SessionCreated, alias); err != nil {
+	//
+	// Scoped to the registrant's OWN device: on a shared roster the tuple is
+	// not device-unique (see store.API), and another machine's live agent
+	// under a colliding tuple has an unrelated session_created — it would look
+	// exactly like a ghost and be tombstoned.
+	if _, err := d.s.DepartStaleSiblings(newAgent.DeviceID, newAgent.SocketPath, newAgent.SessionID, newAgent.SessionCreated, alias); err != nil {
 		return fail(err)
 	}
 	// Reconciliation (spec §3): rewrite the badge for both the OLD tuple
@@ -383,6 +411,15 @@ func (d *Daemon) pushAgentBadge(socketPath, sessionID string, aliases []string) 
 // tmux identity (empty socket or session) can never carry a tmux badge, so
 // they are journaled "skipped" exactly as before, one row per alias. Best-
 // effort; never types into a pane.
+//
+// The tuple grouping below is device-BLIND, and may only stay that way while
+// this runs against a roster of one device's agents. It does: local mode's
+// store holds nothing else, and in hosted mode this returns at the nil
+// notifier above (a Lambda has no tmux to badge — see internal/lambdamode), so
+// remote devices reconcile from device_poll instead. Give the hosted daemon a
+// notifier and this needs the device dimension every other session-scoped
+// surface now carries (store.API), or two machines' sessions coalesce into one
+// group and one of them silently never gets its badge.
 func (d *Daemon) notifyForThread(threadID int64, actor string) {
 	if d.n == nil {
 		return
@@ -616,9 +653,16 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 		if err != nil {
 			return fail(err)
 		}
+		// Device-scoped like every other session-tuple surface (see
+		// store.API): on a shared roster the pair alone would advertise a
+		// colliding session on ANOTHER machine as one of this session's own
+		// aliases — and this op's answer is what the hook drains and the
+		// nudge path addresses. Local mode sends no device_id and every local
+		// row carries "", so it matches exactly as before.
+		deviceID := str(a, "device_id")
 		aliases := []string{}
 		for _, ag := range agents {
-			if ag.SocketPath == socketPath && ag.SessionID == sessionID {
+			if ag.DeviceID == deviceID && ag.SocketPath == socketPath && ag.SessionID == sessionID {
 				aliases = append(aliases, ag.Alias)
 			}
 		}
@@ -634,11 +678,23 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 		if socketPath == "" || sessionID == "" {
 			return fail(fmt.Errorf("session_unread: socket_path and session_id are required"))
 		}
-		total, action, err := d.s.SessionUnread(socketPath, sessionID)
+		total, action, err := d.s.SessionUnread(str(a, "device_id"), socketPath, sessionID)
 		if err != nil {
 			return fail(err)
 		}
 		return ok(map[string]any{"total": total, "action": action})
+	case "device_poll":
+		// Remote mode's wake path for traffic originating on ANOTHER device:
+		// the server holds both the roster and the entries, so it answers with
+		// exactly the sessions this device must reconcile plus the watermark
+		// to resume from — one round trip, no entries shipped to the laptop.
+		// device_id is stamped by the polling daemon, never taken on trust
+		// from a client (see stampDevice).
+		res, err := d.s.DevicePoll(str(a, "device_id"), i64(a, "since_entry_id"))
+		if err != nil {
+			return fail(err)
+		}
+		return ok(res)
 	case "get_thread":
 		th, entries, err := d.s.GetThread(i64(a, "thread_id"))
 		if err != nil {
@@ -722,7 +778,7 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 		// same value in the store so the daemon's resolver (which never
 		// re-reads tmux) agrees with the CLI's live-label resolution
 		// immediately, not at the next register_agent upsert.
-		n, err := d.s.SetSessionLabel(str(a, "socket_path"), str(a, "session_id"), str(a, "label"), boolArg(a, "label_manual"))
+		n, err := d.s.SetSessionLabel(str(a, "device_id"), str(a, "socket_path"), str(a, "session_id"), str(a, "label"), boolArg(a, "label_manual"))
 		if err != nil {
 			return fail(err)
 		}

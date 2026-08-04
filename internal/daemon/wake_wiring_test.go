@@ -455,7 +455,7 @@ func TestLit2Regression(t *testing.T) {
 	call(t, sock, "send_message", map[string]any{"from": "peer", "to_kind": "agent", "to_target": "aliasA", "subject": "a", "body": "x"})
 	call(t, sock, "send_message", map[string]any{"from": "peer", "to_kind": "agent", "to_target": "aliasB", "subject": "b", "body": "y"})
 
-	total, _, err := s.SessionUnread("/s", "$9")
+	total, _, err := s.SessionUnread("", "/s", "$9")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -466,7 +466,7 @@ func TestLit2Regression(t *testing.T) {
 	// Drain ONLY aliasA.
 	call(t, sock, "get_inbox", map[string]any{"alias": "aliasA"})
 
-	remainder, _, err := s.SessionUnread("/s", "$9")
+	remainder, _, err := s.SessionUnread("", "/s", "$9")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -617,7 +617,7 @@ func TestNotifyDrainInterleaving(t *testing.T) {
 	<-replyDone
 	<-getInboxDone
 
-	remainder, _, err := s.SessionUnread("/s", "$9")
+	remainder, _, err := s.SessionUnread("", "/s", "$9")
 	if err != nil {
 		t.Fatal(err)
 	}

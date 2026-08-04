@@ -90,6 +90,30 @@ const BackendEnv = "MUSTER_BACKEND"
 // a 0600 file (see remote.ReadToken).
 const RemoteURLEnv = "MUSTER_REMOTE_URL"
 
+// PollIntervalEnv tunes how often a remote-mode daemon asks the bus whether
+// another device has sent mail to an agent on this one (a Go duration, e.g.
+// "3s"). It bounds only CROSS-device wake latency — a write from this device
+// reconciles inline — and the poller widens the interval by itself while the
+// bus is quiet, so this is the floor rather than the fixed cadence.
+// Unparseable or non-positive values fall back to the default with a warning,
+// since a mistyped knob must not leave a device silently unwoken.
+const PollIntervalEnv = "MUSTER_POLL_INTERVAL"
+
+// pollInterval reads PollIntervalEnv, defaulting to daemon.DefaultPollInterval.
+func pollInterval() time.Duration {
+	raw := os.Getenv(PollIntervalEnv)
+	if raw == "" {
+		return daemon.DefaultPollInterval
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d <= 0 {
+		fmt.Fprintf(os.Stderr, "muster: ignoring %s=%q (want a positive Go duration like 10s), using %s\n",
+			PollIntervalEnv, raw, daemon.DefaultPollInterval)
+		return daemon.DefaultPollInterval
+	}
+	return d
+}
+
 // runServe runs the daemon until it receives SIGINT/SIGTERM, returning the
 // process exit code (0 on a clean shutdown, non-zero on setup failure).
 //
@@ -123,6 +147,10 @@ func runServe() int {
 			fmt.Fprintln(os.Stderr, "muster:", err)
 			return 1
 		}
+		// The poller is remote mode's ONLY wake path for traffic that
+		// originated on another device: a local write reconciles inline, but
+		// nothing on this machine hears about a peer's message otherwise.
+		d.StartPoller(pollInterval())
 	default:
 		fmt.Fprintf(os.Stderr, "muster: unknown %s %q (want local or remote)\n", BackendEnv, backend)
 		return 1

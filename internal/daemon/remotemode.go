@@ -56,7 +56,7 @@ func ServeRemote(socketPath string, up Upstream, n wake.Notifier, deviceID strin
 	if err != nil {
 		return nil, err
 	}
-	d := &Daemon{n: n, up: up, deviceID: deviceID}
+	d := &Daemon{n: n, up: up, deviceID: deviceID, recStop: make(chan struct{})}
 	d.ln = ln
 	go d.acceptLoop()
 	return d, nil
@@ -91,7 +91,7 @@ func (d *Daemon) forward(req proto.Request) proto.Response {
 	if movesBadge(req.Op) {
 		defer d.triggerReconcile()
 	}
-	if req.Op == "register_agent" {
+	if needsDevice(req.Op) {
 		req = d.stampDevice(req)
 	}
 
@@ -100,6 +100,9 @@ func (d *Daemon) forward(req proto.Request) proto.Response {
 		// A transport failure has to reach the client as a protocol answer:
 		// callers above the socket parse a proto.Response and nothing else.
 		return proto.Response{Error: "upstream " + req.Op + ": " + err.Error()}
+	}
+	if resp.OK {
+		d.noteRosterChange(req)
 	}
 	if !resp.OK && IsNewKeyReissueError(resp.Error) {
 		return d.unknownOutcome(req.Op, resp)
@@ -131,12 +134,34 @@ func (d *Daemon) unknownOutcome(op string, resp proto.Response) proto.Response {
 		resp.Error + ")"}
 }
 
-// stampDevice puts this daemon's device id on a forwarded register_agent. The
-// device id is known here and nowhere above — the MCP server and the CLI never
-// learn one — so this is the only place the hosted roster can acquire it, and
-// without it neither reconcile nor the poller can tell which agents are local.
-// A caller-supplied device_id is overwritten rather than trusted: a client
-// cannot claim to be on another machine.
+// deviceOps are the ops whose arguments name a SESSION, and so the ops whose
+// forwarded request has to carry this device's id.
+//
+// The membership rule is "the args carry a (socket_path, session_id) tuple, or
+// register one". That pair is not device-unique in a shared roster (see
+// store.API): two laptops share /private/tmp/tmux-501/default and both number
+// sessions from $1. Unstamped, each of these ops would address whichever
+// machine's session matched first — session_unread would count a peer's mail,
+// session_aliases would advertise a peer's aliases, set_label would readdress
+// a peer's agent.
+//
+// It is deliberately NOT the same set as badgeOps or writeOps: those classify
+// what an op DOES, this classifies what its arguments MEAN.
+var deviceOps = map[string]bool{
+	"register_agent": true, "session_unread": true,
+	"session_aliases": true, "set_label": true,
+}
+
+// needsDevice reports whether op's args name a session and so must be stamped
+// with this device's id before being forwarded.
+func needsDevice(op string) bool { return deviceOps[op] }
+
+// stampDevice puts this daemon's device id on a forwarded session-scoped op
+// (see deviceOps). The device id is known here and nowhere above — the MCP
+// server and the CLI never learn one — so this is the only place the hosted
+// bus can acquire it, and without it neither reconcile nor the poller can tell
+// which agents are local. A caller-supplied device_id is overwritten rather
+// than trusted: a client cannot claim to be on another machine.
 //
 // The request is copied before mutation, args map included: the caller's map
 // came off the wire here, but forward has no license to write into a value it
@@ -292,16 +317,123 @@ func (d *Daemon) ReconcileLocalSessions() {
 	}
 }
 
+// noteRosterChange keeps the device-local roster in step with the roster ops
+// that just went upstream successfully. It is called from forward, which is
+// the ONLY way an agent on this device can register: the MCP server and the
+// CLI are peer clients of this socket, so nothing reaches the hosted roster
+// from this machine without passing through here.
+//
+// What it feeds is the poller's "is there anybody here to wake" check. Keeping
+// it locally rather than asking upstream is what makes an idle device free —
+// a device with no agents makes no calls at all, rather than one list_agents
+// per tick for ever.
+//
+// Agents with no tmux tuple are not recorded: they can carry no badge, so they
+// are not a reason to poll.
+func (d *Daemon) noteRosterChange(req proto.Request) {
+	alias := str(req.Args, "alias")
+	if alias == "" {
+		return
+	}
+	switch req.Op {
+	case "register_agent":
+		socketPath, sessionID := str(req.Args, "socket_path"), str(req.Args, "session_id")
+		if socketPath == "" || sessionID == "" {
+			return
+		}
+		d.localMu.Lock()
+		defer d.localMu.Unlock()
+		if d.localAgents == nil {
+			d.localAgents = map[string]store.SessionRef{}
+		}
+		d.localAgents[alias] = store.SessionRef{SocketPath: socketPath, SessionID: sessionID}
+	case "deregister_agent", "purge_agent":
+		d.localMu.Lock()
+		defer d.localMu.Unlock()
+		delete(d.localAgents, alias)
+	}
+}
+
+// hasLocalAgents reports whether this device has an agent whose pane could be
+// woken, seeding from the hosted roster ONCE if it has never seen one.
+//
+// The seed exists for the restart case: a daemon that came up under
+// already-registered agents has an empty local roster and would otherwise
+// never poll, so cross-device mail would stop arriving silently until each
+// agent happened to re-register. It costs exactly one list_agents over the
+// daemon's lifetime, and only while the local roster is empty.
+func (d *Daemon) hasLocalAgents() bool {
+	d.localMu.Lock()
+	n, seeded := len(d.localAgents), d.localSeeded
+	d.localMu.Unlock()
+	if n > 0 {
+		return true
+	}
+	if seeded {
+		return false
+	}
+
+	agents, err := d.upstreamAgents()
+	d.localMu.Lock()
+	defer d.localMu.Unlock()
+	if err != nil {
+		// Not marked seeded: an upstream hiccup must not permanently decide
+		// this device has nobody on it.
+		fmt.Fprintln(os.Stderr, "muster: poll: seed local roster:", err)
+		return false
+	}
+	d.localSeeded = true
+	if d.localAgents == nil {
+		d.localAgents = map[string]store.SessionRef{}
+	}
+	for _, ag := range agents {
+		if ag.DeviceID != d.deviceID || ag.Departed || ag.SocketPath == "" || ag.SessionID == "" {
+			continue
+		}
+		d.localAgents[ag.Alias] = store.SessionRef{SocketPath: ag.SocketPath, SessionID: ag.SessionID}
+	}
+	return len(d.localAgents) > 0
+}
+
+// reconcileSessions rewrites the badges of exactly the sessions named — the
+// poller's counterpart to ReconcileLocalSessions, which discovers its own list
+// from the hosted roster.
+//
+// It takes the server's answer as the list rather than re-deriving one:
+// device_poll already filtered by device id, and asking the roster again would
+// buy a round trip to reproduce a decision the server just made from fresher
+// state than this device has.
+//
+// The agent badge is deliberately not touched. It advertises WHO is registered
+// here, which only an identity change can move, and refreshing it would cost a
+// list_agents on every tick that found mail.
+func (d *Daemon) reconcileSessions(sessions []store.SessionRef) {
+	if d.n == nil || d.up == nil {
+		return
+	}
+	for _, s := range sessions {
+		if d.reconcileStopped() {
+			return
+		}
+		if s.SocketPath == "" || s.SessionID == "" {
+			continue // no badge anyone is watching
+		}
+		if _, err := d.setSessionBadge(s.SocketPath, s.SessionID); err != nil {
+			fmt.Fprintln(os.Stderr, "muster: poll reconcile:", s.SessionID, err)
+		}
+	}
+}
+
 // sessionUnread returns a session's total unread from whichever backend this
 // daemon fronts. It is the seam that lets setSessionBadge stay the ONE
 // {recompute, push} sequence in both modes rather than growing a remote twin.
 func (d *Daemon) sessionUnread(socketPath, sessionID string) (int, error) {
 	if d.up == nil {
-		total, _, err := d.s.SessionUnread(socketPath, sessionID)
+		total, _, err := d.s.SessionUnread(d.deviceID, socketPath, sessionID)
 		return total, err
 	}
 	resp, err := d.callUpstream(proto.Request{Op: "session_unread", Args: map[string]any{
-		"socket_path": socketPath, "session_id": sessionID,
+		"device_id": d.deviceID, "socket_path": socketPath, "session_id": sessionID,
 	}})
 	if err != nil {
 		return 0, err

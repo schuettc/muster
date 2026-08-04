@@ -364,7 +364,7 @@ func TestCreateThreadRejectsInvalidIntent(t *testing.T) {
 // panic if the short-circuit ever regressed.
 func TestSessionUnreadEmptyTupleNeverGroups(t *testing.T) {
 	for _, tc := range []struct{ sock, sess string }{{"", ""}, {"", "$1"}, {"/s", ""}} {
-		total, action, err := (&Store{}).SessionUnread(tc.sock, tc.sess)
+		total, action, err := (&Store{}).SessionUnread("", tc.sock, tc.sess)
 		if err != nil {
 			t.Fatalf("SessionUnread(%q,%q): %v", tc.sock, tc.sess, err)
 		}

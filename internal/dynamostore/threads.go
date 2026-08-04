@@ -850,7 +850,13 @@ func (s *Store) readableThrough(ctx context.Context, alias, role string, after i
 // concerning two sibling aliases counts once, never twice. action is the
 // subset whose effective intent is action-requested. An empty socketPath or
 // sessionID never groups.
-func (s *Store) SessionUnread(socketPath, sessionID string) (total, action int, err error) {
+//
+// The session's identity is (deviceID, socketPath, sessionID), never the pair
+// alone — see store.API. In a hosted roster the device dimension is what keeps
+// the actor exclusion honest: an alias on another machine sharing this tuple
+// would otherwise count as a sibling, and its message to this session would be
+// dropped as one of the session's own writes.
+func (s *Store) SessionUnread(deviceID, socketPath, sessionID string) (total, action int, err error) {
 	if socketPath == "" || sessionID == "" {
 		return 0, 0, nil
 	}
@@ -872,7 +878,7 @@ func (s *Store) SessionUnread(socketPath, sessionID string) (total, action int, 
 	var candidates []string
 	for _, item := range items {
 		a := itemToAgent(item)
-		if a.SocketPath != socketPath || a.SessionID != sessionID {
+		if !sameSession(a, deviceID, socketPath, sessionID) {
 			continue
 		}
 		candidates = append(candidates, a.Alias)
@@ -889,7 +895,7 @@ func (s *Store) SessionUnread(socketPath, sessionID string) (total, action int, 
 		if err != nil {
 			return 0, 0, err
 		}
-		if !found || a.SocketPath != socketPath || a.SessionID != sessionID {
+		if !found || !sameSession(a, deviceID, socketPath, sessionID) {
 			continue
 		}
 		session = append(session, a)

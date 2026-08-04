@@ -105,14 +105,17 @@ func (s *Store) DepartAgent(alias string) error {
 // manual=false. Returns how many rows changed; 0 with an empty tuple
 // component (nothing addressable to update — matches SessionUnread's
 // never-group-on-empty rule).
-func (s *Store) SetSessionLabel(socketPath, sessionID, label string, manual bool) (int64, error) {
+// deviceID scopes the session to one machine (see store.API's note on the
+// tuple): a label is an ADDRESS, so relabelling a colliding tuple on another
+// device would readdress a peer's agent out from under it.
+func (s *Store) SetSessionLabel(deviceID, socketPath, sessionID, label string, manual bool) (int64, error) {
 	if socketPath == "" || sessionID == "" {
 		return 0, nil
 	}
 	res, err := s.db.Exec(`
 UPDATE agents SET label=?, label_manual=?
-WHERE socket_path=? AND session_id=? AND departed=0`,
-		label, manual, socketPath, sessionID)
+WHERE device_id=? AND socket_path=? AND session_id=? AND departed=0`,
+		label, manual, deviceID, socketPath, sessionID)
 	if err != nil {
 		return 0, err
 	}
@@ -132,15 +135,20 @@ WHERE socket_path=? AND session_id=? AND departed=0`,
 // to a real value the next time that agent re-registers. No-op (0, nil) when
 // any tuple component is empty/zero. Returns the tombstoned aliases so the
 // caller can reconcile their badges.
-func (s *Store) DepartStaleSiblings(socketPath, sessionID string, created int64, keepAlias string) ([]string, error) {
+// deviceID scopes the reaping to one machine (see store.API's note on the
+// tuple). The evidence this infers from — "another row claims my session id
+// under a different creation time" — is only evidence among rows from the SAME
+// machine: two laptops' sessions have unrelated creation times, so without the
+// device dimension registering on one would tombstone the other's LIVE agent.
+func (s *Store) DepartStaleSiblings(deviceID, socketPath, sessionID string, created int64, keepAlias string) ([]string, error) {
 	if socketPath == "" || sessionID == "" || created == 0 {
 		return nil, nil
 	}
 	rows, err := s.db.Query(`
 SELECT alias FROM agents
-WHERE socket_path=? AND session_id=? AND departed=0
+WHERE device_id=? AND socket_path=? AND session_id=? AND departed=0
   AND session_created != 0 AND session_created != ? AND alias != ?`,
-		socketPath, sessionID, created, keepAlias)
+		deviceID, socketPath, sessionID, created, keepAlias)
 	if err != nil {
 		return nil, err
 	}
@@ -234,10 +242,19 @@ func (s *Store) MarkRead(alias string) error {
 // socketPath or sessionID never groups: it matches no agents, so both
 // results are 0 (per-alias identity is UnreadCount's job for such agents,
 // e.g. one registered without a live tmux pane).
-func (s *Store) SessionUnread(socketPath, sessionID string) (total, action int, err error) {
+//
+// The session's identity is (deviceID, socketPath, sessionID), never the pair
+// alone — see store.API. The device dimension is what makes the actor
+// exclusion below correct in a shared store: without it, an alias on ANOTHER
+// machine that happens to share this tuple is treated as a sibling of this
+// session, so its message to this session is discarded as "one of my own
+// writes" and the badge never lights. That is the two-device miss the hosted
+// backend exists to make impossible.
+func (s *Store) SessionUnread(deviceID, socketPath, sessionID string) (total, action int, err error) {
 	err = s.db.QueryRow(`
 WITH sess AS (SELECT alias, last_read_entry_id FROM agents
-              WHERE socket_path = ?1 AND session_id = ?2 AND ?1 != '' AND ?2 != '')
+              WHERE device_id = ?3 AND socket_path = ?1 AND session_id = ?2
+                AND ?1 != '' AND ?2 != '')
 SELECT
   COUNT(DISTINCT threads.id),
   COUNT(DISTINCT CASE WHEN `+effectiveIntent+` = 'action-requested' THEN threads.id END)
@@ -247,6 +264,6 @@ WHERE EXISTS (SELECT 1 FROM entries e
               WHERE e.thread_id = threads.id
                 AND e.id > sess.last_read_entry_id
                 AND e.from_agent NOT IN (SELECT alias FROM sess))`,
-		socketPath, sessionID).Scan(&total, &action)
+		socketPath, sessionID, deviceID).Scan(&total, &action)
 	return total, action, err
 }
