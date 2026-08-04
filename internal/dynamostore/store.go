@@ -10,10 +10,15 @@
 //	gsi1 — partitioned by recipient (RCPT#agent#<alias>, RCPT#role#<role>,
 //	       RCPT#broadcast) and sorted by entry id, so "what is unread for me"
 //	       is a sort-key-bounded query with no join. Entries carry their
-//	       thread's recipient denormalized for exactly this reason. The agent
-//	       roster lives in the disjoint ROSTER partition of the same index.
+//	       thread's recipient denormalized for exactly this reason, and a
+//	       thread's metadata item sits at sort key 0 of the same partition, so
+//	       "which threads are addressed to me" reads no entries at all. The
+//	       agent roster lives in the disjoint ROSTER partition of the same
+//	       index.
 //	gsi2 — the global entry log (ENTRIES partition) in id order, which
-//	       device_poll reads to find mail for one device.
+//	       device_poll reads to find mail for one device, plus the disjoint
+//	       THREADS partition holding every thread's metadata item in id order,
+//	       which is what makes Threads() one query instead of a scan.
 //
 // Ids come from counter items updated with an atomic ADD (see nextID). They
 // must be globally monotonic, not per-thread: Agent.LastReadEntryID is a

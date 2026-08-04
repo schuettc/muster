@@ -296,24 +296,14 @@ func (s *Store) DepartStaleSiblings(socketPath, sessionID string, created int64,
 
 // roster returns every agent item via gsi1's ROSTER partition, paginating.
 func (s *Store) roster(ctx context.Context) ([]map[string]types.AttributeValue, error) {
-	var items []map[string]types.AttributeValue
-	var start map[string]types.AttributeValue
-	for {
-		out, err := s.c.Query(ctx, &dynamodb.QueryInput{
-			TableName:                 aws.String(s.table),
-			IndexName:                 aws.String(gsi1Name),
-			KeyConditionExpression:    aws.String("gsi1pk = :pk"),
-			ExpressionAttributeValues: map[string]types.AttributeValue{":pk": attrS(rosterPartition)},
-			ExclusiveStartKey:         start,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("dynamostore: query roster: %w", err)
-		}
-		items = append(items, out.Items...)
-		if len(out.LastEvaluatedKey) == 0 {
-			break
-		}
-		start = out.LastEvaluatedKey
+	items, err := s.queryAll(ctx, &dynamodb.QueryInput{
+		TableName:                 aws.String(s.table),
+		IndexName:                 aws.String(gsi1Name),
+		KeyConditionExpression:    aws.String("gsi1pk = :pk"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{":pk": attrS(rosterPartition)},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("dynamostore: query roster: %w", err)
 	}
 	return items, nil
 }
