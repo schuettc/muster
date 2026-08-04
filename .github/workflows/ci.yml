@@ -68,6 +68,11 @@ jobs:
       # whole suite silently reverts to skipping; failing on `--- SKIP` is what
       # turns that back into a red build. Nothing else in these two packages
       # skips, so the guard has no legitimate exceptions to carve out.
+      #
+      # If you land a test here that skips for a GOOD reason, allowlist that one
+      # test name below — do not delete this check. Deleting it restores the
+      # exact silent-green regression it exists to prevent, and the next person
+      # to notice will be whoever debugs a backend bug CI said was covered.
       - name: DynamoDB backend + conformance tests
         shell: bash
         env:
