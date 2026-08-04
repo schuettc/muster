@@ -123,6 +123,11 @@ func threadMetaItem(t store.Thread, threadID, firstEntryID, now int64) map[strin
 // denormalized onto the entry: that is what turns "what is unread for me"
 // into a sort-key-bounded query with no join, and it is why AppendEntry reads
 // the thread's metadata before writing.
+//
+// It is FROZEN at write time. See "The recipient denormalization is
+// write-once" in the package comment: re-addressing a thread without rewriting
+// gsi1pk on every existing entry strands them in the old recipient's
+// partition, and unread under-counts silently.
 func entryItem(threadID, entryID int64, fromAgent, body, statusChange string, now int64, recipient string) map[string]types.AttributeValue {
 	return map[string]types.AttributeValue{
 		"pk":            attrS(pkThread(threadID)),
@@ -607,7 +612,10 @@ func unreadByThread(entries []store.Entry, concerning map[int64]bool, exclude ma
 // disagree about which threads reach an alias: the concerning threads' items
 // and the per-thread unread counts relative to alias's own watermark.
 func (s *Store) unreadFor(ctx context.Context, alias string) (map[int64]map[string]types.AttributeValue, map[int64]int, error) {
-	agent, _, err := s.GetAgent(alias)
+	// Strongly consistent by way of agentByAlias: unread_count can be called
+	// immediately after get_inbox's MarkRead wrote this very watermark, and a
+	// stale one would report mail the caller has already drained.
+	agent, _, err := s.agentByAlias(ctx, alias)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -751,13 +759,37 @@ func (s *Store) SessionUnread(socketPath, sessionID string) (total, action int, 
 	if err != nil {
 		return 0, 0, err
 	}
+	// The roster is a GSI query, which DynamoDB can never serve strongly
+	// consistently — so it is used ONLY to identify which aliases belong to the
+	// session. The watermark it projects is not trustworthy here: the daemon
+	// runs Inbox -> MarkRead -> setSessionBadge -> SessionUnread synchronously
+	// on get_inbox, so a stale watermark would return total > 0 and re-light
+	// the tmux badge the operator just drained — and nothing re-polls, so it
+	// would stay lit until the next notify or read.
+	//
 	// The SQLite "sess" CTE does not filter departed rows, so neither does
 	// this: a tombstoned alias is still part of the session's identity.
-	var session []store.Agent
-	aliases := make(map[string]bool)
+	var candidates []string
 	for _, item := range items {
 		a := itemToAgent(item)
 		if a.SocketPath != socketPath || a.SessionID != sessionID {
+			continue
+		}
+		candidates = append(candidates, a.Alias)
+	}
+	sort.Strings(candidates)
+
+	// Re-read each member from the BASE table, strongly consistent, and
+	// re-confirm the tuple against the fresh item — the index copy may have
+	// been written before the alias moved to a different session.
+	var session []store.Agent
+	aliases := make(map[string]bool)
+	for _, alias := range candidates {
+		a, found, err := s.agentByAlias(ctx, alias)
+		if err != nil {
+			return 0, 0, err
+		}
+		if !found || a.SocketPath != socketPath || a.SessionID != sessionID {
 			continue
 		}
 		session = append(session, a)

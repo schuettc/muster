@@ -136,11 +136,27 @@ func (s *Store) ListAgents() ([]store.Agent, error) {
 	return agents, nil
 }
 
-// GetAgent returns one agent by alias.
+// GetAgent returns one agent by alias, strongly consistent — see the read
+// consistency rule in the package comment. Every caller uses the result to
+// decide something about a row the daemon itself may have just written: the
+// register op reads the pre-mutation tuple to drive its CAS, and get_inbox
+// recomputes the session badge from this row's watermark immediately after
+// MarkRead wrote it. An eventually consistent read here hands the daemon a
+// state it has already superseded.
 func (s *Store) GetAgent(alias string) (store.Agent, bool, error) {
-	out, err := s.c.GetItem(backgroundCtx(), &dynamodb.GetItemInput{
-		TableName: aws.String(s.table),
-		Key:       agentKey(alias),
+	return s.agentByAlias(backgroundCtx(), alias)
+}
+
+// agentByAlias is the ONE canonical single-agent read: a strongly consistent
+// GetItem on the BASE table. Every read of an agent's role or read watermark
+// funnels through it — GetAgent, unreadFor, and SessionUnread's per-member
+// re-read alike — so no surface can quietly settle for the eventually
+// consistent copy the roster index projects.
+func (s *Store) agentByAlias(ctx context.Context, alias string) (store.Agent, bool, error) {
+	out, err := s.c.GetItem(ctx, &dynamodb.GetItemInput{
+		TableName:      aws.String(s.table),
+		Key:            agentKey(alias),
+		ConsistentRead: aws.Bool(true),
 	})
 	if err != nil {
 		return store.Agent{}, false, fmt.Errorf("dynamostore: get agent %q: %w", alias, err)
@@ -295,6 +311,14 @@ func (s *Store) DepartStaleSiblings(socketPath, sessionID string, created int64,
 }
 
 // roster returns every agent item via gsi1's ROSTER partition, paginating.
+//
+// This is a GSI read, so it is EVENTUALLY CONSISTENT and cannot be made
+// otherwise — DynamoDB offers no ConsistentRead on a secondary index. Treat
+// what it returns as MEMBERSHIP, not as current per-agent state: a caller that
+// needs an agent's watermark or role to be read-your-writes must re-read the
+// base item through agentByAlias (SessionUnread does exactly that). The lag is
+// in the safe direction for membership — an alias registered a moment ago may
+// be missing, which under-counts rather than resurrecting a stale row.
 func (s *Store) roster(ctx context.Context) ([]map[string]types.AttributeValue, error) {
 	items, err := s.queryAll(ctx, &dynamodb.QueryInput{
 		TableName:                 aws.String(s.table),

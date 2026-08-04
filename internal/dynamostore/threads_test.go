@@ -254,6 +254,40 @@ func TestAppendBackoffGrowsAndIsBounded(t *testing.T) {
 	}
 }
 
+// TestCreateThreadRejectsInvalidIntent pins the validIntent gate. That gate
+// fires BEFORE CreateThread makes any client call, so this needs no endpoint
+// and no table — it runs on every developer machine and in the normal
+// `just verify` gate, which is worth more than the same assertion behind a
+// skip. (The accepted values are exercised end-to-end by
+// TestCreateThreadAcceptsEveryValidIntent.)
+func TestCreateThreadRejectsInvalidIntent(t *testing.T) {
+	for _, bad := range []string{"urgent", "ACTION-REQUESTED", "reply"} {
+		// A zero Store has a nil client: reaching one would panic, which is
+		// itself the assertion that the gate short-circuits first.
+		if _, err := (&Store{}).CreateThread(store.Thread{
+			Kind: "message", FromAgent: "a", ToKind: "broadcast", Intent: bad,
+		}, "body"); err == nil {
+			t.Errorf("intent %q should be rejected", bad)
+		}
+	}
+}
+
+// TestSessionUnreadEmptyTupleNeverGroups: an empty socket path or session id is
+// never a group. The guard returns before any client call, so — like the intent
+// gate — this is pinned with a zero Store and no endpoint; a nil client would
+// panic if the short-circuit ever regressed.
+func TestSessionUnreadEmptyTupleNeverGroups(t *testing.T) {
+	for _, tc := range []struct{ sock, sess string }{{"", ""}, {"", "$1"}, {"/s", ""}} {
+		total, action, err := (&Store{}).SessionUnread(tc.sock, tc.sess)
+		if err != nil {
+			t.Fatalf("SessionUnread(%q,%q): %v", tc.sock, tc.sess, err)
+		}
+		if total != 0 || action != 0 {
+			t.Fatalf("SessionUnread(%q,%q) = %d,%d, want 0,0", tc.sock, tc.sess, total, action)
+		}
+	}
+}
+
 // --- endpoint-backed tests (SKIP without MUSTER_DDB_ENDPOINT) ---------------
 
 func TestCreateThreadAndGetThread(t *testing.T) {
@@ -287,7 +321,9 @@ func TestCreateThreadAndGetThread(t *testing.T) {
 	}
 }
 
-func TestCreateThreadRejectsInvalidIntent(t *testing.T) {
+// TestCreateThreadAcceptsEveryValidIntent is the endpoint-backed half of the
+// intent contract: each accepted value actually round-trips a write.
+func TestCreateThreadAcceptsEveryValidIntent(t *testing.T) {
 	s := newTestStore(t)
 	for _, ok := range []string{"", store.IntentFYI, store.IntentReply, store.IntentAction} {
 		if _, err := s.CreateThread(store.Thread{
@@ -295,11 +331,6 @@ func TestCreateThreadRejectsInvalidIntent(t *testing.T) {
 		}, "body"); err != nil {
 			t.Fatalf("intent %q should be valid: %v", ok, err)
 		}
-	}
-	if _, err := s.CreateThread(store.Thread{
-		Kind: "message", FromAgent: "a", ToKind: "broadcast", Intent: "urgent",
-	}, "body"); err == nil {
-		t.Fatal("unknown intent should be rejected")
 	}
 }
 
@@ -853,28 +884,6 @@ func TestSessionUnreadActionCount(t *testing.T) {
 	}
 }
 
-// TestSessionUnreadEmptyTupleNeverGroups: the empty tuple is never a group.
-func TestSessionUnreadEmptyTupleNeverGroups(t *testing.T) {
-	s := newTestStore(t)
-	if err := s.RegisterAgent(store.Agent{Alias: "solo"}); err != nil {
-		t.Fatalf("register: %v", err)
-	}
-	if _, err := s.CreateThread(store.Thread{
-		Kind: "message", FromAgent: "x", ToKind: "agent", ToTarget: "solo",
-	}, "hi"); err != nil {
-		t.Fatalf("CreateThread: %v", err)
-	}
-	for _, tc := range []struct{ sock, sess string }{{"", ""}, {"", "$1"}, {"/s", ""}} {
-		total, action, err := s.SessionUnread(tc.sock, tc.sess)
-		if err != nil {
-			t.Fatalf("SessionUnread(%q,%q): %v", tc.sock, tc.sess, err)
-		}
-		if total != 0 || action != 0 {
-			t.Fatalf("SessionUnread(%q,%q) = %d,%d, want 0,0", tc.sock, tc.sess, total, action)
-		}
-	}
-}
-
 // TestSessionUnreadUsesPerAliasWatermark: each alias of a session is judged
 // against its OWN read watermark, matching the SQLite join.
 func TestSessionUnreadUsesPerAliasWatermark(t *testing.T) {
@@ -908,6 +917,75 @@ func TestSessionUnreadUsesPerAliasWatermark(t *testing.T) {
 	}
 	if total, _, err := s.SessionUnread("/s", "$1"); err != nil || total != 0 {
 		t.Fatalf("after concerned alias MarkRead: total=%d (%v), want 0", total, err)
+	}
+}
+
+// TestAppendTransactGuardIsForwardOnly is the DETERMINISTIC check on the
+// forward-only guard, driving appendTransact directly so the out-of-order
+// commit is forced rather than hoped for. Its companion
+// TestConcurrentAppendsKeepMaxEntryAsLast races 8 real appends, but if those
+// happen to commit in id order the guard never fires — that test passes even
+// with the condition at appendTransact deleted. This one does not: the second
+// call is a strictly LOWER id, so it must be refused, and the thread's last
+// entry must remain the higher one.
+func TestAppendTransactGuardIsForwardOnly(t *testing.T) {
+	s := newTestStore(t)
+	ctx := t.Context()
+	id, err := s.CreateThread(store.Thread{
+		Kind: "message", FromAgent: "a", ToKind: "agent", ToTarget: "b",
+	}, "first")
+	if err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	now := clock.NowMillis()
+	recipient := rcpt("agent", "b")
+
+	// The higher id commits first and claims the last-entry trio.
+	high := entryItem(id, 7, "hi", "seven", "", now, recipient)
+	if err := s.appendTransact(ctx, high, id, now, 7, "hi", true); err != nil {
+		t.Fatalf("appendTransact(entryID=7): %v", err)
+	}
+	meta, err := s.threadMeta(ctx, id)
+	if err != nil {
+		t.Fatalf("threadMeta: %v", err)
+	}
+	if got := numAttr(meta, "last_entry_id"); got != 7 {
+		t.Fatalf("last_entry_id = %d, want 7", got)
+	}
+
+	// A lower id committing afterwards must be REFUSED, not silently recorded
+	// as the thread's last entry — that mis-pick is exactly what the SQLite
+	// MAX(entries.id) rule forbids.
+	low := entryItem(id, 5, "lo", "five", "", now+1, recipient)
+	err = s.appendTransact(ctx, low, id, now+1, 5, "lo", true)
+	if err == nil {
+		t.Fatal("appendTransact(entryID=5) succeeded; the forward-only guard did not fire")
+	}
+	if !isTransactionConditionFailed(err) {
+		t.Fatalf("appendTransact(entryID=5) failed with %v, want a ConditionalCheckFailed cancellation", err)
+	}
+
+	meta, err = s.threadMeta(ctx, id)
+	if err != nil {
+		t.Fatalf("threadMeta after refusal: %v", err)
+	}
+	if got := numAttr(meta, "last_entry_id"); got != 7 {
+		t.Fatalf("last_entry_id = %d after a lower-id write, want 7", got)
+	}
+	if got := strAttr(meta, "last_from"); got != "hi" {
+		t.Fatalf("last_from = %q after a lower-id write, want %q", got, "hi")
+	}
+	// The transaction is atomic: a refused guard writes NO entry and does not
+	// bump the count either.
+	if got := numAttr(meta, "entry_count"); got != 2 {
+		t.Fatalf("entry_count = %d, want 2 — a refused append must write nothing", got)
+	}
+	_, entries, err := s.GetThread(id)
+	if err != nil {
+		t.Fatalf("GetThread: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("thread has %d entries, want 2 (the opener and id 7)", len(entries))
 	}
 }
 

@@ -1052,7 +1052,16 @@ Read the thread metadata to get its recipient before writing.
 `GetThread` is one query on `pkThread(id)`, splitting SK `0` (metadata) from the
 rest (entries, already in id order).
 
-`Inbox` queries GSI1 for the three address forms that can reach the alias —
+**CORRECTION (found during Task 6 implementation): this said "three address
+forms" and was WRONG.** `threadConcerns` in `internal/store/threads.go` has
+**four** arms — addressed to the alias, to its role, broadcast, **or originated
+by the alias** (`threads.from_agent = ?`). Its doc comment records why: "the
+surfaces diverging is exactly how replies to originated threads once went
+invisible." Implementing three arms would have re-introduced originator
+blindness on the hosted backend only. Any surface answering "does this thread
+concern alias X" needs all four.
+
+`Inbox` queries GSI1 for the address forms that can reach the alias —
 `RCPT#agent#<alias>`, `RCPT#role#<role>` for the agent's role, and
 `RCPT#broadcast` — collects distinct thread ids, and loads their metadata.
 
@@ -2480,12 +2489,20 @@ Expected: FAIL — `DevicePoll` undefined.
 - [ ] **Step 3: Implement `DevicePoll` on both backends**
 
 The server holds both the roster and the entries, so it does the filtering: find
-entries with id greater than `sinceEntryID`, resolve which of them address an
+entries with id greater than `sinceEntryID`, resolve which of them concern an
 agent whose `DeviceID` matches, and return the distinct
 `(SocketPath, SessionID)` pairs plus the new max entry id. On DynamoDB this
 reads GSI2 partition `ENTRIES` with a sort-key lower bound. On SQLite it is a
 join. Entries authored by an agent on the polling device still count — the
 reconcile is idempotent and special-casing them adds a bug surface for nothing.
+
+**"Concern" here means the full four-arm `threadConcerns` predicate, not just
+the recipient.** An entry on a thread the local agent *originated* must wake
+that agent, exactly as it lands in their inbox. Reusing the same predicate
+Task 6 implemented for `Inbox`/`UnreadCount` is mandatory, not a convenience:
+if the poller and the inbox disagree, a peer's reply appears in `muster inbox`
+but never lights the pane — silently, and only on the hosted backend. Do not
+re-derive the predicate here; call into whatever Task 6 made canonical.
 
 - [ ] **Step 4: Add the dispatch case**
 

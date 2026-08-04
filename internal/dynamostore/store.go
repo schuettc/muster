@@ -24,6 +24,45 @@
 // must be globally monotonic, not per-thread: Agent.LastReadEntryID is a
 // global watermark, and per-thread sequences would silently corrupt unread
 // math.
+//
+// # Read consistency
+//
+// DynamoDB's default read is eventually consistent; a strongly consistent one
+// costs twice the read units and is available on the BASE table only, never on
+// a secondary index. The rule this package follows:
+//
+//	A read that feeds a decision the caller itself just caused is strongly
+//	consistent. Everything else is not.
+//
+// In practice that is the small set of base-table single-item reads on the
+// daemon's synchronous op paths — GetAgent/agentByAlias (an agent's role and
+// read watermark), threadMeta (AppendEntry's not-found gate), and GetThread.
+// The daemon runs Inbox -> MarkRead -> setSessionBadge -> SessionUnread inside
+// one get_inbox op, so a stale watermark there re-lights the tmux badge the
+// operator just drained and leaves it lit until the next notify or read.
+//
+// Bulk reads stay eventually consistent by design: roster, Threads, concerns,
+// entriesAfter and maxEntryID are all index queries, which could not be
+// strongly consistent even if they wanted to be. Where one of them feeds a
+// consistency-sensitive decision, it is used for MEMBERSHIP only and the
+// per-item state is re-read from the base table — SessionUnread is the worked
+// example. maxEntryID is the one deliberate exception, documented at its
+// definition: its lag can only leave an entry unread slightly longer, never
+// mark an unseen one read.
+//
+// # The recipient denormalization is write-once
+//
+// entryItem freezes its thread's rcpt(to_kind, to_target) onto the entry at
+// write time, and that is what makes unread a sort-key-bounded query instead
+// of a join. It is safe only because a thread's ADDRESS never changes: the
+// sole updates this package makes to a metadata item touch status, updated_at,
+// origin_project, and the denormalized last-entry trio. If a thread were ever
+// re-addressed — a TransitionTask or a reassignment that rewrote to_kind or
+// to_target — every entry written before the change would strand in the OLD
+// gsi1 partition, invisible to the new recipient's queries, and unread would
+// silently under-count with no error anywhere. Re-addressing a thread
+// therefore requires rewriting gsi1pk on every one of its entries in the same
+// breath. Do not add an update that writes to_kind or to_target without it.
 package dynamostore
 
 import (
