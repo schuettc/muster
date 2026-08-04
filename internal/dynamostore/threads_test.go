@@ -405,13 +405,33 @@ func TestAppendEntryOnMissingThreadReturnsErrThreadNotFoundAndNoOrphan(t *testin
 	if _, err := s.AppendEntry(missing, "backend", "hello", ""); !errors.Is(err, store.ErrThreadNotFound) {
 		t.Fatalf("AppendEntry on missing thread = %v, want ErrThreadNotFound", err)
 	}
-	maxID, err := s.maxEntryID(t.Context())
-	if err != nil {
-		t.Fatalf("maxEntryID: %v", err)
-	}
-	if maxID != 0 {
+	if maxID := lastEntryLogID(t, s); maxID != 0 {
 		t.Fatalf("an orphan entry was written (max entry id = %d)", maxID)
 	}
+}
+
+// lastEntryLogID is the highest entry id in gsi2's global entry log, read the
+// way Task 14's device poller will read it. Tests use it as ground truth for
+// "what has actually been WRITTEN" — production code deliberately has no such
+// helper, because a global maximum is not a safe read watermark for any one
+// alias (see MarkRead).
+func lastEntryLogID(t *testing.T, s *Store) int64 {
+	t.Helper()
+	out, err := s.c.Query(t.Context(), &dynamodb.QueryInput{
+		TableName:                 aws.String(s.table),
+		IndexName:                 aws.String(gsi2Name),
+		KeyConditionExpression:    aws.String("gsi2pk = :pk"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{":pk": attrS(entriesPartition)},
+		ScanIndexForward:          aws.Bool(false),
+		Limit:                     aws.Int32(1),
+	})
+	if err != nil {
+		t.Fatalf("query entry log tail: %v", err)
+	}
+	if len(out.Items) == 0 {
+		return 0
+	}
+	return numAttr(out.Items[0], "id")
 }
 
 func TestUnreadCountRespectsWatermark(t *testing.T) {
@@ -1074,11 +1094,128 @@ func TestEntriesLandInTheGlobalEntryLog(t *testing.T) {
 		t.Fatalf("entry log out of id order: %d then %d",
 			numAttr(items[0], "id"), numAttr(items[1], "id"))
 	}
-	maxID, err := s.maxEntryID(t.Context())
-	if err != nil {
-		t.Fatalf("maxEntryID: %v", err)
+	if maxID := lastEntryLogID(t, s); maxID != 2 {
+		t.Fatalf("entry log tail = %d, want 2", maxID)
 	}
-	if maxID != 2 {
-		t.Fatalf("maxEntryID = %d, want 2", maxID)
+}
+
+// TestMarkReadIgnoresEntriesOutsideTheAliasesPartitions is the regression test
+// for the watermark fix: MarkRead derives its watermark from the alias's OWN
+// gsi1 partitions, so traffic between two OTHER agents can no longer bury an
+// entry that is still in flight to this one.
+//
+// The interleave is controlled, not raced: an entry id is allocated and held
+// uncommitted (exactly what AppendEntry does across its retry backoff) while a
+// higher id commits elsewhere and MarkRead runs in between. No fault injection
+// and no timing assumption — it reproduces against DynamoDB Local.
+func TestMarkReadIgnoresEntriesOutsideTheAliasesPartitions(t *testing.T) {
+	s := newTestStore(t)
+	ctx := t.Context()
+	if err := s.RegisterAgent(store.Agent{Alias: "r"}); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	mine, err := s.CreateThread(store.Thread{
+		Kind: "message", FromAgent: "peer", ToKind: "agent", ToTarget: "r",
+	}, "opener")
+	if err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	if err := s.MarkRead("r"); err != nil {
+		t.Fatalf("MarkRead (drain the opener): %v", err)
+	}
+
+	// A reply to r is allocated an id and then stalls before committing.
+	lowID, err := s.nextID(ctx, "entry")
+	if err != nil {
+		t.Fatalf("nextID: %v", err)
+	}
+	// Meanwhile two agents r has nothing to do with exchange a message, which
+	// takes a HIGHER entry id and commits first.
+	if _, err := s.CreateThread(store.Thread{
+		Kind: "message", FromAgent: "x", ToKind: "agent", ToTarget: "y",
+	}, "none of r's business"); err != nil {
+		t.Fatalf("CreateThread (unrelated): %v", err)
+	}
+	// r reads its inbox in the gap. The global entry log now holds an id above
+	// lowID; r's own partitions do not, so r's watermark must not move.
+	if err := s.MarkRead("r"); err != nil {
+		t.Fatalf("MarkRead (in the gap): %v", err)
+	}
+
+	// The stalled reply finally commits, under the watermark MarkRead wrote.
+	now := clock.NowMillis()
+	late := entryItem(mine, lowID, "peer", "the late reply", "", now, rcpt("agent", "r"))
+	if err := s.appendTransact(ctx, late, mine, now, lowID, "peer", true); err != nil {
+		t.Fatalf("appendTransact (the late reply): %v", err)
+	}
+
+	n, err := s.UnreadCount("r")
+	if err != nil {
+		t.Fatalf("UnreadCount: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("UnreadCount = %d, want 1 — an entry to r was buried by unrelated traffic between x and y", n)
+	}
+}
+
+// TestMarkReadStillOvershootsWithinOnePartition documents the window the fix
+// does NOT close. Deriving the watermark from the alias's own partitions
+// removes the cross-partition coupling; it does not order two writers racing
+// into the SAME recipient partition, because the ids are still allocated
+// before the commits. This test is the known limit, written down — if it ever
+// starts failing, the remaining window closed and the package comment is stale.
+func TestMarkReadStillOvershootsWithinOnePartition(t *testing.T) {
+	s := newTestStore(t)
+	ctx := t.Context()
+	if err := s.RegisterAgent(store.Agent{Alias: "r"}); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	mine, err := s.CreateThread(store.Thread{
+		Kind: "message", FromAgent: "peer", ToKind: "agent", ToTarget: "r",
+	}, "opener")
+	if err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	if err := s.MarkRead("r"); err != nil {
+		t.Fatalf("MarkRead (drain the opener): %v", err)
+	}
+
+	lowID, err := s.nextID(ctx, "entry")
+	if err != nil {
+		t.Fatalf("nextID: %v", err)
+	}
+	// A second writer, addressing the SAME alias, takes a higher id and lands
+	// first — same gsi1 partition, so MarkRead sees it.
+	if _, err := s.CreateThread(store.Thread{
+		Kind: "message", FromAgent: "peer2", ToKind: "agent", ToTarget: "r",
+	}, "overtakes the stalled one"); err != nil {
+		t.Fatalf("CreateThread (overtaker): %v", err)
+	}
+	if err := s.MarkRead("r"); err != nil {
+		t.Fatalf("MarkRead (in the gap): %v", err)
+	}
+
+	now := clock.NowMillis()
+	late := entryItem(mine, lowID, "peer", "the late reply", "", now, rcpt("agent", "r"))
+	if err := s.appendTransact(ctx, late, mine, now, lowID, "peer", true); err != nil {
+		t.Fatalf("appendTransact (the late reply): %v", err)
+	}
+
+	n, err := s.UnreadCount("r")
+	if err != nil {
+		t.Fatalf("UnreadCount: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("UnreadCount = %d, want 0 — this test records the KNOWN same-partition overshoot; "+
+			"if it is now 1 the window closed and the package comment must be updated", n)
+	}
+	// The entry itself is never lost, only its unread signal: it is in the
+	// thread, which Inbox still lists.
+	_, entries, err := s.GetThread(mine)
+	if err != nil {
+		t.Fatalf("GetThread: %v", err)
+	}
+	if len(entries) != 2 || entries[1].Body != "the late reply" {
+		t.Fatalf("thread entries = %+v, want the opener and the late reply", entries)
 	}
 }
