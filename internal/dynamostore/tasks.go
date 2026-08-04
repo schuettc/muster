@@ -110,6 +110,23 @@ func (s *Store) applyTaskWrite(w taskWrite) error {
 	entry := entryItem(w.threadID, entryID, w.byAgent, w.body, w.newStatus, now,
 		rcpt(strAttr(meta, "to_kind"), strAttr(meta, "to_target")))
 
+	return runTaskWrite(w,
+		func(attempt int, advanceLast bool) error {
+			return s.taskTransact(ctx, entry, w, now, entryID, attempt, advanceLast)
+		},
+		func() (bool, error) { return s.classifyTaskFailure(ctx, w) })
+}
+
+// runTaskWrite is applyTaskWrite's retry state machine, split from the client
+// so all of it — the conflict retry, the single concession, and the terminal
+// branch after it — is reachable without an endpoint (DynamoDB Local never
+// emits a TransactionConflict, so the live tests cannot drive this).
+//
+// transact runs one attempt; classify re-reads the thread to say what a
+// cancelled one meant.
+func runTaskWrite(w taskWrite, transact func(attempt int, advanceLast bool) error,
+	classify func() (bool, error),
+) error {
 	// advanceLast starts true for the same reason it does in AppendEntry: the
 	// write claims the denormalized last-entry trio under a forward-only guard,
 	// which is the durable form of SQLite's MAX(entries.id). A concurrent
@@ -117,11 +134,22 @@ func (s *Store) applyTaskWrite(w taskWrite) error {
 	// drag the trio backwards over it.
 	advanceLast := true
 	for attempt := 0; ; attempt++ {
-		err := s.taskTransact(ctx, entry, w, now, entryID, advanceLast)
+		err := transact(attempt, advanceLast)
 		switch {
 		case err == nil:
 			return nil
 
+		// Cancellation reasons are reported PER ITEM, so one exception can
+		// carry a TransactionConflict for one item and a ConditionalCheckFailed
+		// for another — both classifiers can be true at once and the order of
+		// these two cases decides which wins. Taking conflict first is safe
+		// only because a retry re-evaluates every guard, including the open
+		// guard (see taskUpdate): treating a real condition failure as a
+		// conflict costs one wasted round trip and then fails the same way,
+		// never a claim that should have lost and did not. Today the pairing is
+		// unreachable anyway — this transaction's Put has no condition and its
+		// key is unique to this writer — but the safety is structural rather
+		// than accidental, so it survives someone adding a second guarded item.
 		case isTransactionConflict(err) && attempt < appendMaxRetries:
 			// Another writer held the thread item mid-transaction. Transient,
 			// and nothing was written, so the whole thing retries safely. The
@@ -134,14 +162,16 @@ func (s *Store) applyTaskWrite(w taskWrite) error {
 			// must NEVER be retried), or a higher-id entry already owns the
 			// last-entry trio (retry without competing for it). Only a strongly
 			// consistent re-read can tell them apart.
-			stillEligible, rErr := s.classifyTaskFailure(ctx, w)
+			stillEligible, rErr := classify()
 			if rErr != nil {
 				return rErr
 			}
 			if !stillEligible || !advanceLast {
 				// Nothing left to concede: the write's own preconditions hold
 				// and it was not competing for the trio, so this is a genuine
-				// failure rather than a race to re-run.
+				// failure rather than a race to re-run. There is exactly ONE
+				// concession available, which is what bounds this loop on the
+				// condition-failed path — it cannot spin.
 				return fmt.Errorf("dynamostore: %s thread %d: %w", w.newStatus, w.threadID, err)
 			}
 			advanceLast = false
@@ -169,6 +199,15 @@ func (s *Store) classifyTaskFailure(ctx context.Context, w taskWrite) (bool, err
 		}
 		return false, err
 	}
+	// This read is an ABA check, and it can be fooled: if the status flipped
+	// away from open and back between the cancelled transaction and this read,
+	// the claim is reported as still eligible and the caller concedes the
+	// last-entry trio it did not actually lose. The concession is SAFE either
+	// way — the retry still carries the open guard, so it can only win a task
+	// that is genuinely open — it is just occasionally over-applied, leaving
+	// last_entry_id below this entry's id and so diverging from what SQLite's
+	// MAX(entries.id) would report. A cosmetic staleness in one thread's inbox
+	// row, not a claim that should have failed.
 	if w.onlyIfOpen && strAttr(meta, "status") != "open" {
 		return false, store.ErrNotClaimable
 	}
@@ -179,9 +218,16 @@ func (s *Store) classifyTaskFailure(ctx context.Context, w taskWrite) (bool, err
 // — the DynamoDB expression of the SQLite transaction, so a task never changes
 // status without the entry recording who changed it.
 func (s *Store) taskTransact(ctx context.Context, entry map[string]types.AttributeValue,
-	w taskWrite, now, entryID int64, advanceLast bool,
+	w taskWrite, now, entryID int64, attempt int, advanceLast bool,
 ) error {
 	_, err := s.c.TransactWriteItems(ctx, &dynamodb.TransactWriteItemsInput{
+		// The claim path is where an un-tokenized re-send does the most damage:
+		// it would fail the open guard the first send satisfied and report
+		// ErrNotClaimable to the agent that actually won. entryID is unique to
+		// this call, and attempt/advanceLast make the token move whenever the
+		// expression does. See requestToken.
+		ClientRequestToken: requestToken("task|%s|%d|%d|%d|%t",
+			s.writer, w.threadID, entryID, attempt, advanceLast),
 		TransactItems: []types.TransactWriteItem{
 			{Put: &types.Put{TableName: aws.String(s.table), Item: entry}},
 			{Update: taskUpdate(s.table, w, now, entryID, advanceLast)},
@@ -213,6 +259,14 @@ func taskUpdate(table string, w taskWrite, now, entryID int64, advanceLast bool)
 	if w.onlyIfOpen {
 		// ClaimTask's compare-and-swap, and the ONLY thing serializing
 		// concurrent claimants. Do not weaken it into a prior read.
+		//
+		// KEEP THIS BLOCK OUTSIDE THE advanceLast ONE. That placement is what
+		// makes the concession retry safe: every attempt re-carries
+		// `#status = :open`, so conceding the last-entry trio narrows what the
+		// write competes for without ever loosening what it is allowed to win.
+		// Fold the open guard in under advanceLast and the retry becomes an
+		// unconditional status overwrite — a second claimant succeeding after
+		// the first already won, silently, with both agents holding the task.
 		cond += " AND #status = :open"
 		values[":open"] = attrS("open")
 	}

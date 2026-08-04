@@ -32,10 +32,23 @@ func newTestStore(t *testing.T) *Store {
 }
 
 // testTableName derives a unique table per test so tests never share state.
-// Subtest names contain '/', which DynamoDB rejects in a table name.
+//
+// DynamoDB accepts only [a-zA-Z0-9_.-] in a table name, and Go builds subtest
+// names straight from the prose in t.Run — so '/', spaces and any punctuation
+// the author happened to type all have to go. Filtering to the allowed set
+// rather than listing the offenders keeps a new subtest from failing on a
+// ValidationException that says nothing about apostrophes.
 func testTableName(t *testing.T) string {
 	t.Helper()
-	name := strings.NewReplacer("/", "-", " ", "-", "#", "-").Replace(t.Name())
+	name := strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9',
+			r == '_', r == '.', r == '-':
+			return r
+		default:
+			return '-'
+		}
+	}, t.Name())
 	return TestTablePrefix + name
 }
 

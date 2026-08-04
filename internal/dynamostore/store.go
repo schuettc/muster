@@ -123,6 +123,7 @@ package dynamostore
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"os"
@@ -158,6 +159,10 @@ const (
 type Store struct {
 	c     *dynamodb.Client
 	table string
+
+	// writer namespaces this Store's ClientRequestTokens. See requestToken for
+	// why the deterministic half of a token is not enough on its own.
+	writer string
 }
 
 // Open connects to DynamoDB and ensures the table exists. Region and
@@ -189,7 +194,7 @@ func Open(ctx context.Context, table string) (*Store, error) {
 		}
 	})
 
-	s := &Store{c: c, table: table}
+	s := &Store{c: c, table: table, writer: rand.Text()}
 	if err := s.EnsureTable(ctx); err != nil {
 		return nil, err
 	}

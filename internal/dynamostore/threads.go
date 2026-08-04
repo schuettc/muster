@@ -2,6 +2,8 @@ package dynamostore
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"sort"
@@ -244,6 +246,9 @@ func (s *Store) CreateThread(t store.Thread, firstBody string) (int64, error) {
 	}
 
 	_, err = s.c.TransactWriteItems(ctx, &dynamodb.TransactWriteItemsInput{
+		// Both ids come from nextID, so they are unique to this call and the
+		// token is stable for as long as the SDK keeps retrying it.
+		ClientRequestToken: requestToken("create-thread|%s|%d|%d", s.writer, threadID, entryID),
 		TransactItems: []types.TransactWriteItem{
 			{Put: &types.Put{
 				TableName: aws.String(s.table),
@@ -290,7 +295,7 @@ func (s *Store) AppendEntry(threadID int64, fromAgent, body, statusChange string
 	// precisely the mis-pick the SQLite comment forbids.
 	advanceLast := true
 	for attempt := 0; ; attempt++ {
-		err := s.appendTransact(ctx, entry, threadID, now, entryID, fromAgent, advanceLast)
+		err := s.appendTransact(ctx, entry, threadID, now, entryID, attempt, fromAgent, advanceLast)
 		switch {
 		case err == nil:
 			return entryID, nil
@@ -333,8 +338,11 @@ func appendBackoff(attempt int) time.Duration {
 // appendTransact writes the entry and bumps the thread in one transaction.
 // When advanceLast is false the last-entry trio is left alone (a higher-id
 // entry already won that race) and only updated_at and the entry count move.
+//
+// attempt is the caller's retry counter and feeds the ClientRequestToken only;
+// see requestToken for why it belongs in the token.
 func (s *Store) appendTransact(ctx context.Context, entry map[string]types.AttributeValue,
-	threadID, now, entryID int64, fromAgent string, advanceLast bool,
+	threadID, now, entryID int64, attempt int, fromAgent string, advanceLast bool,
 ) error {
 	upd := &types.Update{
 		TableName: aws.String(s.table),
@@ -363,12 +371,69 @@ func (s *Store) appendTransact(ctx context.Context, entry map[string]types.Attri
 			"attribute_exists(pk) AND (attribute_not_exists(#last_entry_id) OR #last_entry_id < :eid)")
 	}
 	_, err := s.c.TransactWriteItems(ctx, &dynamodb.TransactWriteItemsInput{
+		ClientRequestToken: requestToken("append|%s|%d|%d|%d|%t",
+			s.writer, threadID, entryID, attempt, advanceLast),
 		TransactItems: []types.TransactWriteItem{
 			{Put: &types.Put{TableName: aws.String(s.table), Item: entry}},
 			{Update: upd},
 		},
 	})
 	return err
+}
+
+// requestToken derives a TransactWriteItems ClientRequestToken.
+//
+// TransactWriteItems is NOT idempotent without one, and the SDK's standard
+// retryer retries connection resets and 5xx on every operation. So a
+// transaction that COMMITS and then fails to acknowledge is re-sent by the SDK
+// itself, and the second send re-evaluates the ConditionExpression the first
+// one just satisfied — on the claim path that hands ErrNotClaimable to the
+// agent who actually won the task, which then sits claimed by someone who
+// believes they lost. With a token, DynamoDB recognizes the re-send inside a
+// 10-minute idempotency window and returns the original result rather than
+// re-evaluating anything.
+//
+// This is a different layer from the daemon→Lambda IdemKey: that one
+// deduplicates one caller's op, this one deduplicates the SDK's own retries
+// inside a single invocation. Neither substitutes for the other.
+//
+// Three rules govern the value.
+//
+// STABLE across the SDK's internal retries of one attempt — that is the entire
+// protection, so it is computed once per TransactWriteItems call and never per
+// physical request.
+//
+// DISTINCT whenever the request content moves, because re-using a token with
+// different content is an IdempotentParameterMismatch. The concession retry
+// deliberately alters the expression, so advanceLast is in every token that has
+// one, and callers fold in their attempt counter as well: our own retries only
+// ever follow a cancellation we actually observed, which by definition
+// committed nothing, so a fresh token per attempt loses no protection and
+// avoids depending on how DynamoDB remembers a failed token.
+//
+// NAMESPACED to this Store, via s.writer. The ids are the natural identity of a
+// write, but they are only unique for as long as the counter items behind
+// nextID live — and the idempotency window does NOT share that lifetime.
+// DynamoDB Local demonstrates both halves of the cost: the window is not scoped
+// to a table (two fresh tables each writing thread 1 / entry 1 collide) and it
+// outlives DeleteTable (the same table recreated inside ten minutes collides
+// with its former self). The mismatch surfaces loudly, but the matching case is
+// worse — a token whose content happens to agree is answered with the ORIGINAL
+// result and the write is silently dropped. Production has one long-lived
+// table, so neither would fire there; the namespace is what makes that a fact
+// about this code rather than about the deployment.
+//
+// s.writer is random per Store, which is the one thing here that is not derived
+// from the write. It costs nothing: it is fixed for the process's life, so the
+// stability rule above still holds, and a token only has to survive an SDK
+// retry — no caller is waiting on an answer across a restart. Deduplicating a
+// caller's op ACROSS invocations is the IdemKey layer's job, not this one's.
+//
+// Hashed rather than concatenated because the field caps at 36 characters,
+// which the writer id plus two int64s exceeds on its own.
+func requestToken(format string, args ...any) *string {
+	sum := sha256.Sum256([]byte(fmt.Sprintf(format, args...)))
+	return aws.String(hex.EncodeToString(sum[:16]))
 }
 
 // isTransactionConditionFailed reports whether a TransactWriteItems was

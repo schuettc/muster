@@ -1,6 +1,7 @@
 package dynamostore
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"slices"
@@ -237,6 +238,91 @@ func TestTransactionCancellationClassifiers(t *testing.T) {
 		if got := isTransactionConflict(tc.err); got != tc.wantConflic {
 			t.Errorf("%s: isTransactionConflict = %v, want %v", tc.name, got, tc.wantConflic)
 		}
+	}
+}
+
+// TestRequestTokenIsStableUniqueAndShortEnough pins the properties a
+// ClientRequestToken has to have, none of which fails visibly if it breaks.
+//
+// STABLE for one attempt is the whole point: without it the SDK's own retry of
+// a committed-but-unacknowledged transaction re-evaluates the guards, and a
+// claim's winner is told it lost. DISTINCT whenever anything moves is the other
+// half, and it has two failure modes of opposite character — DynamoDB answers a
+// re-used token carrying DIFFERENT content with IdempotentParameterMismatch
+// (loud), and one carrying the SAME content with the original result, silently
+// dropping the write. SHORT because the field caps at 36 characters, which is
+// why this is a hash and not a concatenation.
+func TestRequestTokenIsStableUniqueAndShortEnough(t *testing.T) {
+	const maxLen = 36
+	// The formats below are the live call sites, writer id first. If one of
+	// them changes, change it here too.
+	const task = "task|%s|%d|%d|%d|%t"
+
+	// The same inputs must always produce the same token — that is what makes
+	// computing it once per call, rather than per physical request, the whole
+	// protection.
+	a := aws.ToString(requestToken(task, "w1", 7, 42, 0, true))
+	if b := aws.ToString(requestToken(task, "w1", 7, 42, 0, true)); a != b {
+		t.Fatalf("token is not deterministic: %q then %q", a, b)
+	}
+
+	seen := map[string]string{}
+	add := func(label string, tok *string) {
+		t.Helper()
+		s := aws.ToString(tok)
+		if s == "" {
+			t.Fatalf("%s: empty token", label)
+		}
+		if len(s) > maxLen {
+			t.Fatalf("%s: token %q is %d chars, over DynamoDB's %d limit", label, s, len(s), maxLen)
+		}
+		if prev, dup := seen[s]; dup {
+			t.Fatalf("%s and %s share token %q — one of them would be swallowed as a duplicate",
+				prev, label, s)
+		}
+		seen[s] = label
+	}
+	add("claim: writer w1, thread 7, entry 42, attempt 0, advancing",
+		requestToken(task, "w1", 7, 42, 0, true))
+	add("same attempt with the trio conceded — a DIFFERENT expression",
+		requestToken(task, "w1", 7, 42, 0, false))
+	add("same shape, next attempt",
+		requestToken(task, "w1", 7, 42, 1, true))
+	add("different entry id",
+		requestToken(task, "w1", 7, 43, 0, true))
+	add("different thread",
+		requestToken(task, "w1", 8, 42, 0, true))
+	// The namespace that stops one Store's ids colliding with another's. The
+	// idempotency window is neither table-scoped nor cleared by DeleteTable, so
+	// two Stores that both allocate thread 1 / entry 1 collide without it —
+	// which is exactly what the endpoint suite did before writer was added.
+	add("another writer, identical ids",
+		requestToken(task, "w2", 7, 42, 0, true))
+	add("an append, not a task write",
+		requestToken("append|%s|%d|%d|%d|%t", "w1", 7, 42, 0, true))
+	add("a thread creation",
+		requestToken("create-thread|%s|%d|%d", "w1", 7, 42))
+}
+
+// TestOpenGivesEachStoreItsOwnWriterID: the writer id namespaces every
+// ClientRequestToken this Store issues, so two Stores sharing one would
+// reintroduce the collision it exists to prevent.
+func TestOpenGivesEachStoreItsOwnWriterID(t *testing.T) {
+	a := newTestStore(t)
+	b, err := Open(context.Background(), testTableName(t)+"-b")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := b.DropTable(context.Background()); err != nil {
+			t.Errorf("DropTable: %v", err)
+		}
+	})
+	if a.writer == "" {
+		t.Fatal("Open left writer empty; every token would collapse into one namespace")
+	}
+	if a.writer == b.writer {
+		t.Fatalf("two Stores share writer %q", a.writer)
 	}
 }
 
@@ -948,6 +1034,39 @@ func TestSessionUnreadUsesPerAliasWatermark(t *testing.T) {
 // with the condition at appendTransact deleted. This one does not: the second
 // call is a strictly LOWER id, so it must be refused, and the thread's last
 // entry must remain the higher one.
+// TestAppendTransactSurvivesARepeatedSend is the entry path's half of the
+// ClientRequestToken. The SDK's standard retryer re-sends a transaction whose
+// response was lost — same arguments, so the same token — and an un-tokenized
+// append applies its `ADD #entry_count :one` twice, or trips its own
+// forward-only guard and reports a failure for an entry that is already
+// durably written.
+func TestAppendTransactSurvivesARepeatedSend(t *testing.T) {
+	s := newTestStore(t)
+	ctx := t.Context()
+	id, err := s.CreateThread(store.Thread{
+		Kind: "message", FromAgent: "a", ToKind: "agent", ToTarget: "b",
+	}, "first")
+	if err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+
+	const entryID = 400
+	entry := entryItem(id, entryID, "a", "again", "", 5000, rcpt("agent", "b"))
+	for i := range 2 {
+		if err := s.appendTransact(ctx, entry, id, 5000, entryID, 0, "a", true); err != nil {
+			t.Fatalf("send %d: %v", i, err)
+		}
+	}
+
+	meta, err := s.threadMeta(ctx, id)
+	if err != nil {
+		t.Fatalf("threadMeta: %v", err)
+	}
+	if got := numAttr(meta, "entry_count"); got != 2 {
+		t.Fatalf("entry_count = %d, want 2 — the re-send was applied a second time", got)
+	}
+}
+
 func TestAppendTransactGuardIsForwardOnly(t *testing.T) {
 	s := newTestStore(t)
 	ctx := t.Context()
@@ -962,7 +1081,7 @@ func TestAppendTransactGuardIsForwardOnly(t *testing.T) {
 
 	// The higher id commits first and claims the last-entry trio.
 	high := entryItem(id, 7, "hi", "seven", "", now, recipient)
-	if err := s.appendTransact(ctx, high, id, now, 7, "hi", true); err != nil {
+	if err := s.appendTransact(ctx, high, id, now, 7, 0, "hi", true); err != nil {
 		t.Fatalf("appendTransact(entryID=7): %v", err)
 	}
 	meta, err := s.threadMeta(ctx, id)
@@ -977,7 +1096,7 @@ func TestAppendTransactGuardIsForwardOnly(t *testing.T) {
 	// as the thread's last entry — that mis-pick is exactly what the SQLite
 	// MAX(entries.id) rule forbids.
 	low := entryItem(id, 5, "lo", "five", "", now+1, recipient)
-	err = s.appendTransact(ctx, low, id, now+1, 5, "lo", true)
+	err = s.appendTransact(ctx, low, id, now+1, 5, 0, "lo", true)
 	if err == nil {
 		t.Fatal("appendTransact(entryID=5) succeeded; the forward-only guard did not fire")
 	}
@@ -1145,7 +1264,7 @@ func TestMarkReadIgnoresEntriesOutsideTheAliasesPartitions(t *testing.T) {
 	// The stalled reply finally commits, under the watermark MarkRead wrote.
 	now := clock.NowMillis()
 	late := entryItem(mine, lowID, "peer", "the late reply", "", now, rcpt("agent", "r"))
-	if err := s.appendTransact(ctx, late, mine, now, lowID, "peer", true); err != nil {
+	if err := s.appendTransact(ctx, late, mine, now, lowID, 0, "peer", true); err != nil {
 		t.Fatalf("appendTransact (the late reply): %v", err)
 	}
 
@@ -1197,7 +1316,7 @@ func TestMarkReadStillOvershootsWithinOnePartition(t *testing.T) {
 
 	now := clock.NowMillis()
 	late := entryItem(mine, lowID, "peer", "the late reply", "", now, rcpt("agent", "r"))
-	if err := s.appendTransact(ctx, late, mine, now, lowID, "peer", true); err != nil {
+	if err := s.appendTransact(ctx, late, mine, now, lowID, 0, "peer", true); err != nil {
 		t.Fatalf("appendTransact (the late reply): %v", err)
 	}
 
