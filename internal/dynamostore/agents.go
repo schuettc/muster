@@ -397,6 +397,11 @@ func attrN(v int64) types.AttributeValue {
 
 func attrBool(v bool) types.AttributeValue { return &types.AttributeValueMemberBOOL{Value: v} }
 
+// attrB writes opaque bytes. It must never be handed an empty slice: DynamoDB
+// rejects an empty AttributeValue in an update expression, so callers with
+// nothing to store REMOVE the attribute instead (see IdemComplete).
+func attrB(v []byte) types.AttributeValue { return &types.AttributeValueMemberB{Value: v} }
+
 // numAttr reads a Number attribute, treating absence as zero. An item written
 // before an attribute existed simply reads as its zero value — this backend's
 // equivalent of the SQLite additive-column migration, and why it needs no
@@ -417,6 +422,15 @@ func strAttr(item map[string]types.AttributeValue, name string) string {
 	m, ok := item[name].(*types.AttributeValueMemberS)
 	if !ok {
 		return ""
+	}
+	return m.Value
+}
+
+// binAttr reads a Binary attribute, treating absence as nil.
+func binAttr(item map[string]types.AttributeValue, name string) []byte {
+	m, ok := item[name].(*types.AttributeValueMemberB)
+	if !ok {
+		return nil
 	}
 	return m.Value
 }

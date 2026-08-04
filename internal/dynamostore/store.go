@@ -163,6 +163,12 @@ type Store struct {
 	// writer namespaces this Store's ClientRequestTokens. See requestToken for
 	// why the deterministic half of a token is not enough on its own.
 	writer string
+
+	// eventTTL is how far out AppendEvent stamps an event item's `ttl`. Read
+	// once at Open from the EventRetentionEnv knob (see eventRetention), so a
+	// deployment's retention is fixed for the process's life rather than
+	// re-read per write.
+	eventTTL time.Duration
 }
 
 // Open connects to DynamoDB and ensures the table exists. Region and
@@ -175,6 +181,14 @@ func Open(ctx context.Context, table string) (*Store, error) {
 		return nil, errors.New("dynamostore: table name required")
 	}
 	endpoint := os.Getenv(EndpointEnv)
+
+	// Read the retention knob before touching AWS: a typo in it is a
+	// configuration error the operator should see at startup, not one that
+	// silently reverts to 30 days after the table is created.
+	ttl, err := eventRetention()
+	if err != nil {
+		return nil, err
+	}
 
 	var loadOpts []func(*awsconfig.LoadOptions) error
 	if endpoint != "" {
@@ -194,7 +208,7 @@ func Open(ctx context.Context, table string) (*Store, error) {
 		}
 	})
 
-	s := &Store{c: c, table: table, writer: rand.Text()}
+	s := &Store{c: c, table: table, writer: rand.Text(), eventTTL: ttl}
 	if err := s.EnsureTable(ctx); err != nil {
 		return nil, err
 	}

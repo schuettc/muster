@@ -62,3 +62,18 @@ CREATE TABLE IF NOT EXISTS events (
     detail    TEXT NOT NULL DEFAULT ''       -- 'lit' | 'cleared' | 'skipped: …' | 'error: …'
 );
 CREATE INDEX IF NOT EXISTS idx_events_agent ON events(agent, id);
+
+-- Server-side idempotency records: one row per client IdemKey, claimed by the
+-- caller that gets to execute the op and completed with that op's response so
+-- a redelivery replays it instead of re-running it (see internal/store/idem.go).
+-- Local mode never populates this table — a local client sends no IdemKey — but
+-- the table and its methods exist on both backends so the interface is honest
+-- and the conformance suite can hold them to the same behaviour.
+-- No ALTER migration is needed: CREATE TABLE IF NOT EXISTS here covers
+-- pre-existing databases, since store.Open applies this whole file every time.
+CREATE TABLE IF NOT EXISTS idem (
+    key        TEXT PRIMARY KEY,
+    state      TEXT NOT NULL,          -- 'pending' | 'done'
+    resp       BLOB,
+    created_at INTEGER NOT NULL
+);

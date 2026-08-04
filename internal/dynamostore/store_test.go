@@ -5,6 +5,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/schuettc/muster/internal/store"
 )
 
 // newTestStore returns a Store against a DynamoDB reachable at
@@ -50,6 +52,15 @@ func testTableName(t *testing.T) string {
 		}
 	}, t.Name())
 	return TestTablePrefix + name
+}
+
+// TestStoreSatisfiesAPI pins *Store to store.API at compile time — the twin of
+// daemon's TestStoreSatisfiesAPI for the SQLite backend. With KV, events and
+// the idempotency records in place this backend now implements the interface
+// in full, so a method added to store.API that this package forgets is a build
+// failure rather than a lambda-mode surprise. It needs no endpoint.
+func TestStoreSatisfiesAPI(_ *testing.T) {
+	var _ store.API = (*Store)(nil)
 }
 
 func TestOpenCreatesTable(t *testing.T) {

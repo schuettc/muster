@@ -33,4 +33,10 @@ type API interface {
 	Events(q EventQuery) ([]Event, error)
 	MaxEventID() (int64, error)
 	PruneEvents(olderThanMillis int64) (int64, error)
+	// IdemBegin claims key for a first delivery. found=false means this caller
+	// owns execution and must call IdemComplete. found=true with done=true
+	// means the op already ran and resp is its recorded response. found=true
+	// with done=false means an identical request is in flight.
+	IdemBegin(key string) (resp []byte, done bool, found bool, err error)
+	IdemComplete(key string, resp []byte) error
 }
