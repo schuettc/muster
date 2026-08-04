@@ -25,6 +25,14 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
+		// The provided.al2023 runtime execs the zip's `bootstrap` with NO
+		// arguments, so the Lambda never gets to say `muster lambda`. Without
+		// this the function would print usage to a log nobody reads and exit
+		// 2 on every cold start. AWS_LAMBDA_FUNCTION_NAME is set by the
+		// runtime itself and by nothing else, so it cannot fire on a device.
+		if os.Getenv(LambdaRuntimeEnv) != "" {
+			os.Exit(runLambda())
+		}
 		humancli.Usage(os.Stdout)
 		os.Exit(2)
 	}
@@ -78,6 +86,13 @@ func main() {
 func wantsHelp(args []string) bool {
 	return len(args) > 0 && humancli.IsHelpArg(args[0])
 }
+
+// LambdaRuntimeEnv is set by the AWS Lambda runtime in every execution
+// environment. main() reads it only to decide what an ARGUMENT-LESS
+// invocation means: on a device that is a usage error, inside Lambda it is
+// the runtime starting `bootstrap`. An explicit `muster lambda` needs none of
+// this — the switch above routes it regardless of environment.
+const LambdaRuntimeEnv = "AWS_LAMBDA_FUNCTION_NAME"
 
 // BackendEnv selects which backend `muster serve` fronts: "local" (the
 // default) or "remote". An unrecognised value is an error rather than a

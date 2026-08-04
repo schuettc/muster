@@ -253,6 +253,29 @@ won't register, drain mail, or deregister. To move the identity deliberately,
 run `muster register` from the pane that should own it — the explicit
 commands always override.
 
+### Spanning two machines (optional)
+
+By default the bus is one SQLite file that one daemon owns, so agents on your
+laptop and agents on your desktop are on two unrelated buses and cannot address
+each other. If you want one bus across both, there is an optional hosted
+backend: a DynamoDB table and a Lambda function you deploy into **your own** AWS
+account from the CloudFormation template in
+[`contrib/cloudformation/`](contrib/cloudformation/muster-backend.yaml). Devices
+authenticate with a shared bearer token and need no AWS credentials at all.
+
+It costs a few cents a month at personal scale, it is opt-in, and the local path
+is untouched if you never want it — the AWS SDK is not even compiled into the
+binary you install. Setup, the security model, cost, and the known limitations
+are in [`docs/hosted-backend.md`](docs/hosted-backend.md); read the security
+section before deploying, because the endpoint is publicly reachable and the
+token is the only thing protecting it.
+
+```sh
+export MUSTER_BACKEND=remote
+export MUSTER_REMOTE_URL=https://xxxxxxxx.lambda-url.us-east-1.on.aws/
+# plus the token at ~/.local/share/muster/remote-token, mode 0600
+```
+
 ## License
 
 [MIT](LICENSE) © Court Schuett

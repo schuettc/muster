@@ -40,9 +40,15 @@ for arch in arm64 amd64; do
   tar -C "$dir" -czf "$work/muster_darwin_${arch}.tar.gz" muster
 done
 
-# recompute checksums across the full asset set (signed darwin + CI's linux)
+# Recompute checksums across the FULL asset set — signed darwin, CI's linux,
+# and the Lambda zip for the hosted backend. This file replaces CI's, so every
+# asset CI checksummed has to be downloaded and re-hashed here: anything left
+# out silently vanishes from checksums.txt and looks like an unverifiable
+# download to whoever fetches it. The zip is a linux/arm64 binary and is not
+# signed or notarized — nothing on macOS ever executes it.
 (cd "$work" && \
-  gh release download "$tag" --repo "$repo" --pattern "muster_linux_*.tar.gz" && \
-  shasum -a 256 muster_*.tar.gz > checksums.txt && \
+  gh release download "$tag" --repo "$repo" \
+    --pattern "muster_linux_*.tar.gz" --pattern "muster-lambda-*.zip" && \
+  shasum -a 256 muster_*.tar.gz muster-lambda-*.zip > checksums.txt && \
   gh release upload "$tag" muster_darwin_*.tar.gz checksums.txt --clobber --repo "$repo")
 echo "done: darwin assets for $tag are signed + notarized"

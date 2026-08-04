@@ -224,6 +224,47 @@ func TestRemoteBackendRequiresItsToken(t *testing.T) {
 	}
 }
 
+// TestBareInvocationUnderLambdaRuntimeRoutesToLambda pins the dispatch
+// decision the provided.al2023 runtime depends on. It execs the zip's
+// `bootstrap` with no arguments, so a bare invocation inside Lambda is not a
+// usage error — it is the function starting. Without the AWS_LAMBDA_FUNCTION_NAME
+// branch every cold start prints usage and exits 2.
+//
+// This test binary is built UNTAGGED, so the branch lands in lambda_off.go's
+// stub. That is exactly the observable that distinguishes the two paths: the
+// stub's exit code is also 2, so the assertion has to be on stderr naming the
+// rebuild, not on the code.
+func TestBareInvocationUnderLambdaRuntimeRoutesToLambda(t *testing.T) {
+	out, errOut, code := runEnv(t, []string{"AWS_LAMBDA_FUNCTION_NAME=muster-bus"})
+	if code != 2 {
+		t.Errorf("exit code = %d, want 2", code)
+	}
+	if !strings.Contains(errOut, "-tags lambda") {
+		t.Errorf("stderr = %q, want the lambda-mode stub message — a bare invocation "+
+			"under the Lambda runtime must route to lambda mode", errOut)
+	}
+	if strings.Contains(out, "muster — local multi-agent coordination bus") {
+		t.Errorf("stdout printed the usage banner; the Lambda runtime would log it "+
+			"and exit on every cold start:\n%s", out)
+	}
+}
+
+// TestBareInvocationOutsideLambdaStillPrintsUsage is the other half: the
+// AWS_LAMBDA_FUNCTION_NAME branch must not change what `muster` with no
+// arguments does anywhere else. TestBareInvocationExitsTwoOnStdout covers the
+// inherited environment; this pins that an EMPTY value is also not the Lambda
+// runtime, since that is how the variable would most plausibly get set by
+// accident.
+func TestBareInvocationOutsideLambdaStillPrintsUsage(t *testing.T) {
+	out, _, code := runEnv(t, []string{"AWS_LAMBDA_FUNCTION_NAME="})
+	if code != 2 {
+		t.Errorf("exit code = %d, want 2", code)
+	}
+	if !strings.Contains(out, "muster — local multi-agent coordination bus") {
+		t.Errorf("stdout missing the usage banner:\n%s", out)
+	}
+}
+
 func TestDebugMissingOpStillExitsNonzero(t *testing.T) {
 	// Sanity check that fixing debug's -h handling didn't disturb its
 	// existing "no args" error path.

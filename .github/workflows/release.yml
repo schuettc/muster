@@ -3,7 +3,8 @@ name: release
 # Merge to main = release. The VERSION file is the knob: when a merge lands on
 # main and no tag v<VERSION> exists yet, this workflow tags it, creates the
 # GitHub release (auto-generated notes), and attaches cross-compiled binaries
-# (cgo-free: darwin/linux × arm64/amd64) with sha256 checksums. Every binary
+# (cgo-free: darwin/linux × arm64/amd64) plus the hosted backend's Lambda zip,
+# all with sha256 checksums. Every binary
 # is stamped with this release's version/commit via -ldflags -X into
 # internal/version. A merge that doesn't bump VERSION releases nothing.
 # macOS binaries are re-signed and notarized locally afterwards via
@@ -71,7 +72,29 @@ jobs:
               go build -trimpath -ldflags "$ldflags" -o "dist/${out}/muster" ./cmd/muster
             tar -C "dist/${out}" -czf "dist/${out}.tar.gz" muster
           done
-          (cd dist && shasum -a 256 *.tar.gz > checksums.txt)
+          # The Lambda artifact for the optional hosted backend
+          # (contrib/cloudformation/muster-backend.yaml). Three things about
+          # this build differ from the device binaries above and all three are
+          # load-bearing:
+          #
+          #   -tags lambda   is NOT optional. Without it the zip carries a
+          #                  binary whose runLambda is the stub, and the
+          #                  function dies at every cold start with "built
+          #                  without lambda mode". The device binaries are
+          #                  built WITHOUT the tag on purpose — that is what
+          #                  keeps the AWS SDK out of what people install.
+          #   bootstrap      is the filename provided.al2023 execs. Any other
+          #                  name and the runtime cannot start the function.
+          #   linux/arm64    matches Architectures: [arm64] in the template.
+          zipname="muster-lambda-arm64-${tag}.zip"
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 \
+            go build -tags lambda -trimpath -ldflags "$ldflags" -o dist/bootstrap ./cmd/muster
+          (cd dist && zip -qj "$zipname" bootstrap && rm bootstrap)
+          # Version-stamped, because CloudFormation only redeploys Lambda code
+          # when S3Key or S3ObjectVersion changes — a same-key overwrite leaves
+          # the old binary running with no error anywhere. A tagged filename
+          # makes the upgrade path correct by default.
+          (cd dist && shasum -a 256 *.tar.gz *.zip > checksums.txt)
       - name: Create the release
         if: steps.rel.outputs.create == 'true'
         env:
@@ -84,4 +107,4 @@ jobs:
         if: steps.rel.outputs.skip == 'false'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "${{ steps.rel.outputs.tag }}" dist/*.tar.gz dist/checksums.txt --clobber --repo "$GITHUB_REPOSITORY"
+        run: gh release upload "${{ steps.rel.outputs.tag }}" dist/*.tar.gz dist/*.zip dist/checksums.txt --clobber --repo "$GITHUB_REPOSITORY"

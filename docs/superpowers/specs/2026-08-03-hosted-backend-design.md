@@ -360,24 +360,29 @@ linux/arm64 binary it already cross-compiles.
 
 Modelled on two devices, a 10-second poll, daemons up twelve hours a day, plus a
 few hundred real operations a day — roughly 275,000 invocations a month. List
-rates, us-east-1. **These rates must be re-verified before they are published in
-user-facing docs.**
+rates, us-east-1, DynamoDB Standard table class, on-demand capacity.
+**Re-verified against the AWS pricing pages on 2026-08-04**, which corrected the
+DynamoDB rates below: both were recalled at double their current value, since
+AWS halved on-demand throughput pricing after they were first written down.
 
 | Line item | Volume/month | Rate | Cost |
 |---|---|---|---|
 | Lambda requests | 275k | 1M/mo always-free | $0 |
-| Lambda duration | ~700 GB-s | 400k GB-s/mo always-free | $0 |
-| Function URL | — | no charge | $0 |
-| DynamoDB reads | ~138k RRU | $0.25/M | ~$0.03 |
-| DynamoDB writes | ~180k WRU | $1.25/M | ~$0.23 |
+| Lambda duration (arm64) | ~700 GB-s | 400k GB-s/mo always-free | $0 |
+| Function URL | — | no per-request charge | $0 |
+| DynamoDB reads | ~138k RRU | $0.125/M | ~$0.02 |
+| DynamoDB writes | ~180k WRU | $0.625/M | ~$0.11 |
 | DynamoDB storage | megabytes | 25GB always-free | $0 |
-| **Total** | | | **~$0.26/mo** |
+| **Total** | | | **~$0.13/mo** |
 
 The Lambda free tiers used here are the always-free ones, not the twelve-month
 introductory tier. Write volume includes the idempotency record per mutation.
+It does not separately account for a transactional write consuming two write
+units rather than one, and most mutations here go through a transaction, so the
+DynamoDB line is an order of magnitude rather than a forecast.
 
 Poll cadence is not a meaningful cost driver: polling every two seconds around
-the clock instead — the aggressive case — lands near $0.65/mo, still dominated
+the clock instead — the aggressive case — lands near $0.33/mo, still dominated
 by DynamoDB rather than Lambda.
 
 ### Cold starts
