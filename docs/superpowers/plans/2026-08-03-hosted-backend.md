@@ -2726,6 +2726,13 @@ does not imply the former.
 
 The bearer token is a stack **`Parameter` with `NoEcho: true`**, so it does not
 appear in stack events, the console, or `describe-stacks` output.
+
+**Token entropy is load-bearing and there is no second line of defence.** Task
+11's review confirmed the handler has no rate limiting or lockout — correct for
+v1, but it means an online brute force is bounded *only* by how much entropy the
+operator's token carries. The docs must instruct `openssl rand -base64 32` (or
+equivalent), and the template should reject obviously-weak values via a
+`MinLength` constraint rather than trusting the instruction to be followed.
 `MUSTER_TOKEN_PREVIOUS` is a second parameter defaulting to empty, used only
 during rotation.
 

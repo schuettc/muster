@@ -205,5 +205,8 @@ func Run() int {
 	}
 	fmt.Fprintln(os.Stderr, "muster: lambda mode over DynamoDB table", table)
 	lambda.Start(Handler(daemon.New(s, nil), EnvAuth{}))
-	return 0
+	// Unreachable on the happy path — lambda.Start blocks for the life of the
+	// container. Reaching here means the runtime died, which is a failure
+	// however quietly it happened, so do not report success.
+	return 1
 }

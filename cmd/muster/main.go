@@ -70,7 +70,7 @@ func main() {
 }
 
 // wantsHelp reports whether the first token after a subcommand name is a
-// help flag. serve/mcp/debug are owned by main() (not humancli.Dispatch),
+// help flag. serve/mcp/debug/lambda are owned by main() (not humancli.Dispatch),
 // so their -h/--help handling lives here rather than behind flag.ErrHelp
 // interception the way the humancli-dispatched commands do it.
 func wantsHelp(args []string) bool {
