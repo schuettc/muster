@@ -35,11 +35,22 @@ use net/http and a bearer token, with no AWS dependency whatsoever.
 - **The AWS SDK ships only in the Lambda artifact.** `internal/lambdamode` and
   `internal/dynamostore` are reachable **only** under the `lambda` build tag.
   The default binary — the one every device runs, in local *and* remote mode —
-  must contain no AWS code at all. Baseline for comparison: the pre-change
-  binary is 17,075,090 bytes (~16MB); an untagged `just build` must stay within
-  a few hundred KB of that. If it jumps toward 25MB, an AWS import has leaked
-  into the default build and that is a constraint violation, not a size
-  regression to accept.
+  must contain no AWS code at all.
+
+  **The real invariant is `go list -deps ./cmd/muster | grep aws` printing
+  nothing**, not a byte count. An earlier version of this constraint demanded
+  the untagged binary stay within a few hundred KB of the 17,075,090-byte
+  baseline; that was wrong and was corrected at Task 13. `internal/remote` puts
+  `net/http` and `crypto/tls` in the default graph — about +2.8MB, landing near
+  19.9MB — and that is unavoidable: one binary serves both local and remote mode
+  selected by an environment variable, so every device carries an HTTPS client
+  whether or not it uses one. Build-tagging `internal/remote` would shrink it,
+  at the cost of making remote mode a different binary, which defeats the
+  single-artifact design.
+
+  A jump toward 28MB, on the other hand, still means an AWS import leaked in —
+  the SDK is roughly 8MB on top of TLS. Check the dependency graph rather than
+  the size when this trips.
 
   This works because remote mode authenticates with a bearer token over plain
   HTTP (see Task 12), so a device using the hosted backend needs no AWS SDK
