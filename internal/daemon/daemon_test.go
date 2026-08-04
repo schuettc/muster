@@ -8,7 +8,6 @@ import (
 
 	"github.com/schuettc/muster/internal/client"
 	"github.com/schuettc/muster/internal/clock"
-	"github.com/schuettc/muster/internal/mustertest"
 	"github.com/schuettc/muster/internal/paths"
 	"github.com/schuettc/muster/internal/proto"
 	"github.com/schuettc/muster/internal/store"
@@ -17,12 +16,7 @@ import (
 // startTestDaemon boots a real in-process daemon on a temp socket.
 func startTestDaemon(t *testing.T) string {
 	t.Helper()
-	dir, cleanup, err := mustertest.ShortHome()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(cleanup)
-	t.Setenv("MUSTER_HOME", dir)
+	dir := testHome(t)
 	s, err := store.Open(filepath.Join(dir, "bus.db"))
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
@@ -37,11 +31,7 @@ func startTestDaemon(t *testing.T) string {
 }
 
 func TestDaemonRegisterAndList(t *testing.T) {
-	dir, cleanup, err := mustertest.ShortHome()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(cleanup)
+	dir := testHome(t)
 	s, err := store.Open(filepath.Join(dir, "bus.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -79,11 +69,7 @@ func TestDaemonRegisterAndList(t *testing.T) {
 // understood float64 and silently coerced the string thread_id to 0,
 // so the claim landed on thread 0 instead of the real thread.
 func TestTaskClaimAcceptsStringThreadID(t *testing.T) {
-	dir, cleanup, err := mustertest.ShortHome()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(cleanup)
+	dir := testHome(t)
 	s, err := store.Open(filepath.Join(dir, "bus.db"))
 	if err != nil {
 		t.Fatal(err)

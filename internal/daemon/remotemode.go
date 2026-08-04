@@ -78,12 +78,17 @@ func (d *Daemon) serve(req proto.Request) proto.Response {
 // logical Call and holds it across its own retries, which is the only layer
 // that knows what a retry is. It does not retry either, for the same reason.
 //
-// Every WRITE triggers a badge reconcile afterwards, whatever the outcome:
-// this is the inline trigger that keeps same-device messaging as fast as it is
-// in local mode, and it runs even on a failed or unknown-outcome forward
-// precisely because those may still have committed upstream.
+// A write that can move a badge triggers a reconcile afterwards, whatever the
+// outcome: this is the inline trigger that keeps same-device messaging as fast
+// as it is in local mode, and it runs even on a failed or unknown-outcome
+// forward precisely because those may still have committed upstream.
+//
+// The trigger is movesBadge, not IsWriteOp: the two classify different things
+// (which ops need an idempotency key vs which ops change what a badge shows),
+// and the ops in the gap — kv_set, log_event, set_label, prune_events — would
+// each buy a full upstream fan-out for a badge that cannot have changed.
 func (d *Daemon) forward(req proto.Request) proto.Response {
-	if IsWriteOp(req.Op) {
+	if movesBadge(req.Op) {
 		defer d.triggerReconcile()
 	}
 	if req.Op == "register_agent" {
@@ -155,21 +160,32 @@ func (d *Daemon) stampDevice(req proto.Request) proto.Request {
 // each would be that too. It is also what serializes reconciles against each
 // other, so a slow one cannot write a stale unread count over a fresh one
 // after the fast one already landed.
+//
+// The loop is owned by Close: recClosed refuses new runs and ends the current
+// one, and the WaitGroup — added to under recMu, the same lock Close latches
+// under, so nothing can join after Close starts waiting — is what makes
+// "Close returned" mean "no goroutine is still calling upstream".
 func (d *Daemon) triggerReconcile() {
 	d.recMu.Lock()
+	if d.recClosed {
+		d.recMu.Unlock()
+		return
+	}
 	if d.recRunning {
 		d.recPending = true
 		d.recMu.Unlock()
 		return
 	}
 	d.recRunning = true
+	d.recWG.Add(1)
 	d.recMu.Unlock()
 
 	go func() {
+		defer d.recWG.Done()
 		for {
 			d.ReconcileLocalSessions()
 			d.recMu.Lock()
-			if !d.recPending {
+			if !d.recPending || d.recClosed {
 				d.recRunning = false
 				d.recMu.Unlock()
 				return
@@ -186,10 +202,21 @@ func (d *Daemon) triggerReconcile() {
 // sessionLock, fetch session_unread upstream, and write the badge.
 //
 // sessionLock is a local-daemon concern here rather than a server-side one,
-// which is where it belonged all along: socket_path IS the tmux server socket,
-// so the key is device-scoped by construction and two devices cannot contend
-// on it. Holding it server-side only ever worked because server and client
-// were the same process.
+// which is where it belonged all along: the lock protects a LOCAL resource —
+// this process's tmux option writes for a tuple — and every contender for it
+// runs inside this process, so a per-process lock is the whole scope. Holding
+// it server-side only ever worked because server and client were the same
+// process.
+//
+// The tuple is NOT a device-unique identity, and nothing here may assume it
+// is. Two machines both running tmux as the first user share the socket path
+// /private/tmp/tmux-501/default, and each numbers its own sessions from $1, so
+// the same (socket_path, session_id) routinely names a different session on a
+// different machine. In a shared hosted roster that makes DeviceID the only
+// thing separating them: every filter that decides what this device may badge
+// — which sessions to reconcile AND which aliases those sessions advertise —
+// has to apply it, or one laptop writes the other laptop's aliases into its
+// own @muster_agent.
 //
 // Two triggers drive it: inline after a local write (forward), and the poller.
 // Best-effort throughout — a badge is a hint and the inbox is authoritative,
@@ -199,8 +226,10 @@ func (d *Daemon) triggerReconcile() {
 // Exported because the poller lives outside this package.
 func (d *Daemon) ReconcileLocalSessions() {
 	// No notifier means no badge to write, so there is nothing to learn from
-	// upstream — check this BEFORE spending a round trip.
-	if d.n == nil || d.up == nil {
+	// upstream — check this BEFORE spending a round trip. A closed daemon is
+	// the same answer for a different reason: the poller lives outside this
+	// package and can still hold a reference after Close.
+	if d.n == nil || d.up == nil || d.reconcileStopped() {
 		return
 	}
 	agents, err := d.upstreamAgents()
@@ -209,17 +238,27 @@ func (d *Daemon) ReconcileLocalSessions() {
 		return
 	}
 
+	// Narrow the hosted roster to THIS device before anything reads it. Both
+	// consumers below need the same narrowing (see the tuple-collision note on
+	// this function), and doing it once here is what keeps them from drifting.
+	local := make([]store.Agent, 0, len(agents))
+	for _, ag := range agents {
+		if ag.DeviceID == d.deviceID {
+			local = append(local, ag)
+		}
+	}
+
 	// Group this device's live agents by session tuple, so sibling aliases
 	// sharing a session produce ONE recompute and one badge write rather than
 	// one per alias. Sorted so the order is deterministic rather than map luck.
 	type tuple struct{ socketPath, sessionID string }
 	seen := map[string]bool{}
 	var sessions []tuple
-	for _, ag := range agents {
+	for _, ag := range local {
 		// A departed agent keeps its last-known tuple on the row, and an agent
 		// registered outside tmux has no tuple at all; neither has a badge
 		// anyone is watching.
-		if ag.DeviceID != d.deviceID || ag.Departed || ag.SocketPath == "" || ag.SessionID == "" {
+		if ag.Departed || ag.SocketPath == "" || ag.SessionID == "" {
 			continue
 		}
 		key := sessionKey(ag.SocketPath, ag.SessionID)
@@ -244,7 +283,12 @@ func (d *Daemon) ReconcileLocalSessions() {
 		// costs no extra round trip. Without it a remote-mode device would
 		// never get the operator's ambient "registered as X" indicator, which
 		// in local mode rides on register/deregister's reconcileBadge.
-		d.pushAgentBadge(s.socketPath, s.sessionID, liveAliasesFor(agents, s.socketPath, s.sessionID))
+		//
+		// It reads `local`, not `agents`: liveAliasesFor matches on the tuple
+		// alone — correct for the local store, where every row is this device's
+		// — so handing it the whole hosted roster would advertise another
+		// machine's aliases on any tuple the two happen to share.
+		d.pushAgentBadge(s.socketPath, s.sessionID, liveAliasesFor(local, s.socketPath, s.sessionID))
 	}
 }
 

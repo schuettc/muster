@@ -101,6 +101,23 @@ func (f *fakeNotifier) snapAgentSets() []agentSet {
 	return out
 }
 
+// testHome is the ONE setup every socket-bound daemon test uses: a short
+// MUSTER_HOME (the unix-socket sun_path limit) with the client's autospawn
+// disabled. Without MUSTER_NO_AUTOSPAWN a failed dial spawns the compiled TEST
+// binary with `serve`, which re-runs this whole suite recursively — so it
+// belongs in shared setup rather than in each test that remembers it.
+func testHome(t *testing.T) string {
+	t.Helper()
+	dir, cleanup, err := mustertest.ShortHome()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(cleanup)
+	t.Setenv("MUSTER_HOME", dir)
+	t.Setenv("MUSTER_NO_AUTOSPAWN", "1")
+	return dir
+}
+
 func startWithNotifier(t *testing.T, n *fakeNotifier) string {
 	t.Helper()
 	sock, _ := startWithNotifierAndStore(t, n)
@@ -109,12 +126,7 @@ func startWithNotifier(t *testing.T, n *fakeNotifier) string {
 
 func startWithNotifierAndStore(t *testing.T, n *fakeNotifier) (string, *store.Store) {
 	t.Helper()
-	dir, cleanup, err := mustertest.ShortHome()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(cleanup)
-	t.Setenv("MUSTER_HOME", dir)
+	dir := testHome(t)
 	s, err := store.Open(filepath.Join(dir, "bus.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -174,12 +186,7 @@ func TestNotifySkipsAgentsWithoutSession(t *testing.T) {
 }
 
 func TestNilNotifierIsSafe(t *testing.T) {
-	dir, cleanup, err := mustertest.ShortHome()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(cleanup)
-	t.Setenv("MUSTER_HOME", dir)
+	dir := testHome(t)
 	s, err := store.Open(filepath.Join(dir, "bus.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -493,12 +500,7 @@ func (m *markReadFailingStore) MarkRead(alias string) error {
 }
 
 func TestGetInboxFailsWhenMarkReadFails(t *testing.T) {
-	dir, cleanup, err := mustertest.ShortHome()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(cleanup)
-	t.Setenv("MUSTER_HOME", dir)
+	dir := testHome(t)
 	realStore, err := store.Open(filepath.Join(dir, "bus.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -570,12 +572,7 @@ func (b *blockingNotifier) Notify(socketPath, sessionID string, count int) error
 // so sees the drain already applied — must be the one that lands last, i.e.
 // the true post-drain state must win, not the stale count.
 func TestNotifyDrainInterleaving(t *testing.T) {
-	dir, cleanup, err := mustertest.ShortHome()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(cleanup)
-	t.Setenv("MUSTER_HOME", dir)
+	dir := testHome(t)
 	s, err := store.Open(filepath.Join(dir, "bus.db"))
 	if err != nil {
 		t.Fatal(err)

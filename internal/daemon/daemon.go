@@ -35,9 +35,14 @@ type Daemon struct {
 	up       Upstream
 	deviceID string
 
+	// recClosed is set by Close and is the reconcile loop's stop signal;
+	// recWG is how Close waits for an in-flight reconcile to finish, so a
+	// closed daemon can no longer call upstream or write a tmux option.
 	recMu      sync.Mutex
 	recRunning bool
 	recPending bool
+	recClosed  bool
+	recWG      sync.WaitGroup
 
 	// sessLocks serializes {SessionUnread recompute, tmux option write,
 	// journal} per (socket_path, session_id) tuple (spec §3): a concurrent
@@ -69,12 +74,35 @@ func Serve(socketPath string, s store.API, n wake.Notifier) (*Daemon, error) {
 	return d, nil
 }
 
-// Close stops accepting connections. Safe on a Daemon built by New (no listener).
+// Close stops accepting connections and shuts down remote mode's background
+// reconcile, waiting for an in-flight one to finish. After it returns, the
+// daemon makes no further upstream calls and writes no further tmux options —
+// including from ReconcileLocalSessions, which the poller may still call from
+// outside this package. Safe on a Daemon built by New (no listener), and safe
+// to call more than once.
 func (d *Daemon) Close() error {
+	d.stopReconcile()
 	if d.ln == nil {
 		return nil
 	}
 	return d.ln.Close()
+}
+
+// stopReconcile latches the reconcile loop shut and waits for whatever is
+// already running. The latch is set under recMu — the same lock triggerReconcile
+// takes before recWG.Add — so no new reconcile can be added after Wait begins.
+func (d *Daemon) stopReconcile() {
+	d.recMu.Lock()
+	d.recClosed = true
+	d.recMu.Unlock()
+	d.recWG.Wait()
+}
+
+// reconcileStopped reports whether Close has latched the loop shut.
+func (d *Daemon) reconcileStopped() bool {
+	d.recMu.Lock()
+	defer d.recMu.Unlock()
+	return d.recClosed
 }
 
 func (d *Daemon) acceptLoop() {

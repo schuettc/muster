@@ -43,6 +43,34 @@ var writeOps = map[string]bool{
 // must never consume an idempotency record.
 func IsWriteOp(op string) bool { return writeOps[op] }
 
+// badgeOps are the writes that can move a tmux badge, and so the ones remote
+// mode reconciles after (see forward). It is a strict subset of writeOps: a
+// write that changes no badge still costs a reconcile a list_agents plus one
+// session_unread per local session, and kv_set/log_event are the frequent ops
+// on this bus — log_event fires on every nudge typed and submitted — so paying
+// a fan-out for them is a steady idle cost, not a burst the coalescer bounds.
+//
+// The membership rule is not a judgement call: an op belongs here exactly when
+// its LOCAL dispatch reaches the badge, i.e. calls notifyForThread,
+// setSessionBadge or reconcileBadge. That makes local and remote mode agree on
+// what "this changed a badge" means by construction rather than by two people
+// reading the same op the same way. TestBadgeOpsMatchDispatch derives the set
+// from dispatch's own switch (AST walk, following one hop through the
+// per-op handlers) and fails if this map and the code disagree — so a new
+// notifying op cannot be silently left out and go un-badged in remote mode.
+//
+// The reverse mistake is the cheap one: an op wrongly listed here costs a
+// redundant reconcile. An op wrongly missing means a badge that never lights.
+var badgeOps = map[string]bool{
+	"register_agent": true, "deregister_agent": true, "purge_agent": true,
+	"send_message": true, "task_create": true, "reply": true,
+	"task_claim": true, "task_transition": true, "get_inbox": true,
+}
+
+// movesBadge reports whether op can change what a tmux badge shows. Only
+// meaningful for writes; every read answers false.
+func movesBadge(op string) bool { return badgeOps[op] }
+
 // idemRetryPrefix marks the ONE idempotency outcome a client may retry under
 // the SAME key: an identical request is still in flight, so the op will have a
 // recorded response shortly. Every other idempotency failure is unknown rather

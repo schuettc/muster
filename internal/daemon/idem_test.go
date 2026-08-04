@@ -393,6 +393,131 @@ func TestEveryDispatchOpIsClassified(t *testing.T) {
 	}
 }
 
+// badgeSinks are the three functions that actually write a tmux badge. An op
+// "moves a badge" exactly when its dispatch reaches one of them.
+var badgeSinks = map[string]bool{
+	"notifyForThread": true, "setSessionBadge": true, "reconcileBadge": true,
+}
+
+// calleeNames returns the name of every function or method called anywhere in
+// n — `foo()` as "foo", `x.Foo()` as "Foo". Coarse on purpose: the graph it
+// feeds only has to over-approximate reachability, and a false edge would make
+// the drift guard demand MORE ops be classified as badge-moving, never fewer.
+func calleeNames(n ast.Node) []string {
+	var names []string
+	ast.Inspect(n, func(node ast.Node) bool {
+		call, isCall := node.(*ast.CallExpr)
+		if !isCall {
+			return true
+		}
+		switch fn := call.Fun.(type) {
+		case *ast.Ident:
+			names = append(names, fn.Name)
+		case *ast.SelectorExpr:
+			names = append(names, fn.Sel.Name)
+		}
+		return true
+	})
+	return names
+}
+
+// TestBadgeOpsMatchDispatch is the drift guard for badgeOps, remote mode's
+// reconcile trigger. It derives the badge-moving set from dispatch's own
+// switch — walking the call graph within daemon.go, so a case that reaches the
+// badge through a handler (register_agent → handleRegisterAgent →
+// reconcileBadge) still counts — and demands the map say the same thing.
+//
+// Without this, a new notifying op would keep working in local mode and
+// silently never light a badge in remote mode: the wrong half of the failure,
+// and invisible until an operator noticed mail they were never told about.
+func TestBadgeOpsMatchDispatch(t *testing.T) {
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "daemon.go", nil, 0)
+	if err != nil {
+		t.Fatalf("parse daemon.go: %v", err)
+	}
+	callees := map[string][]string{}
+	for _, decl := range f.Decls {
+		fn, isFn := decl.(*ast.FuncDecl)
+		if !isFn || fn.Body == nil {
+			continue
+		}
+		callees[fn.Name.Name] = calleeNames(fn.Body)
+	}
+	var reaches func(name string, seen map[string]bool) bool
+	reaches = func(name string, seen map[string]bool) bool {
+		if badgeSinks[name] {
+			return true
+		}
+		if seen[name] {
+			return false
+		}
+		seen[name] = true
+		for _, callee := range callees[name] {
+			if reaches(callee, seen) {
+				return true
+			}
+		}
+		return false
+	}
+
+	derived := map[string]bool{}
+	ast.Inspect(f, func(n ast.Node) bool {
+		sw, isSwitch := n.(*ast.SwitchStmt)
+		if !isSwitch {
+			return true
+		}
+		if sel, isSel := sw.Tag.(*ast.SelectorExpr); !isSel || sel.Sel.Name != "Op" {
+			return true
+		}
+		for _, stmt := range sw.Body.List {
+			cc, isCase := stmt.(*ast.CaseClause)
+			if !isCase {
+				continue
+			}
+			hit := false
+			for _, callee := range calleeNames(&ast.BlockStmt{List: cc.Body}) {
+				if reaches(callee, map[string]bool{}) {
+					hit = true
+					break
+				}
+			}
+			if !hit {
+				continue
+			}
+			for _, e := range cc.List {
+				lit, isLit := e.(*ast.BasicLit)
+				if !isLit || lit.Kind != token.STRING {
+					continue
+				}
+				op, err := strconv.Unquote(lit.Value)
+				if err != nil {
+					t.Fatalf("unquote case %s: %v", lit.Value, err)
+				}
+				derived[op] = true
+			}
+		}
+		return true
+	})
+
+	if len(derived) < 5 {
+		t.Fatalf("derived only %v as badge-moving — the AST walk is broken, not the classification", derived)
+	}
+	for op := range derived {
+		if !movesBadge(op) {
+			t.Errorf("%s reaches the tmux badge in dispatch but is missing from badgeOps: in remote mode its badge would never light", op)
+		}
+	}
+	for op := range badgeOps {
+		if !derived[op] {
+			t.Errorf("badgeOps has %q, but dispatch never reaches a badge for it — it buys a reconcile for nothing", op)
+		}
+		if !IsWriteOp(op) {
+			t.Errorf("badgeOps has %q, which is not a write op: forward only triggers on writes, so it can never fire", op)
+		}
+	}
+}
+
 func contains(ss []string, s string) bool {
 	for _, v := range ss {
 		if v == s {

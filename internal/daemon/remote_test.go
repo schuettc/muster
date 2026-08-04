@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/schuettc/muster/internal/client"
-	"github.com/schuettc/muster/internal/mustertest"
 	"github.com/schuettc/muster/internal/proto"
 	"github.com/schuettc/muster/internal/store"
 	"github.com/schuettc/muster/internal/wake"
@@ -56,24 +55,9 @@ func (f *fakeUpstream) opsSeen() []string {
 	return ops
 }
 
-// remoteHome sets up a short MUSTER_HOME and disables the client's autospawn.
-// Without MUSTER_NO_AUTOSPAWN a failed dial spawns the compiled test binary
-// with `serve`, which re-runs this suite recursively.
-func remoteHome(t *testing.T) string {
-	t.Helper()
-	home, cleanup, err := mustertest.ShortHome()
-	if err != nil {
-		t.Fatalf("ShortHome: %v", err)
-	}
-	t.Cleanup(cleanup)
-	t.Setenv("MUSTER_HOME", home)
-	t.Setenv("MUSTER_NO_AUTOSPAWN", "1")
-	return home
-}
-
 func startRemote(t *testing.T, up Upstream, n *fakeNotifier) string {
 	t.Helper()
-	home := remoteHome(t)
+	home := testHome(t)
 	sock := filepath.Join(home, "sock")
 	// A typed nil *fakeNotifier would be a NON-nil wake.Notifier, which is
 	// exactly the shape the nil-notifier guards are meant to catch.
@@ -135,7 +119,7 @@ func TestRemoteModeDoesNotDispatchLocally(t *testing.T) {
 // makes ReconcileLocalSessions unable to tell this device's sessions from
 // another's — it would badge-write into sessions on other machines.
 func TestServeRemoteRequiresUpstreamAndDevice(t *testing.T) {
-	home := remoteHome(t)
+	home := testHome(t)
 	if _, err := ServeRemote(filepath.Join(home, "s1"), nil, nil, "dev-1"); err == nil {
 		t.Fatal("ServeRemote accepted a nil upstream")
 	}
@@ -163,6 +147,44 @@ func TestRemoteModeStampsDeviceID(t *testing.T) {
 	}
 	if got := reqs[0].Args["device_id"]; got != "dev-1" {
 		t.Fatalf("device_id = %v, want dev-1", got)
+	}
+}
+
+// TestRemoteModeOverwritesACallerSuppliedDeviceID: the stamp is authoritative,
+// not a default. A client above the socket that supplies its own device_id —
+// by accident or to claim it is on another machine — must not be believed:
+// the roster's device column is what reconcile filters on, so a forged one
+// would let a session on one machine be badged from another.
+func TestRemoteModeOverwritesACallerSuppliedDeviceID(t *testing.T) {
+	up := &fakeUpstream{resp: proto.Response{OK: true}}
+	sock := startRemote(t, up, nil)
+
+	if _, err := client.Call(sock, proto.Request{Op: "register_agent", Args: map[string]any{
+		"alias": "a1", "device_id": "someone-elses-laptop",
+	}}); err != nil {
+		t.Fatalf("client.Call: %v", err)
+	}
+	reqs := up.snap()
+	if len(reqs) != 1 {
+		t.Fatalf("upstream saw %+v, want one register_agent", reqs)
+	}
+	if got := reqs[0].Args["device_id"]; got != "dev-1" {
+		t.Fatalf("device_id = %v, want dev-1 — a caller-supplied id was trusted", got)
+	}
+}
+
+// TestStampDeviceDoesNotMutateTheCallersArgs: forward is handed a request that
+// came off the wire, and stamping must copy rather than write into it.
+func TestStampDeviceDoesNotMutateTheCallersArgs(t *testing.T) {
+	d := &Daemon{deviceID: "dev-1"}
+	args := map[string]any{"alias": "a1"}
+	req := proto.Request{Op: "register_agent", Args: args}
+	stamped := d.stampDevice(req)
+	if stamped.Args["device_id"] != "dev-1" {
+		t.Fatalf("stamped args = %+v", stamped.Args)
+	}
+	if _, found := args["device_id"]; found {
+		t.Fatalf("stampDevice wrote into the caller's map: %+v", args)
 	}
 }
 
@@ -213,7 +235,7 @@ func TestReconcileLocalSessionsBadgesThisDeviceOnly(t *testing.T) {
 		"session_unread": {OK: true, Data: map[string]any{"total": 3, "action": 1}},
 	}}
 	n := &fakeNotifier{}
-	home := remoteHome(t)
+	home := testHome(t)
 	d, err := ServeRemote(filepath.Join(home, "sock"), up, n, "dev-1")
 	if err != nil {
 		t.Fatalf("ServeRemote: %v", err)
@@ -266,7 +288,7 @@ func TestReconcileClearsWhenUpstreamReportsZero(t *testing.T) {
 		"session_unread": {OK: true, Data: map[string]any{"total": 0}},
 	}}
 	n := &fakeNotifier{}
-	home := remoteHome(t)
+	home := testHome(t)
 	d, err := ServeRemote(filepath.Join(home, "sock"), up, n, "dev-1")
 	if err != nil {
 		t.Fatalf("ServeRemote: %v", err)
@@ -279,12 +301,49 @@ func TestReconcileClearsWhenUpstreamReportsZero(t *testing.T) {
 	}
 }
 
+// TestReconcileDoesNotMixDevicesSharingATuple is the tuple-collision case, and
+// it is not exotic: tmux's default socket for the first user on a machine is
+// /private/tmp/tmux-501/default on every macOS laptop, and every tmux server
+// numbers its own sessions from $1. So two devices in one hosted roster
+// routinely carry the SAME (socket_path, session_id) naming two different
+// sessions. Only DeviceID tells them apart, and the agent badge — which
+// matches on the tuple alone, correct for a single-device store — must be fed
+// a roster already narrowed to this device. Otherwise device A advertises
+// device B's aliases as addressable in A's own tmux status line.
+func TestReconcileDoesNotMixDevicesSharingATuple(t *testing.T) {
+	const shared = "/private/tmp/tmux-501/default"
+	up := &fakeUpstream{byOp: map[string]proto.Response{
+		"list_agents": {OK: true, Data: []store.Agent{
+			{Alias: "mine", DeviceID: "dev-1", SocketPath: shared, SessionID: "$1"},
+			{Alias: "theirs", DeviceID: "dev-2", SocketPath: shared, SessionID: "$1"},
+		}},
+		"session_unread": {OK: true, Data: map[string]any{"total": 1}},
+	}}
+	n := &fakeNotifier{}
+	home := testHome(t)
+	d, err := ServeRemote(filepath.Join(home, "sock"), up, n, "dev-1")
+	if err != nil {
+		t.Fatalf("ServeRemote: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+
+	d.ReconcileLocalSessions()
+
+	sets := n.snapAgentSets()
+	if len(sets) != 1 {
+		t.Fatalf("agent-badge pushes = %d, want 1: %+v", len(sets), sets)
+	}
+	if len(sets[0].aliases) != 1 || sets[0].aliases[0] != "mine" {
+		t.Fatalf("agent badge = %v, want [mine] — another device's alias leaked into this device's badge", sets[0].aliases)
+	}
+}
+
 // TestReconcileIsSkippedWithoutANotifier: with no notifier there is no badge
 // to write, so reconcile must not spend an upstream round trip at all. The
 // forwarding tests rely on this — they assert an exact upstream call count.
 func TestReconcileIsSkippedWithoutANotifier(t *testing.T) {
 	up := &fakeUpstream{resp: proto.Response{OK: true}}
-	home := remoteHome(t)
+	home := testHome(t)
 	d, err := ServeRemote(filepath.Join(home, "sock"), up, nil, "dev-1")
 	if err != nil {
 		t.Fatalf("ServeRemote: %v", err)
@@ -320,20 +379,124 @@ func TestRemoteWriteTriggersReconcile(t *testing.T) {
 	}
 }
 
-// TestRemoteReadDoesNotTriggerReconcile: a read changes nothing, so it must
-// not spend a reconcile's worth of upstream calls.
-func TestRemoteReadDoesNotTriggerReconcile(t *testing.T) {
-	up := &fakeUpstream{resp: proto.Response{OK: true}}
+// TestOnlyBadgeMovingWritesTriggerReconcile: the trigger is movesBadge, not
+// IsWriteOp. A read changes nothing, and a write like kv_set changes nothing a
+// badge shows — neither may spend a reconcile's worth of upstream calls, which
+// is a list_agents plus one session_unread per local session, every time.
+//
+// The proof is a positive control rather than a sleep: the send_message at the
+// end is the one op that MUST reconcile, and waiting for its badge write gives
+// the two earlier ops far more room to have been wrong than any fixed delay
+// would. What the whole upstream saw is then asserted exactly, so a stray
+// reconcile is caught wherever in the sequence it landed.
+func TestOnlyBadgeMovingWritesTriggerReconcile(t *testing.T) {
+	up := &fakeUpstream{byOp: map[string]proto.Response{
+		"list_agents":    {OK: true, Data: []store.Agent{{Alias: "a1", DeviceID: "dev-1", SocketPath: "/s", SessionID: "$1"}}},
+		"session_unread": {OK: true, Data: map[string]any{"total": 1}},
+	}, resp: proto.Response{OK: true}}
 	n := &fakeNotifier{}
 	sock := startRemote(t, up, n)
 
-	if _, err := client.Call(sock, proto.Request{Op: "list_threads"}); err != nil {
+	for _, req := range []proto.Request{
+		{Op: "list_threads"},
+		{Op: "kv_set", Args: map[string]any{"key": "k", "value": "v", "by": "a1"}},
+		{Op: "send_message", Args: map[string]any{"from": "a1", "to_kind": "agent", "to_target": "a1", "body": "x"}},
+	} {
+		if _, err := client.Call(sock, req); err != nil {
+			t.Fatalf("%s: %v", req.Op, err)
+		}
+	}
+	waitFor(t, func() bool { return len(n.snap(&n.notified)) > 0 })
+
+	want := []string{"list_threads", "kv_set", "send_message", "list_agents", "session_unread"}
+	got := up.opsSeen()
+	if len(got) != len(want) {
+		t.Fatalf("upstream saw %v, want exactly %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("upstream saw %v, want exactly %v", got, want)
+		}
+	}
+}
+
+// gatedUpstream is a fakeUpstream whose list_agents parks until release is
+// closed, so a test can hold a reconcile mid-flight and observe what Close
+// does about it.
+type gatedUpstream struct {
+	fakeUpstream
+	entered chan struct{} // closed when the first list_agents arrives
+	release chan struct{}
+	once    sync.Once
+}
+
+func (g *gatedUpstream) Call(ctx context.Context, req proto.Request) (proto.Response, error) {
+	if req.Op == "list_agents" {
+		g.once.Do(func() { close(g.entered) })
+		<-g.release
+	}
+	return g.fakeUpstream.Call(ctx, req)
+}
+
+// TestCloseStopsTheReconcileLoop: the reconcile goroutine outlives the request
+// that spawned it, so without a shutdown path a closed daemon keeps calling
+// upstream and writing tmux options — in tests, past t.Cleanup; in production,
+// for as long as the poller keeps handing it work.
+//
+// Close must therefore both WAIT for an in-flight reconcile and refuse further
+// ones, including through ReconcileLocalSessions, which the poller calls from
+// outside this package and can still hold a reference to.
+func TestCloseStopsTheReconcileLoop(t *testing.T) {
+	up := &gatedUpstream{entered: make(chan struct{}), release: make(chan struct{})}
+	up.byOp = map[string]proto.Response{
+		"list_agents":    {OK: true, Data: []store.Agent{{Alias: "a1", DeviceID: "dev-1", SocketPath: "/s", SessionID: "$1"}}},
+		"session_unread": {OK: true, Data: map[string]any{"total": 1}},
+	}
+	up.resp = proto.Response{OK: true}
+	n := &fakeNotifier{}
+	home := testHome(t)
+	d, err := ServeRemote(filepath.Join(home, "sock"), up, n, "dev-1")
+	if err != nil {
+		t.Fatalf("ServeRemote: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Close() }) // Close is safe to call twice
+
+	if _, err := client.Call(filepath.Join(home, "sock"), proto.Request{Op: "send_message", Args: map[string]any{
+		"from": "a1", "to_kind": "agent", "to_target": "a1", "body": "x",
+	}}); err != nil {
 		t.Fatalf("client.Call: %v", err)
 	}
-	// Give a stray reconcile goroutine room to be wrong.
-	time.Sleep(50 * time.Millisecond)
-	if ops := up.opsSeen(); len(ops) != 1 || ops[0] != "list_threads" {
-		t.Fatalf("a read triggered extra upstream work: %v", ops)
+	<-up.entered // the reconcile is now parked inside upstream list_agents
+
+	closed := make(chan error, 1)
+	go func() { closed <- d.Close() }()
+	// Blocking cannot be observed except by waiting; this direction fails
+	// OPEN (a slow machine passes) rather than flaking, and the assertions
+	// after the release are the ones that carry the test.
+	select {
+	case err := <-closed:
+		t.Fatalf("Close returned (%v) while a reconcile was still in flight upstream", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(up.release)
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close did not return after the in-flight reconcile finished")
+	}
+	// Close waited for the whole reconcile, not just its upstream call: the
+	// badge write it was on its way to make has already happened.
+	if got := n.snap(&n.notified); len(got) == 0 {
+		t.Fatal("Close returned before the in-flight reconcile finished its badge write")
+	}
+
+	before := len(up.snap())
+	d.ReconcileLocalSessions()
+	if after := len(up.snap()); after != before {
+		t.Fatalf("ReconcileLocalSessions called upstream after Close (%d → %d)", before, after)
 	}
 }
 
