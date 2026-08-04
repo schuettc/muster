@@ -61,10 +61,14 @@ func (d *Daemon) StartPoller(base time.Duration) {
 // a tick returns mail, so an idle pair of laptops settles at one call a minute
 // while a live conversation stays at the operator-visible cadence.
 //
-// sinceEntryID is the watermark the server hands back. It advances over every
-// entry the server CONSIDERED, not only the ones that concerned this device
-// (see store.DevicePollResult), which is what stops a busy bus from re-reading
-// the same entries for ever.
+// sinceEntryID is the resume floor the server hands back, and this loop treats
+// it as opaque. It moves over every entry the server CONSIDERED, not only the
+// ones that concerned this device, which is what stops a busy bus from
+// re-reading the same entries for ever — but it may deliberately lag the newest
+// entry the server saw, and a floor that stops advancing means the server is
+// holding back over a gap it has not seen filled yet (see
+// store.DevicePollResult). Both look identical from here: ask, reconcile what
+// comes back, pass the floor on unchanged.
 func (d *Daemon) pollLoop(base time.Duration) {
 	interval := base
 	var sinceEntryID int64

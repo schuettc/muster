@@ -12,10 +12,25 @@ type SessionRef struct {
 // DevicePollResult is what a device needs to know after a poll: which of its
 // sessions have new mail, and the watermark to resume from.
 //
-// MaxEntryID is the highest entry id the poll CONSIDERED, not the highest that
-// concerned the device — mail for somebody else still moves it. Otherwise a
-// busy bus would re-read the same entries on every tick and the poll would
-// never go quiet.
+// MaxEntryID is a RESUME FLOOR, not a report of the newest entry: the id a
+// backend promises it has nothing left to say at or below, so the next poll
+// asks for `id > MaxEntryID`. Two properties come with that, and a backend owes
+// both:
+//
+//   - It moves over every entry the poll CONSIDERED, not only the ones that
+//     concerned the device — mail for somebody else still moves it. Otherwise a
+//     busy bus would re-read the same entries on every tick and the poll would
+//     never go quiet.
+//   - It may NOT pass an entry the poll has not seen. On a backend where an
+//     entry can become visible after a higher-id one (the hosted backend: ids
+//     are allocated before the write commits), that means the floor lags the
+//     highest id seen until the gap below it fills — see
+//     dynamostore.pollWatermark. Passing a gap would drop that entry's wake
+//     permanently, since no later poll ever looks below the floor again.
+//
+// SQLite owes the second property nothing extra: one connection, ids from
+// AUTOINCREMENT inside the inserting transaction, so a committed id is always
+// contiguous with the ones before it and the max IS the floor.
 type DevicePollResult struct {
 	MaxEntryID int64        `json:"max_entry_id"`
 	Sessions   []SessionRef `json:"sessions"`
@@ -45,6 +60,13 @@ type DevicePollResult struct {
 // Only agents that could carry a badge are considered — live (not departed),
 // with a non-empty tuple — matching what the daemon's ReconcileLocalSessions
 // is willing to write.
+//
+// That `departed = 0` is an intentional divergence from SessionUnread five
+// functions away, which counts a tombstoned agent's mail on purpose: unread math
+// must stay honest because that mail still waits to be drained, while PUSHING a
+// badge into a session nobody watches anymore buys nothing. Local mode draws the
+// same line — notifyForThread journals such a recipient "skipped: departed"
+// rather than excluding it from unread.
 func (s *Store) DevicePoll(deviceID string, sinceEntryID int64) (DevicePollResult, error) {
 	out := DevicePollResult{MaxEntryID: sinceEntryID, Sessions: []SessionRef{}}
 
@@ -57,6 +79,10 @@ func (s *Store) DevicePoll(deviceID string, sinceEntryID int64) (DevicePollResul
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	// MAX(id) is a safe resume floor HERE and only here: SetMaxOpenConns(1) plus
+	// AUTOINCREMENT inside the inserting transaction means a visible id can
+	// never sit above one still in flight, so there is no gap to lag behind (see
+	// DevicePollResult, and dynamostore.pollWatermark for the backend that must).
 	if err := tx.QueryRow(
 		`SELECT COALESCE(MAX(id), ?1) FROM entries WHERE id > ?1`, sinceEntryID,
 	).Scan(&out.MaxEntryID); err != nil {

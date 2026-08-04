@@ -521,6 +521,180 @@ func TestBadgeOpsMatchDispatch(t *testing.T) {
 	}
 }
 
+// deviceArgKeys are the args a session-scoped op reads: the tuple that is not
+// device-unique in a shared roster, plus the device id itself. A dispatch case
+// that reads any of them is deciding something about ONE machine's session, so
+// its forwarded form has to carry this device's id (see deviceOps).
+var deviceArgKeys = map[string]bool{
+	"socket_path": true, "session_id": true, "device_id": true,
+}
+
+// stampedOutsideForward are the device-scoped ops that forward never sees, with
+// the reason each one is exempt from deviceOps. Every entry here is a claim that
+// something else stamps the device id.
+var stampedOutsideForward = map[string]string{
+	// The poller builds this request itself and puts d.deviceID on it
+	// (Daemon.devicePoll); no client can ask for it, so forward never carries one.
+	"device_poll": "stamped by the poller, never forwarded from a client",
+}
+
+// TestDeviceOpsMatchDispatch is the drift guard for deviceOps, the set forward
+// stamps this device's id onto. It derives the session-scoped ops from
+// dispatch's own switch — a case counts when its reachable call graph inside
+// daemon.go reads one of deviceArgKeys out of the args map, so register_agent
+// still counts through handleRegisterAgent — and demands the map agree.
+//
+// The failure it exists to catch is silent and one-directional: a new
+// session-scoped op left out of deviceOps works perfectly in local mode (where
+// every row carries device_id "") and, once forwarded unstamped, addresses
+// whichever machine's session matched first in the shared roster. That is a
+// wrong answer about another laptop, not an error anyone sees. writeOps and
+// badgeOps are pinned this way for the same reason; this is the third.
+func TestDeviceOpsMatchDispatch(t *testing.T) {
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "daemon.go", nil, 0)
+	if err != nil {
+		t.Fatalf("parse daemon.go: %v", err)
+	}
+	callees, reads := map[string][]string{}, map[string]bool{}
+	for _, decl := range f.Decls {
+		fn, isFn := decl.(*ast.FuncDecl)
+		if !isFn || fn.Body == nil {
+			continue
+		}
+		callees[fn.Name.Name] = calleeNames(fn.Body)
+		reads[fn.Name.Name] = readsDeviceArg(t, fn.Body)
+	}
+	var reaches func(name string, seen map[string]bool) bool
+	reaches = func(name string, seen map[string]bool) bool {
+		if reads[name] {
+			return true
+		}
+		if seen[name] {
+			return false
+		}
+		seen[name] = true
+		for _, callee := range callees[name] {
+			if reaches(callee, seen) {
+				return true
+			}
+		}
+		return false
+	}
+
+	derived := map[string]bool{}
+	for _, cc := range dispatchCases(t, f) {
+		hit := readsDeviceArg(t, &ast.BlockStmt{List: cc.Body})
+		if !hit {
+			for _, callee := range calleeNames(&ast.BlockStmt{List: cc.Body}) {
+				if reaches(callee, map[string]bool{}) {
+					hit = true
+					break
+				}
+			}
+		}
+		if !hit {
+			continue
+		}
+		for _, op := range caseOps(t, cc) {
+			derived[op] = true
+		}
+	}
+
+	if len(derived) < 4 {
+		t.Fatalf("derived only %v as session-scoped — the AST walk is broken, not the classification", derived)
+	}
+	for op := range derived {
+		if needsDevice(op) {
+			continue
+		}
+		if why, exempt := stampedOutsideForward[op]; exempt {
+			t.Logf("%s: session-scoped but not in deviceOps — %s", op, why)
+			continue
+		}
+		t.Errorf("%s reads a device-scoped arg in dispatch but is missing from deviceOps: "+
+			"forwarded unstamped it would address another machine's session", op)
+	}
+	for op := range deviceOps {
+		if !derived[op] {
+			t.Errorf("deviceOps has %q, but dispatch never reads a device-scoped arg for it — "+
+				"stamping it buys nothing", op)
+		}
+	}
+	for op, why := range stampedOutsideForward {
+		if !derived[op] {
+			t.Errorf("stampedOutsideForward has %q (%s), which dispatch does not treat as session-scoped", op, why)
+		}
+		if needsDevice(op) {
+			t.Errorf("%s is in BOTH deviceOps and stampedOutsideForward — one of the two claims is wrong", op)
+		}
+	}
+}
+
+// readsDeviceArg reports whether n contains a string literal naming one of
+// deviceArgKeys — how every args read in dispatch is spelled (str(a, "…")).
+// Coarse in the safe direction: a false hit demands MORE ops be classified as
+// session-scoped, never fewer.
+func readsDeviceArg(t *testing.T, n ast.Node) bool {
+	t.Helper()
+	found := false
+	ast.Inspect(n, func(node ast.Node) bool {
+		lit, isLit := node.(*ast.BasicLit)
+		if !isLit || lit.Kind != token.STRING {
+			return true
+		}
+		v, err := strconv.Unquote(lit.Value)
+		if err != nil {
+			t.Fatalf("unquote %s: %v", lit.Value, err)
+		}
+		if deviceArgKeys[v] {
+			found = true
+		}
+		return true
+	})
+	return found
+}
+
+// dispatchCases returns every case clause of the switch on a request's Op.
+func dispatchCases(t *testing.T, f *ast.File) []*ast.CaseClause {
+	t.Helper()
+	var cases []*ast.CaseClause
+	ast.Inspect(f, func(n ast.Node) bool {
+		sw, isSwitch := n.(*ast.SwitchStmt)
+		if !isSwitch {
+			return true
+		}
+		if sel, isSel := sw.Tag.(*ast.SelectorExpr); !isSel || sel.Sel.Name != "Op" {
+			return true
+		}
+		for _, stmt := range sw.Body.List {
+			if cc, isCase := stmt.(*ast.CaseClause); isCase {
+				cases = append(cases, cc)
+			}
+		}
+		return true
+	})
+	return cases
+}
+
+// caseOps returns the op names a case clause matches.
+func caseOps(t *testing.T, cc *ast.CaseClause) []string {
+	t.Helper()
+	var ops []string
+	for _, e := range cc.List {
+		lit, isLit := e.(*ast.BasicLit)
+		if !isLit || lit.Kind != token.STRING {
+			continue
+		}
+		op, err := strconv.Unquote(lit.Value)
+		if err != nil {
+			t.Fatalf("unquote case %s: %v", lit.Value, err)
+		}
+		ops = append(ops, op)
+	}
+	return ops
+}
+
 func contains(ss []string, s string) bool {
 	for _, v := range ss {
 		if v == s {

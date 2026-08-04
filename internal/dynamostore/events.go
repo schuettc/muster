@@ -210,6 +210,13 @@ func eventConcerns(e store.Event, alias string, concerning map[int64]bool) bool 
 // over the single connection store.Open pins, so a follow read cannot see a
 // gap it will then skip past. A conformance suite must NOT assert that
 // successive follow polls return every event that was written.
+//
+// What makes the acceptance defensible is exactly what the journal is: a feed.
+// DevicePoll meets the identical hazard over the entry log and cannot accept it,
+// because its watermark is the ONLY wake path for cross-device mail — a skip
+// there is a badge that never lights, not a line missing from a feed. See
+// pollWatermark for the contiguity-plus-overlap rule that costs; it is also what
+// this path would need if anything ever hung a wake off the journal.
 func (s *Store) Events(q store.EventQuery) ([]store.Event, error) {
 	if q.AfterID < 0 || q.ThreadID < 0 {
 		return nil, fmt.Errorf("negative id in event query")

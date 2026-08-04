@@ -100,6 +100,15 @@
 // get_inbox pays for the concerns/entriesAfter fan-out twice: once in Inbox,
 // once in MarkRead.
 //
+// Allocation-before-commit is a PACKAGE-WIDE fact, not a MarkRead quirk, and
+// three places answer to it. MarkRead bounds it and accepts what is left (this
+// section). The events follow watermark accepts a skip outright, because the
+// journal is a feed and a missing line is the whole cost (see Events). DevicePoll
+// refuses to accept one at all — it is the only wake path for cross-device mail,
+// so a skipped entry is a tmux badge that never lights — and pays for that with a
+// watermark that will not pass an id it has not seen (see pollWatermark). Any new
+// watermark over these ids owes the same question an answer.
+//
 // The SQLite backend has neither window. store.Open sets SetMaxOpenConns(1),
 // so its MarkRead transaction (SELECT MAX(id) FROM entries, then the UPDATE)
 // holds the only connection there is, and entry ids come from AUTOINCREMENT
