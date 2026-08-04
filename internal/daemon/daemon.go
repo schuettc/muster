@@ -440,11 +440,11 @@ func targetOf(toKind, toTarget string) string {
 	return toKind + ":" + toTarget
 }
 
-// Dispatch runs one request against the store/notifier and returns its
+// dispatch runs one request against the store/notifier and returns its
 // response, with no socket or connection involved — the seam lambda mode
 // uses to route a request through the same op logic the socket-bound daemon
-// uses, and what handle calls per line read off the wire.
-func (d *Daemon) Dispatch(req proto.Request) proto.Response {
+// uses. Callers go through Dispatch, which wraps this with idempotency.
+func (d *Daemon) dispatch(req proto.Request) proto.Response {
 	a := req.Args
 	switch req.Op {
 	case "register_agent":
