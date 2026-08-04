@@ -39,3 +39,20 @@ cross:
 
 # Full gate — what pre-push and CI run.
 verify: fmt-check lint test build cross
+
+# DynamoDB backend tests against DynamoDB Local. Requires Docker, so it is
+# deliberately NOT part of `verify`: that gate must stay fast and
+# dependency-free. Without an endpoint the dynamo tests skip, so `verify`
+# still compiles and vets them — it just can't exercise the DynamoDB
+# semantics (conditional writes, atomic counters) this recipe covers.
+verify-dynamo:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    docker rm -f muster-ddb >/dev/null 2>&1 || true
+    docker run -d --rm -p 8000:8000 --name muster-ddb amazon/dynamodb-local >/dev/null
+    trap 'docker rm -f muster-ddb >/dev/null 2>&1 || true' EXIT
+    for _ in $(seq 1 30); do
+      curl -s http://localhost:8000 >/dev/null 2>&1 && break
+      sleep 0.5
+    done
+    MUSTER_DDB_ENDPOINT=http://localhost:8000 go test -race ./internal/dynamostore/...
