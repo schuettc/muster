@@ -498,12 +498,25 @@ func testCreateThread(t *testing.T, s store.API) {
 
 // testIntentValidation: CreateThread is the validation boundary, so MCP, CLI
 // and station cannot diverge on the vocabulary.
+//
+// Each accepted value is also read back. Accepting an intent and then dropping
+// it is indistinguishable from rejecting it at every surface that matters, and
+// on a message kind effectiveIntent is the identity, so the stored value must
+// come back verbatim.
 func testIntentValidation(t *testing.T, s store.API) {
 	for _, ok := range []string{"", store.IntentFYI, store.IntentReply, store.IntentAction} {
-		if _, err := s.CreateThread(store.Thread{
+		id, err := s.CreateThread(store.Thread{
 			Kind: "message", FromAgent: "a", ToKind: "broadcast", Intent: ok,
-		}, "body"); err != nil {
+		}, "body")
+		if err != nil {
 			t.Fatalf("intent %q should be valid: %v", ok, err)
+		}
+		th, _, err := s.GetThread(id)
+		if err != nil {
+			t.Fatalf("GetThread for intent %q: %v", ok, err)
+		}
+		if th.Intent != ok {
+			t.Fatalf("message stored with intent %q read back as %q", ok, th.Intent)
 		}
 	}
 	if _, err := s.CreateThread(store.Thread{
@@ -1301,22 +1314,48 @@ func testIdemLifecycle(t *testing.T, s store.API) {
 
 // testIdemAtomic is the test the whole design exists for: N callers race for
 // one key and exactly one may execute the op.
+//
+// Counting winners is only half the contract. What every LOSER reports is the
+// signal the dispatch wrapper reads to tell a replay from an in-flight
+// duplicate, so each one is asserted individually: no error, found, not done.
+// A backend whose losers returned an error instead would satisfy a
+// winners-only count while turning "already in flight" into a 500.
 func testIdemAtomic(t *testing.T, s store.API) {
 	const n = 8
-	var claims int64
+	type outcome struct {
+		done  bool
+		found bool
+		err   error
+	}
+	outcomes := make([]outcome, n)
 	var wg sync.WaitGroup
-	for range n {
+	for i := range n {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if _, _, found, err := s.IdemBegin("race"); err == nil && !found {
-				atomic.AddInt64(&claims, 1)
-			}
+			_, done, found, err := s.IdemBegin("race")
+			outcomes[i] = outcome{done: done, found: found, err: err}
 		}()
 	}
 	wg.Wait()
-	if claims != 1 {
-		t.Fatalf("%d callers claimed the key, want exactly 1", claims)
+
+	winners := 0
+	for i, o := range outcomes {
+		if o.err == nil && !o.found {
+			winners++
+			continue
+		}
+		// Every non-winner must lose the DOCUMENTED way.
+		if o.err != nil {
+			t.Errorf("caller %d: IdemBegin returned %v, want a clean in-flight report", i, o.err)
+			continue
+		}
+		if o.done {
+			t.Errorf("caller %d: done=true, want false — the op has not run yet", i)
+		}
+	}
+	if winners != 1 {
+		t.Fatalf("%d of %d callers claimed the key, want exactly 1 (outcomes: %+v)", winners, n, outcomes)
 	}
 }
 
@@ -1511,10 +1550,15 @@ func testEventsByAgentRole(t *testing.T, s store.API) {
 	id := mustThread(t, s, store.Thread{
 		Kind: "task", FromAgent: "web", ToKind: "role", ToTarget: "worker", Status: "open",
 	}, "do it")
-	if err := s.AppendEvent(store.Event{
-		Kind: "task", Agent: "web", Target: "role:worker", ThreadID: id,
-	}); err != nil {
-		t.Fatalf("AppendEvent: %v", err)
+	// The second event is the negative control: without it a filter that
+	// matched EVERYTHING would satisfy the count below.
+	for _, e := range []store.Event{
+		{Kind: "task", Agent: "web", Target: "role:worker", ThreadID: id},
+		{Kind: "send", Agent: "x", Target: "agent:zzz", ThreadID: 999},
+	} {
+		if err := s.AppendEvent(e); err != nil {
+			t.Fatalf("AppendEvent: %v", err)
+		}
 	}
 	got, err := s.Events(store.EventQuery{Agent: "api", Backlog: true, Limit: 10})
 	if err != nil {
@@ -1523,6 +1567,9 @@ func testEventsByAgentRole(t *testing.T, s store.API) {
 	if len(got) != 1 {
 		t.Fatalf("api holds role worker, so the role-addressed thread's event concerns it: got %d: %+v",
 			len(got), got)
+	}
+	if got[0].Agent == "x" {
+		t.Fatalf("an unrelated event leaked through the role-aware agent filter: %+v", got[0])
 	}
 }
 
