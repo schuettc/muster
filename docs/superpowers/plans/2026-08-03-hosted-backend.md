@@ -2534,6 +2534,32 @@ Register both in the `cases` slice from Task 9.
 Run: `just verify-dynamo`
 Expected: FAIL — `DevicePoll` undefined.
 
+- [ ] **Step 2b: REQUIRED — give `SessionUnread` a device dimension**
+
+**Added at Task 13, whose review found this. It is a blocker for the two-device
+milestone, which is the entire point of this feature.**
+
+`(socket_path, session_id)` is **not** device-unique in a shared store. Two macOS
+laptops both use `/private/tmp/tmux-501/default` (501 is the default first-user
+uid) and both can have a session `$1`. `session_unread` has no device dimension
+in either backend (`internal/store/agents.go:237-249`,
+`internal/dynamostore/threads.go:853-878`), so its self-exclusion —
+`e.from_agent NOT IN (SELECT alias FROM sess)` — treats a **remote** device's
+alias as a sibling of the local session and drops the entry.
+
+Failure: device A runs `backend`, device B runs `frontend`, both on the colliding
+tuple. `frontend` messages `backend`. A's unread query excludes the entry as
+"one of my own session's writes", so **A's badge never lights**. A missed wake,
+in exactly the two-device scenario the hosted backend exists to serve.
+
+Add the device dimension to `SessionUnread` across `store.API`, both backends,
+and the conformance suite. Task 13 already fixed the alias half of this
+(`liveAliasesFor` now filters by `DeviceID`); this is the unread half.
+
+Note the root cause was a wrong belief, not a typo: a comment asserted the tuple
+was "device-scoped by construction", which is true of the local mutex and false
+of session identity upstream. Check any other code resting on that assumption.
+
 - [ ] **Step 3: Implement `DevicePoll` on both backends**
 
 The server holds both the roster and the entries, so it does the filtering: find
