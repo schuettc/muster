@@ -1026,14 +1026,6 @@ func TestSessionUnreadUsesPerAliasWatermark(t *testing.T) {
 	}
 }
 
-// TestAppendTransactGuardIsForwardOnly is the DETERMINISTIC check on the
-// forward-only guard, driving appendTransact directly so the out-of-order
-// commit is forced rather than hoped for. Its companion
-// TestConcurrentAppendsKeepMaxEntryAsLast races 8 real appends, but if those
-// happen to commit in id order the guard never fires — that test passes even
-// with the condition at appendTransact deleted. This one does not: the second
-// call is a strictly LOWER id, so it must be refused, and the thread's last
-// entry must remain the higher one.
 // TestAppendTransactSurvivesARepeatedSend is the entry path's half of the
 // ClientRequestToken. The SDK's standard retryer re-sends a transaction whose
 // response was lost — same arguments, so the same token — and an un-tokenized
@@ -1067,6 +1059,14 @@ func TestAppendTransactSurvivesARepeatedSend(t *testing.T) {
 	}
 }
 
+// TestAppendTransactGuardIsForwardOnly is the DETERMINISTIC check on the
+// forward-only guard, driving appendTransact directly so the out-of-order
+// commit is forced rather than hoped for. Its companion
+// TestConcurrentAppendsKeepMaxEntryAsLast races 8 real appends, but if those
+// happen to commit in id order the guard never fires — that test passes even
+// with the condition at appendTransact deleted. This one does not: the second
+// call is a strictly LOWER id, so it must be refused, and the thread's last
+// entry must remain the higher one.
 func TestAppendTransactGuardIsForwardOnly(t *testing.T) {
 	s := newTestStore(t)
 	ctx := t.Context()
