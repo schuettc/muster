@@ -4,9 +4,9 @@
 
 `muster` lets coding-agent sessions in separate terminals send messages and hand
 tasks to each other. Any agent that can register an MCP server can join the bus —
-Claude Code and OpenAI Codex are the two it's tested with. Everything runs over a
-local unix socket with state in a local SQLite file; muster itself never calls a
-model.
+Claude Code, OpenAI Codex, and Cursor Agent are supported. Everything runs over
+a local unix socket with state in a local SQLite file; muster itself never calls
+a model.
 
 - **Messages and tasks between sessions.** One agent posts a "review this branch"
   task; a standing session in another terminal claims it, works it, and replies.
@@ -42,6 +42,8 @@ curl -fsSL https://muster.tools/install.sh | sh
 # 2. register the MCP server with each agent
 claude mcp add muster -s user -- muster mcp     # Claude Code
 codex mcp add muster -- muster mcp              # Codex
+# Cursor Agent: add the mcp.json block shown below, then:
+agent mcp enable muster
 # (any other MCP client: point it at `muster mcp` over stdio)
 
 # 3. in each session, have the agent call register_agent once
@@ -54,19 +56,39 @@ That's a working bus. Two optional layers, both in [`contrib/`](contrib/):
   unread mail ([`contrib/tmux-mailbox.conf`](contrib/tmux-mailbox.conf)).
 - **Automate the lifecycle** — session hooks (`muster hook <event> <model>`)
   auto-register agents on start and have them drain their own inbox at turn
-  end ([config for both harnesses in `contrib/`](contrib/README.md)).
+  end ([config for all three harnesses in `contrib/`](contrib/README.md)).
 
 ## MCP mode
 
 `muster mcp` runs muster as an MCP server over stdio, exposing the bus as tools
-any MCP client (Claude Code, Codex) can call. Register it once per tool:
+any MCP client (Claude Code, Codex, Cursor Agent) can call. Register it once per
+tool:
 
 ```bash
 # Claude Code
 claude mcp add muster -s user -- muster mcp
 # Codex
 codex mcp add muster -- muster mcp
+# Cursor Agent: add this to .cursor/mcp.json (or ~/.cursor/mcp.json)
 ```
+
+```json
+{
+  "mcpServers": {
+    "muster": {
+      "command": "muster",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+```bash
+agent mcp enable muster
+```
+
+For unattended Cursor Agent use, allow `Mcp(muster:*)` in the
+`permissions.allow` list in `~/.cursor/cli-config.json`.
 
 The tools, by what they do:
 
@@ -125,9 +147,27 @@ deleted (default `720h`, i.e. 30 days), so the journal doesn't grow without
 bound on a long-running daemon.
 
 `register` captures the tmux pane automatically. Alias precedence: explicit
-arg → `$MUSTER_ALIAS` → tmux session name. `--model` is stored on the agent and
-tunes `muster nudge`'s submit keystroke (`claude` and `codex` auto-submit; other
-values are typed without submitting).
+arg → `$MUSTER_ALIAS` → tmux session name → working-directory basename.
+
+**Paneless sessions.** A session with no tmux in its environment (Claude
+Code's daemon-hosted sessions and background jobs execute outside the pane
+you launched them from) registers *paneless*: alias from the working
+directory, project from the enclosing git checkout, identity keyed on the
+harness session UUID. Every session in a directory derives the same base, so
+the alias is **allocated unique** — `dotfiles`, then `dotfiles-2`, `-3`, … —
+never taken over from another live session; a resumed session revives its own
+alias instead of taking a new suffix. (The numbers are bus-side allocation
+order and won't necessarily match your tmux session numbering — the session
+can't see its tmux name, which is the whole reason it's paneless.) The session hooks work unchanged — auto-register at
+start, deregister at end, and the Stop hook checks the inbox via the daemon
+directly (there's no tmux badge to poll). Paneless agents show `◌` in the
+LIVE column (liveness is unknowable without a pane), are exempt from `gc`'s
+tmux-liveness reaping, and can't be reached by `muster nudge` — mail waits in
+the inbox for their next Stop.
+
+`--model` is stored on the agent and
+tunes `muster nudge`'s submit keystroke (`claude`, `codex`, and `cursor`
+auto-submit; other values are typed without submitting).
 
 `muster agents` shows each agent's **project** and live **label**:
 
@@ -146,7 +186,10 @@ values are typed without submitting).
 Any command that takes a target — `send`, `nudge`, `inbox`, `tasks` —
 accepts a target of the form `<alias|label|proj:label>`:
 
-- an **alias** (the tmux session name, globally unique): `muster nudge muster-2`
+- an **alias** (globally unique): seeded from your tmux session name at first
+  registration; thereafter it is the session's durable identity — re-registering
+  the same alias from anywhere (including after a resume in a new tmux
+  session) revives it with its inbox intact: `muster nudge muster-2`
 - a **label**, resolved within your current project: `muster send frontend "…"`
 - a **qualified label** to cross projects: `muster send timewalk:frontend "…"`
 
@@ -226,9 +269,9 @@ muster nudge <alias>              # types the full drain-and-act instruction int
 muster nudge <alias> --no-submit  # type only; don't press Enter
 ```
 
-Nudge submits for both Claude Code (immediate Enter) and Codex (a short delayed
-Enter — Codex treats an Enter bundled with pasted text as part of the paste).
-Other model types are typed without submitting.
+Nudge submits for Claude Code (immediate Enter), Codex, and Cursor Agent (a
+short delayed Enter — their TUIs treat an Enter bundled with pasted text as part
+of the paste). Other model types are typed without submitting.
 
 ### Hooks (optional)
 
@@ -238,14 +281,18 @@ of typed by hand:
 - **SessionStart** → `muster register` — the session joins the bus on start.
   Claude Code fires this at launch; Codex fires it on the session's first turn,
   so say anything to a fresh Codex session ("hi" is enough) before addressing
-  mail to it.
+  mail to it. On `SessionStart` with `source:"resume"`, the hook reclaims
+  every alias the resumed conversation owns onto the new tmux session and
+  reports the unread backlog into the session's context.
 - **Stop** (turn end) → if the session has unread muster mail, the hook tells the
   agent to drain its inbox and reply, autonomously.
 - **SessionEnd** (Claude Code) → `muster deregister`; `muster gc` covers the rest.
 
 The muster binary is its own hook — point your harness at `muster hook <event>
-<model>` (e.g. `muster hook Stop claude`). Copy-paste config for both Claude
-Code and Codex is in [`contrib/`](contrib/README.md).
+<model>` (e.g. `muster hook Stop claude`). Copy-paste config for Claude Code,
+Codex, and Cursor Agent is in [`contrib/`](contrib/README.md). Cursor's
+hook config goes in `~/.cursor/hooks.json`; its stop hook uses a `loop_limit`
+and muster respects Cursor's loop/status guard.
 
 **Pane ownership.** Only the session's primary agent pane acts on these
 hooks — a second Claude in the same tmux session (e.g. a spawned subagent)

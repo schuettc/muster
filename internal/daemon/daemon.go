@@ -4,11 +4,13 @@ package daemon
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/schuettc/muster/internal/display"
@@ -33,7 +35,9 @@ type storeAPI interface {
 	DepartAgent(alias string) error
 	DepartStaleSiblings(socketPath, sessionID string, created int64, keepAlias string) ([]string, error)
 	SetSessionLabel(socketPath, sessionID, label string, manual bool) (int64, error)
+	SetHarnessSessionID(alias, id string) error
 	DeleteAgent(alias string) error
+	Become(from, to string) error
 	CreateThread(t store.Thread, firstBody string) (int64, error)
 	AppendEntry(threadID int64, fromAgent, body, statusChange string) (int64, error)
 	ClaimTask(threadID int64, byAgent string) error
@@ -42,7 +46,9 @@ type storeAPI interface {
 	Threads(limit int) ([]store.Thread, error)
 	Inbox(alias string) ([]store.Thread, error)
 	MarkRead(alias string) error
+	UnreadCount(alias string) (int, error)
 	SessionUnread(socketPath, sessionID string) (total, action int, err error)
+	SessionAliasLineage(socketPath, sessionID string) ([]string, error)
 	KVSet(key, value, updatedBy string) error
 	KVGet(key string) (store.KVPair, bool, error)
 	AppendEvent(e store.Event) error
@@ -208,7 +214,8 @@ func (d *Daemon) handleRegisterAgent(a map[string]any) proto.Response {
 		Alias: alias, Role: str(a, "role"), ModelType: str(a, "model_type"),
 		SocketPath: str(a, "socket_path"), PaneID: str(a, "pane_id"), SessionName: str(a, "session_name"),
 		SessionID: str(a, "session_id"), SessionCreated: i64(a, "session_created"),
-		Project: str(a, "project"), Label: str(a, "label"), LabelManual: boolArg(a, "label_manual"),
+		HarnessSessionID: str(a, "harness_session_id"),
+		Project:          str(a, "project"), Label: str(a, "label"), LabelManual: boolArg(a, "label_manual"),
 	}
 
 	var mu *sync.Mutex
@@ -247,7 +254,26 @@ func (d *Daemon) handleRegisterAgent(a map[string]any) proto.Response {
 		d.reconcileBadge(old.SocketPath, old.SessionID)
 	}
 	d.reconcileBadge(newAgent.SocketPath, newAgent.SessionID)
-	return ok(nil)
+	// Outcome classification (durable-alias spec change 1): the pre-mutation
+	// row read above already tells this apart for free — no prior row is a
+	// first sight, a live prior row is a tuple refresh, and a tombstone is a
+	// returning session (RegisterAgent's upsert just revived it). The unread
+	// count rides along so a resuming session learns its backlog in the same
+	// call; a count failure degrades to 0 rather than failing a register that
+	// already succeeded.
+	outcome := "new"
+	switch {
+	case hadOld && old.Departed:
+		outcome = "revived"
+		d.logEvent(store.Event{Kind: "register", Agent: alias, Detail: "revived"})
+	case hadOld:
+		outcome = "refreshed"
+	}
+	unread, err := d.s.UnreadCount(alias)
+	if err != nil {
+		unread = 0
+	}
+	return ok(map[string]any{"outcome": outcome, "unread": unread})
 }
 
 // setSessionBadge is the ONE canonical {recompute, push} sequence for a
@@ -361,7 +387,9 @@ func (d *Daemon) notifyForThread(threadID int64, actor string) {
 		}
 	case "broadcast":
 		for _, a := range agents {
-			recipients[a.Alias] = struct{}{}
+			if th.ToTarget == "" || a.Project == th.ToTarget {
+				recipients[a.Alias] = struct{}{}
+			}
 		}
 	}
 	// Drop the actor's entire session: the literal alias always goes (an
@@ -444,14 +472,50 @@ func (d *Daemon) senderProject(alias string) string {
 	return ag.Project
 }
 
+// validateBroadcastTarget is the send-time backstop for scoped broadcasts
+// (to_kind=broadcast, to_target=<project>): reject unless some non-departed
+// agent is registered under exactly that project, so a typo'd project never
+// creates a thread that concerns nobody — the same black-hole principle as
+// resolveAgentTarget for mistyped aliases. A global broadcast (empty
+// target) is never validated. Exact match only; project strings come from
+// tmux capture and are stable, so no fuzzy or prefix matching.
+func (d *Daemon) validateBroadcastTarget(project string) error {
+	if project == "" {
+		return nil
+	}
+	agents, err := d.s.ListAgents()
+	if err != nil {
+		return err
+	}
+	known := make(map[string]bool)
+	for _, ag := range agents {
+		if !ag.Departed && ag.Project != "" {
+			known[ag.Project] = true
+		}
+	}
+	if known[project] {
+		return nil
+	}
+	names := make([]string, 0, len(known))
+	for p := range known {
+		names = append(names, p)
+	}
+	sort.Strings(names)
+	return fmt.Errorf("no registered agents in project %q (known projects: %s)", project, strings.Join(names, ", "))
+}
+
 // targetOf renders a thread address as a journal target: 'broadcast' or
 // '<to_kind>:<to_target>'. toTarget is the (possibly daemon-resolved) target
 // actually stored on the thread, not necessarily the raw request arg — so a
 // send_message/task_create addressed to a label journals the ALIAS it
-// resolved to, not the label a caller typed.
+// resolved to, not the label a caller typed. A scoped broadcast journals
+// 'broadcast:<project>'.
 func targetOf(toKind, toTarget string) string {
 	if toKind == "broadcast" {
-		return "broadcast"
+		if toTarget == "" {
+			return "broadcast"
+		}
+		return "broadcast:" + toTarget
 	}
 	return toKind + ":" + toTarget
 }
@@ -477,6 +541,11 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 			}
 			toTarget = resolved
 		}
+		if toKind == "broadcast" {
+			if err := d.validateBroadcastTarget(toTarget); err != nil {
+				return fail(err)
+			}
+		}
 		id, err := d.s.CreateThread(store.Thread{
 			Kind: "message", FromAgent: from, ToKind: toKind,
 			ToTarget: toTarget, Subject: str(a, "subject"), Ref: str(a, "ref"),
@@ -497,6 +566,11 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 				return fail(err)
 			}
 			toTarget = resolved
+		}
+		if toKind == "broadcast" {
+			if err := d.validateBroadcastTarget(toTarget); err != nil {
+				return fail(err)
+			}
 		}
 		id, err := d.s.CreateThread(store.Thread{
 			Kind: "task", FromAgent: from, ToKind: toKind,
@@ -529,7 +603,14 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 			return fail(err)
 		}
 		d.logEvent(store.Event{Kind: "reply", Agent: str(a, "from"), ThreadID: i64(a, "thread_id"), Detail: display.Sanitize(str(a, "body"), replyPreviewWidth)})
-		d.notifyForThread(i64(a, "thread_id"), str(a, "from"))
+		// An fyi reply is a closer: the entry lands on the thread and shows
+		// as unread on the recipients' next natural inbox check, but nobody's
+		// badge lights — no wake means no reflexive ack back, which is what
+		// breaks the ack-loop (each closing ack waking the peer into one more
+		// closing ack).
+		if !boolArg(a, "fyi") {
+			d.notifyForThread(i64(a, "thread_id"), str(a, "from"))
+		}
 		return ok(map[string]any{"entry_id": id})
 	case "get_inbox":
 		alias := str(a, "alias")
@@ -554,31 +635,36 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 		d.logEvent(store.Event{Kind: "read", Agent: alias, Detail: detail})
 		return ok(threads)
 	case "session_aliases":
+		// socket_path may be empty: a paneless session's tuple is ("",
+		// harness session UUID) — see internal/harnessenv. Only a missing
+		// session_id leaves no tuple to key on.
+		//
+		// SessionAliasLineage (not a flat tuple filter over ListAgents) walks
+		// supersession lineage the same way SessionUnread does: a
+		// become-retired seed's row sits on its OLD tuple forever (reclaim
+		// correctly never resurrects it there), so a flat filter would drop
+		// it from the very session its identity moved to. Lineage rows are
+		// additive to this op's existing include-departed-on-purpose
+		// behavior — nothing here narrows what used to come back, it only
+		// adds the aliases a flat tuple match was missing.
 		socketPath, sessionID := str(a, "socket_path"), str(a, "session_id")
-		if socketPath == "" || sessionID == "" {
-			return fail(fmt.Errorf("session_aliases: socket_path and session_id are required"))
+		if sessionID == "" {
+			return fail(fmt.Errorf("session_aliases: session_id is required"))
 		}
-		agents, err := d.s.ListAgents()
+		aliases, err := d.s.SessionAliasLineage(socketPath, sessionID)
 		if err != nil {
 			return fail(err)
 		}
-		aliases := []string{}
-		for _, ag := range agents {
-			if ag.SocketPath == socketPath && ag.SessionID == sessionID {
-				aliases = append(aliases, ag.Alias)
-			}
-		}
-		sort.Strings(aliases)
-		aliases = compactStrings(aliases)
 		return ok(map[string]any{"aliases": aliases})
 	case "session_unread":
 		// Read-only display data (spec §3/§4 hook wiring): no lock needed —
 		// unlike setSessionBadge, this neither mutates the tmux badge nor
 		// journals anything, so there is nothing for the session lock to
 		// serialize against.
+		// socket_path may be empty — the paneless tuple, as in session_aliases.
 		socketPath, sessionID := str(a, "socket_path"), str(a, "session_id")
-		if socketPath == "" || sessionID == "" {
-			return fail(fmt.Errorf("session_unread: socket_path and session_id are required"))
+		if sessionID == "" {
+			return fail(fmt.Errorf("session_unread: session_id is required"))
 		}
 		total, action, err := d.s.SessionUnread(socketPath, sessionID)
 		if err != nil {
@@ -673,6 +759,11 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 			return fail(err)
 		}
 		return ok(map[string]any{"updated": n})
+	case "stamp_harness_session":
+		if err := d.s.SetHarnessSessionID(str(a, "alias"), str(a, "harness_session_id")); err != nil {
+			return fail(err)
+		}
+		return ok(nil)
 	case "purge_agent":
 		// The explicit, irreversible hard-delete: `muster gc --purge-agents`'s
 		// own op, distinct from deregister_agent's tombstone. Identity,
@@ -686,6 +777,50 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 			d.reconcileBadge(old.SocketPath, old.SessionID)
 		}
 		return ok(nil)
+	case "become":
+		// Claim a durable name: the seed's identity moves to `to` and the
+		// seed retires (store.Become). unread is computed via SessionUnread
+		// on the claimed alias's (socket_path, session_id) tuple, not
+		// UnreadCount(to) — mail addressed to the pre-claim seed alias
+		// concerns that alias's *text*, not the destination alias's, so
+		// UnreadCount(to) would miss it. SessionUnread groups by the
+		// session tuple, which now belongs to `to` post-claim, so it
+		// correctly picks up mail that arrived before the claim. This
+		// matches the spec's intent: "how much mail is waiting for this
+		// session", reported so a caller can say "you are now X — N
+		// unread" in one round trip.
+		from, to := str(a, "from"), str(a, "to")
+		if err := d.s.Become(from, to); err != nil {
+			switch {
+			case errors.Is(err, store.ErrBecomeFromMissing):
+				// No self-prefix (finding F3): callData already renders
+				// "<op>: <resp.Error>" for every op — send_message's resolve
+				// errors follow the same convention (no "send_message: "
+				// baked in here). A daemon error that also opened with
+				// "become: " doubled into "become: become: ..." on the CLI.
+				return fail(fmt.Errorf("no such alias %q to become from; register first", from))
+			case errors.Is(err, store.ErrBecomeToExists):
+				return fail(fmt.Errorf("alias %q already has history; pick another name, or purge it with `muster gc --purge-agents`", to))
+			}
+			return fail(err)
+		}
+		d.logEvent(store.Event{Kind: "become", Agent: to, Detail: from + " → " + to})
+		ag, _, err := d.s.GetAgent(to)
+		if err != nil {
+			// store.Become above already committed: the claim itself succeeded,
+			// so a GetAgent read failure here must not surface as an op failure
+			// (finding F3) — a caller retrying on error would then hit
+			// ErrBecomeToExists for a claim that already went through. Degrade
+			// best-effort exactly like the unread lookup below already does:
+			// skip the badge reconcile and report unread:0 instead of failing.
+			return ok(map[string]any{"from": from, "to": to, "unread": 0})
+		}
+		d.reconcileBadge(ag.SocketPath, ag.SessionID)
+		unread, _, err := d.s.SessionUnread(ag.SocketPath, ag.SessionID)
+		if err != nil {
+			unread = 0 // best-effort: the claim already succeeded
+		}
+		return ok(map[string]any{"from": from, "to": to, "unread": unread})
 	default:
 		return proto.Response{Error: "unknown op: " + req.Op}
 	}

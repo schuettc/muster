@@ -165,6 +165,18 @@ func CurrentSessionOption(name string) string {
 	return out
 }
 
+// SessionOption reads a tmux user option's raw value for a specific
+// (socket, target) pair — the socket-aware counterpart to
+// CurrentSessionOption, via the same query seam as SessionLabel/SessionName.
+// A hook spawned with $TMUX stripped from its environment (the harness-hosted
+// production case) has no ambient session for CurrentSessionOption to read;
+// when identity instead came from tmuxenv.CaptureFromAncestry, this is how a
+// caller reads an option (e.g. "@muster_inbox") for that WALKED tuple rather
+// than trusting an environment that isn't there.
+func SessionOption(socket, target, name string) string {
+	return query(socket, target, "#{"+name+"}")
+}
+
 // CurrentSessionName returns the ambient session's name (no -S/-t), or "" if
 // tmux isn't reachable (e.g. not running inside tmux).
 func CurrentSessionName() string {

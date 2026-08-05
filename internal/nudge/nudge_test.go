@@ -45,19 +45,30 @@ func TestNudgeClaudeTypesAndSubmitsWithoutDelay(t *testing.T) {
 }
 
 func TestNudgeCodexTypesAndSubmitsAfterDelay(t *testing.T) {
+	testNudgePasteSubmitHarness(t, "codex")
+}
+
+func TestNudgeCursorTypesAndSubmitsAfterDelay(t *testing.T) {
+	// Cursor Agent's TUI matches Codex: an Enter bundled with pasted text is
+	// treated as part of the paste (and leaves the text stuck in the composer).
+	testNudgePasteSubmitHarness(t, "cursor")
+}
+
+func testNudgePasteSubmitHarness(t *testing.T, model string) {
+	t.Helper()
 	calls, run := recorder()
 	slept, sleep := sleepRecorder()
 	n := TmuxNudger{Run: run, Sleep: sleep}
-	submitted, err := n.Nudge("/s", "%2", "codex", true)
+	submitted, err := n.Nudge("/s", "%2", model, true)
 	if err != nil {
-		t.Fatalf("codex: %v", err)
+		t.Fatalf("%s: %v", model, err)
 	}
 	if !submitted {
-		t.Fatalf("codex must now report submitted=true (delayed standalone Enter submits its TUI)")
+		t.Fatalf("%s must report submitted=true (delayed standalone Enter submits its TUI)", model)
 	}
-	// Codex must pause once before pressing Enter.
+	// Must pause once before pressing Enter.
 	if len(*slept) != 1 || (*slept)[0] <= 0 {
-		t.Fatalf("codex must sleep exactly once for a positive delay before Enter, slept=%v", *slept)
+		t.Fatalf("%s must sleep exactly once for a positive delay before Enter, slept=%v", model, *slept)
 	}
 	// The Enter must be a separate send-keys call issued after the text, not bundled.
 	c := *calls

@@ -1523,6 +1523,9 @@ func (m Model) dispToTarget(row listThreadRow) string {
 	case "role":
 		return "role:" + row.ToTarget
 	case "broadcast":
+		if row.ToTarget != "" {
+			return "broadcast:" + row.ToTarget
+		}
 		return "broadcast"
 	default:
 		return row.ToTarget

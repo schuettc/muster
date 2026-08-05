@@ -618,20 +618,44 @@ func TestNotifyDrainInterleaving(t *testing.T) {
 	}
 }
 
-// TestSessionAliasesRejectsEmptyTuple: session_aliases requires BOTH
-// socket_path and session_id non-empty (spec §3), and on success returns the
-// session's aliases sorted.
+// TestSessionAliasesRejectsEmptyTuple: session_aliases requires a non-empty
+// session_id (spec §3) — socket_path may be empty, the PANELESS tuple ("",
+// harness session UUID), which must match only paneless rows — and on
+// success returns the session's aliases sorted.
 func TestSessionAliasesRejectsEmptyTuple(t *testing.T) {
 	n := &fakeNotifier{}
 	sock := startWithNotifier(t, n)
 	call(t, sock, "register_agent", map[string]any{"alias": "solo", "role": "peer", "model_type": "claude", "socket_path": "/s", "session_id": "$9"})
 	call(t, sock, "register_agent", map[string]any{"alias": "twin", "role": "peer", "model_type": "claude", "socket_path": "/s", "session_id": "$9"})
 
-	if resp := call(t, sock, "session_aliases", map[string]any{"socket_path": "", "session_id": "$9"}); resp.OK {
-		t.Fatal("session_aliases must reject an empty socket_path")
-	}
 	if resp := call(t, sock, "session_aliases", map[string]any{"socket_path": "/s", "session_id": ""}); resp.OK {
 		t.Fatal("session_aliases must reject an empty session_id")
+	}
+
+	// The paneless tuple ("", uuid) is valid and matches only paneless rows —
+	// never tmux rows, even ones whose session_id coincides.
+	call(t, sock, "register_agent", map[string]any{"alias": "paneless-1", "role": "peer", "model_type": "claude", "socket_path": "", "session_id": "hs-uuid"})
+	respPaneless := call(t, sock, "session_aliases", map[string]any{"socket_path": "", "session_id": "hs-uuid"})
+	if !respPaneless.OK {
+		t.Fatalf("session_aliases must accept the paneless tuple: %+v", respPaneless)
+	}
+	var panelessOut struct {
+		Aliases []string `json:"aliases"`
+	}
+	decode(t, respPaneless, &panelessOut)
+	if !slices.Equal(panelessOut.Aliases, []string{"paneless-1"}) {
+		t.Fatalf("paneless aliases = %v, want [paneless-1]", panelessOut.Aliases)
+	}
+	respEmpty := call(t, sock, "session_aliases", map[string]any{"socket_path": "", "session_id": "$9"})
+	if !respEmpty.OK {
+		t.Fatalf("session_aliases with empty socket must be accepted: %+v", respEmpty)
+	}
+	var emptyOut struct {
+		Aliases []string `json:"aliases"`
+	}
+	decode(t, respEmpty, &emptyOut)
+	if len(emptyOut.Aliases) != 0 {
+		t.Fatalf("(\"\", $9) must not match tmux rows on socket /s, got %v", emptyOut.Aliases)
 	}
 
 	resp := call(t, sock, "session_aliases", map[string]any{"socket_path": "/s", "session_id": "$9"})
@@ -650,16 +674,17 @@ func TestSessionAliasesRejectsEmptyTuple(t *testing.T) {
 
 // TestSessionUnreadOpRejectsEmptyTupleAndReturnsCounts: the session_unread op
 // (spec §3/§4, added for the Stop hook's multi-alias drain wording) requires
-// both fields non-empty like session_aliases, and on success returns the
-// store's {total, action} pair as-is.
+// a non-empty session_id like session_aliases (socket_path may be empty —
+// the paneless tuple), and on success returns the store's {total, action}
+// pair as-is.
 func TestSessionUnreadOpRejectsEmptyTupleAndReturnsCounts(t *testing.T) {
 	sock := startWithNotifier(t, &fakeNotifier{})
 	call(t, sock, "register_agent", map[string]any{"alias": "worker", "role": "peer", "model_type": "claude", "socket_path": "/s", "session_id": "$9"})
 	call(t, sock, "register_agent", map[string]any{"alias": "other", "role": "peer", "model_type": "claude", "socket_path": "/p", "session_id": "$2"})
 	call(t, sock, "send_message", map[string]any{"from": "other", "to_kind": "agent", "to_target": "worker", "subject": "s", "body": "b", "intent": "action-requested"})
 
-	if resp := call(t, sock, "session_unread", map[string]any{"socket_path": "", "session_id": "$9"}); resp.OK {
-		t.Fatal("session_unread must reject an empty socket_path")
+	if resp := call(t, sock, "session_unread", map[string]any{"socket_path": "", "session_id": "$9"}); !resp.OK {
+		t.Fatalf("session_unread must accept an empty socket_path (paneless tuple): %+v", resp)
 	}
 	if resp := call(t, sock, "session_unread", map[string]any{"socket_path": "/s", "session_id": ""}); resp.OK {
 		t.Fatal("session_unread must reject an empty session_id")

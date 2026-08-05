@@ -91,13 +91,15 @@ func init() {
 	Registry = []Command{
 		{
 			Name:     "send",
-			Synopsis: `send <target> "body" [--from <alias>] [--subject <s>] [--ref <r>] [--role] [--broadcast] [--intent fyi|reply-requested|action-requested]`,
+			Synopsis: `send <target> "body" [--from <alias>] [--subject <s>] [--ref <r>] [--role] [--broadcast [--project <p>]] [--intent fyi|reply-requested|action-requested]`,
 			Summary:  "Send a message to an agent, role, or everyone.",
 			Help: `target is an alias, a label, or a "project:label" pair, resolved the same
 way for every muster surface (send, nudge, inbox, tasks). --role treats
 target as a role name instead of an agent; --broadcast ignores target and
 sends to every registered agent (target is then omitted: 'muster send
---broadcast "body"'). --intent tags the message for the recipient's
+--broadcast "body"'). With --project, the broadcast reaches only agents
+registered under that exact project (the daemon rejects unknown projects and
+lists the known ones). --intent tags the message for the recipient's
 inbox/hook rendering: fyi (default, no action implied), reply-requested, or
 action-requested.`,
 			Group:    GroupTalk,
@@ -118,14 +120,17 @@ the operator (or the agent) to submit by hand.`,
 		},
 		{
 			Name:     "reply",
-			Synopsis: `reply <thread-id> "body" [--from <alias>]`,
+			Synopsis: `reply <thread-id> "body" [--from <alias>] [--fyi]`,
 			Summary:  "Append a reply to an existing thread.",
 			Help: `The CLI half of the MCP reply tool: appends an entry to the thread and
 flags every participant's mailbox, exactly as a tool-sent reply would.
---from is the replying agent's alias (default "human"). Together with
-'muster inbox' and 'muster thread' this completes the read-and-respond
-loop from a plain shell — the fallback when a session has no muster MCP
-connection.`,
+--from is the replying agent's alias (default "human"). --fyi marks a
+closing note: the entry lands on the thread but wakes nobody — recipients
+see it on their next natural inbox check. Use it for acks and wrap-ups
+that need nothing back, so a closure doesn't wake the peer into one more
+closing ack. Together with 'muster inbox' and 'muster thread' this
+completes the read-and-respond loop from a plain shell — the fallback
+when a session has no muster MCP connection.`,
 			Group:    GroupTalk,
 			NewFlags: newReplyFlags,
 			Run:      cmdReply,
@@ -215,7 +220,7 @@ marks anything read.`,
 		},
 		{
 			Name:     "register",
-			Synopsis: "register [<alias>] [--role <role>] [--model claude|codex]",
+			Synopsis: "register [<alias>] [--role <role>] [--model claude|codex|cursor]",
 			Summary:  "Register the current tmux session as an agent.",
 			Help: `Alias precedence: the explicit argument, then $MUSTER_ALIAS, then the tmux
 session name. Captures the calling session's project/pane/socket identity
@@ -223,6 +228,18 @@ from tmux (internal/tmuxenv) so other commands can address it.`,
 			Group:    GroupIdentity,
 			NewFlags: newRegisterFlags,
 			Run:      cmdRegister,
+		},
+		{
+			Name:     "become",
+			Synopsis: "become <name> [--from <alias>]",
+			Summary:  "Claim a durable name for this session.",
+			Help: `Claim this session's real name: a new alias inherits this session's
+identity and inbox watermark, and the tmux-seeded alias retires — route
+traffic by a name the work deserves. --from selects which of this session's
+live aliases to claim from; required when the session has more than one.`,
+			Group:    GroupIdentity,
+			NewFlags: newBecomeFlags,
+			Run:      cmdBecome,
 		},
 		{
 			Name:     "deregister",
@@ -236,10 +253,24 @@ from tmux (internal/tmuxenv) so other commands can address it.`,
 			Name:     "label",
 			Synopsis: "label [<name>] [--clear]",
 			Summary:  "Name or clear the current tmux session's label.",
-			Help:     `Requires a tmux session ($TMUX set). Sets (or, with --clear or a bare 'muster label', clears) this session's addressable label in one command. When a live Claude Code agent is registered in this session, also types /rename <name> into its pane so the Claude session name follows.`,
+			Help:     `Requires a tmux session ($TMUX set). Sets (or, with --clear or a bare 'muster label', clears) this session's addressable label in one command. When a live Claude Code or Cursor agent is registered in this session, also types /rename <name> into its pane so the harness session name follows.`,
 			Group:    GroupIdentity,
 			NewFlags: newLabelFlags,
 			Run:      cmdLabel,
+		},
+		{
+			Name:     "whereami",
+			Synopsis: "whereami [--json]",
+			Summary:  "Print the tmux identity of the pane this process runs under.",
+			Help: `Resolves via $TMUX when present, else by walking process ancestry (works
+inside env-stripped harness hooks). For muster's own hooks and operator
+convenience. Prints "socket=<path> session_id=<id> session_name=<name>
+pane=<id> created=<ts>" (one line); --json emits the same fields as a JSON
+object. Empty stdout and a nonzero exit when no pane resolves — never a
+cwd guess.`,
+			Group:    GroupIdentity,
+			NewFlags: newWhereamiFlags,
+			Run:      cmdWhereami,
 		},
 		{
 			Name:     "gc",
@@ -269,7 +300,7 @@ SIGINT/SIGTERM.`,
 			Synopsis: "mcp",
 			Summary:  "Run the MCP stdio server for coding-agent tool use.",
 			Help: `Exposes the daemon's operations as MCP tools over stdio, for a coding
-agent (Claude Code, Codex, ...) to call directly. stdout is the MCP
+agent (Claude Code, Codex, Cursor, ...) to call directly. stdout is the MCP
 protocol channel — all diagnostics go to stderr.`,
 			Group: GroupPlumbing,
 		},
@@ -278,7 +309,7 @@ protocol channel — all diagnostics go to stderr.`,
 			Synopsis: "hook <SessionStart|SessionEnd|Stop> [model]",
 			Summary:  "Session-lifecycle hook entry point for agent harness configs.",
 			Help: `The single entry point an agent harness's hook config (Claude Code,
-Codex, ...) points at directly — not normally typed by hand. SessionStart
+Codex, Cursor, ...) points at directly — not normally typed by hand. SessionStart
 registers, SessionEnd deregisters, Stop checks the calling tmux session's
 inbox and, if there's unread mail, prints decision:block JSON telling the
 agent to drain it. model defaults to "claude" when omitted. Never blocks a

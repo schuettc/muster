@@ -157,15 +157,16 @@ func (s *Store) GetThread(id int64) (Thread, []Entry, error) {
 // X. Every surface that answers that question — Inbox, UnreadCount, and (by
 // construction, since it walks originator+recipients) the daemon's notify
 // fan-out — must agree with this fragment; the surfaces diverging is exactly
-// how replies to originated threads once went invisible. Binds the alias
-// three times.
+// how replies to originated threads once went invisible. A scoped broadcast
+// (to_target != ”) concerns only agents whose registered project matches it
+// exactly; binds the alias four times.
 const threadConcerns = `((threads.to_kind='agent'  AND threads.to_target=?)
    OR (threads.to_kind='role'      AND threads.to_target != '' AND threads.to_target=(SELECT role FROM agents WHERE alias=?))
-   OR (threads.to_kind='broadcast')
+   OR (threads.to_kind='broadcast' AND (threads.to_target='' OR threads.to_target=(SELECT project FROM agents WHERE alias=?)))
    OR (threads.from_agent=?))`
 
 // threadConcernsJoin is threadConcerns re-expressed as a JOIN predicate
-// against a CTE column (sess.alias) instead of a literal alias bound three
+// against a CTE column (sess.alias) instead of a literal alias bound four
 // times — needed by SessionUnread, where "the alias" ranges over every alias
 // of a session rather than one bound value. It must stay semantically
 // identical to threadConcerns (update both together);
@@ -174,7 +175,7 @@ const threadConcerns = `((threads.to_kind='agent'  AND threads.to_target=?)
 // "sess" with an "alias" column.
 const threadConcernsJoin = `((threads.to_kind='agent' AND threads.to_target=sess.alias)
    OR (threads.to_kind='role'     AND threads.to_target != '' AND threads.to_target=(SELECT role FROM agents WHERE alias=sess.alias))
-   OR (threads.to_kind='broadcast')
+   OR (threads.to_kind='broadcast' AND (threads.to_target='' OR threads.to_target=(SELECT project FROM agents WHERE alias=sess.alias)))
    OR (threads.from_agent=sess.alias))`
 
 // threadLastEntryCTE is the ONE canonical CTE computing each thread's last
@@ -239,7 +240,7 @@ SELECT recent.id, recent.kind, recent.from_agent, recent.to_kind, recent.to_targ
        le.from_agent, le.created_at, last.n, COALESCE(unread.n, 0)
 FROM recent`+threadLastEntryJoin+`
 LEFT JOIN unread ON unread.thread_id = recent.id
-ORDER BY recent.updated_at DESC`, alias, alias, alias, alias, alias)
+ORDER BY recent.updated_at DESC`, alias, alias, alias, alias, alias, alias)
 	if err != nil {
 		return nil, err
 	}

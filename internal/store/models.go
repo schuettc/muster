@@ -27,12 +27,21 @@ type Agent struct {
 	// (registered outside tmux, or before this column existed) — liveness
 	// then falls back to bare session existence. See tmuxenv.IsSessionAlive
 	// and Store.DepartStaleSiblings.
-	SessionCreated int64  `json:"session_created"`
-	Project        string `json:"project"`
-	Label          string `json:"label"`
-	LabelManual    bool   `json:"label_manual"`
-	RegisteredAt   int64  `json:"registered_at"`
-	LastSeen       int64  `json:"last_seen"`
+	SessionCreated int64 `json:"session_created"`
+	// HarnessSessionID is the agent-harness session UUID (e.g. Claude Code's
+	// session id) when known — the deterministic link between a roster row
+	// and the harness session it belongs to. The pane-side launch handshake
+	// (`muster register <name> --harness-session <uuid>` before
+	// `claude --session-id <uuid>`) sets it on tmux-anchored rows so the
+	// session's own hooks — which run with no tmux in their environment on
+	// daemon-hosted harnesses — can still find their rows; paneless
+	// registrations carry it too. "" = unknown (pre-handshake rows).
+	HarnessSessionID string `json:"harness_session_id"`
+	Project          string `json:"project"`
+	Label            string `json:"label"`
+	LabelManual      bool   `json:"label_manual"`
+	RegisteredAt     int64  `json:"registered_at"`
+	LastSeen         int64  `json:"last_seen"`
 	// LastReadEntryID is the entry-ID read watermark (see MarkRead/UnreadCount
 	// in agents.go): the highest entries.id visible the last time this
 	// agent's inbox was read. Supersedes the wall-clock last_read_at for
@@ -50,6 +59,15 @@ type Agent struct {
 	// row — it sets Departed instead; `gc --purge-agents` hard-deletes
 	// departed/dead rows the old way.
 	Departed bool `json:"departed"`
+	// SupersededBy is non-empty on a departed row that was claimed away via
+	// Become: it names the alias that now carries this identity forward.
+	// RegisterAgent's upsert always resets it to "" (a revived/re-registered
+	// alias is no longer superseded — e.g. the operator purged the successor
+	// and re-registered the old name), and Become's clone does NOT copy it
+	// onto the new alias (the successor starts unsuperseded). Resume reclaim
+	// (hookSessionStartResume) uses this as ground truth to skip resurrecting a
+	// retired seed, rather than inferring it from tuple coincidence.
+	SupersededBy string `json:"superseded_by"`
 }
 
 // Thread is a conversation: a message (no status) or a task (status set).

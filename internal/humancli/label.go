@@ -82,7 +82,7 @@ func cmdLabel(args []string, out io.Writer) error {
 	sessionID := tmuxenv.CurrentSessionID()
 	syncLabelToBus(out, name, true, socket, sessionID)
 	if socket != "" && sessionID != "" {
-		syncClaudeName(out, name, socket, sessionID)
+		syncAgentName(out, name, socket, sessionID)
 	}
 	_, err := fmt.Fprintf(out, "labeled this session %q (%s)\n", name, opt)
 	return err
@@ -109,13 +109,14 @@ func syncLabelToBus(out io.Writer, label string, manual bool, socket, sessionID 
 	}
 }
 
-// syncClaudeName types "/rename <name>" into this session's registered live
-// Claude pane so the Claude Code session name follows the label — making
+// syncAgentName types "/rename <name>" into this session's registered live
+// Claude Code or Cursor pane so its session name follows the label — making
 // prefix T (which shells out to `muster label`) the ONE naming gesture for
-// tmux, the bus, and Claude. Strictly gated on the roster: a non-departed
-// claude-model row on this exact session tuple whose pane is still alive. A
-// session with no live Claude (plain shell, codex, dead pane) gets no
-// injection — the roster is the definition of "Claude Code runs here", not
+// tmux, the bus, and the agent harness. Codex has no /rename, so it gets no
+// injection. Strictly gated on the roster: a non-departed claude- or
+// cursor-model row on this exact session tuple whose pane is still alive. A
+// session with no supported live agent (plain shell, Codex, dead pane) gets no
+// injection — the roster is the definition of a supported harness here, not
 // pane_current_command sniffing. Also gated on session incarnation
 // (tmuxenv.IsSessionAlive): tmux recycles session IDs across server
 // restarts, so a stale un-reaped row can match this exact tuple yet name a
@@ -124,7 +125,7 @@ func syncLabelToBus(out io.Writer, label string, manual bool, socket, sessionID 
 // syncLabelToBus: a skipped or failed injection never fails the label
 // write. Clearing never injects (there is no "/rename to nothing" gesture
 // worth typing at a session).
-func syncClaudeName(out io.Writer, name, socket, sessionID string) {
+func syncAgentName(out io.Writer, name, socket, sessionID string) {
 	raw, err := callData("list_agents", nil)
 	if err != nil {
 		return // no daemon → no roster to gate on; the tmux label already landed
@@ -141,7 +142,7 @@ func syncClaudeName(out io.Writer, name, socket, sessionID string) {
 		return err
 	}}
 	for _, ag := range rows {
-		if ag.Departed || ag.ModelType != "claude" || ag.SocketPath != socket ||
+		if ag.Departed || (ag.ModelType != "claude" && ag.ModelType != "cursor") || ag.SocketPath != socket ||
 			ag.SessionID != sessionID || ag.PaneID == "" {
 			continue
 		}
@@ -151,11 +152,11 @@ func syncClaudeName(out io.Writer, name, socket, sessionID string) {
 		if !tmuxenv.IsSessionAlive(socket, ag.SessionID, ag.SessionCreated) {
 			continue
 		}
-		if _, err := typer.TypeLine(socket, ag.PaneID, "claude", "/rename "+name, true); err != nil {
-			_, _ = fmt.Fprintf(out, "warning: claude session rename failed (%v); run /rename %s in claude yourself\n", err, name)
+		if _, err := typer.TypeLine(socket, ag.PaneID, ag.ModelType, "/rename "+name, true); err != nil {
+			_, _ = fmt.Fprintf(out, "warning: %s session rename failed (%v); run /rename %s in %s yourself\n", ag.ModelType, err, name, ag.ModelType)
 			return
 		}
-		_, _ = fmt.Fprintf(out, "renamed claude session to match (pane %s)\n", ag.PaneID)
-		return // one live claude per session; first match wins
+		_, _ = fmt.Fprintf(out, "renamed %s session to match (pane %s)\n", ag.ModelType, ag.PaneID)
+		return // one live supported harness per session; first match wins
 	}
 }
