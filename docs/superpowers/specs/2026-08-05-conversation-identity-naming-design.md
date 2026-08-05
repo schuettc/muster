@@ -143,12 +143,13 @@ rather than silently stealing the name. No silent fallback.
   write the label WITH the manual flag (promote); otherwise keep today's
   auto behavior. Never demote a manual flag. Muster-free by design.
 - **prefix T shim** (`bin/tmux-muster-label.sh`): drop the hard `muster`
-  dependency. If `command -v muster` → delegate exactly as today (bus sync +
-  /rename injection included). Otherwise fall back to plain
-  `tmux set-option` for the label + manual flag + `refresh-client`. No
-  send-keys in the fallback — typing into panes stays muster's job (nudge
-  handles liveness/idle); standalone prefix T aligns tmux + tabs and leaves
-  Claude's internal name to /rename.
+  dependency. If `command -v muster` → delegate exactly as today — **the
+  /rename injection is retained unchanged; it is working well and this
+  design must not regress it** (operator-confirmed 2026-08-05). Otherwise
+  fall back to plain `tmux set-option` for the label + manual flag +
+  `refresh-client`. No send-keys in the fallback — typing into panes stays
+  muster's job (nudge handles liveness/idle); standalone prefix T aligns
+  tmux + tabs and leaves Claude's internal name to /rename.
 
 ### 5.3 The contract (cross-repo, documented in both)
 
@@ -196,13 +197,63 @@ each repo's CLAUDE.md pins the contract so the two cannot drift.
   (seconds) is accepted.
 - Any change to alias assignment, become, or the resolver's precedence rules.
 
-## 9. Testing
+## 9. Hosted-backend integration (feat/hosted-backend)
+
+The hosted backend (2026-08-03 design/plan: per-device daemons, Lambda +
+DynamoDB store behind a bearer token, `device_id` on agent rows, global
+roster, `device_poll` wake) changes where state lives but not where naming
+happens. The integration points, verified against the branch:
+
+- **The projection is device-local and store-agnostic.** The SessionStart
+  projection runs in the hook on the device hosting the conversation —
+  transcript read, `tmuxenv` writes, `set_label` op. `set_label` is already
+  on the remote write-op allowlist with idempotency keys, and dynamostore's
+  `SetSessionLabel` is device-scoped. Remote mode changes nothing in the
+  flow. No component ever writes tmux state for another device (the daemon
+  never types; cross-device changes arrive as badge reconciliation via
+  `device_poll`).
+- **Resolution goes global — that's the feature.** `resolveAgentTarget`
+  stays daemon-side over `ListAgents`, which in remote mode is the global
+  roster: the laptop can `send nfl-3` to a session on the desktop. Duplicate
+  manual labels in the same project across devices hit the existing loud
+  ambiguity error. Device-qualified addressing (beyond `proj:label`) is a
+  non-goal for v1.
+- **Incarnation guards are device-scoped tuples.** tmux session IDs (`$1`)
+  collide across devices *by construction*, and the branch already threads
+  `device_id` through every tuple match (`sameSession`,
+  `DepartStaleSiblings`, `SetSessionLabel`). The §5.1 guard is therefore
+  `(device_id, socket_path, session_id)` + `session_created` equality.
+- **Attribution and reaping stay distinct decisions.** The branch's
+  `DepartStaleSiblings` deliberately *spares* `session_created = 0` rows
+  from tombstoning (a pre-upgrade row on a still-live session self-heals on
+  re-register). The §5.1 guard does not conflict: it refuses to *attribute*
+  such rows to a live session (badges, roster live-dot, label re-reads)
+  without ever tombstoning them. Both rules are the conservative direction
+  for their respective irreversibility.
+- **Guard and sweep live at the store-API layer**, implemented and tested in
+  BOTH stores (SQLite + dynamostore) so local and remote mode cannot drift.
+  The sweep criteria tighten for the sparing rule above: retire rows with
+  empty `harness_session_id` only when they are also departed or stale by
+  `last_seen` — a live pre-upgrade session that will self-heal is not
+  swept.
+- **Conversation identity is device-portable by construction.** Harness-id
+  reclaim runs against the global roster; if a conversation ever lands on
+  another device, re-registration updates the row's `device_id` and the
+  projection re-derives the name there. No new mechanism needed.
+- **Sequencing:** this design lands on `dev`; `feat/hosted-backend` already
+  merges `dev` forward regularly. The guard/sweep must be expressed as
+  store-API semantics before the hosted branch's next `dev` merge, so
+  dynamostore implements them from the interface rather than retrofitting.
+
+## 10. Testing
 
 - **muster:** unit tests for the incarnation guard (recycled tuple +
-  `session_created = 0` never matches; mismatched epoch never matches);
-  hook-projection tests against fixture transcripts (with/without
-  custom-title, unreadable path); sweep tests pinning that only
-  empty-harness-id rows retire. `just verify` gates as always.
+  `session_created = 0` never matches; mismatched epoch never matches;
+  same tuple on a different `device_id` never matches); hook-projection
+  tests against fixture transcripts (with/without custom-title, unreadable
+  path); sweep tests pinning that only empty-harness-id rows that are
+  departed-or-stale retire. Guard and sweep tests run against both stores
+  once dynamostore lands. `just verify` gates as always.
 - **dotfiles:** extend the existing `tests/*.test.zsh` harness — shim
   fallback with muster absent from PATH; statusline promote-on-custom-title,
   never-demote, auto backoff behind the manual flag.
