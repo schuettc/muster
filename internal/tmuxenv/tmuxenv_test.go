@@ -2,6 +2,7 @@ package tmuxenv
 
 import (
 	"fmt"
+	"reflect"
 	"testing"
 )
 
@@ -122,5 +123,27 @@ func TestCaptureEnvPopulated(t *testing.T) {
 	if c.Project != "muster" || c.SessionID != "$7" || c.SessionName != "muster-2" ||
 		c.SessionCreated != 1784000000 || c.Label != "backend" || !c.LabelManual {
 		t.Fatalf("capture=%+v", c)
+	}
+}
+
+func TestSetSessionOptionOnUsesExplicitSocket(t *testing.T) {
+	var calls [][]string
+	withRun(t, func(args ...string) (string, error) {
+		calls = append(calls, append([]string(nil), args...))
+		return "", nil
+	})
+
+	if err := SetSessionOptionOn("/tmp/proj-x", "$3", "@claude_task", "nfl-3"); err != nil {
+		t.Fatalf("SetSessionOptionOn: %v", err)
+	}
+	if err := RefreshClientOn("/tmp/proj-x"); err != nil {
+		t.Fatalf("RefreshClientOn: %v", err)
+	}
+	want := [][]string{
+		{"-S", "/tmp/proj-x", "set-option", "-t", "$3", "@claude_task", "nfl-3"},
+		{"-S", "/tmp/proj-x", "refresh-client", "-S"},
+	}
+	if len(calls) != 2 || !reflect.DeepEqual(calls[0], want[0]) || !reflect.DeepEqual(calls[1], want[1]) {
+		t.Fatalf("unexpected tmux calls: %v", calls)
 	}
 }

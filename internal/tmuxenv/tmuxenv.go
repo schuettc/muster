@@ -212,6 +212,23 @@ func UnsetSessionOption(name string) error {
 	return err
 }
 
+// SetSessionOptionOn sets a tmux user option on an explicit socket + target
+// session — the env-stripped counterpart of SetSessionOption, for callers
+// (the SessionStart projection) that resolved their coordinates via
+// CaptureFromAncestry rather than the ambient environment.
+func SetSessionOptionOn(socket, target, name, value string) error {
+	_, err := Run("-S", socket, "set-option", "-t", target, name, value)
+	return err
+}
+
+// RefreshClientOn repaints the attached clients of the server on socket —
+// the env-stripped counterpart of RefreshClient. Best-effort, like its
+// ambient sibling.
+func RefreshClientOn(socket string) error {
+	_, err := Run("-S", socket, "refresh-client", "-S")
+	return err
+}
+
 // RefreshClient repaints the ambient session's attached clients (e.g. so a
 // title bar reflects a just-changed label). Best-effort: callers should treat
 // a returned error as non-fatal.
