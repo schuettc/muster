@@ -85,23 +85,27 @@ func query(socket, target, format string) string {
 	return out
 }
 
-// IsSessionAlive reports whether the tmux session a registration was captured
-// from still exists on the socket. created is the registration's recorded
-// #{session_created} (store.Agent.SessionCreated): tmux recycles session IDs
-// from $0 across server restarts, so existence of a session with the same ID
-// is not enough — a live session whose creation time differs from the
-// recorded one is a NEW incarnation, and the registration is dead. created ==
-// 0 (a pre-upgrade row, or one captured outside tmux) cannot discriminate and
-// falls back to bare existence, exactly the pre-created behavior.
+// IsSessionAlive reports whether the tmux session a registration was
+// captured from still exists on the socket AS THE SAME INCARNATION. tmux
+// recycles session IDs across server restarts, so existence alone proves
+// nothing: the stored session_created must equal the live session's. Rows
+// with created == 0 (pre-v0.8.0 registrations that never captured it) can
+// never prove their incarnation and therefore NEVER read alive — the
+// 2026-08-05 rule (conversation-identity spec §5.1) replacing the old
+// spare-legacy fallback, after a tombstoned 0-row rode a recycled $1 into a
+// live session's badge. Reaping stays separate: DepartStaleSiblings still
+// deliberately spares 0-rows (attribution and tombstoning are distinct
+// decisions); operator-run `muster gc` is the sweep that retires them, and
+// a tombstone revives with history intact on its next register.
 func IsSessionAlive(socket, sessionID string, created int64) bool {
-	if socket == "" || sessionID == "" {
+	if socket == "" || sessionID == "" || created == 0 {
 		return false
 	}
 	out := query(socket, sessionID, "#{session_created}")
 	if out == "" {
 		return false // session gone (or tmux unreachable): dead either way
 	}
-	return created == 0 || out == strconv.FormatInt(created, 10)
+	return out == strconv.FormatInt(created, 10)
 }
 
 // SessionAttached reports whether at least one human tmux client is

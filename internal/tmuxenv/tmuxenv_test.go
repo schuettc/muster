@@ -32,8 +32,11 @@ func TestIsSessionAlive(t *testing.T) {
 	if !IsSessionAlive("/s", "$1", 1784000000) {
 		t.Fatal("want alive when the session exists and its creation time matches")
 	}
-	if !IsSessionAlive("/s", "$1", 0) {
-		t.Fatal("want alive on created=0 (legacy row): bare existence must suffice")
+	// created=0 (legacy row) never reads alive, even though the session
+	// exists — spec §5.1: an unprovable incarnation can't attribute a live
+	// session. Superseded the old spare-legacy fallback (2026-08-05).
+	if IsSessionAlive("/s", "$1", 0) {
+		t.Fatal("want dead on created=0: an unprovable incarnation must never read alive (spec §5.1)")
 	}
 	if IsSessionAlive("/s", "$1", 1770000000) {
 		t.Fatal("want dead on a creation-time mismatch: same session ID, but a new server incarnation recycled it")
@@ -44,6 +47,20 @@ func TestIsSessionAlive(t *testing.T) {
 	}
 	if IsSessionAlive("", "$1", 0) || IsSessionAlive("/s", "", 0) {
 		t.Fatal("empty socket/session must be dead")
+	}
+}
+
+func TestIsSessionAliveZeroCreatedNeverMatches(t *testing.T) {
+	withRun(t, func(_ ...string) (string, error) { return "1784000000", nil }) // session exists
+
+	if IsSessionAlive("/tmp/s", "$1", 0) {
+		t.Fatal("created=0 must never attribute a live session (spec §5.1: unprovable incarnation)")
+	}
+	if !IsSessionAlive("/tmp/s", "$1", 1784000000) {
+		t.Fatal("matching non-zero created must read alive")
+	}
+	if IsSessionAlive("/tmp/s", "$1", 1700000000) {
+		t.Fatal("mismatched created must read dead")
 	}
 }
 

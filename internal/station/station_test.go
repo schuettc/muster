@@ -160,7 +160,16 @@ func TestRegisterStationFreshAliasRegisters(t *testing.T) {
 func TestRegisterStationFailsOverOnLiveCollision(t *testing.T) {
 	startStationTestDaemon(t)
 	caller := daemonCaller{}
-	registerDirect(t, caller, "station", "/other", "$OTHER")
+	// A real, non-zero session_created: spec §5.1 (2026-08-05) made
+	// session_created=0 (what plain registerDirect stores) never read
+	// alive, so this row needs one matching stubTmuxAlive's answer below to
+	// actually prove the collision live.
+	if _, err := caller.Call("register_agent", map[string]any{
+		"alias": "station", "role": "operator", "model_type": "station",
+		"socket_path": "/other", "session_id": "$OTHER", "session_created": 1784000000,
+	}); err != nil {
+		t.Fatal(err)
+	}
 	stubTmuxAlive(t, "/other", "$OTHER") // the existing "station" record is alive
 
 	c := tmuxenv.Capture{SocketPath: "/s", SessionID: "$1", SessionName: "sess", PaneID: "%1"}

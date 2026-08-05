@@ -151,7 +151,16 @@ func TestLabelRequiresTmux(t *testing.T) {
 func TestLabelRenamesLiveClaudePane(t *testing.T) {
 	startCLITestDaemon(t)
 	t.Setenv("TMUX", "/tmp/sock,1,0")
-	registerClaudeViaDaemon(t, "worker", "/tmp/sock", "$1", "%5")
+	// session_created must be explicit and non-zero: spec §5.1 (2026-08-05)
+	// made created=0 never read alive (an unprovable incarnation can't
+	// attribute a live session), so registerClaudeViaDaemon's implicit 0
+	// would no longer pass the liveness gate this test exercises.
+	if _, err := callData("register_agent", map[string]any{
+		"alias": "worker", "socket_path": "/tmp/sock", "session_id": "$1",
+		"pane_id": "%5", "model_type": "claude", "session_created": 1700000000,
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	var sent [][]string
 	prev := tmuxenv.Run
@@ -164,10 +173,8 @@ func TestLabelRenamesLiveClaudePane(t *testing.T) {
 			return "%5", nil // pane-alive probe answers: alive
 		}
 		if last == "#{session_created}" {
-			// session-alive probe: the row was registered with session_created
-			// 0 (registerClaudeViaDaemon doesn't set it), so IsSessionAlive
-			// degrades open on any non-empty answer here — this just proves
-			// the session still exists.
+			// session-alive probe: matches the row's recorded 1700000000
+			// exactly, proving the same incarnation (spec §5.1).
 			return "1700000000", nil
 		}
 		if len(args) > 2 && args[2] == "send-keys" {
@@ -201,7 +208,15 @@ func TestLabelRenamesLiveClaudePane(t *testing.T) {
 func TestLabelRenamesLiveCursorPane(t *testing.T) {
 	startCLITestDaemon(t)
 	t.Setenv("TMUX", "/tmp/sock,1,0")
-	registerModelViaDaemon(t, "worker", "/tmp/sock", "$1", "%5", "cursor")
+	// session_created must be explicit and non-zero: spec §5.1 (2026-08-05)
+	// made created=0 never read alive, so registerModelViaDaemon's implicit
+	// 0 would no longer pass the liveness gate this test exercises.
+	if _, err := callData("register_agent", map[string]any{
+		"alias": "worker", "socket_path": "/tmp/sock", "session_id": "$1",
+		"pane_id": "%5", "model_type": "cursor", "session_created": 1700000000,
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	var sent [][]string
 	prev := tmuxenv.Run
@@ -213,7 +228,7 @@ func TestLabelRenamesLiveCursorPane(t *testing.T) {
 		case "#{pane_id}":
 			return "%5", nil
 		case "#{session_created}":
-			return "1700000000", nil
+			return "1700000000", nil // matches the row's recorded incarnation
 		}
 		if len(args) > 2 && args[2] == "send-keys" {
 			sent = append(sent, append([]string(nil), args...))
