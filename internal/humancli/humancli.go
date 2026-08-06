@@ -31,6 +31,12 @@ type agentFull struct {
 	PaneID      string `json:"pane_id"`
 	SessionID   string `json:"session_id"`
 	SessionName string `json:"session_name"`
+	// SessionCreated mirrors store.Agent.SessionCreated — cmdNudge uses it
+	// (with tmuxenv.IsSessionAlive) to tell a merely-stale pane row (session
+	// still alive, pane reaped underneath it) from a fully dead one, so it
+	// can refuse the dead-pane case with a remedy instead of a doomed
+	// send-keys.
+	SessionCreated int64 `json:"session_created"`
 	// HarnessSessionID mirrors agentRow's own copy (see store.Agent.HarnessSessionID)
 	// — stampHarnessLinks reads it via hookGetAgent to skip a row that already
 	// has a link.
@@ -503,6 +509,17 @@ func cmdNudge(args []string, out io.Writer) error {
 		return fmt.Errorf("no agent registered as %q", alias)
 	}
 	ag := res.Agent
+	// A stored pane can go stale between registration and nudge — most
+	// commonly a reaped teammate's pane, closed out from under a row that
+	// still names it. Refuse rather than guess: with teammate panes sharing
+	// the session, typing into whatever pane happens to be there next is
+	// worse than failing loudly (spec §3, no auto-retargeting). The row
+	// heals itself the next time that session starts/resumes and
+	// re-registers, or the operator can re-register from the live pane now.
+	if ag.SocketPath != "" && !tmuxenv.IsPaneAlive(ag.SocketPath, ag.PaneID) &&
+		tmuxenv.IsSessionAlive(ag.SocketPath, ag.SessionID, ag.SessionCreated) {
+		return fmt.Errorf("nudge %s: stored pane %s is gone but its session is alive — the row heals at the session's next start/resume (or re-register from the live pane); refusing to type into a guessed pane", ag.Alias, ag.PaneID)
+	}
 	// session_name is mutable — tmux lets an operator rename a session at any
 	// time — so the stored (registration-time) snapshot goes stale the
 	// moment that happens. Query the LIVE name at nudge time; fall back to
