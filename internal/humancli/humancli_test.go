@@ -330,6 +330,46 @@ func TestNudgeCommandResolvesAndNudges(t *testing.T) {
 	}
 }
 
+// TestNudgeDeadPaneRefusesWithRemedy proves nudge refuses to send-keys into
+// a stored pane that's gone when its session is still alive (a reaped
+// teammate's pane, or any stale pane row) — auto-retargeting to a guessed
+// pane would be worse than failing (spec §3), so cmdNudge must error with
+// the remedy instead of attempting a doomed send-keys.
+func TestNudgeDeadPaneRefusesWithRemedy(t *testing.T) {
+	startTestDaemon(t)
+	if _, err := callData("register_agent", map[string]any{
+		"alias": "rev", "role": "reviewer", "model_type": "codex",
+		"socket_path": "/s", "pane_id": "%99", "session_id": "$1",
+		"session_created": 200,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var recorded [][]string
+	origNudge := nudgeRun
+	nudgeRun = func(args ...string) error { recorded = append(recorded, args); return nil }
+	t.Cleanup(func() { nudgeRun = origNudge })
+
+	origRun := tmuxenv.Run
+	// session_created probe answers 200 (matches registration → session
+	// alive); the pane_id probe for %99 answers "" (not in the map →
+	// hookRun's default) → pane gone.
+	tmuxenv.Run = hookRun(map[string]string{"#{session_created}": "200"})
+	t.Cleanup(func() { tmuxenv.Run = origRun })
+
+	var buf bytes.Buffer
+	err := Dispatch([]string{"nudge", "rev"}, &buf)
+	if err == nil {
+		t.Fatalf("expected an error nudging a dead stored pane, got nil (out=%q)", buf.String())
+	}
+	if !strings.Contains(err.Error(), "stored pane %99 is gone") || !strings.Contains(err.Error(), "heals at the session's next start") {
+		t.Fatalf("expected error to name the dead pane and the remedy, got %q", err.Error())
+	}
+	if len(recorded) != 0 {
+		t.Fatalf("expected NO send-keys call for a dead stored pane, got %v", recorded)
+	}
+}
+
 // TestNudgePrintsLiveSessionName proves nudge reports the session's CURRENT
 // tmux name, not the stale registration-time snapshot: session names are
 // mutable (a human can `tmux rename-session` any time), so a stored

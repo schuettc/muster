@@ -175,9 +175,16 @@ auto-submit; other values are typed without submitting).
   `proj-<name>` convention (one tmux server per project). On the default tmux
   server there's no project — everything shares one namespace, and the rest of
   muster works the same.
-- **label** is a name you give a session: run `muster label backend` inside it
-  (or `muster label --clear` to remove it). Only deliberately-set labels are
-  addressable; auto-generated values are shown parenthesized and are not.
+- **label** is a name for a session, and only a deliberately-set one is
+  addressable — auto-generated values are shown parenthesized and are not.
+  You set one by hand with `muster label backend` (or `muster label --clear`
+  to remove it) or via `prefix T` in tmux, but those aren't the only
+  gestures that count: a resumed conversation re-asserts its transcript
+  custom-title as its label automatically at SessionStart. A mid-conversation
+  `/rename` becomes that addressable label at the *next* SessionStart (resume
+  or restart) — or immediately, once the operator's statusline is wired to
+  call `muster label --no-inject` on a rename as a companion gesture
+  (expected, not yet shipped in this repo).
   (Stored in a tmux session option — default `@claude_task`, override with
   `$MUSTER_LABEL_OPTION`.)
 
@@ -198,6 +205,13 @@ elsewhere, muster errors and lists the `proj:label` candidates. Resolution is
 canonical on the daemon side, not just the CLI: an unresolvable target fails
 with an error and never creates a thread, whether the call came from `muster
 send`/`muster nudge` or an MCP tool like `send_message`/`task_create`.
+
+This resolution is separate from the lower-level `session_unread` and
+`session_aliases` daemon ops that hooks use to ask "what's mine" — those key
+off `(socket_path, session_id, session_created)`, and a tmux-side caller that
+omits `session_created` doesn't get an error, just a silently empty answer
+(`{total: 0}`, no aliases), because an unproven session ID reads as zero
+rather than as "unknown."
 
 ### `muster station`
 

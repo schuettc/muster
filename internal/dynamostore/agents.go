@@ -374,8 +374,12 @@ func (s *Store) rawAgentItem(ctx context.Context, alias string) (map[string]type
 // sessionLineage so the two can never disagree about what a session is.
 // Departed aliases are included ON PURPOSE (their unread mail still needs
 // draining), and an empty sessionID matches nothing.
-func (s *Store) SessionAliasLineage(deviceID, socketPath, sessionID string) ([]string, error) {
-	members, err := s.sessionLineage(backgroundCtx(), deviceID, socketPath, sessionID)
+//
+// sessionCreated scopes the walk's base case to one tmux incarnation, exactly
+// as deviceID scopes it to one machine — see sameSession, which carries both,
+// and store.API for why they land in the same place and nowhere else.
+func (s *Store) SessionAliasLineage(deviceID, socketPath, sessionID string, sessionCreated int64) ([]string, error) {
+	members, err := s.sessionLineage(backgroundCtx(), deviceID, socketPath, sessionID, sessionCreated)
 	if err != nil {
 		return nil, err
 	}
@@ -399,11 +403,15 @@ func (s *Store) SessionAliasLineage(deviceID, socketPath, sessionID string) ([]s
 // picks up retired seeds whose own rows still sit on long-dead tuples. That is
 // the "mail follows the name" rule.
 //
-// The device filter applies to the BASE CASE ONLY, matching store.Store: a
-// tuple can collide across machines, which is what deviceID defends against,
-// but superseded_by is an alias-valued pointer to a primary key, so there is no
-// coincidence to defend against and filtering it would break the legitimate
-// cross-device lineage the hosted backend exists to serve.
+// BOTH scoping dimensions — device and incarnation — apply to the BASE CASE
+// ONLY, matching store.Store line for line. sameSession is where they live, so
+// the base case here carries them by construction rather than by remembering
+// to. The recursive step is filtered by NEITHER: superseded_by is an
+// alias-valued pointer to a primary key, so there is no coincidence to defend
+// against and scoping it could only drop true positives — breaking the
+// legitimate cross-device lineage the hosted backend exists to serve, and the
+// equally legitimate cross-restart lineage the incarnation dimension arrived
+// with. store.API argues this once for both dimensions and both backends.
 //
 // # What eventual consistency does to the walk
 //
@@ -427,7 +435,7 @@ func (s *Store) SessionAliasLineage(deviceID, socketPath, sessionID string) ([]s
 // Termination mirrors the SQLite UNION argument: an alias enters the set at
 // most once, so a malformed superseded_by cycle (A→B→A) simply adds nothing on
 // the round that would re-add a present alias, and the fixpoint loop exits.
-func (s *Store) sessionLineage(ctx context.Context, deviceID, socketPath, sessionID string) ([]store.Agent, error) {
+func (s *Store) sessionLineage(ctx context.Context, deviceID, socketPath, sessionID string, sessionCreated int64) ([]store.Agent, error) {
 	if sessionID == "" {
 		return nil, nil
 	}
@@ -473,7 +481,7 @@ func (s *Store) sessionLineage(ctx context.Context, deviceID, socketPath, sessio
 		}
 		// Re-confirm the tuple against the fresh item: the index copy may
 		// have been written before the alias moved to a different session.
-		if !found || !sameSession(a, deviceID, socketPath, sessionID) {
+		if !found || !sameSession(a, deviceID, socketPath, sessionID, sessionCreated) {
 			continue
 		}
 		inSet[a.Alias] = true
@@ -536,7 +544,14 @@ func (s *Store) DeleteAgent(alias string) error {
 // label_manual — no gsi1pk, so ListAgents could never see it again to clean it
 // up, while GetAgent answered ok=true with an empty identity. Skipping is also
 // the SQLite contract: its UPDATE matches no rows for a deleted alias.
-func (s *Store) SetSessionLabel(deviceID, socketPath, sessionID, label string, manual bool) (int64, error) {
+//
+// sessionCreated narrows the write to the caller's PROVEN incarnation, via
+// sameSession — a label write lands on the session running now, never on a
+// recycled-ID ghost (created mismatch) or an unprovable legacy row (created 0).
+// The empty-tuple guard above already excludes the paneless case, so
+// sameSession's socketPath exemption cannot fire here; the incarnation clause
+// is unconditional in practice.
+func (s *Store) SetSessionLabel(deviceID, socketPath, sessionID string, sessionCreated int64, label string, manual bool) (int64, error) {
 	if socketPath == "" || sessionID == "" {
 		return 0, nil
 	}
@@ -548,7 +563,7 @@ func (s *Store) SetSessionLabel(deviceID, socketPath, sessionID, label string, m
 	var n int64
 	for _, item := range items {
 		a := itemToAgent(item)
-		if a.Departed || !sameSession(a, deviceID, socketPath, sessionID) {
+		if a.Departed || !sameSession(a, deviceID, socketPath, sessionID, sessionCreated) {
 			continue
 		}
 		_, err := s.c.UpdateItem(ctx, &dynamodb.UpdateItemInput{
@@ -610,7 +625,11 @@ func (s *Store) DepartStaleSiblings(deviceID, socketPath, sessionID string, crea
 	var stale []string
 	for _, item := range items {
 		a := itemToAgent(item)
-		if a.Departed || !sameSession(a, deviceID, socketPath, sessionID) {
+		// sameTuple, NOT sameSession: this method reasons across incarnations
+		// of one tuple, so scoping to `created` would hide every row it is
+		// hunting. The created comparison two lines down is the incarnation
+		// logic, inverted on purpose.
+		if a.Departed || !sameTuple(a, deviceID, socketPath, sessionID) {
 			continue
 		}
 		if a.SessionCreated == 0 || a.SessionCreated == created || a.Alias == keepAlias {
@@ -650,11 +669,42 @@ func (s *Store) roster(ctx context.Context) ([]map[string]types.AttributeValue, 
 }
 
 // sameSession is the ONE place this backend answers "is this agent in that
-// session": the full (device, socket_path, session_id) identity, never the
-// pair alone (see store.API's note — the pair collides across machines in a
-// shared roster). Every session-scoped surface here goes through it so none of
-// them can quietly drop the device dimension again.
-func sameSession(a store.Agent, deviceID, socketPath, sessionID string) bool {
+// session": the full (device, socket_path, session_id) identity AND the one
+// incarnation of it named by sessionCreated — never the pair alone (see
+// store.API, which argues both dimensions and why they land in the same
+// place). Every session-scoped surface here goes through it so none of them
+// can quietly drop a dimension again, which is exactly how the device
+// dimension was lost once already.
+//
+// The incarnation clause mirrors the SQLite base case character for
+// character:
+//
+//	AND (?1 = '' OR (session_created = ?4 AND ?4 != 0))
+//
+// An empty socketPath — the paneless harness tuple — is EXEMPT: a harness UUID
+// is never recycled, so there is no second incarnation to tell apart. A zero
+// sessionCreated on a real tmux tuple matches NOTHING, because zero is the
+// absence of proof rather than a value. The device clause has no such
+// exemption; a paneless registration still belongs to one machine.
+//
+// sameTuple is the same predicate with the incarnation left out, for the one
+// caller whose question is about incarnations rather than within one.
+func sameSession(a store.Agent, deviceID, socketPath, sessionID string, sessionCreated int64) bool {
+	if !sameTuple(a, deviceID, socketPath, sessionID) {
+		return false
+	}
+	if socketPath == "" {
+		return true // paneless: harness UUIDs are never recycled
+	}
+	return sessionCreated != 0 && a.SessionCreated == sessionCreated
+}
+
+// sameTuple is sameSession's location half — device and tuple, no incarnation.
+// It exists for DepartStaleSiblings alone, whose whole job is to compare rows
+// ACROSS incarnations of one tuple ("another row claims my session id under a
+// different creation time"), so an incarnation-scoped predicate would filter
+// out the very rows it is looking for. Every other caller wants sameSession.
+func sameTuple(a store.Agent, deviceID, socketPath, sessionID string) bool {
 	return a.DeviceID == deviceID && a.SocketPath == socketPath && a.SessionID == sessionID
 }
 

@@ -288,7 +288,11 @@ func cmdGC(args []string, out io.Writer) error {
 			if _, err := callData("deregister_agent", map[string]any{"alias": a.Alias}); err != nil {
 				return err
 			}
-			if _, err := fmt.Fprintf(out, "tombstoned %s (dead session)\n", a.Alias); err != nil {
+			reason := "dead session"
+			if a.SessionCreated == 0 {
+				reason = "legacy row: no session_created, unprovable incarnation"
+			}
+			if _, err := fmt.Fprintf(out, "tombstoned %s (%s)\n", a.Alias, reason); err != nil {
 				return err
 			}
 			tombstoned++

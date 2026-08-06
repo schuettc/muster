@@ -276,7 +276,10 @@ func (d *Daemon) ReconcileLocalSessions() {
 	// Group this device's live agents by session tuple, so sibling aliases
 	// sharing a session produce ONE recompute and one badge write rather than
 	// one per alias. Sorted so the order is deterministic rather than map luck.
-	type tuple struct{ socketPath, sessionID string }
+	type tuple struct {
+		socketPath, sessionID string
+		sessionCreated        int64
+	}
 	seen := map[string]bool{}
 	var sessions []tuple
 	for _, ag := range local {
@@ -291,7 +294,18 @@ func (d *Daemon) ReconcileLocalSessions() {
 			continue
 		}
 		seen[key] = true
-		sessions = append(sessions, tuple{ag.SocketPath, ag.SessionID})
+		// The tuple's PROVEN incarnation, not this alias's. Sessions are
+		// deduplicated on the bare (socket, session) key, so whichever alias
+		// this loop reached first would otherwise decide it, and a legacy
+		// 0-created row sharing a recycled session ID would drive the whole
+		// group's recompute to zero. Same rule the local path applies in
+		// notifyForThread — sessionIncarnationOf is that rule, called here
+		// over `local` because remote mode's sessionIncarnation cannot read a
+		// store (see its doc). It MUST be `local`, never `agents`: an
+		// un-narrowed hosted roster would let a colliding tuple on a peer
+		// machine contribute its own unrelated creation time.
+		sessions = append(sessions, tuple{ag.SocketPath, ag.SessionID,
+			sessionIncarnationOf(local, ag.SocketPath, ag.SessionID, ag.SessionCreated)})
 	}
 	sort.Slice(sessions, func(i, j int) bool {
 		if sessions[i].socketPath != sessions[j].socketPath {
@@ -301,7 +315,7 @@ func (d *Daemon) ReconcileLocalSessions() {
 	})
 
 	for _, s := range sessions {
-		if _, err := d.setSessionBadge(s.socketPath, s.sessionID); err != nil {
+		if _, err := d.setSessionBadge(s.socketPath, s.sessionID, s.sessionCreated); err != nil {
 			fmt.Fprintln(os.Stderr, "muster: reconcile:", s.sessionID, err)
 		}
 		// The agent badge comes free: the roster is already in hand, so this
@@ -405,10 +419,29 @@ func (d *Daemon) hasLocalAgents() bool {
 // state than this device has.
 //
 // The agent badge is deliberately not touched. It advertises WHO is registered
-// here, which only an identity change can move, and refreshing it would cost a
-// list_agents on every tick that found mail.
+// here, which only an identity change can move.
+//
+// It DOES read the roster once — not for the agent badge, but because a badge
+// write must name an incarnation (spec §5.1) and device_poll answers with
+// tuples only. Remote mode's sessionIncarnation cannot resolve one for itself
+// (no local store, and the hosted roster is the whole bus's), so the
+// resolution has to happen here, over a roster narrowed to this device. Once
+// per batch, not once per session: a device with five lit sessions still costs
+// one list_agents.
+//
+// A roster read FAILURE skips the whole batch rather than badging with a zero
+// incarnation. Zero seeds nothing, so it would not recompute the badge — it
+// would clear it, telling every named session it is caught up on the one tick
+// the server just said it has mail. Leaving the previous badge in place is the
+// safe direction, and the next tick retries (the watermark has advanced, but
+// device_poll re-reports any session with mail still unread).
 func (d *Daemon) reconcileSessions(sessions []store.SessionRef) {
-	if d.n == nil || d.up == nil {
+	if d.n == nil || d.up == nil || len(sessions) == 0 {
+		return
+	}
+	local, err := d.deviceRoster()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "muster: poll reconcile: roster:", err)
 		return
 	}
 	for _, s := range sessions {
@@ -418,22 +451,53 @@ func (d *Daemon) reconcileSessions(sessions []store.SessionRef) {
 		if s.SocketPath == "" || s.SessionID == "" {
 			continue // no badge anyone is watching
 		}
-		if _, err := d.setSessionBadge(s.SocketPath, s.SessionID); err != nil {
+		// fallback 0: an unprovable tuple (no live row carries a non-zero
+		// created) genuinely has no incarnation to badge, and 0 correctly
+		// resolves to an empty answer rather than another incarnation's mail.
+		created := sessionIncarnationOf(local, s.SocketPath, s.SessionID, 0)
+		if _, err := d.setSessionBadge(s.SocketPath, s.SessionID, created); err != nil {
 			fmt.Fprintln(os.Stderr, "muster: poll reconcile:", s.SessionID, err)
 		}
 	}
 }
 
+// deviceRoster is the hosted roster narrowed to THIS device — the only roster
+// an incarnation may be resolved against in remote mode. The narrowing is the
+// point: (socket, session) collides across machines, so a peer's row on the
+// same tuple would otherwise contribute its own unrelated creation time and
+// win the "highest non-zero created" rule outright.
+func (d *Daemon) deviceRoster() ([]store.Agent, error) {
+	agents, err := d.upstreamAgents()
+	if err != nil {
+		return nil, err
+	}
+	local := make([]store.Agent, 0, len(agents))
+	for _, ag := range agents {
+		if ag.DeviceID == d.deviceID {
+			local = append(local, ag)
+		}
+	}
+	return local, nil
+}
+
 // sessionUnread returns a session's total unread from whichever backend this
 // daemon fronts. It is the seam that lets setSessionBadge stay the ONE
 // {recompute, push} sequence in both modes rather than growing a remote twin.
-func (d *Daemon) sessionUnread(socketPath, sessionID string) (int, error) {
+//
+// sessionCreated is the incarnation the badge is being written for, already
+// resolved by setSessionBadge (see daemon.sessionIncarnation). It is sent
+// upstream as an ARGUMENT rather than left to the server: the hosted
+// session_unread op deliberately does not resolve (see store.API), so a
+// remote-mode badge that omitted it would ask for incarnation 0 — which seeds
+// nothing — and get an authoritative zero back for a session with mail.
+func (d *Daemon) sessionUnread(socketPath, sessionID string, sessionCreated int64) (int, error) {
 	if d.up == nil {
-		total, _, err := d.s.SessionUnread(d.deviceID, socketPath, sessionID)
+		total, _, err := d.s.SessionUnread(d.deviceID, socketPath, sessionID, sessionCreated)
 		return total, err
 	}
 	resp, err := d.callUpstream(proto.Request{Op: "session_unread", Args: map[string]any{
 		"device_id": d.deviceID, "socket_path": socketPath, "session_id": sessionID,
+		"session_created": sessionCreated,
 	}})
 	if err != nil {
 		return 0, err

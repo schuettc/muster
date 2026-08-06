@@ -899,12 +899,18 @@ func (s *Store) readableThrough(ctx context.Context, a store.Agent, after int64)
 // the moment it was retired, so this stays per-row semantics, never a
 // session-wide max. Departed rows are deliberately not filtered — a tombstoned
 // alias is still part of the session's identity, and its mail still counts.
-func (s *Store) SessionUnread(deviceID, socketPath, sessionID string) (total, action int, err error) {
+// sessionCreated adds the incarnation dimension to that identity: the tuple
+// says WHERE, sessionCreated says WHICH RUN of it. Like deviceID it scopes the
+// lineage walk's base case and nothing else, and like deviceID it is enforced
+// inside sameSession rather than here. A zero on a real tmux tuple seeds
+// nothing (attribution requires proof); the paneless tuple is exempt, since a
+// harness UUID is never recycled. See store.API.
+func (s *Store) SessionUnread(deviceID, socketPath, sessionID string, sessionCreated int64) (total, action int, err error) {
 	if sessionID == "" {
 		return 0, 0, nil
 	}
 	ctx := backgroundCtx()
-	session, err := s.sessionLineage(ctx, deviceID, socketPath, sessionID)
+	session, err := s.sessionLineage(ctx, deviceID, socketPath, sessionID, sessionCreated)
 	if err != nil {
 		return 0, 0, err
 	}

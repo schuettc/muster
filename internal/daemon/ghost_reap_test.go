@@ -92,3 +92,75 @@ func TestRegisterWithoutCreatedSparesSiblings(t *testing.T) {
 		t.Fatalf("a created-less register must not reap, got %+v", a)
 	}
 }
+
+// lastNotifierCallFor returns the most recent Notify/Clear for session, or nil.
+func lastNotifierCallFor(log []notifierCall, session string) *notifierCall {
+	for i := len(log) - 1; i >= 0; i-- {
+		if log[i].session == session {
+			return &log[i]
+		}
+	}
+	return nil
+}
+
+// TestNotifyBadgeIgnoresGhostIncarnationOrdering pins the badge half of spec
+// §5.1: incarnation scopes the unread COUNT, but the tmux badge is still
+// keyed (socket, session) — only one incarnation of a session ID can exist in
+// tmux at a time. notifyForThread groups recipients by that bare tuple, so
+// before the fix the group inherited the SessionCreated of whichever alias
+// sorted FIRST: a legacy 0-created ghost sharing a recycled session ID drove
+// the recompute, SessionUnread(...,0) returned 0, and the live agent's badge
+// got an authoritative Clear — its Stop hook gates on @muster_inbox and would
+// never learn about the mail. The alias names here make the ghost sort first
+// on purpose; the badge must still be lit for the live incarnation.
+func TestNotifyBadgeIgnoresGhostIncarnationOrdering(t *testing.T) {
+	n := &fakeNotifier{}
+	sock := startWithNotifier(t, n)
+	// The ghost registers first, on created 0 — DepartStaleSiblings spares
+	// 0-rows, so it survives the live registration that follows.
+	call(t, sock, "register_agent", map[string]any{
+		"alias": "aaa-ghost", "socket_path": "/s", "session_id": "$1", "session_created": 0,
+	})
+	call(t, sock, "register_agent", map[string]any{
+		"alias": "zzz-live", "socket_path": "/s", "session_id": "$1", "session_created": 200,
+	})
+	call(t, sock, "register_agent", map[string]any{
+		"alias": "peer", "socket_path": "/p", "session_id": "$2", "session_created": 300,
+	})
+
+	call(t, sock, "send_message", map[string]any{"from": "peer", "to_kind": "broadcast", "subject": "s", "body": "for everyone"})
+
+	got := lastNotifierCallFor(n.snapLog(), "$1")
+	if got == nil || got.kind != "Notify" || got.count != 1 {
+		t.Fatalf("a ghost sharing the tuple must not drive the badge to zero: last call for $1 = %+v, want Notify count 1", got)
+	}
+}
+
+// TestDeregisterGhostKeepsLiveBadge is the same root cause on the
+// reconcileBadge path: deregistering the ghost hands reconcileBadge the
+// GHOST's row (created 0) for a tuple a proven live incarnation still
+// occupies, and the recompute cleared a badge that had real mail behind it.
+func TestDeregisterGhostKeepsLiveBadge(t *testing.T) {
+	n := &fakeNotifier{}
+	sock := startWithNotifier(t, n)
+	call(t, sock, "register_agent", map[string]any{
+		"alias": "ghost", "socket_path": "/s", "session_id": "$1", "session_created": 0,
+	})
+	call(t, sock, "register_agent", map[string]any{
+		"alias": "live", "socket_path": "/s", "session_id": "$1", "session_created": 200,
+	})
+	call(t, sock, "register_agent", map[string]any{
+		"alias": "peer", "socket_path": "/p", "session_id": "$2", "session_created": 300,
+	})
+	call(t, sock, "send_message", map[string]any{"from": "peer", "to_kind": "agent", "to_target": "live", "subject": "s", "body": "real mail"})
+	if got := lastNotifierCallFor(n.snapLog(), "$1"); got == nil || got.kind != "Notify" || got.count != 1 {
+		t.Fatalf("setup: mail to the live alias must light $1, got %+v", got)
+	}
+
+	call(t, sock, "deregister_agent", map[string]any{"alias": "ghost"})
+
+	got := lastNotifierCallFor(n.snapLog(), "$1")
+	if got == nil || got.kind != "Notify" || got.count != 1 {
+		t.Fatalf("reaping the ghost must leave the live incarnation's badge lit: last call for $1 = %+v, want Notify count 1", got)
+	}
+}

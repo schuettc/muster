@@ -17,7 +17,7 @@ func TestStopHookDrainsSeedStragglerAfterBecome(t *testing.T) {
 	t.Setenv("TMUX_PANE", "%1")
 	prev := tmuxenv.Run
 	tmuxenv.Run = hookRun(map[string]string{
-		"@muster_inbox": "1", "#{session_id}": "$1", "#{session_name}": "muster-2",
+		"@muster_inbox": "1", "#{session_id}": "$1", "#{session_created}": "100", "#{session_name}": "muster-2",
 	})
 	t.Cleanup(func() { tmuxenv.Run = prev })
 	seed := func(op string, args map[string]any) {
@@ -26,9 +26,9 @@ func TestStopHookDrainsSeedStragglerAfterBecome(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	seed("register_agent", map[string]any{"alias": "muster-2", "socket_path": "/tmp/sock", "session_id": "$1", "pane_id": "%1"})
+	seed("register_agent", map[string]any{"alias": "muster-2", "socket_path": "/tmp/sock", "session_id": "$1", "session_created": 100, "pane_id": "%1"})
 	seed("become", map[string]any{"from": "muster-2", "to": "alias-routing"})
-	seed("register_agent", map[string]any{"alias": "peer", "socket_path": "/tmp/sock", "session_id": "$9"})
+	seed("register_agent", map[string]any{"alias": "peer", "socket_path": "/tmp/sock", "session_id": "$9", "session_created": 100})
 	seed("send_message", map[string]any{"from": "peer", "to_kind": "agent", "to_target": "alias-routing", "subject": "s", "body": "b"})
 
 	var buf bytes.Buffer
@@ -216,7 +216,7 @@ func TestResumeSummaryReportsSessionUnreadTruth(t *testing.T) {
 		"session_created": 111, "harness_session_id": "uuid-42",
 	})
 	seed("become", map[string]any{"from": "muster-2", "to": "alias-routing"})
-	seed("register_agent", map[string]any{"alias": "peer", "socket_path": "/tmp/sock2", "session_id": "$peer"})
+	seed("register_agent", map[string]any{"alias": "peer", "socket_path": "/tmp/sock2", "session_id": "$peer", "session_created": 100})
 	// A straggler addressed to the RETIRED seed name, sent BEFORE resume —
 	// the exact live-rig topology: the mail's target is a departed alias
 	// whose superseded_by carries the identity forward.
@@ -271,12 +271,12 @@ func TestStopHookDrainsSeedStragglerAfterResume(t *testing.T) {
 
 	// A straggler addressed to the RETIRED seed name, sent AFTER resume: the
 	// seed's own row is still departed on the OLD (now-dead) tuple.
-	seed("register_agent", map[string]any{"alias": "peer", "socket_path": "/tmp/sock2", "session_id": "$peer"})
+	seed("register_agent", map[string]any{"alias": "peer", "socket_path": "/tmp/sock2", "session_id": "$peer", "session_created": 100})
 	seed("send_message", map[string]any{"from": "peer", "to_kind": "agent", "to_target": "muster-2", "subject": "s", "body": "still for the old name"})
 
 	// Stop, on the NEW tuple, driven by tmux env matching the resumed session.
 	tmuxenv.Run = hookRun(map[string]string{
-		"@muster_inbox": "1", "#{session_id}": "$NEW", "#{session_name}": "muster-9",
+		"@muster_inbox": "1", "#{session_id}": "$NEW", "#{session_created}": "222", "#{session_name}": "muster-9",
 	})
 	var stopBuf bytes.Buffer
 	if err := cmdHook([]string{"Stop"}, strings.NewReader(`{}`), &stopBuf); err != nil {

@@ -27,6 +27,12 @@ const replyPreviewWidth = 80
 // Daemon owns the listener and, depending on the mode it was built in, either
 // a local store (Serve/New) or an upstream to forward to (ServeRemote).
 // Exactly one of s and up is set; up != nil IS the mode flag — see remotemode.go.
+//
+// The storeAPI interface upstream declares here is deliberately absent: this
+// branch promoted it to store.API (internal/store/api.go), the single
+// canonical declaration both backends implement. Upstream's additions to it
+// land there instead, so a method cannot exist for the daemon and not for
+// dynamostore.
 type Daemon struct {
 	ln net.Listener
 	s  store.API
@@ -302,9 +308,9 @@ func (d *Daemon) handleRegisterAgent(a map[string]any) proto.Response {
 	// (a re-register that moves an agent to a new session must not leave
 	// its previous session's flag stale) and the NEW one.
 	if hadOld {
-		d.reconcileBadge(old.SocketPath, old.SessionID)
+		d.reconcileBadge(old.SocketPath, old.SessionID, old.SessionCreated)
 	}
-	d.reconcileBadge(newAgent.SocketPath, newAgent.SessionID)
+	d.reconcileBadge(newAgent.SocketPath, newAgent.SessionID, newAgent.SessionCreated)
 	// Outcome classification (durable-alias spec change 1): the pre-mutation
 	// row read above already tells this apart for free — no prior row is a
 	// first sight, a live prior row is a tuple refresh, and a tombstone is a
@@ -337,11 +343,27 @@ func (d *Daemon) handleRegisterAgent(a map[string]any) proto.Response {
 // always leaves the badge at whichever recompute ran last, never a stale
 // interleaved value. Callers journal using the returned total/err; on err,
 // callers must journal "error: …" and must NOT treat it as a cleared badge.
-func (d *Daemon) setSessionBadge(socketPath, sessionID string) (total int, err error) {
+//
+// sessionCreated is the incarnation being badged (spec §5.1): the caller
+// passes the SessionCreated of whatever row put this tuple in scope, so the
+// recompute counts only mail belonging to one tmux-session incarnation — a
+// legacy or ghost row sitting on a recycled session ID can no longer inflate
+// a live session's badge.
+//
+// The caller's value is a FALLBACK, not the last word: sessionIncarnation
+// re-resolves the tuple from stored rows first. The count is keyed
+// (socket, session, created) but the badge itself is keyed (socket, session)
+// — only one incarnation of a session ID can exist in tmux at a time — so a
+// recompute driven by the wrong row's incarnation would write an
+// authoritative zero over a live session's real mail (the ghost-sorts-first
+// notify grouping, and reconcile driven by a departing ghost's own row).
+// Resolving here, inside the ONE canonical {recompute, push} sequence, means
+// no call site can reintroduce that skew.
+func (d *Daemon) setSessionBadge(socketPath, sessionID string, sessionCreated int64) (total int, err error) {
 	mu := d.sessionLock(socketPath, sessionID)
 	mu.Lock()
 	defer mu.Unlock()
-	total, err = d.sessionUnread(socketPath, sessionID)
+	total, err = d.sessionUnread(socketPath, sessionID, d.sessionIncarnation(socketPath, sessionID, sessionCreated))
 	if err != nil {
 		return 0, err
 	}
@@ -353,6 +375,63 @@ func (d *Daemon) setSessionBadge(socketPath, sessionID string) (total int, err e
 	return total, err
 }
 
+// sessionIncarnation resolves which incarnation currently OCCUPIES a tmux
+// tuple, from stored rows only (the daemon stays tmux-agnostic — it never
+// queries tmux). The answer is the highest non-zero session_created among
+// the tuple's non-departed rows: a live registrant captured that value from
+// the pane it is running in, so a row carrying it is proof the session
+// exists under that incarnation, while a 0-created row (pre-v0.8.0, or a
+// registrant outside tmux) proves nothing and never wins. Departed rows are
+// excluded — a tombstone is exactly the row whose incarnation is over.
+//
+// fallback is returned when no row proves an incarnation for the tuple: with
+// nothing to correct to, the caller's own value stands (and for a tuple
+// holding only 0-created rows that value is itself 0, which seeds nothing —
+// attribution requires proof, spec §5.1).
+//
+// REMOTE MODE resolves ELSEWHERE, and this returns fallback untouched. There
+// is no local store to read, and the roster upstream is the whole bus's — a
+// tuple colliding on a peer machine would contribute its own unrelated
+// creation times, so resolving here against an un-narrowed roster would be
+// worse than not resolving at all. Both remote callers of setSessionBadge
+// therefore resolve first, against a roster narrowed to THIS DEVICE, and pass
+// the proven value in: ReconcileLocalSessions from the roster it already
+// holds, and reconcileSessions from one it fetches once per batch. The
+// asymmetry is real and is why this is a seam rather than a bare read; the
+// property it protects — a badge write is driven by the incarnation that
+// OCCUPIES the tuple, never by whichever row happened to name it — holds in
+// both modes.
+func (d *Daemon) sessionIncarnation(socketPath, sessionID string, fallback int64) int64 {
+	if d.up != nil {
+		return fallback
+	}
+	agents, err := d.s.ListAgents()
+	if err != nil {
+		return fallback // best-effort: a roster read failure must not change badge behavior
+	}
+	return sessionIncarnationOf(agents, socketPath, sessionID, fallback)
+}
+
+// sessionIncarnationOf is sessionIncarnation over an already-loaded roster,
+// for callers that hold one — notifyForThread in local mode, and both remote
+// reconcile paths (which MUST narrow that roster to this device first; see
+// sessionIncarnation). Same rule, no second read.
+func sessionIncarnationOf(agents []store.Agent, socketPath, sessionID string, fallback int64) int64 {
+	var proven int64
+	for _, a := range agents {
+		if a.Departed || a.SocketPath != socketPath || a.SessionID != sessionID {
+			continue
+		}
+		if a.SessionCreated > proven {
+			proven = a.SessionCreated
+		}
+	}
+	if proven == 0 {
+		return fallback
+	}
+	return proven
+}
+
 // reconcileBadge is setSessionBadge for identity-change call sites
 // (register/deregister/purge) that don't have a thread/journal-row shape to
 // produce: best-effort, silent on an empty tuple or a nil notifier (there is
@@ -360,11 +439,11 @@ func (d *Daemon) setSessionBadge(socketPath, sessionID string) (total int, err e
 // only moments a session's alias list can change, so this additionally
 // pushes the agent badge (@muster_agent) — the operator's ambient
 // "registered as X" indicator.
-func (d *Daemon) reconcileBadge(socketPath, sessionID string) {
+func (d *Daemon) reconcileBadge(socketPath, sessionID string, sessionCreated int64) {
 	if d.n == nil || socketPath == "" || sessionID == "" {
 		return
 	}
-	_, _ = d.setSessionBadge(socketPath, sessionID)
+	_, _ = d.setSessionBadge(socketPath, sessionID, sessionCreated)
 	d.pushSessionAgents(socketPath, sessionID)
 }
 
@@ -496,7 +575,10 @@ func (d *Daemon) notifyForThread(threadID int64, actor string) {
 	}
 	sort.Strings(aliases)
 
-	type sessionGroup struct{ socketPath, sessionID, journalAlias string }
+	type sessionGroup struct {
+		socketPath, sessionID, journalAlias string
+		sessionCreated                      int64
+	}
 	seen := make(map[string]bool, len(aliases))
 	var groups []sessionGroup
 	for _, alias := range aliases {
@@ -521,11 +603,22 @@ func (d *Daemon) notifyForThread(threadID int64, actor string) {
 			continue // sibling alias of an already-scheduled session
 		}
 		seen[key] = true
-		groups = append(groups, sessionGroup{socketPath: a.SocketPath, sessionID: a.SessionID, journalAlias: alias})
+		// The group's incarnation is the tuple's PROVEN one, not this
+		// alias's: recipients are grouped by the bare (socket, session) key,
+		// so whichever alias sorts first would otherwise decide it — and a
+		// legacy 0-created ghost sharing a recycled session ID would drive
+		// the whole group's recompute to zero (see
+		// TestNotifyBadgeIgnoresGhostIncarnationOrdering). a.SessionCreated
+		// stays the fallback for a tuple no row proves.
+		groups = append(groups, sessionGroup{
+			socketPath: a.SocketPath, sessionID: a.SessionID,
+			sessionCreated: sessionIncarnationOf(agents, a.SocketPath, a.SessionID, a.SessionCreated),
+			journalAlias:   alias,
+		})
 	}
 
 	for _, g := range groups {
-		total, err := d.setSessionBadge(g.socketPath, g.sessionID)
+		total, err := d.setSessionBadge(g.socketPath, g.sessionID, g.sessionCreated)
 		detail := "lit"
 		switch {
 		case err != nil:
@@ -714,7 +807,7 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 		detail := ""
 		if d.n != nil {
 			if ag, found, _ := d.s.GetAgent(alias); found && ag.SocketPath != "" && ag.SessionID != "" {
-				if _, err := d.setSessionBadge(ag.SocketPath, ag.SessionID); err != nil {
+				if _, err := d.setSessionBadge(ag.SocketPath, ag.SessionID, ag.SessionCreated); err != nil {
 					detail = "error: " + err.Error()
 				}
 			}
@@ -734,6 +827,12 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 		// additive to this op's existing include-departed-on-purpose
 		// behavior — nothing here narrows what used to come back, it only
 		// adds the aliases a flat tuple match was missing.
+		//
+		// session_created scopes the lineage walk's base case to one tmux
+		// incarnation (spec §5.1). An absent arg reads 0: a tmux caller that
+		// supplied no proof of incarnation gets an empty list (correct — it
+		// cannot claim any row on a recyclable session ID), while a paneless
+		// caller (empty socket_path) is unaffected.
 		socketPath, sessionID := str(a, "socket_path"), str(a, "session_id")
 		if sessionID == "" {
 			return fail(fmt.Errorf("session_aliases: session_id is required"))
@@ -743,10 +842,11 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 		// colliding session on ANOTHER machine as one of this session's own
 		// aliases — and this op's answer is what the hook drains and the
 		// nudge path addresses. Local mode sends no device_id and every local
-		// row carries "", so it matches exactly as before. Scoping lives in
-		// SessionAliasLineage's base case, not in a post-filter here: the
-		// supersession walk must stay free to leave the tuple (see its doc).
-		aliases, err := d.s.SessionAliasLineage(str(a, "device_id"), socketPath, sessionID)
+		// row carries "", so it matches exactly as before. Both scopings live
+		// in SessionAliasLineage's base case, not in a post-filter here: the
+		// supersession walk must stay free to leave the tuple AND the device
+		// (see its doc).
+		aliases, err := d.s.SessionAliasLineage(str(a, "device_id"), socketPath, sessionID, i64(a, "session_created"))
 		if err != nil {
 			return fail(err)
 		}
@@ -757,11 +857,20 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 		// journals anything, so there is nothing for the session lock to
 		// serialize against.
 		// socket_path may be empty — the paneless tuple, as in session_aliases.
+		// session_created carries the caller's live incarnation (spec §5.1);
+		// absent reads 0, so a tmux caller with no proof gets zeros and a
+		// paneless caller is unaffected — same contract as session_aliases.
+		// Deliberately NOT run through sessionIncarnation: this op answers
+		// the caller's own question, and resolving server-side would hand a
+		// caller that proved nothing another incarnation's mail. The badge
+		// path resolves precisely because there the DAEMON, not a caller, is
+		// deciding which incarnation a (socket, session)-keyed tmux write
+		// belongs to.
 		socketPath, sessionID := str(a, "socket_path"), str(a, "session_id")
 		if sessionID == "" {
 			return fail(fmt.Errorf("session_unread: session_id is required"))
 		}
-		total, action, err := d.s.SessionUnread(str(a, "device_id"), socketPath, sessionID)
+		total, action, err := d.s.SessionUnread(str(a, "device_id"), socketPath, sessionID, i64(a, "session_created"))
 		if err != nil {
 			return fail(err)
 		}
@@ -852,7 +961,7 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 			return fail(err)
 		}
 		if hadOld {
-			d.reconcileBadge(old.SocketPath, old.SessionID)
+			d.reconcileBadge(old.SocketPath, old.SessionID, old.SessionCreated)
 		}
 		return ok(nil)
 	case "set_label":
@@ -861,7 +970,12 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 		// same value in the store so the daemon's resolver (which never
 		// re-reads tmux) agrees with the CLI's live-label resolution
 		// immediately, not at the next register_agent upsert.
-		n, err := d.s.SetSessionLabel(str(a, "device_id"), str(a, "socket_path"), str(a, "session_id"), str(a, "label"), boolArg(a, "label_manual"))
+		// session_created scopes the write to the caller's proven incarnation
+		// (spec §5.1): an old caller omitting it now updates 0 rows and the
+		// CLI's existing "bus label sync failed / refreshes on next
+		// register" warning path already communicates a 0-update as
+		// silence — acceptable single-binary skew.
+		n, err := d.s.SetSessionLabel(str(a, "device_id"), str(a, "socket_path"), str(a, "session_id"), i64(a, "session_created"), str(a, "label"), boolArg(a, "label_manual"))
 		if err != nil {
 			return fail(err)
 		}
@@ -881,7 +995,7 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 			return fail(err)
 		}
 		if hadOld {
-			d.reconcileBadge(old.SocketPath, old.SessionID)
+			d.reconcileBadge(old.SocketPath, old.SessionID, old.SessionCreated)
 		}
 		return ok(nil)
 	case "become":
@@ -922,13 +1036,18 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 			// skip the badge reconcile and report unread:0 instead of failing.
 			return ok(map[string]any{"from": from, "to": to, "unread": 0})
 		}
-		d.reconcileBadge(ag.SocketPath, ag.SessionID)
+		d.reconcileBadge(ag.SocketPath, ag.SessionID, ag.SessionCreated)
 		// The device comes from the CLAIMED ROW, not from d.deviceID: a
 		// daemon fronting a shared store (lambda mode) serves many devices and
 		// carries none of its own, and store.Become clones device_id from the
 		// seed, so ag.DeviceID is the tuple this session actually sits on.
 		// Local mode reads "" off the row and matches as it always did.
-		unread, _, err := d.s.SessionUnread(ag.DeviceID, ag.SocketPath, ag.SessionID)
+		//
+		// The incarnation is the same one the badge just used
+		// (sessionIncarnation), so the number reported back to the claimer and
+		// the number on its tmux badge can never disagree.
+		unread, _, err := d.s.SessionUnread(ag.DeviceID, ag.SocketPath, ag.SessionID,
+			d.sessionIncarnation(ag.SocketPath, ag.SessionID, ag.SessionCreated))
 		if err != nil {
 			unread = 0 // best-effort: the claim already succeeded
 		}

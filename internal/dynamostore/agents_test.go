@@ -122,7 +122,7 @@ func TestSetSessionLabelDoesNotResurrectAPurgedAlias(t *testing.T) {
 	ctx := context.Background()
 
 	if err := s.RegisterAgent(store.Agent{
-		Alias: "real", DeviceID: "dev-1", SocketPath: "/s", SessionID: "$1",
+		Alias: "real", DeviceID: "dev-1", SocketPath: "/s", SessionID: "$1", SessionCreated: 100,
 	}); err != nil {
 		t.Fatalf("RegisterAgent: %v", err)
 	}
@@ -134,14 +134,14 @@ func TestSetSessionLabelDoesNotResurrectAPurgedAlias(t *testing.T) {
 		Item: map[string]types.AttributeValue{
 			"pk": attrS(pkAgent("purged") + "#stale-index-copy"), "sk": attrN(metaSK),
 			"alias": attrS("purged"), "device_id": attrS("dev-1"),
-			"socket_path": attrS("/s"), "session_id": attrS("$1"),
+			"socket_path": attrS("/s"), "session_id": attrS("$1"), "session_created": attrN(100),
 			"gsi1pk": attrS(rosterPartition), "gsi1sk": attrN(metaSK),
 		},
 	}); err != nil {
 		t.Fatalf("seed the lagging index copy: %v", err)
 	}
 
-	n, err := s.SetSessionLabel("dev-1", "/s", "$1", "renamed", true)
+	n, err := s.SetSessionLabel("dev-1", "/s", "$1", 100, "renamed", true)
 	if err != nil {
 		t.Fatalf("SetSessionLabel: %v", err)
 	}

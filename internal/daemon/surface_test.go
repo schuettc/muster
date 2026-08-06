@@ -31,8 +31,8 @@ func snapAgentsTable(t *testing.T, s *store.Store) []store.Agent {
 func TestListThreadsMarksNothingRead(t *testing.T) {
 	n := &fakeNotifier{}
 	sock, s := startWithNotifierAndStore(t, n)
-	call(t, sock, "register_agent", map[string]any{"alias": "web", "role": "producer", "model_type": "claude", "socket_path": "/s", "session_id": "$1"})
-	call(t, sock, "register_agent", map[string]any{"alias": "api", "role": "consumer", "model_type": "claude", "socket_path": "/s", "session_id": "$2"})
+	call(t, sock, "register_agent", map[string]any{"alias": "web", "role": "producer", "model_type": "claude", "socket_path": "/s", "session_id": "$1", "session_created": 100})
+	call(t, sock, "register_agent", map[string]any{"alias": "api", "role": "consumer", "model_type": "claude", "socket_path": "/s", "session_id": "$2", "session_created": 100})
 	call(t, sock, "send_message", map[string]any{"from": "web", "to_kind": "agent", "to_target": "api", "subject": "hi", "body": "x"})
 
 	before := snapAgentsTable(t, s)

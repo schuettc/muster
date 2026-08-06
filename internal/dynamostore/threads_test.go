@@ -368,7 +368,7 @@ func TestCreateThreadRejectsInvalidIntent(t *testing.T) {
 // the client and belongs to the endpoint-backed conformance suite instead.
 func TestSessionUnreadEmptySessionNeverGroups(t *testing.T) {
 	for _, tc := range []struct{ sock, sess string }{{"", ""}, {"/s", ""}} {
-		total, action, err := (&Store{}).SessionUnread("", tc.sock, tc.sess)
+		total, action, err := (&Store{}).SessionUnread("", tc.sock, tc.sess, 100)
 		if err != nil {
 			t.Fatalf("SessionUnread(%q,%q): %v", tc.sock, tc.sess, err)
 		}

@@ -608,3 +608,161 @@ func waitFor(t *testing.T, cond func() bool) {
 	}
 	t.Fatal("timed out waiting for the expected state")
 }
+
+// --- the incarnation dimension in remote mode ------------------------------
+//
+// The hosted session_unread op deliberately does NOT resolve an incarnation
+// (store.API: a caller answers for its own and must prove it). setSessionBadge
+// is where resolution happens — and in remote mode it happens on the DEVICE,
+// before the request goes upstream, because the local daemon is the one
+// deciding which incarnation a (socket, session)-keyed tmux write belongs to.
+// These pin that the resolved value actually leaves the machine, and that it
+// is resolved against a roster narrowed to this device.
+
+// sessionCreatedIn returns the session_created arg of every session_unread the
+// fake upstream was asked for, in order.
+func sessionCreatedIn(up *fakeUpstream) []int64 {
+	var out []int64
+	for _, r := range up.snap() {
+		if r.Op != "session_unread" {
+			continue
+		}
+		switch v := r.Args["session_created"].(type) {
+		case int64:
+			out = append(out, v)
+		case float64:
+			out = append(out, int64(v))
+		default:
+			out = append(out, -1) // absent: the failure this test exists to catch
+		}
+	}
+	return out
+}
+
+// TestRemoteBadgeSendsTheProvenIncarnation: the whole point. A tuple holding a
+// live row and a legacy 0-created ghost must badge under the LIVE row's
+// incarnation. Sending 0 — which is what omitting the arg looks like on the
+// wire — asks the hosted store for an incarnation nothing matches, and it
+// answers an authoritative zero: the badge is CLEARED on a session with mail.
+func TestRemoteBadgeSendsTheProvenIncarnation(t *testing.T) {
+	const sock = "/private/tmp/tmux-501/default"
+	up := &fakeUpstream{byOp: map[string]proto.Response{
+		"list_agents": {OK: true, Data: []store.Agent{
+			// The ghost sorts first, so a per-alias implementation picks it.
+			{Alias: "aaa-ghost", DeviceID: "dev-1", SocketPath: sock, SessionID: "$1", SessionCreated: 0},
+			{Alias: "zzz-live", DeviceID: "dev-1", SocketPath: sock, SessionID: "$1", SessionCreated: 1700000000},
+		}},
+		"session_unread": {OK: true, Data: map[string]any{"total": 2}},
+	}}
+	n := &fakeNotifier{}
+	home := testHome(t)
+	d, err := ServeRemote(filepath.Join(home, "sock"), up, n, "dev-1")
+	if err != nil {
+		t.Fatalf("ServeRemote: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+
+	d.ReconcileLocalSessions()
+
+	got := sessionCreatedIn(up)
+	if len(got) != 1 || got[0] != 1700000000 {
+		t.Fatalf("session_created sent upstream = %v, want [1700000000] — the badge must name the "+
+			"incarnation that OCCUPIES the tuple, not whichever row sorted first", got)
+	}
+}
+
+// TestRemoteBadgeIgnoresAnotherDevicesIncarnation: the resolution roster must
+// be narrowed to this device FIRST. A peer laptop sharing the tuple has its
+// own unrelated creation time, and "highest non-zero created" would let the
+// peer's win outright — so this device would ask the hosted store about an
+// incarnation that does not exist on it and be told, authoritatively, zero.
+func TestRemoteBadgeIgnoresAnotherDevicesIncarnation(t *testing.T) {
+	const shared = "/private/tmp/tmux-501/default"
+	up := &fakeUpstream{byOp: map[string]proto.Response{
+		"list_agents": {OK: true, Data: []store.Agent{
+			{Alias: "mine", DeviceID: "dev-1", SocketPath: shared, SessionID: "$1", SessionCreated: 1700000000},
+			// Same tuple, another laptop, a LATER creation time.
+			{Alias: "theirs", DeviceID: "dev-2", SocketPath: shared, SessionID: "$1", SessionCreated: 1900000000},
+		}},
+		"session_unread": {OK: true, Data: map[string]any{"total": 1}},
+	}}
+	n := &fakeNotifier{}
+	home := testHome(t)
+	d, err := ServeRemote(filepath.Join(home, "sock"), up, n, "dev-1")
+	if err != nil {
+		t.Fatalf("ServeRemote: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+
+	d.ReconcileLocalSessions()
+
+	got := sessionCreatedIn(up)
+	if len(got) != 1 || got[0] != 1700000000 {
+		t.Fatalf("session_created sent upstream = %v, want [1700000000] — another device's "+
+			"incarnation on a colliding tuple must not decide this device's badge", got)
+	}
+}
+
+// TestPollReconcileResolvesTheIncarnation: device_poll answers with TUPLES
+// (store.SessionRef carries no creation time), so the poller has to resolve
+// one itself before it can badge. It is the only cross-device wake path, so
+// getting a zero here is not a stale badge — it is a permanently dark one.
+func TestPollReconcileResolvesTheIncarnation(t *testing.T) {
+	const sock = "/private/tmp/tmux-501/default"
+	up := &fakeUpstream{byOp: map[string]proto.Response{
+		"list_agents": {OK: true, Data: []store.Agent{
+			{Alias: "live", DeviceID: "dev-1", SocketPath: sock, SessionID: "$1", SessionCreated: 1700000000},
+			{Alias: "peer", DeviceID: "dev-2", SocketPath: sock, SessionID: "$1", SessionCreated: 1900000000},
+		}},
+		"session_unread": {OK: true, Data: map[string]any{"total": 4}},
+	}}
+	n := &fakeNotifier{}
+	home := testHome(t)
+	d, err := ServeRemote(filepath.Join(home, "sock"), up, n, "dev-1")
+	if err != nil {
+		t.Fatalf("ServeRemote: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+
+	d.reconcileSessions([]store.SessionRef{{SocketPath: sock, SessionID: "$1"}})
+
+	got := sessionCreatedIn(up)
+	if len(got) != 1 || got[0] != 1700000000 {
+		t.Fatalf("session_created sent upstream = %v, want [1700000000]", got)
+	}
+	if lit := n.snap(&n.notified); len(lit) != 1 || lit[0] != "$1" {
+		t.Fatalf("notified = %v, want [$1]", lit)
+	}
+}
+
+// TestPollReconcileSkipsTheBatchOnARosterError: a roster read failure must
+// leave the previous badge alone, NOT badge with a zero incarnation. Zero
+// seeds nothing, so it would not recompute the badge — it would clear it,
+// telling a session it is caught up on the one tick the server just said it
+// has mail.
+func TestPollReconcileSkipsTheBatchOnARosterError(t *testing.T) {
+	up := &fakeUpstream{
+		byOp:   map[string]proto.Response{"session_unread": {OK: true, Data: map[string]any{"total": 0}}},
+		err:    errors.New("upstream down"),
+		errFor: "list_agents",
+	}
+	n := &fakeNotifier{}
+	home := testHome(t)
+	d, err := ServeRemote(filepath.Join(home, "sock"), up, n, "dev-1")
+	if err != nil {
+		t.Fatalf("ServeRemote: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+
+	d.reconcileSessions([]store.SessionRef{{SocketPath: "/s", SessionID: "$1"}})
+
+	if cleared := n.snap(&n.cleared); len(cleared) != 0 {
+		t.Fatalf("cleared %v after a roster read failure — an unresolvable incarnation must "+
+			"leave the badge alone, never clear it", cleared)
+	}
+	for _, op := range up.opsSeen() {
+		if op == "session_unread" {
+			t.Fatal("asked upstream for unread with no incarnation to name")
+		}
+	}
+}

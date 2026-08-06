@@ -123,7 +123,7 @@ func TestSessionUnreadFollowsSupersessionLineage(t *testing.T) {
 	// re-registers onto a brand-new tuple (the resumed session), while the
 	// seed's row stays exactly where Become left it — on the OLD tuple,
 	// departed, superseded_by="claimed".
-	if err := s.RegisterAgent(Agent{Alias: "claimed", SocketPath: "/new", SessionID: "$new"}); err != nil {
+	if err := s.RegisterAgent(Agent{Alias: "claimed", SocketPath: "/new", SessionID: "$new", SessionCreated: 100}); err != nil {
 		t.Fatal(err)
 	}
 	seed, _, _ := s.GetAgent("seed")
@@ -136,7 +136,7 @@ func TestSessionUnreadFollowsSupersessionLineage(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	total, _, err := s.SessionUnread("", "/new", "$new")
+	total, _, err := s.SessionUnread("", "/new", "$new", 100)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,7 +160,7 @@ func TestSessionUnreadFollowsChainedLineage(t *testing.T) {
 	if err := s.Become("b", "c"); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.RegisterAgent(Agent{Alias: "c", SocketPath: "/new", SessionID: "$new"}); err != nil {
+	if err := s.RegisterAgent(Agent{Alias: "c", SocketPath: "/new", SessionID: "$new", SessionCreated: 100}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -168,7 +168,7 @@ func TestSessionUnreadFollowsChainedLineage(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	total, _, err := s.SessionUnread("", "/new", "$new")
+	total, _, err := s.SessionUnread("", "/new", "$new", 100)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -183,7 +183,7 @@ func TestSessionUnreadFollowsChainedLineage(t *testing.T) {
 // not miscount. UNION's row-level dedup is what bounds the recursion.
 func TestSessionUnreadLineageCycleGuard(t *testing.T) {
 	s := newTestStore(t)
-	if err := s.RegisterAgent(Agent{Alias: "x", SocketPath: "/s", SessionID: "$1"}); err != nil {
+	if err := s.RegisterAgent(Agent{Alias: "x", SocketPath: "/s", SessionID: "$1", SessionCreated: 100}); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.RegisterAgent(Agent{Alias: "y", SocketPath: "/other", SessionID: "$other"}); err != nil {
@@ -207,7 +207,7 @@ func TestSessionUnreadLineageCycleGuard(t *testing.T) {
 	var total, action int
 	var err error
 	go func() {
-		total, action, err = s.SessionUnread("", "/s", "$1")
+		total, action, err = s.SessionUnread("", "/s", "$1", 100)
 		close(done)
 	}()
 	select {

@@ -70,6 +70,8 @@ var cases = []conformanceCase{
 	{"SetSessionLabelMovesSiblingsTogether", testSetSessionLabel},
 	{"SetSessionLabelNoOpsOnEmptyTuple", testSetSessionLabelEmptyTuple},
 	{"SetSessionLabelSparesACollidingDevice", testSetSessionLabelDeviceCollision},
+	{"SetSessionLabelScopesToTheProvenIncarnation", testSetSessionLabelIncarnation},
+	{"SetSessionLabelRefusesAnUnprovenIncarnation", testSetSessionLabelZeroIncarnation},
 	{"DepartStaleSiblingsGhostGuard", testDepartStaleSiblings},
 	{"DepartStaleSiblingsNoOpsOnEmptyTuple", testDepartStaleSiblingsEmptyTuple},
 	{"DepartStaleSiblingsSparesACollidingDevice", testDepartStaleSiblingsDeviceCollision},
@@ -111,6 +113,9 @@ var cases = []conformanceCase{
 	{"SessionUnreadEmptyTupleNeverGroups", testSessionUnreadEmptyTuple},
 	{"SessionUnreadSeparatesCollidingDevices", testSessionUnreadDeviceCollision},
 	{"SessionUnreadGroupsThePanelessTuple", testSessionUnreadPaneless},
+	{"SessionUnreadSeparatesTmuxIncarnations", testSessionUnreadIncarnation},
+	{"SessionUnreadRefusesAnUnprovenIncarnation", testSessionUnreadZeroIncarnation},
+	{"SessionUnreadExemptsThePanelessTupleFromIncarnation", testSessionUnreadPanelessIgnoresIncarnation},
 
 	// Identity: harness link, become, and supersession lineage.
 	{"SetHarnessSessionIDStampsExistingRow", testSetHarnessSessionID},
@@ -127,6 +132,9 @@ var cases = []conformanceCase{
 	{"SessionAliasLineageWalksTheChain", testSessionAliasLineage},
 	{"SessionAliasLineageEmptySessionIsEmpty", testSessionAliasLineageEmpty},
 	{"SessionAliasLineageSeparatesCollidingDevices", testSessionAliasLineageDevices},
+	{"SessionAliasLineageSeparatesTmuxIncarnations", testSessionAliasLineageIncarnation},
+	{"SessionAliasLineageRefusesAnUnprovenIncarnation", testSessionAliasLineageZeroIncarnation},
+	{"SessionLineageCrossesIncarnationsOnTheRecursiveStep", testLineageCrossesIncarnations},
 
 	// Device poll.
 	{"DevicePollFindsNewMail", testDevicePollFindsNewMail},
@@ -170,8 +178,44 @@ var cases = []conformanceCase{
 
 // --- helpers ---------------------------------------------------------------
 
+// liveCreated is the canonical "this session is running now" incarnation
+// stamp. Session-tuple methods take a sessionCreated and a ZERO matches
+// nothing (store.API: zero is the absence of proof, not a value), so a case
+// that left it unset would ask for an incarnation no row has and get a
+// perfectly plausible empty answer — passing while proving nothing. Every
+// tmux-tuple registration therefore carries this, and every call site passes
+// it; the incarnation cases below override it on purpose.
+const liveCreated int64 = 1700000000
+
+// ghostCreated is a DIFFERENT incarnation of the same session id — what tmux
+// leaves behind when its server restarts and renumbers from $1 again.
+const ghostCreated int64 = 1600000000
+
+// mustRegister registers a, defaulting SessionCreated to liveCreated for a
+// tmux-tuple registration that did not name one. The default is narrow: a
+// paneless row (empty socket) is exempt from the incarnation dimension
+// entirely and is left alone, and a case that names its own SessionCreated
+// keeps it. To register a row with a genuinely absent incarnation — a legacy
+// pre-v0.8.0 row on a real socket — use mustRegisterLegacy, which says so.
 func mustRegister(t *testing.T, s store.API, a store.Agent) {
 	t.Helper()
+	if a.SocketPath != "" && a.SessionCreated == 0 {
+		a.SessionCreated = liveCreated
+	}
+	if err := s.RegisterAgent(a); err != nil {
+		t.Fatalf("RegisterAgent(%q): %v", a.Alias, err)
+	}
+}
+
+// mustRegisterLegacy registers a row whose session_created is 0 on a real tmux
+// tuple — a registration written before muster captured creation times. Such a
+// row can never PROVE which incarnation it belongs to, so it is
+// indistinguishable from a ghost, and the session-tuple methods must refuse to
+// attribute anything to it. Separate from mustRegister so that "created 0" is
+// always a decision a case made out loud, never a field someone forgot.
+func mustRegisterLegacy(t *testing.T, s store.API, a store.Agent) {
+	t.Helper()
+	a.SessionCreated = 0
 	if err := s.RegisterAgent(a); err != nil {
 		t.Fatalf("RegisterAgent(%q): %v", a.Alias, err)
 	}
@@ -408,7 +452,7 @@ func testSetSessionLabel(t *testing.T, s store.API) {
 		t.Fatalf("DepartAgent: %v", err)
 	}
 
-	n, err := s.SetSessionLabel("", sock, sess, "backend", true)
+	n, err := s.SetSessionLabel("", sock, sess, liveCreated, "backend", true)
 	if err != nil {
 		t.Fatalf("SetSessionLabel: %v", err)
 	}
@@ -430,7 +474,7 @@ func testSetSessionLabel(t *testing.T, s store.API) {
 
 func testSetSessionLabelEmptyTuple(t *testing.T, s store.API) {
 	for _, tc := range []struct{ sock, sess string }{{"", "$1"}, {"/tmp/s", ""}, {"", ""}} {
-		n, err := s.SetSessionLabel("", tc.sock, tc.sess, "x", true)
+		n, err := s.SetSessionLabel("", tc.sock, tc.sess, liveCreated, "x", true)
 		if err != nil {
 			t.Fatalf("SetSessionLabel(%q,%q): %v", tc.sock, tc.sess, err)
 		}
@@ -458,7 +502,12 @@ func testDepartStaleSiblings(t *testing.T, s store.API) {
 	reg("ghost", 1700000000)
 	reg("keeper", nowCreated)
 	reg("sibling", nowCreated)
-	reg("preupgrade", 0)
+	// A row that predates creation-time capture. It must be SPARED even though
+	// its created differs from nowCreated: 0 is not a different incarnation,
+	// it is no evidence of one, and tombstoning on absent evidence destroys a
+	// live registration. Registered through mustRegisterLegacy so the 0 stays
+	// 0 — mustRegister would fill it in.
+	mustRegisterLegacy(t, s, store.Agent{Alias: "preupgrade", SocketPath: sock, SessionID: sess})
 	mustRegister(t, s, store.Agent{
 		Alias: "elsewhere", SocketPath: sock, SessionID: "$2", SessionCreated: 1700000000,
 	})
@@ -507,7 +556,7 @@ func testSetSessionLabelDeviceCollision(t *testing.T, s store.API) {
 	mustRegister(t, s, store.Agent{Alias: "mine", DeviceID: "dev-a", SocketPath: sock, SessionID: sess})
 	mustRegister(t, s, store.Agent{Alias: "theirs", DeviceID: "dev-b", SocketPath: sock, SessionID: sess})
 
-	n, err := s.SetSessionLabel("dev-a", sock, sess, "backend", true)
+	n, err := s.SetSessionLabel("dev-a", sock, sess, liveCreated, "backend", true)
 	if err != nil {
 		t.Fatalf("SetSessionLabel: %v", err)
 	}
@@ -644,7 +693,7 @@ func testExplicitTaskIntent(t *testing.T, s store.API) {
 	}
 	// The action count keys off the EFFECTIVE intent, not off kind: a task
 	// explicitly marked fyi is unread but is not asking for anything.
-	total, action, err := s.SessionUnread("", "/s", "$1")
+	total, action, err := s.SessionUnread("", "/s", "$1", liveCreated)
 	if err != nil {
 		t.Fatalf("SessionUnread: %v", err)
 	}
@@ -1185,7 +1234,7 @@ func testSessionUnreadDistinct(t *testing.T, s store.API) {
 		mustRegister(t, s, store.Agent{Alias: alias, SocketPath: "/s", SessionID: "$1"})
 	}
 	mustThread(t, s, store.Thread{Kind: "message", FromAgent: "peer", ToKind: "broadcast"}, "hi all")
-	total, action, err := s.SessionUnread("", "/s", "$1")
+	total, action, err := s.SessionUnread("", "/s", "$1", liveCreated)
 	if err != nil {
 		t.Fatalf("SessionUnread: %v", err)
 	}
@@ -1204,7 +1253,7 @@ func testSessionUnreadSiblingAuthors(t *testing.T, s store.API) {
 	mustThread(t, s, store.Thread{
 		Kind: "message", FromAgent: "a1", ToKind: "agent", ToTarget: "outsider",
 	}, "hello")
-	total, action, err := s.SessionUnread("", "/s", "$1")
+	total, action, err := s.SessionUnread("", "/s", "$1", liveCreated)
 	if err != nil {
 		t.Fatalf("SessionUnread: %v", err)
 	}
@@ -1218,7 +1267,7 @@ func testSessionUnreadAction(t *testing.T, s store.API) {
 	mustThread(t, s, store.Thread{
 		Kind: "task", FromAgent: "backend", ToKind: "agent", ToTarget: "worker", Status: "open",
 	}, "please do X")
-	total, action, err := s.SessionUnread("", "/s", "$1")
+	total, action, err := s.SessionUnread("", "/s", "$1", liveCreated)
 	if err != nil {
 		t.Fatalf("SessionUnread: %v", err)
 	}
@@ -1237,20 +1286,20 @@ func testSessionUnreadPerAliasWatermark(t *testing.T, s store.API) {
 	mustThread(t, s, store.Thread{
 		Kind: "message", FromAgent: "peer", ToKind: "agent", ToTarget: "a1",
 	}, "for a1")
-	if total, _, err := s.SessionUnread("", "/s", "$1"); err != nil || total != 1 {
+	if total, _, err := s.SessionUnread("", "/s", "$1", liveCreated); err != nil || total != 1 {
 		t.Fatalf("before any read: total=%d (%v), want 1", total, err)
 	}
 	if err := s.MarkRead("a2"); err != nil {
 		t.Fatalf("MarkRead a2: %v", err)
 	}
-	if total, _, err := s.SessionUnread("", "/s", "$1"); err != nil || total != 1 {
+	if total, _, err := s.SessionUnread("", "/s", "$1", liveCreated); err != nil || total != 1 {
 		t.Fatalf("after a sibling's MarkRead: total=%d (%v), want 1 — each alias is judged against its OWN watermark",
 			total, err)
 	}
 	if err := s.MarkRead("a1"); err != nil {
 		t.Fatalf("MarkRead a1: %v", err)
 	}
-	if total, _, err := s.SessionUnread("", "/s", "$1"); err != nil || total != 0 {
+	if total, _, err := s.SessionUnread("", "/s", "$1", liveCreated); err != nil || total != 0 {
 		t.Fatalf("after the concerned alias's MarkRead: total=%d (%v), want 0", total, err)
 	}
 }
@@ -1259,7 +1308,7 @@ func testSessionUnreadEmptyTuple(t *testing.T, s store.API) {
 	mustRegister(t, s, store.Agent{Alias: "a1", SocketPath: "", SessionID: ""})
 	mustThread(t, s, store.Thread{Kind: "message", FromAgent: "peer", ToKind: "broadcast"}, "hi")
 	for _, tc := range []struct{ sock, sess string }{{"", ""}, {"", "$1"}, {"/s", ""}} {
-		total, action, err := s.SessionUnread("", tc.sock, tc.sess)
+		total, action, err := s.SessionUnread("", tc.sock, tc.sess, liveCreated)
 		if err != nil {
 			t.Fatalf("SessionUnread(%q,%q): %v", tc.sock, tc.sess, err)
 		}
@@ -1286,7 +1335,7 @@ func testSessionUnreadDeviceCollision(t *testing.T, s store.API) {
 		Kind: "message", FromAgent: "frontend", ToKind: "agent", ToTarget: "backend",
 	}, "ping from the other laptop")
 
-	total, _, err := s.SessionUnread("dev-a", sock, sess)
+	total, _, err := s.SessionUnread("dev-a", sock, sess, liveCreated)
 	if err != nil {
 		t.Fatalf("SessionUnread(dev-a): %v", err)
 	}
@@ -1296,7 +1345,7 @@ func testSessionUnreadDeviceCollision(t *testing.T, s store.API) {
 
 	// The mirror image, which is what makes the exclusion still an exclusion:
 	// on the sending device the same entry IS its own write.
-	total, _, err = s.SessionUnread("dev-b", sock, sess)
+	total, _, err = s.SessionUnread("dev-b", sock, sess, liveCreated)
 	if err != nil {
 		t.Fatalf("SessionUnread(dev-b): %v", err)
 	}
@@ -2022,7 +2071,7 @@ func testSessionUnreadPaneless(t *testing.T, s store.API) {
 		Kind: "message", FromAgent: "peer", ToKind: "agent", ToTarget: "paneless-a",
 	}, "mail for a paneless session")
 
-	total, _, err := s.SessionUnread("", "", uuid)
+	total, _, err := s.SessionUnread("", "", uuid, 0)
 	if err != nil {
 		t.Fatalf("SessionUnread: %v", err)
 	}
@@ -2281,7 +2330,7 @@ func testSessionUnreadLineage(t *testing.T, s store.API) {
 		Kind: "message", FromAgent: "peer", ToKind: "agent", ToTarget: "seed",
 	}, "addressed to the old name")
 
-	total, _, err := s.SessionUnread("", "/new", "$new")
+	total, _, err := s.SessionUnread("", "/new", "$new", liveCreated)
 	if err != nil {
 		t.Fatalf("SessionUnread: %v", err)
 	}
@@ -2304,7 +2353,7 @@ func testSessionUnreadChainedLineage(t *testing.T, s store.API) {
 		Kind: "message", FromAgent: "peer", ToKind: "agent", ToTarget: "a",
 	}, "addressed to the original name")
 
-	total, _, err := s.SessionUnread("", "/new", "$new")
+	total, _, err := s.SessionUnread("", "/new", "$new", liveCreated)
 	if err != nil {
 		t.Fatalf("SessionUnread: %v", err)
 	}
@@ -2330,7 +2379,7 @@ func testSessionAliasLineage(t *testing.T, s store.API) {
 	mustRegister(t, s, store.Agent{Alias: "sibling", SocketPath: "/new", SessionID: "$new"})
 	mustRegister(t, s, store.Agent{Alias: "stranger", SocketPath: "/elsewhere", SessionID: "$x"})
 
-	got, err := s.SessionAliasLineage("", "/new", "$new")
+	got, err := s.SessionAliasLineage("", "/new", "$new", liveCreated)
 	if err != nil {
 		t.Fatalf("SessionAliasLineage: %v", err)
 	}
@@ -2347,7 +2396,7 @@ func testSessionAliasLineage(t *testing.T, s store.API) {
 
 func testSessionAliasLineageEmpty(t *testing.T, s store.API) {
 	mustRegister(t, s, store.Agent{Alias: "a1", SocketPath: "", SessionID: ""})
-	got, err := s.SessionAliasLineage("", "", "")
+	got, err := s.SessionAliasLineage("", "", "", liveCreated)
 	if err != nil {
 		t.Fatalf("SessionAliasLineage: %v", err)
 	}
@@ -2364,11 +2413,243 @@ func testSessionAliasLineageDevices(t *testing.T, s store.API) {
 	mustRegister(t, s, store.Agent{Alias: "mine", DeviceID: "dev-a", SocketPath: sock, SessionID: sess})
 	mustRegister(t, s, store.Agent{Alias: "theirs", DeviceID: "dev-b", SocketPath: sock, SessionID: sess})
 
-	got, err := s.SessionAliasLineage("dev-a", sock, sess)
+	got, err := s.SessionAliasLineage("dev-a", sock, sess, liveCreated)
 	if err != nil {
 		t.Fatalf("SessionAliasLineage: %v", err)
 	}
 	if len(got) != 1 || got[0] != "mine" {
 		t.Fatalf("dev-a lineage = %v, want [mine] — the tuple is not device-unique", got)
+	}
+}
+
+// --- the incarnation dimension ---------------------------------------------
+//
+// tmux recycles session IDs across server restarts, so (device, socket,
+// session) names a SEQUENCE of unrelated sessions over a machine's lifetime.
+// session_created picks the one running now. These cases are built like the
+// device-collision ones above: the ghost and the live session share a
+// GENUINELY IDENTICAL tuple, differing only in creation time, so a backend
+// that dropped the dimension cannot pass them by accident.
+//
+// Every call below passes sessionCreated EXPLICITLY. It has to: a zero matches
+// nothing and the methods answer empty rather than erroring (store.API), so a
+// case that omitted it would assert against a plausible zero and prove
+// nothing at all.
+
+// testSetSessionLabelIncarnation: a label write lands on the session running
+// now and never on a ghost from a dead tmux server that happened to be handed
+// the same session id. Labels are addresses; relabelling a ghost is silent,
+// relabelling the wrong live thing is not.
+func testSetSessionLabelIncarnation(t *testing.T, s store.API) {
+	const sock, sess = "/private/tmp/tmux-501/default", "$1"
+	mustRegister(t, s, store.Agent{Alias: "current", SocketPath: sock, SessionID: sess, SessionCreated: liveCreated})
+	mustRegister(t, s, store.Agent{Alias: "ghost", SocketPath: sock, SessionID: sess, SessionCreated: ghostCreated})
+
+	n, err := s.SetSessionLabel("", sock, sess, liveCreated, "nfl-3", true)
+	if err != nil {
+		t.Fatalf("SetSessionLabel: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("labelled %d rows, want 1 — only the proven incarnation is eligible", n)
+	}
+	ghost, _, err := s.GetAgent("ghost")
+	if err != nil {
+		t.Fatalf("GetAgent ghost: %v", err)
+	}
+	if ghost.Label != "" || ghost.LabelManual {
+		t.Errorf("a dead incarnation's row was relabelled (label=%q manual=%v)", ghost.Label, ghost.LabelManual)
+	}
+}
+
+// testSetSessionLabelZeroIncarnation: zero is the ABSENCE of proof, not a
+// value to match on. A caller that cannot name its incarnation writes nothing
+// — including onto legacy rows that also carry 0, which would otherwise make
+// "no proof" match "no proof" and relabel exactly the rows that cannot be
+// attributed.
+func testSetSessionLabelZeroIncarnation(t *testing.T, s store.API) {
+	const sock, sess = "/private/tmp/tmux-501/default", "$1"
+	mustRegisterLegacy(t, s, store.Agent{Alias: "legacy", SocketPath: sock, SessionID: sess})
+	mustRegister(t, s, store.Agent{Alias: "current", SocketPath: sock, SessionID: sess, SessionCreated: liveCreated})
+
+	n, err := s.SetSessionLabel("", sock, sess, 0, "nfl-3", true)
+	if err != nil {
+		t.Fatalf("SetSessionLabel: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("labelled %d rows with an unproven incarnation, want 0", n)
+	}
+	for _, alias := range []string{"legacy", "current"} {
+		got, _, err := s.GetAgent(alias)
+		if err != nil {
+			t.Fatalf("GetAgent %s: %v", alias, err)
+		}
+		if got.Label != "" {
+			t.Errorf("%s was relabelled %q by a caller that proved no incarnation", alias, got.Label)
+		}
+	}
+}
+
+// testSessionUnreadIncarnation: two incarnations of one session id each count
+// their OWN mail. Without the dimension the ghost is a member of the live
+// session, so its straggler mail inflates the live badge — and, worse, the
+// ghost's alias counts as a sibling author, which is how a real message gets
+// silently dropped from the count.
+func testSessionUnreadIncarnation(t *testing.T, s store.API) {
+	const sock, sess = "/private/tmp/tmux-501/default", "$1"
+	mustRegister(t, s, store.Agent{Alias: "current", SocketPath: sock, SessionID: sess, SessionCreated: liveCreated})
+	mustRegister(t, s, store.Agent{Alias: "ghost", SocketPath: sock, SessionID: sess, SessionCreated: ghostCreated})
+	mustThread(t, s, store.Thread{
+		Kind: "message", FromAgent: "peer", ToKind: "agent", ToTarget: "ghost",
+	}, "mail for a session that is gone")
+
+	total, _, err := s.SessionUnread("", sock, sess, liveCreated)
+	if err != nil {
+		t.Fatalf("SessionUnread(live): %v", err)
+	}
+	if total != 0 {
+		t.Fatalf("live incarnation unread = %d, want 0 — the dead incarnation's mail is not this session's", total)
+	}
+
+	mustThread(t, s, store.Thread{
+		Kind: "message", FromAgent: "peer", ToKind: "agent", ToTarget: "current",
+	}, "mail for the session running now")
+
+	total, _, err = s.SessionUnread("", sock, sess, liveCreated)
+	if err != nil {
+		t.Fatalf("SessionUnread(live, again): %v", err)
+	}
+	if total != 1 {
+		t.Fatalf("live incarnation unread = %d, want exactly its own 1", total)
+	}
+	// And symmetric: the ghost tuple still answers for itself, so this is a
+	// partition of the mail rather than a filter that hides some of it.
+	total, _, err = s.SessionUnread("", sock, sess, ghostCreated)
+	if err != nil {
+		t.Fatalf("SessionUnread(ghost): %v", err)
+	}
+	if total != 1 {
+		t.Fatalf("dead incarnation unread = %d, want its own 1", total)
+	}
+}
+
+// testSessionUnreadZeroIncarnation: an unprovable row seeds nothing. A legacy
+// registration on a real tmux tuple cannot show which incarnation it belongs
+// to, so it is indistinguishable from a ghost and must not be attributed —
+// not even to a caller that also proves nothing.
+func testSessionUnreadZeroIncarnation(t *testing.T, s store.API) {
+	const sock, sess = "/private/tmp/tmux-501/default", "$1"
+	mustRegisterLegacy(t, s, store.Agent{Alias: "legacy", SocketPath: sock, SessionID: sess})
+	mustThread(t, s, store.Thread{
+		Kind: "message", FromAgent: "peer", ToKind: "agent", ToTarget: "legacy",
+	}, "mail for an unprovable row")
+
+	total, _, err := s.SessionUnread("", sock, sess, 0)
+	if err != nil {
+		t.Fatalf("SessionUnread: %v", err)
+	}
+	if total != 0 {
+		t.Fatalf("unread = %d with created 0 on a real tmux tuple, want 0 — zero seeds nothing", total)
+	}
+}
+
+// testSessionUnreadPanelessIgnoresIncarnation: the paneless tuple ("", harness
+// UUID) is EXEMPT. A harness UUID is never recycled, so there is no second
+// incarnation to tell apart and demanding proof would only break the one
+// identity that needs none. Asserted for both a zero and a mismatched
+// non-zero, so the exemption cannot be implemented as "0 means any".
+func testSessionUnreadPanelessIgnoresIncarnation(t *testing.T, s store.API) {
+	const uuid = "9f1c2f6e-0000-4000-8000-000000000042"
+	mustRegister(t, s, store.Agent{Alias: "harness", SocketPath: "", SessionID: uuid})
+	mustThread(t, s, store.Thread{
+		Kind: "message", FromAgent: "peer", ToKind: "agent", ToTarget: "harness",
+	}, "mail for a paneless session")
+
+	for _, created := range []int64{0, liveCreated, ghostCreated} {
+		total, _, err := s.SessionUnread("", "", uuid, created)
+		if err != nil {
+			t.Fatalf("SessionUnread(created=%d): %v", created, err)
+		}
+		if total != 1 {
+			t.Errorf("paneless unread with created=%d is %d, want 1 — the paneless tuple is exempt",
+				created, total)
+		}
+	}
+}
+
+// testSessionAliasLineageIncarnation: the op the SessionStart hook drains and
+// the nudge path addresses. Handing it a dead incarnation's aliases means
+// telling a live session to drain, and address, somebody else's names.
+func testSessionAliasLineageIncarnation(t *testing.T, s store.API) {
+	const sock, sess = "/private/tmp/tmux-501/default", "$1"
+	mustRegister(t, s, store.Agent{Alias: "current", SocketPath: sock, SessionID: sess, SessionCreated: liveCreated})
+	mustRegister(t, s, store.Agent{Alias: "ghost", SocketPath: sock, SessionID: sess, SessionCreated: ghostCreated})
+
+	got, err := s.SessionAliasLineage("", sock, sess, liveCreated)
+	if err != nil {
+		t.Fatalf("SessionAliasLineage: %v", err)
+	}
+	if len(got) != 1 || got[0] != "current" {
+		t.Fatalf("lineage = %v, want [current] — a recycled session id is not one session", got)
+	}
+}
+
+// testSessionAliasLineageZeroIncarnation: same rule as SessionUnread's, pinned
+// separately because the two run different SQL on the SQLite backend, so a
+// re-tightening regression in one would pass the other's test.
+func testSessionAliasLineageZeroIncarnation(t *testing.T, s store.API) {
+	const sock, sess = "/private/tmp/tmux-501/default", "$1"
+	mustRegisterLegacy(t, s, store.Agent{Alias: "legacy", SocketPath: sock, SessionID: sess})
+
+	got, err := s.SessionAliasLineage("", sock, sess, 0)
+	if err != nil {
+		t.Fatalf("SessionAliasLineage: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("lineage = %v with created 0 on a real tmux tuple, want empty", got)
+	}
+}
+
+// testLineageCrossesIncarnations pins the OTHER half of the rule — the half
+// nothing pinned before, so a future reviewer "fixing the inconsistency" by
+// scoping the recursive step would have got a green suite and silently broken
+// resume.
+//
+// Both scoping dimensions stop at the base case. Here a name is claimed on one
+// machine under one tmux incarnation, and resumed on ANOTHER machine under
+// ANOTHER incarnation: the walk must still reach back through superseded_by to
+// the retired seed and count its mail. Lineage is identity, which crosses both
+// machines and restarts; the tuple is location, which does not.
+func testLineageCrossesIncarnations(t *testing.T, s store.API) {
+	mustRegister(t, s, store.Agent{
+		Alias: "seed", DeviceID: "laptop-a", SocketPath: "/private/tmp/tmux-501/default",
+		SessionID: "$1", SessionCreated: ghostCreated,
+	})
+	if err := s.Become("seed", "claimed"); err != nil {
+		t.Fatalf("Become: %v", err)
+	}
+	// Resumed elsewhere: different machine, different tmux server, and the
+	// identical session id $1 that every fresh tmux hands out first.
+	mustRegister(t, s, store.Agent{
+		Alias: "claimed", DeviceID: "laptop-b", SocketPath: "/private/tmp/tmux-501/default",
+		SessionID: "$1", SessionCreated: liveCreated,
+	})
+	mustThread(t, s, store.Thread{
+		Kind: "message", FromAgent: "peer", ToKind: "agent", ToTarget: "seed",
+	}, "still addressed to the old name")
+
+	got, err := s.SessionAliasLineage("laptop-b", "/private/tmp/tmux-501/default", "$1", liveCreated)
+	if err != nil {
+		t.Fatalf("SessionAliasLineage: %v", err)
+	}
+	if len(got) != 2 || got[0] != "claimed" || got[1] != "seed" {
+		t.Fatalf("lineage = %v, want [claimed seed] — the recursive step is scoped by NEITHER dimension", got)
+	}
+
+	total, _, err := s.SessionUnread("laptop-b", "/private/tmp/tmux-501/default", "$1", liveCreated)
+	if err != nil {
+		t.Fatalf("SessionUnread: %v", err)
+	}
+	if total != 1 {
+		t.Fatalf("unread = %d, want 1 — mail must follow the name across both a machine and a restart", total)
 	}
 }

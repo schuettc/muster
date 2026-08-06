@@ -44,11 +44,11 @@ func TestBecomeRequiresFromWhenSplit(t *testing.T) {
 	t.Setenv("TMUX", "/tmp/sock,1,0")
 	t.Setenv("TMUX_PANE", "%1")
 	prev := tmuxenv.Run
-	tmuxenv.Run = hookRun(map[string]string{"#{session_id}": "$1"})
+	tmuxenv.Run = hookRun(map[string]string{"#{session_id}": "$1", "#{session_created}": "100"})
 	t.Cleanup(func() { tmuxenv.Run = prev })
 	for _, a := range []string{"muster-2", "cost-audit"} {
 		if _, err := callData("register_agent", map[string]any{
-			"alias": a, "socket_path": "/tmp/sock", "session_id": "$1",
+			"alias": a, "socket_path": "/tmp/sock", "session_id": "$1", "session_created": 100,
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -72,10 +72,10 @@ func TestBecomeRejectsEmptyAlias(t *testing.T) {
 	t.Setenv("TMUX", "/tmp/sock,1,0")
 	t.Setenv("TMUX_PANE", "%1")
 	prev := tmuxenv.Run
-	tmuxenv.Run = hookRun(map[string]string{"#{session_id}": "$1"})
+	tmuxenv.Run = hookRun(map[string]string{"#{session_id}": "$1", "#{session_created}": "100"})
 	t.Cleanup(func() { tmuxenv.Run = prev })
 	if _, err := callData("register_agent", map[string]any{
-		"alias": "muster-2", "socket_path": "/tmp/sock", "session_id": "$1",
+		"alias": "muster-2", "socket_path": "/tmp/sock", "session_id": "$1", "session_created": 100,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -114,10 +114,10 @@ func TestBecomeToExistsErrorHasNoPrefixStutter(t *testing.T) {
 	t.Setenv("TMUX", "/tmp/sock,1,0")
 	t.Setenv("TMUX_PANE", "%1")
 	prev := tmuxenv.Run
-	tmuxenv.Run = hookRun(map[string]string{"#{session_id}": "$1"})
+	tmuxenv.Run = hookRun(map[string]string{"#{session_id}": "$1", "#{session_created}": "100"})
 	t.Cleanup(func() { tmuxenv.Run = prev })
 	if _, err := callData("register_agent", map[string]any{
-		"alias": "muster-2", "socket_path": "/tmp/sock", "session_id": "$1",
+		"alias": "muster-2", "socket_path": "/tmp/sock", "session_id": "$1", "session_created": 100,
 	}); err != nil {
 		t.Fatal(err)
 	}

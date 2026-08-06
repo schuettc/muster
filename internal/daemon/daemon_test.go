@@ -147,7 +147,7 @@ func TestRegisterCapturesLabelAndDeregister(t *testing.T) {
 	sock := startTestDaemon(t) // existing helper
 	if _, err := client.Call(sock, proto.Request{Op: "register_agent", Args: map[string]any{
 		"alias": "muster-2", "role": "peer", "model_type": "codex",
-		"socket_path": "/s", "session_id": "$1",
+		"socket_path": "/s", "session_id": "$1", "session_created": 100,
 		"project": "muster", "label": "frontend", "label_manual": true,
 	}}); err != nil {
 		t.Fatal(err)
@@ -185,7 +185,7 @@ func TestRegisterCapturesLabelAndDeregister(t *testing.T) {
 	// A returning session (fresh register_agent) revives the row.
 	if _, err := client.Call(sock, proto.Request{Op: "register_agent", Args: map[string]any{
 		"alias": "muster-2", "role": "peer", "model_type": "codex",
-		"socket_path": "/s", "session_id": "$1",
+		"socket_path": "/s", "session_id": "$1", "session_created": 100,
 		"project": "muster", "label": "frontend", "label_manual": true,
 	}}); err != nil {
 		t.Fatal(err)
@@ -206,7 +206,7 @@ func TestRegisterCapturesLabelAndDeregister(t *testing.T) {
 // already-acknowledged mail as unread.
 func TestDeregisterPreservesReadWatermark(t *testing.T) {
 	sock := startTestDaemon(t)
-	if _, err := client.Call(sock, proto.Request{Op: "register_agent", Args: map[string]any{"alias": "reader", "socket_path": "/s", "session_id": "$1"}}); err != nil {
+	if _, err := client.Call(sock, proto.Request{Op: "register_agent", Args: map[string]any{"alias": "reader", "socket_path": "/s", "session_id": "$1", "session_created": 100}}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := client.Call(sock, proto.Request{Op: "send_message", Args: map[string]any{"from": "peer", "to_kind": "agent", "to_target": "reader", "body": "hi"}}); err != nil {
@@ -245,7 +245,7 @@ func TestDeregisterPreservesReadWatermark(t *testing.T) {
 // afterward.
 func TestPurgeAgentHardDeletes(t *testing.T) {
 	sock := startTestDaemon(t)
-	if _, err := client.Call(sock, proto.Request{Op: "register_agent", Args: map[string]any{"alias": "gone", "socket_path": "/s", "session_id": "$1"}}); err != nil {
+	if _, err := client.Call(sock, proto.Request{Op: "register_agent", Args: map[string]any{"alias": "gone", "socket_path": "/s", "session_id": "$1", "session_created": 100}}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := client.Call(sock, proto.Request{Op: "purge_agent", Args: map[string]any{"alias": "gone"}}); err != nil {
@@ -399,7 +399,7 @@ func TestPruneEventsOpRejectsNonPositiveCutoff(t *testing.T) {
 func TestLogEventConstructsCanonicalNudge(t *testing.T) {
 	n := &fakeNotifier{}
 	sock, s := startWithNotifierAndStore(t, n)
-	call(t, sock, "register_agent", map[string]any{"alias": "api", "model_type": "claude", "socket_path": "/s", "session_id": "$2"})
+	call(t, sock, "register_agent", map[string]any{"alias": "api", "model_type": "claude", "socket_path": "/s", "session_id": "$2", "session_created": 100})
 	// attempted pollution: kind/agent/thread_id/count must all be overwritten
 	resp := call(t, sock, "log_event", map[string]any{"target": "api", "detail": "submitted", "kind": "send", "agent": "fake", "thread_id": 9, "count": 5})
 	if !resp.OK {
@@ -426,7 +426,7 @@ func TestLogEventConstructsCanonicalNudge(t *testing.T) {
 func TestListEventsMaxIDAndFollow(t *testing.T) {
 	n := &fakeNotifier{}
 	sock, _ := startWithNotifierAndStore(t, n)
-	call(t, sock, "register_agent", map[string]any{"alias": "api", "model_type": "claude", "socket_path": "/s", "session_id": "$2"})
+	call(t, sock, "register_agent", map[string]any{"alias": "api", "model_type": "claude", "socket_path": "/s", "session_id": "$2", "session_created": 100})
 	// empty journal: backlog with limit 0 must still return max_id 0
 	resp := call(t, sock, "list_events", map[string]any{"backlog": true, "limit": 0})
 	var out struct {
@@ -450,7 +450,7 @@ func TestListEventsMaxIDAndFollow(t *testing.T) {
 func TestStampHarnessSession(t *testing.T) {
 	sock := startWithNotifier(t, &fakeNotifier{})
 	call(t, sock, "register_agent", map[string]any{
-		"alias": "backend", "socket_path": "/s", "session_id": "$1",
+		"alias": "backend", "socket_path": "/s", "session_id": "$1", "session_created": 100,
 	})
 	resp := call(t, sock, "stamp_harness_session", map[string]any{
 		"alias": "backend", "harness_session_id": "uuid-1",
@@ -463,5 +463,67 @@ func TestStampHarnessSession(t *testing.T) {
 	m, _ := rows[0].(map[string]any)
 	if m["harness_session_id"] != "uuid-1" {
 		t.Fatalf("harness_session_id = %v, want uuid-1", m["harness_session_id"])
+	}
+}
+
+// TestSessionUnreadOpRequiresCreated pins the op contract: a tmux tuple
+// queried without session_created (or with a stale one) gets zeros — the
+// recycled-ID ghost can no longer inflate a live session's badge.
+func TestSessionUnreadOpRequiresCreated(t *testing.T) {
+	sock := startWithNotifier(t, &fakeNotifier{})
+	// The legacy ghost registers FIRST, on session_created 0 — exactly how a
+	// pre-v0.8.0 row is found sitting on a since-recycled session ID (the
+	// current incarnation's register would otherwise reap it as a stale
+	// sibling, and DepartStaleSiblings deliberately spares 0-rows).
+	call(t, sock, "register_agent", map[string]any{
+		"alias": "ghost", "role": "peer", "model_type": "claude",
+		"socket_path": "/s", "session_id": "$1", "session_created": 0,
+	})
+	call(t, sock, "register_agent", map[string]any{
+		"alias": "current", "role": "peer", "model_type": "claude",
+		"socket_path": "/s", "session_id": "$1", "session_created": 200,
+	})
+	call(t, sock, "register_agent", map[string]any{
+		"alias": "peer", "role": "peer", "model_type": "codex",
+		"socket_path": "/p", "session_id": "$2", "session_created": 300,
+	})
+	call(t, sock, "send_message", map[string]any{"from": "peer", "to_kind": "agent", "to_target": "current", "subject": "s", "body": "live mail"})
+	call(t, sock, "send_message", map[string]any{"from": "peer", "to_kind": "agent", "to_target": "ghost", "subject": "s", "body": "ghost mail"})
+
+	var out struct {
+		Total  int `json:"total"`
+		Action int `json:"action"`
+	}
+	resp := call(t, sock, "session_unread", map[string]any{
+		"socket_path": "/s", "session_id": "$1", "session_created": 200,
+	})
+	if !resp.OK {
+		t.Fatalf("session_unread with proof: %+v", resp)
+	}
+	decode(t, resp, &out)
+	if out.Total != 1 {
+		t.Fatalf("with proof: total = %d, want 1 (only the live incarnation's mail)", out.Total)
+	}
+	resp = call(t, sock, "session_unread", map[string]any{
+		"socket_path": "/s", "session_id": "$1", // no session_created: no proof
+	})
+	if !resp.OK {
+		t.Fatalf("session_unread without proof: %+v", resp)
+	}
+	out.Total = -1
+	decode(t, resp, &out)
+	if out.Total != 0 {
+		t.Fatalf("without proof: total = %d, want 0", out.Total)
+	}
+	// session_aliases carries the same dimension: the ghost is not part of
+	// this conversation's identity, so the drain wording must not name it.
+	var al struct {
+		Aliases []string `json:"aliases"`
+	}
+	decode(t, call(t, sock, "session_aliases", map[string]any{
+		"socket_path": "/s", "session_id": "$1", "session_created": 200,
+	}), &al)
+	if len(al.Aliases) != 1 || al.Aliases[0] != "current" {
+		t.Fatalf("session_aliases = %v, want [current]", al.Aliases)
 	}
 }
