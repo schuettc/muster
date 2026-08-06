@@ -1535,3 +1535,194 @@ func TestHookSessionStartSiblingPaneDoesNotStompName(t *testing.T) {
 		t.Fatalf("a non-owning sibling must project nothing, got %q", buf.String())
 	}
 }
+
+// writeTeammateTranscript writes a transcript whose teamName record sits at
+// line 3 — the same fixture shape as harnessenv's TestIsTeammateDetectsMemberTranscript
+// (a fleet member spawned into a pane of some primary's tmux session).
+func writeTeammateTranscript(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "member.jsonl")
+	lines := []string{
+		`{"type":"mode","mode":"normal","sessionId":"u1"}`,
+		`{"type":"permission-mode","permissionMode":"auto","sessionId":"u1"}`,
+		`{"parentUuid":null,"isSidechain":false,"teamName":"session-b41c21dd","agentName":"l5-mlb-measure","type":"user","message":{"role":"user","content":"go"}}`,
+	}
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// stubTeammateGateTmux swaps tmuxenv.Run for a recorder seeded with values,
+// keyed by the last arg (mirroring hookRun) — realistic enough that, absent
+// the gate, the pre-existing pane-anchored logic (hookCapture,
+// hookMayClaimIdentity, hookStopWalked, ...) would resolve pane %2's tuple
+// onto the primary's own session $1 exactly as the 2026-08-06 incident did.
+// Once the gate is in place, none of this is ever consulted, so the
+// recorded calls come back empty.
+func stubTeammateGateTmux(t *testing.T, values map[string]string) *[][]string {
+	t.Helper()
+	var calls [][]string
+	prev := tmuxenv.Run
+	tmuxenv.Run = func(args ...string) (string, error) {
+		calls = append(calls, append([]string(nil), args...))
+		if v, ok := values[args[len(args)-1]]; ok {
+			return v, nil
+		}
+		return "", nil
+	}
+	t.Cleanup(func() { tmuxenv.Run = prev })
+	return &calls
+}
+
+// registerGuardedPrimary registers the primary alias on pane %1 of session
+// $1 (socket /s, incarnation 200) and gives it a manual label via the
+// set_label op — the exact row shape the 2026-08-06 incident stomped when a
+// teammate's SessionStart fired from the sibling pane %2 of the same
+// session.
+func registerGuardedPrimary(t *testing.T) {
+	t.Helper()
+	if _, err := callData("register_agent", map[string]any{
+		"alias": "primary", "socket_path": "/s", "session_id": "$1",
+		"session_created": int64(200), "pane_id": "%1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := callData("set_label", map[string]any{
+		"socket_path": "/s", "session_id": "$1", "session_created": int64(200),
+		"label": "primary-name", "label_manual": true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// teammateGateTmuxValues are the tmux stub answers shared by all three
+// teammate-gate regression tests: the primary's own session/pane identity,
+// so that (absent the gate) the pre-existing logic would resolve pane %2
+// onto the primary's tuple exactly as the incident did.
+var teammateGateTmuxValues = map[string]string{
+	"#{session_id}":      "$1",
+	"#{session_created}": "200",
+	"#{session_name}":    "primary",
+	"#{pane_id}":         "%1", // the primary's pane is still alive
+}
+
+// TestHookTeammateSessionStartTouchesNothing is the 2026-08-06 incident as a
+// regression test: a primary registered on pane %1 of $1; a teammate's
+// SessionStart fires from pane %2 of the SAME session with a teamName-bearing
+// transcript. The row must be byte-for-byte untouched (pane, harness id,
+// label) and the roster must gain no alias.
+func TestHookTeammateSessionStartTouchesNothing(t *testing.T) {
+	tp := writeTeammateTranscript(t)
+	calls := stubTeammateGateTmux(t, teammateGateTmuxValues)
+
+	startCLITestDaemon(t)
+	registerGuardedPrimary(t)
+	before := agentRowForTest(t, "primary")
+
+	t.Setenv("TMUX", "/s,1,0")
+	t.Setenv("TMUX_PANE", "%2")
+	t.Setenv("MUSTER_ALIAS", "")
+
+	var buf bytes.Buffer
+	payload := fmt.Sprintf(`{"source":"startup","session_id":"uuid-tm","transcript_path":%q}`, tp)
+	if err := cmdHook([]string{"SessionStart"}, strings.NewReader(payload), &buf); err != nil {
+		t.Fatal(err)
+	}
+
+	if buf.Len() != 0 {
+		t.Fatalf("a teammate SessionStart must print nothing, got %q", buf.String())
+	}
+	if len(*calls) != 0 {
+		t.Fatalf("a teammate SessionStart must make no tmux calls, got %v", *calls)
+	}
+	agents := listAgentsForTest(t, "")
+	if len(agents) != 1 {
+		t.Fatalf("the roster must gain no alias, got %d rows: %+v", len(agents), agents)
+	}
+	after := agentRowForTest(t, "primary")
+	if after.PaneID != before.PaneID || after.HarnessSessionID != before.HarnessSessionID ||
+		after.Label != before.Label || after.LabelManual != before.LabelManual {
+		t.Fatalf("the primary row must be untouched: before=%+v after=%+v", before, after)
+	}
+}
+
+// TestHookTeammateSessionEndTombstonesNothing is TestHookTeammateSessionStartTouchesNothing's
+// SessionEnd counterpart: the same teammate transcript firing SessionEnd from
+// the sibling pane must not tombstone the primary's row.
+func TestHookTeammateSessionEndTombstonesNothing(t *testing.T) {
+	tp := writeTeammateTranscript(t)
+	calls := stubTeammateGateTmux(t, teammateGateTmuxValues)
+
+	startCLITestDaemon(t)
+	registerGuardedPrimary(t)
+
+	t.Setenv("TMUX", "/s,1,0")
+	t.Setenv("TMUX_PANE", "%2")
+	t.Setenv("MUSTER_ALIAS", "")
+
+	var buf bytes.Buffer
+	payload := fmt.Sprintf(`{"session_id":"uuid-tm","transcript_path":%q}`, tp)
+	if err := cmdHook([]string{"SessionEnd"}, strings.NewReader(payload), &buf); err != nil {
+		t.Fatal(err)
+	}
+
+	if buf.Len() != 0 {
+		t.Fatalf("a teammate SessionEnd must print nothing, got %q", buf.String())
+	}
+	if len(*calls) != 0 {
+		t.Fatalf("a teammate SessionEnd must make no tmux calls, got %v", *calls)
+	}
+	if ag := agentRowForTest(t, "primary"); ag.Departed {
+		t.Fatal("a teammate SessionEnd must not tombstone the primary")
+	}
+}
+
+// TestHookTeammateStopEmitsNoWake is the Stop counterpart: with an unread
+// message waiting for the primary, the same teammate transcript's Stop must
+// neither print a wake decision nor drain the primary's unread count.
+func TestHookTeammateStopEmitsNoWake(t *testing.T) {
+	tp := writeTeammateTranscript(t)
+	calls := stubTeammateGateTmux(t, teammateGateTmuxValues)
+
+	startCLITestDaemon(t)
+	registerGuardedPrimary(t)
+	if _, err := callData("send_message", map[string]any{
+		"from": "peer", "to_kind": "agent", "to_target": "primary", "subject": "s", "body": "b",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("TMUX", "/s,1,0")
+	t.Setenv("TMUX_PANE", "%2")
+	t.Setenv("MUSTER_ALIAS", "")
+
+	var buf bytes.Buffer
+	payload := fmt.Sprintf(`{"session_id":"uuid-tm","transcript_path":%q}`, tp)
+	if err := cmdHook([]string{"Stop"}, strings.NewReader(payload), &buf); err != nil {
+		t.Fatal(err)
+	}
+
+	if buf.Len() != 0 {
+		t.Fatalf("a teammate Stop must emit no wake text, got %q", buf.String())
+	}
+	if len(*calls) != 0 {
+		t.Fatalf("a teammate Stop must make no tmux calls, got %v", *calls)
+	}
+
+	raw, err := callData("session_unread", map[string]any{
+		"socket_path": "/s", "session_id": "$1", "session_created": int64(200),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var res struct {
+		Total int `json:"total"`
+	}
+	if err := json.Unmarshal(raw, &res); err != nil {
+		t.Fatal(err)
+	}
+	if res.Total != 1 {
+		t.Fatalf("the primary's unread count must not be drained, got total=%d", res.Total)
+	}
+}
