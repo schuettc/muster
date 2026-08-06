@@ -11,7 +11,7 @@ import (
 func TestScopedBroadcastUnknownProjectRejected(t *testing.T) {
 	n := &fakeNotifier{}
 	sock := startWithNotifier(t, n)
-	call(t, sock, "register_agent", map[string]any{"alias": "web1", "project": "web", "socket_path": "/s", "session_id": "$1"})
+	call(t, sock, "register_agent", map[string]any{"alias": "web1", "project": "web", "socket_path": "/s", "session_id": "$1", "session_created": 100})
 
 	resp := call(t, sock, "send_message", map[string]any{
 		"from": "web1", "to_kind": "broadcast", "to_target": "wbe", "subject": "typo", "body": "x",
@@ -27,8 +27,8 @@ func TestScopedBroadcastUnknownProjectRejected(t *testing.T) {
 func TestScopedBroadcastKnownProjectAccepted(t *testing.T) {
 	n := &fakeNotifier{}
 	sock := startWithNotifier(t, n)
-	call(t, sock, "register_agent", map[string]any{"alias": "web1", "project": "web", "socket_path": "/s", "session_id": "$1"})
-	call(t, sock, "register_agent", map[string]any{"alias": "web2", "project": "web", "socket_path": "/s", "session_id": "$2"})
+	call(t, sock, "register_agent", map[string]any{"alias": "web1", "project": "web", "socket_path": "/s", "session_id": "$1", "session_created": 100})
+	call(t, sock, "register_agent", map[string]any{"alias": "web2", "project": "web", "socket_path": "/s", "session_id": "$2", "session_created": 100})
 
 	resp := call(t, sock, "send_message", map[string]any{
 		"from": "web1", "to_kind": "broadcast", "to_target": "web", "subject": "ok", "body": "x",
@@ -41,8 +41,8 @@ func TestScopedBroadcastKnownProjectAccepted(t *testing.T) {
 func TestScopedBroadcastDepartedOnlyProjectRejected(t *testing.T) {
 	n := &fakeNotifier{}
 	sock := startWithNotifier(t, n)
-	call(t, sock, "register_agent", map[string]any{"alias": "web1", "project": "web", "socket_path": "/s", "session_id": "$1"})
-	call(t, sock, "register_agent", map[string]any{"alias": "solo", "project": "api", "socket_path": "/s", "session_id": "$2"})
+	call(t, sock, "register_agent", map[string]any{"alias": "web1", "project": "web", "socket_path": "/s", "session_id": "$1", "session_created": 100})
+	call(t, sock, "register_agent", map[string]any{"alias": "solo", "project": "api", "socket_path": "/s", "session_id": "$2", "session_created": 100})
 	call(t, sock, "deregister_agent", map[string]any{"alias": "solo"})
 
 	resp := call(t, sock, "send_message", map[string]any{
@@ -56,7 +56,7 @@ func TestScopedBroadcastDepartedOnlyProjectRejected(t *testing.T) {
 func TestGlobalBroadcastNeverValidated(t *testing.T) {
 	n := &fakeNotifier{}
 	sock := startWithNotifier(t, n)
-	call(t, sock, "register_agent", map[string]any{"alias": "web1", "project": "web", "socket_path": "/s", "session_id": "$1"})
+	call(t, sock, "register_agent", map[string]any{"alias": "web1", "project": "web", "socket_path": "/s", "session_id": "$1", "session_created": 100})
 	resp := call(t, sock, "send_message", map[string]any{
 		"from": "web1", "to_kind": "broadcast", "to_target": "", "subject": "all", "body": "x",
 	})
@@ -68,7 +68,7 @@ func TestGlobalBroadcastNeverValidated(t *testing.T) {
 func TestScopedBroadcastTaskCreateValidatedToo(t *testing.T) {
 	n := &fakeNotifier{}
 	sock := startWithNotifier(t, n)
-	call(t, sock, "register_agent", map[string]any{"alias": "web1", "project": "web", "socket_path": "/s", "session_id": "$1"})
+	call(t, sock, "register_agent", map[string]any{"alias": "web1", "project": "web", "socket_path": "/s", "session_id": "$1", "session_created": 100})
 	resp := call(t, sock, "task_create", map[string]any{
 		"from": "web1", "to_kind": "broadcast", "to_target": "nope", "subject": "t", "body": "x",
 	})
@@ -80,9 +80,9 @@ func TestScopedBroadcastTaskCreateValidatedToo(t *testing.T) {
 func TestScopedBroadcastNotifiesOnlyProjectSessions(t *testing.T) {
 	n := &fakeNotifier{}
 	sock := startWithNotifier(t, n)
-	call(t, sock, "register_agent", map[string]any{"alias": "web1", "project": "web", "socket_path": "/s", "session_id": "$1"})
-	call(t, sock, "register_agent", map[string]any{"alias": "web2", "project": "web", "socket_path": "/s", "session_id": "$2"})
-	call(t, sock, "register_agent", map[string]any{"alias": "api1", "project": "api", "socket_path": "/s", "session_id": "$3"})
+	call(t, sock, "register_agent", map[string]any{"alias": "web1", "project": "web", "socket_path": "/s", "session_id": "$1", "session_created": 100})
+	call(t, sock, "register_agent", map[string]any{"alias": "web2", "project": "web", "socket_path": "/s", "session_id": "$2", "session_created": 100})
+	call(t, sock, "register_agent", map[string]any{"alias": "api1", "project": "api", "socket_path": "/s", "session_id": "$3", "session_created": 100})
 
 	call(t, sock, "send_message", map[string]any{
 		"from": "web1", "to_kind": "broadcast", "to_target": "web", "subject": "s", "body": "x",

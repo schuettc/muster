@@ -331,11 +331,19 @@ FROM agents WHERE alias=?`, to, now, now, from)
 // simply produces no new row on the step that would re-add an
 // already-present alias, so the recursion terminates instead of hanging
 // (see TestSessionUnreadLineageCycleGuard).
-func (s *Store) SessionUnread(socketPath, sessionID string) (total, action int, err error) {
+//
+// sessionCreated scopes the BASE case to one tmux-session incarnation:
+// with a non-empty socketPath, only rows whose session_created equals it
+// seed the walk, and 0 seeds nothing (attribution requires proof — spec
+// §5.1, 2026-08-05). An empty socketPath (the paneless tuple) skips the
+// check: harness UUIDs are never recycled. The recursive lineage step is
+// deliberately unscoped — superseded rows sit on old tuples forever.
+func (s *Store) SessionUnread(socketPath, sessionID string, sessionCreated int64) (total, action int, err error) {
 	err = s.db.QueryRow(`
 WITH RECURSIVE sess AS (
   SELECT alias, last_read_entry_id, superseded_by FROM agents
   WHERE socket_path = ?1 AND session_id = ?2 AND ?2 != ''
+    AND (?1 = '' OR (session_created = ?3 AND ?3 != 0))
   UNION
   SELECT a.alias, a.last_read_entry_id, a.superseded_by
   FROM agents a JOIN sess ON a.superseded_by = sess.alias
@@ -349,7 +357,7 @@ WHERE EXISTS (SELECT 1 FROM entries e
               WHERE e.thread_id = threads.id
                 AND e.id > sess.last_read_entry_id
                 AND e.from_agent NOT IN (SELECT alias FROM sess))`,
-		socketPath, sessionID).Scan(&total, &action)
+		socketPath, sessionID, sessionCreated).Scan(&total, &action)
 	return total, action, err
 }
 
@@ -364,16 +372,24 @@ WHERE EXISTS (SELECT 1 FROM entries e
 // it. Result is sorted and deduplicated; an empty sessionID matches no
 // agents (mirrors SessionUnread's empty-tuple guard) and returns an empty
 // slice.
-func (s *Store) SessionAliasLineage(socketPath, sessionID string) ([]string, error) {
+//
+// sessionCreated scopes the BASE case to one tmux-session incarnation:
+// with a non-empty socketPath, only rows whose session_created equals it
+// seed the walk, and 0 seeds nothing (attribution requires proof — spec
+// §5.1, 2026-08-05). An empty socketPath (the paneless tuple) skips the
+// check: harness UUIDs are never recycled. The recursive lineage step is
+// deliberately unscoped — superseded rows sit on old tuples forever.
+func (s *Store) SessionAliasLineage(socketPath, sessionID string, sessionCreated int64) ([]string, error) {
 	rows, err := s.db.Query(`
 WITH RECURSIVE sess AS (
   SELECT alias, superseded_by FROM agents
   WHERE socket_path = ?1 AND session_id = ?2 AND ?2 != ''
+    AND (?1 = '' OR (session_created = ?3 AND ?3 != 0))
   UNION
   SELECT a.alias, a.superseded_by
   FROM agents a JOIN sess ON a.superseded_by = sess.alias
 )
-SELECT alias FROM sess ORDER BY alias`, socketPath, sessionID)
+SELECT alias FROM sess ORDER BY alias`, socketPath, sessionID, sessionCreated)
 	if err != nil {
 		return nil, err
 	}

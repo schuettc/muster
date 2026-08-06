@@ -204,6 +204,25 @@ func CurrentSessionID() string {
 	return out
 }
 
+// CurrentSessionCreated returns the ambient session's #{session_created} —
+// the incarnation half of tmux identity, the ambient counterpart of the
+// value Capture carries (see CaptureEnv). tmux recycles session IDs across
+// server restarts, so every session-scoped query that must prove WHICH
+// incarnation it means pairs the session_id with this (spec §5.1). Returns 0
+// if tmux isn't reachable or the value doesn't parse — the same "no proof"
+// value a pre-v0.8.0 stored row carries.
+func CurrentSessionCreated() int64 {
+	out, err := Run("display-message", "-p", "#{session_created}")
+	if err != nil {
+		return 0
+	}
+	created, err := strconv.ParseInt(out, 10, 64)
+	if err != nil {
+		return 0
+	}
+	return created
+}
+
 // SetSessionOption sets a tmux user option on the ambient session.
 func SetSessionOption(name, value string) error {
 	_, err := Run("set-option", name, value)

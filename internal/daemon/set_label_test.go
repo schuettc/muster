@@ -13,11 +13,11 @@ import (
 func TestSetLabelMakesLabelResolvableImmediately(t *testing.T) {
 	sock := startWithNotifier(t, &fakeNotifier{})
 	call(t, sock, "register_agent", map[string]any{
-		"alias": "workspace-2", "socket_path": "/s", "session_id": "$0",
+		"alias": "workspace-2", "socket_path": "/s", "session_id": "$0", "session_created": 100,
 		"project": "bettor-help-workspace",
 	})
 	call(t, sock, "register_agent", map[string]any{
-		"alias": "sender", "socket_path": "/s", "session_id": "$7",
+		"alias": "sender", "socket_path": "/s", "session_id": "$7", "session_created": 100,
 		"project": "bettor-help-workspace",
 	})
 

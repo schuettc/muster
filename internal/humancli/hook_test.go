@@ -122,13 +122,13 @@ func TestHookStopUnreadEmitsBlockDecision(t *testing.T) {
 	startTestDaemon(t)
 	if _, err := callData("register_agent", map[string]any{
 		"alias": "backend", "role": "peer", "model_type": "claude",
-		"socket_path": "/tmp/sock", "session_id": "$1",
+		"socket_path": "/tmp/sock", "session_id": "$1", "session_created": 100,
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := callData("register_agent", map[string]any{
 		"alias": "other", "role": "peer", "model_type": "claude",
-		"socket_path": "/tmp/other", "session_id": "$2",
+		"socket_path": "/tmp/other", "session_id": "$2", "session_created": 100,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +140,7 @@ func TestHookStopUnreadEmitsBlockDecision(t *testing.T) {
 
 	t.Setenv("TMUX", "/tmp/sock,1,0")
 	prev := tmuxenv.Run
-	tmuxenv.Run = hookRun(map[string]string{"@muster_inbox": "3", "#{session_id}": "$1"})
+	tmuxenv.Run = hookRun(map[string]string{"@muster_inbox": "3", "#{session_id}": "$1", "#{session_created}": "100"})
 	t.Cleanup(func() { tmuxenv.Run = prev })
 
 	res := runHook(t)
@@ -164,14 +164,14 @@ func TestHookStopMultiAliasListsAllSorted(t *testing.T) {
 	for _, alias := range []string{"zeta", "alpha"} { // registered out of sorted order
 		if _, err := callData("register_agent", map[string]any{
 			"alias": alias, "role": "peer", "model_type": "claude",
-			"socket_path": "/tmp/sock2", "session_id": "$5",
+			"socket_path": "/tmp/sock2", "session_id": "$5", "session_created": 100,
 		}); err != nil {
 			t.Fatal(err)
 		}
 	}
 	if _, err := callData("register_agent", map[string]any{
 		"alias": "other", "role": "peer", "model_type": "claude",
-		"socket_path": "/tmp/other2", "session_id": "$6",
+		"socket_path": "/tmp/other2", "session_id": "$6", "session_created": 100,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -183,7 +183,7 @@ func TestHookStopMultiAliasListsAllSorted(t *testing.T) {
 
 	t.Setenv("TMUX", "/tmp/sock2,1,0")
 	prev := tmuxenv.Run
-	tmuxenv.Run = hookRun(map[string]string{"@muster_inbox": "9", "#{session_id}": "$5"})
+	tmuxenv.Run = hookRun(map[string]string{"@muster_inbox": "9", "#{session_id}": "$5", "#{session_created}": "100"})
 	t.Cleanup(func() { tmuxenv.Run = prev })
 
 	res := runHook(t)
@@ -204,13 +204,13 @@ func TestHookStopActionCountAppearsWhenActionable(t *testing.T) {
 	startTestDaemon(t)
 	if _, err := callData("register_agent", map[string]any{
 		"alias": "worker", "role": "peer", "model_type": "claude",
-		"socket_path": "/tmp/sock3", "session_id": "$7",
+		"socket_path": "/tmp/sock3", "session_id": "$7", "session_created": 100,
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := callData("register_agent", map[string]any{
 		"alias": "other", "role": "peer", "model_type": "claude",
-		"socket_path": "/tmp/other3", "session_id": "$8",
+		"socket_path": "/tmp/other3", "session_id": "$8", "session_created": 100,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -223,7 +223,7 @@ func TestHookStopActionCountAppearsWhenActionable(t *testing.T) {
 
 	t.Setenv("TMUX", "/tmp/sock3,1,0")
 	prev := tmuxenv.Run
-	tmuxenv.Run = hookRun(map[string]string{"@muster_inbox": "1", "#{session_id}": "$7"})
+	tmuxenv.Run = hookRun(map[string]string{"@muster_inbox": "1", "#{session_id}": "$7", "#{session_created}": "100"})
 	t.Cleanup(func() { tmuxenv.Run = prev })
 
 	res := runHook(t)
@@ -239,13 +239,13 @@ func TestHookStopActionCountAbsentWhenNotActionable(t *testing.T) {
 	startTestDaemon(t)
 	if _, err := callData("register_agent", map[string]any{
 		"alias": "worker", "role": "peer", "model_type": "claude",
-		"socket_path": "/tmp/sock4", "session_id": "$9",
+		"socket_path": "/tmp/sock4", "session_id": "$9", "session_created": 100,
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := callData("register_agent", map[string]any{
 		"alias": "other", "role": "peer", "model_type": "claude",
-		"socket_path": "/tmp/other4", "session_id": "$10",
+		"socket_path": "/tmp/other4", "session_id": "$10", "session_created": 100,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -258,7 +258,7 @@ func TestHookStopActionCountAbsentWhenNotActionable(t *testing.T) {
 
 	t.Setenv("TMUX", "/tmp/sock4,1,0")
 	prev := tmuxenv.Run
-	tmuxenv.Run = hookRun(map[string]string{"@muster_inbox": "1", "#{session_id}": "$9"})
+	tmuxenv.Run = hookRun(map[string]string{"@muster_inbox": "1", "#{session_id}": "$9", "#{session_created}": "100"})
 	t.Cleanup(func() { tmuxenv.Run = prev })
 
 	res := runHook(t)
@@ -370,7 +370,7 @@ func TestHookStaleBadgeSuppressedByAuthoritativeZero(t *testing.T) {
 	startTestDaemon(t)
 	if _, err := callData("register_agent", map[string]any{
 		"alias": "worker", "role": "peer", "model_type": "claude",
-		"socket_path": "/tmp/sock_stale", "session_id": "$99",
+		"socket_path": "/tmp/sock_stale", "session_id": "$99", "session_created": 100,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -379,7 +379,7 @@ func TestHookStaleBadgeSuppressedByAuthoritativeZero(t *testing.T) {
 	t.Setenv("TMUX", "/tmp/sock_stale,1,0")
 	prev := tmuxenv.Run
 	// Stub tmux to report stale @muster_inbox=2 but matching session_id.
-	tmuxenv.Run = hookRun(map[string]string{"@muster_inbox": "2", "#{session_id}": "$99"})
+	tmuxenv.Run = hookRun(map[string]string{"@muster_inbox": "2", "#{session_id}": "$99", "#{session_created}": "100"})
 	t.Cleanup(func() { tmuxenv.Run = prev })
 
 	var buf bytes.Buffer
@@ -419,7 +419,7 @@ func hookAgentPane(t *testing.T, alias string) (paneID string, found bool) {
 func TestHookSessionStartNoOpForLiveForeignOwner(t *testing.T) {
 	startTestDaemon(t)
 	if _, err := callData("register_agent", map[string]any{
-		"alias": "start-owner", "socket_path": "/tmp/sockA", "session_id": "$1", "pane_id": "%1",
+		"alias": "start-owner", "socket_path": "/tmp/sockA", "session_id": "$1", "session_created": 100, "pane_id": "%1",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -429,7 +429,7 @@ func TestHookSessionStartNoOpForLiveForeignOwner(t *testing.T) {
 	t.Setenv("MUSTER_ALIAS", "")
 	prev := tmuxenv.Run
 	tmuxenv.Run = hookRun(map[string]string{
-		"#{session_id}":   "$1",
+		"#{session_id}": "$1", "#{session_created}": "100",
 		"#{session_name}": "start-owner",
 		"#{pane_id}":      "%1", // IsPaneAlive("/tmp/sockA","%1") -> alive
 	})
@@ -481,7 +481,7 @@ func TestHookSessionStartClaims(t *testing.T) {
 			t.Setenv("MUSTER_ALIAS", "")
 			prev := tmuxenv.Run
 			tmuxenv.Run = hookRun(map[string]string{
-				"#{session_id}":   "$1",
+				"#{session_id}": "$1", "#{session_created}": "100",
 				"#{session_name}": "claim-me",
 				"#{pane_id}":      c.paneAlive,
 			})
@@ -506,12 +506,12 @@ func TestHookSessionStartClaims(t *testing.T) {
 func TestHookStopSilentForNonOwner(t *testing.T) {
 	startTestDaemon(t)
 	if _, err := callData("register_agent", map[string]any{
-		"alias": "stop-nonowner", "socket_path": "/tmp/sockB", "session_id": "$5", "pane_id": "%1",
+		"alias": "stop-nonowner", "socket_path": "/tmp/sockB", "session_id": "$5", "session_created": 100, "pane_id": "%1",
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := callData("register_agent", map[string]any{
-		"alias": "other", "socket_path": "/tmp/otherB", "session_id": "$6",
+		"alias": "other", "socket_path": "/tmp/otherB", "session_id": "$6", "session_created": 100,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -524,7 +524,7 @@ func TestHookStopSilentForNonOwner(t *testing.T) {
 	t.Setenv("TMUX", "/tmp/sockB,1,0")
 	t.Setenv("TMUX_PANE", "%2")
 	prev := tmuxenv.Run
-	tmuxenv.Run = hookRun(map[string]string{"@muster_inbox": "3", "#{session_id}": "$5"})
+	tmuxenv.Run = hookRun(map[string]string{"@muster_inbox": "3", "#{session_id}": "$5", "#{session_created}": "100"})
 	t.Cleanup(func() { tmuxenv.Run = prev })
 
 	var buf bytes.Buffer
@@ -542,12 +542,12 @@ func TestHookStopSilentForNonOwner(t *testing.T) {
 func TestHookStopDrainsForOwner(t *testing.T) {
 	startTestDaemon(t)
 	if _, err := callData("register_agent", map[string]any{
-		"alias": "stop-owner", "socket_path": "/tmp/sockD", "session_id": "$7", "pane_id": "%1",
+		"alias": "stop-owner", "socket_path": "/tmp/sockD", "session_id": "$7", "session_created": 100, "pane_id": "%1",
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := callData("register_agent", map[string]any{
-		"alias": "other", "socket_path": "/tmp/otherD", "session_id": "$8",
+		"alias": "other", "socket_path": "/tmp/otherD", "session_id": "$8", "session_created": 100,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -560,7 +560,7 @@ func TestHookStopDrainsForOwner(t *testing.T) {
 	t.Setenv("TMUX", "/tmp/sockD,1,0")
 	t.Setenv("TMUX_PANE", "%1")
 	prev := tmuxenv.Run
-	tmuxenv.Run = hookRun(map[string]string{"@muster_inbox": "3", "#{session_id}": "$7"})
+	tmuxenv.Run = hookRun(map[string]string{"@muster_inbox": "3", "#{session_id}": "$7", "#{session_created}": "100"})
 	t.Cleanup(func() { tmuxenv.Run = prev })
 
 	res := runHook(t)
@@ -576,12 +576,12 @@ func TestHookStopDrainsForOwner(t *testing.T) {
 func TestHookStopFallbackWhenPaneUnknown(t *testing.T) {
 	startTestDaemon(t)
 	if _, err := callData("register_agent", map[string]any{
-		"alias": "stop-unknown-pane", "socket_path": "/tmp/sockE", "session_id": "$9",
+		"alias": "stop-unknown-pane", "socket_path": "/tmp/sockE", "session_id": "$9", "session_created": 100,
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := callData("register_agent", map[string]any{
-		"alias": "other", "socket_path": "/tmp/otherE", "session_id": "$10",
+		"alias": "other", "socket_path": "/tmp/otherE", "session_id": "$10", "session_created": 100,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -594,7 +594,7 @@ func TestHookStopFallbackWhenPaneUnknown(t *testing.T) {
 	t.Setenv("TMUX", "/tmp/sockE,1,0")
 	t.Setenv("TMUX_PANE", "%9")
 	prev := tmuxenv.Run
-	tmuxenv.Run = hookRun(map[string]string{"@muster_inbox": "3", "#{session_id}": "$9"})
+	tmuxenv.Run = hookRun(map[string]string{"@muster_inbox": "3", "#{session_id}": "$9", "#{session_created}": "100"})
 	t.Cleanup(func() { tmuxenv.Run = prev })
 
 	res := runHook(t)
@@ -608,7 +608,7 @@ func TestHookStopFallbackWhenPaneUnknown(t *testing.T) {
 func TestHookSessionEndNoOpForNonOwner(t *testing.T) {
 	startTestDaemon(t)
 	if _, err := callData("register_agent", map[string]any{
-		"alias": "end-nonowner", "socket_path": "/tmp/sockF", "session_id": "$1", "pane_id": "%1",
+		"alias": "end-nonowner", "socket_path": "/tmp/sockF", "session_id": "$1", "session_created": 100, "pane_id": "%1",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -617,7 +617,7 @@ func TestHookSessionEndNoOpForNonOwner(t *testing.T) {
 	t.Setenv("TMUX_PANE", "%2")
 	t.Setenv("MUSTER_ALIAS", "")
 	prev := tmuxenv.Run
-	tmuxenv.Run = hookRun(map[string]string{"#{session_id}": "$1", "#{session_name}": "end-nonowner"})
+	tmuxenv.Run = hookRun(map[string]string{"#{session_id}": "$1", "#{session_created}": "100", "#{session_name}": "end-nonowner"})
 	t.Cleanup(func() { tmuxenv.Run = prev })
 
 	var buf bytes.Buffer
@@ -644,7 +644,7 @@ func TestHookSessionEndDeregistersAllOwnedAliases(t *testing.T) {
 	reg := func(alias, pane string) {
 		t.Helper()
 		if _, err := callData("register_agent", map[string]any{
-			"alias": alias, "socket_path": "/tmp/sockH", "session_id": "$1", "pane_id": pane,
+			"alias": alias, "socket_path": "/tmp/sockH", "session_id": "$1", "session_created": 100, "pane_id": pane,
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -654,7 +654,7 @@ func TestHookSessionEndDeregistersAllOwnedAliases(t *testing.T) {
 	reg("end-paneless", "")  // pane-unset row: owned per the existing gate
 	reg("end-sibling", "%7") // sibling pane on the SAME session: not ours
 	if _, err := callData("register_agent", map[string]any{
-		"alias": "end-elsewhere", "socket_path": "/tmp/sockH", "session_id": "$2", "pane_id": "%2",
+		"alias": "end-elsewhere", "socket_path": "/tmp/sockH", "session_id": "$2", "session_created": 100, "pane_id": "%2",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -663,7 +663,7 @@ func TestHookSessionEndDeregistersAllOwnedAliases(t *testing.T) {
 	t.Setenv("TMUX_PANE", "%2")
 	t.Setenv("MUSTER_ALIAS", "")
 	prev := tmuxenv.Run
-	tmuxenv.Run = hookRun(map[string]string{"#{session_id}": "$1", "#{session_name}": "end-sweep"})
+	tmuxenv.Run = hookRun(map[string]string{"#{session_id}": "$1", "#{session_created}": "100", "#{session_name}": "end-sweep"})
 	t.Cleanup(func() { tmuxenv.Run = prev })
 
 	var buf bytes.Buffer
@@ -686,7 +686,7 @@ func TestHookSessionEndDeregistersAllOwnedAliases(t *testing.T) {
 func TestHookSessionEndDeregistersForOwner(t *testing.T) {
 	startTestDaemon(t)
 	if _, err := callData("register_agent", map[string]any{
-		"alias": "end-owner", "socket_path": "/tmp/sockG", "session_id": "$1", "pane_id": "%2",
+		"alias": "end-owner", "socket_path": "/tmp/sockG", "session_id": "$1", "session_created": 100, "pane_id": "%2",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -695,7 +695,7 @@ func TestHookSessionEndDeregistersForOwner(t *testing.T) {
 	t.Setenv("TMUX_PANE", "%2")
 	t.Setenv("MUSTER_ALIAS", "")
 	prev := tmuxenv.Run
-	tmuxenv.Run = hookRun(map[string]string{"#{session_id}": "$1", "#{session_name}": "end-owner"})
+	tmuxenv.Run = hookRun(map[string]string{"#{session_id}": "$1", "#{session_created}": "100", "#{session_name}": "end-owner"})
 	t.Cleanup(func() { tmuxenv.Run = prev })
 
 	var buf bytes.Buffer
@@ -724,7 +724,7 @@ func TestHookSessionEndDeregistersForOwner(t *testing.T) {
 func TestHookSessionEndNoOpForForeignTuple(t *testing.T) {
 	startTestDaemon(t)
 	if _, err := callData("register_agent", map[string]any{
-		"alias": "end-foreign-tuple", "socket_path": "/tmp/sockOLD", "session_id": "$OLD", "pane_id": "%1",
+		"alias": "end-foreign-tuple", "socket_path": "/tmp/sockOLD", "session_id": "$OLD", "session_created": 100, "pane_id": "%1",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -733,7 +733,7 @@ func TestHookSessionEndNoOpForForeignTuple(t *testing.T) {
 	t.Setenv("TMUX_PANE", "%2")
 	t.Setenv("MUSTER_ALIAS", "")
 	prev := tmuxenv.Run
-	tmuxenv.Run = hookRun(map[string]string{"#{session_id}": "$NEW", "#{session_name}": "end-foreign-tuple"})
+	tmuxenv.Run = hookRun(map[string]string{"#{session_id}": "$NEW", "#{session_created}": "100", "#{session_name}": "end-foreign-tuple"})
 	t.Cleanup(func() { tmuxenv.Run = prev })
 
 	var buf bytes.Buffer
@@ -794,7 +794,7 @@ func TestHookSessionStartBestEffortWhenDaemonUnreachable(t *testing.T) {
 func TestHookSessionStartClaimsOverDepartedRow(t *testing.T) {
 	startTestDaemon(t)
 	if _, err := callData("register_agent", map[string]any{
-		"alias": "claim-departed", "socket_path": "/tmp/sockDep", "session_id": "$1", "pane_id": "%1",
+		"alias": "claim-departed", "socket_path": "/tmp/sockDep", "session_id": "$1", "session_created": 100, "pane_id": "%1",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -807,7 +807,7 @@ func TestHookSessionStartClaimsOverDepartedRow(t *testing.T) {
 	t.Setenv("MUSTER_ALIAS", "")
 	prev := tmuxenv.Run
 	tmuxenv.Run = hookRun(map[string]string{
-		"#{session_id}":   "$1",
+		"#{session_id}": "$1", "#{session_created}": "100",
 		"#{session_name}": "claim-departed",
 		"#{pane_id}":      "%1", // the old owner's pane is still alive
 	})
@@ -837,12 +837,12 @@ func TestHookSessionStartClaimsOverDepartedRow(t *testing.T) {
 func TestHookStopDrainsWhenOnlyNamedOwnerIsDeparted(t *testing.T) {
 	startTestDaemon(t)
 	if _, err := callData("register_agent", map[string]any{
-		"alias": "stop-departed", "socket_path": "/tmp/sockStopDep", "session_id": "$5", "pane_id": "%1",
+		"alias": "stop-departed", "socket_path": "/tmp/sockStopDep", "session_id": "$5", "session_created": 100, "pane_id": "%1",
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := callData("register_agent", map[string]any{
-		"alias": "other", "socket_path": "/tmp/otherStopDep", "session_id": "$6",
+		"alias": "other", "socket_path": "/tmp/otherStopDep", "session_id": "$6", "session_created": 100,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -858,7 +858,7 @@ func TestHookStopDrainsWhenOnlyNamedOwnerIsDeparted(t *testing.T) {
 	t.Setenv("TMUX", "/tmp/sockStopDep,1,0")
 	t.Setenv("TMUX_PANE", "%2") // not the tombstone's stored pane ('%1')
 	prev := tmuxenv.Run
-	tmuxenv.Run = hookRun(map[string]string{"@muster_inbox": "3", "#{session_id}": "$5"})
+	tmuxenv.Run = hookRun(map[string]string{"@muster_inbox": "3", "#{session_id}": "$5", "#{session_created}": "100"})
 	t.Cleanup(func() { tmuxenv.Run = prev })
 
 	res := runHook(t)
@@ -954,12 +954,12 @@ func TestHookStopStampsHarnessLink(t *testing.T) {
 	t.Setenv("TMUX", "/tmp/sock,1,0")
 	t.Setenv("TMUX_PANE", "%1")
 	if _, err := callData("register_agent", map[string]any{
-		"alias": "backend", "socket_path": "/tmp/sock", "session_id": "$1", "pane_id": "%1",
+		"alias": "backend", "socket_path": "/tmp/sock", "session_id": "$1", "session_created": 100, "pane_id": "%1",
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := callData("register_agent", map[string]any{
-		"alias": "sender", "socket_path": "/tmp/sock", "session_id": "$2",
+		"alias": "sender", "socket_path": "/tmp/sock", "session_id": "$2", "session_created": 100,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -970,8 +970,8 @@ func TestHookStopStampsHarnessLink(t *testing.T) {
 	}
 	prev := tmuxenv.Run
 	tmuxenv.Run = hookRun(map[string]string{
-		"@muster_inbox":   "1",
-		"#{session_id}":   "$1",
+		"@muster_inbox": "1",
+		"#{session_id}": "$1", "#{session_created}": "100",
 		"#{session_name}": "backend",
 	})
 	t.Cleanup(func() { tmuxenv.Run = prev })
@@ -1037,12 +1037,12 @@ func TestHookStopRepairsHarnessLinkViaAncestryWalk(t *testing.T) {
 		"#{@muster_inbox}": "1",
 	})
 	if _, err := callData("register_agent", map[string]any{
-		"alias": "walked-backend", "socket_path": sock, "session_id": "$3", "pane_id": "%7",
+		"alias": "walked-backend", "socket_path": sock, "session_id": "$3", "session_created": 555, "pane_id": "%7",
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := callData("register_agent", map[string]any{
-		"alias": "sender", "socket_path": "/tmp/otherWalk", "session_id": "$4",
+		"alias": "sender", "socket_path": "/tmp/otherWalk", "session_id": "$4", "session_created": 100,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -1097,17 +1097,17 @@ func TestStampHarnessLinksScopesToOwnedPane(t *testing.T) {
 	t.Setenv("TMUX", "/tmp/sockPane,1,0")
 	t.Setenv("TMUX_PANE", "%1")
 	if _, err := callData("register_agent", map[string]any{
-		"alias": "mine", "socket_path": "/tmp/sockPane", "session_id": "$1", "pane_id": "%1",
+		"alias": "mine", "socket_path": "/tmp/sockPane", "session_id": "$1", "session_created": 100, "pane_id": "%1",
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := callData("register_agent", map[string]any{
-		"alias": "sibling", "socket_path": "/tmp/sockPane", "session_id": "$1", "pane_id": "%2",
+		"alias": "sibling", "socket_path": "/tmp/sockPane", "session_id": "$1", "session_created": 100, "pane_id": "%2",
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := callData("register_agent", map[string]any{
-		"alias": "sender", "socket_path": "/tmp/otherPane", "session_id": "$2",
+		"alias": "sender", "socket_path": "/tmp/otherPane", "session_id": "$2", "session_created": 100,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -1118,8 +1118,8 @@ func TestStampHarnessLinksScopesToOwnedPane(t *testing.T) {
 	}
 	prev := tmuxenv.Run
 	tmuxenv.Run = hookRun(map[string]string{
-		"@muster_inbox":   "1",
-		"#{session_id}":   "$1",
+		"@muster_inbox": "1",
+		"#{session_id}": "$1", "#{session_created}": "100",
 		"#{session_name}": "mine",
 	})
 	t.Cleanup(func() { tmuxenv.Run = prev })
@@ -1163,7 +1163,7 @@ func TestHookSessionStartResumeReclaimsAlias(t *testing.T) {
 		"alias": "backend-2", "socket_path": "/tmp/sock", "session_id": "$OLD",
 		"session_created": 111, "harness_session_id": "uuid-42", "label": "lake", "label_manual": true,
 	})
-	seed("register_agent", map[string]any{"alias": "sender", "socket_path": "/tmp/sock", "session_id": "$2"})
+	seed("register_agent", map[string]any{"alias": "sender", "socket_path": "/tmp/sock", "session_id": "$2", "session_created": 100})
 	seed("send_message", map[string]any{"from": "sender", "to_kind": "agent", "to_target": "backend-2", "subject": "s", "body": "b"})
 	seed("deregister_agent", map[string]any{"alias": "backend-2"})
 

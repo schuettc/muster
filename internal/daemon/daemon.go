@@ -47,8 +47,8 @@ type storeAPI interface {
 	Inbox(alias string) ([]store.Thread, error)
 	MarkRead(alias string) error
 	UnreadCount(alias string) (int, error)
-	SessionUnread(socketPath, sessionID string) (total, action int, err error)
-	SessionAliasLineage(socketPath, sessionID string) ([]string, error)
+	SessionUnread(socketPath, sessionID string, sessionCreated int64) (total, action int, err error)
+	SessionAliasLineage(socketPath, sessionID string, sessionCreated int64) ([]string, error)
 	KVSet(key, value, updatedBy string) error
 	KVGet(key string) (store.KVPair, bool, error)
 	AppendEvent(e store.Event) error
@@ -251,9 +251,9 @@ func (d *Daemon) handleRegisterAgent(a map[string]any) proto.Response {
 	// (a re-register that moves an agent to a new session must not leave
 	// its previous session's flag stale) and the NEW one.
 	if hadOld {
-		d.reconcileBadge(old.SocketPath, old.SessionID)
+		d.reconcileBadge(old.SocketPath, old.SessionID, old.SessionCreated)
 	}
-	d.reconcileBadge(newAgent.SocketPath, newAgent.SessionID)
+	d.reconcileBadge(newAgent.SocketPath, newAgent.SessionID, newAgent.SessionCreated)
 	// Outcome classification (durable-alias spec change 1): the pre-mutation
 	// row read above already tells this apart for free — no prior row is a
 	// first sight, a live prior row is a tuple refresh, and a tombstone is a
@@ -285,11 +285,17 @@ func (d *Daemon) handleRegisterAgent(a map[string]any) proto.Response {
 // always leaves the badge at whichever recompute ran last, never a stale
 // interleaved value. Callers journal using the returned total/err; on err,
 // callers must journal "error: …" and must NOT treat it as a cleared badge.
-func (d *Daemon) setSessionBadge(socketPath, sessionID string) (total int, err error) {
+//
+// sessionCreated is the incarnation being badged (spec §5.1): every caller
+// has an agent row in scope and passes THAT row's SessionCreated, so the
+// recompute counts only mail belonging to the same tmux-session incarnation
+// — a legacy or ghost row sitting on a recycled session ID can no longer
+// inflate (or, once drained, clear) a live session's badge.
+func (d *Daemon) setSessionBadge(socketPath, sessionID string, sessionCreated int64) (total int, err error) {
 	mu := d.sessionLock(socketPath, sessionID)
 	mu.Lock()
 	defer mu.Unlock()
-	total, _, err = d.s.SessionUnread(socketPath, sessionID)
+	total, _, err = d.s.SessionUnread(socketPath, sessionID, sessionCreated)
 	if err != nil {
 		return 0, err
 	}
@@ -308,11 +314,11 @@ func (d *Daemon) setSessionBadge(socketPath, sessionID string) (total int, err e
 // only moments a session's alias list can change, so this additionally
 // pushes the agent badge (@muster_agent) — the operator's ambient
 // "registered as X" indicator.
-func (d *Daemon) reconcileBadge(socketPath, sessionID string) {
+func (d *Daemon) reconcileBadge(socketPath, sessionID string, sessionCreated int64) {
 	if d.n == nil || socketPath == "" || sessionID == "" {
 		return
 	}
-	_, _ = d.setSessionBadge(socketPath, sessionID)
+	_, _ = d.setSessionBadge(socketPath, sessionID, sessionCreated)
 	d.pushSessionAgents(socketPath, sessionID)
 }
 
@@ -413,7 +419,10 @@ func (d *Daemon) notifyForThread(threadID int64, actor string) {
 	}
 	sort.Strings(aliases)
 
-	type sessionGroup struct{ socketPath, sessionID, journalAlias string }
+	type sessionGroup struct {
+		socketPath, sessionID, journalAlias string
+		sessionCreated                      int64
+	}
 	seen := make(map[string]bool, len(aliases))
 	var groups []sessionGroup
 	for _, alias := range aliases {
@@ -438,11 +447,11 @@ func (d *Daemon) notifyForThread(threadID int64, actor string) {
 			continue // sibling alias of an already-scheduled session
 		}
 		seen[key] = true
-		groups = append(groups, sessionGroup{socketPath: a.SocketPath, sessionID: a.SessionID, journalAlias: alias})
+		groups = append(groups, sessionGroup{socketPath: a.SocketPath, sessionID: a.SessionID, sessionCreated: a.SessionCreated, journalAlias: alias})
 	}
 
 	for _, g := range groups {
-		total, err := d.setSessionBadge(g.socketPath, g.sessionID)
+		total, err := d.setSessionBadge(g.socketPath, g.sessionID, g.sessionCreated)
 		detail := "lit"
 		switch {
 		case err != nil:
@@ -627,7 +636,7 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 		detail := ""
 		if d.n != nil {
 			if ag, found, _ := d.s.GetAgent(alias); found && ag.SocketPath != "" && ag.SessionID != "" {
-				if _, err := d.setSessionBadge(ag.SocketPath, ag.SessionID); err != nil {
+				if _, err := d.setSessionBadge(ag.SocketPath, ag.SessionID, ag.SessionCreated); err != nil {
 					detail = "error: " + err.Error()
 				}
 			}
@@ -647,11 +656,17 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 		// additive to this op's existing include-departed-on-purpose
 		// behavior — nothing here narrows what used to come back, it only
 		// adds the aliases a flat tuple match was missing.
+		//
+		// session_created scopes the lineage walk's base case to one tmux
+		// incarnation (spec §5.1). An absent arg reads 0: a tmux caller that
+		// supplied no proof of incarnation gets an empty list (correct — it
+		// cannot claim any row on a recyclable session ID), while a paneless
+		// caller (empty socket_path) is unaffected.
 		socketPath, sessionID := str(a, "socket_path"), str(a, "session_id")
 		if sessionID == "" {
 			return fail(fmt.Errorf("session_aliases: session_id is required"))
 		}
-		aliases, err := d.s.SessionAliasLineage(socketPath, sessionID)
+		aliases, err := d.s.SessionAliasLineage(socketPath, sessionID, i64(a, "session_created"))
 		if err != nil {
 			return fail(err)
 		}
@@ -662,11 +677,14 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 		// journals anything, so there is nothing for the session lock to
 		// serialize against.
 		// socket_path may be empty — the paneless tuple, as in session_aliases.
+		// session_created carries the caller's live incarnation (spec §5.1);
+		// absent reads 0, so a tmux caller with no proof gets zeros and a
+		// paneless caller is unaffected — same contract as session_aliases.
 		socketPath, sessionID := str(a, "socket_path"), str(a, "session_id")
 		if sessionID == "" {
 			return fail(fmt.Errorf("session_unread: session_id is required"))
 		}
-		total, action, err := d.s.SessionUnread(socketPath, sessionID)
+		total, action, err := d.s.SessionUnread(socketPath, sessionID, i64(a, "session_created"))
 		if err != nil {
 			return fail(err)
 		}
@@ -745,7 +763,7 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 			return fail(err)
 		}
 		if hadOld {
-			d.reconcileBadge(old.SocketPath, old.SessionID)
+			d.reconcileBadge(old.SocketPath, old.SessionID, old.SessionCreated)
 		}
 		return ok(nil)
 	case "set_label":
@@ -774,7 +792,7 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 			return fail(err)
 		}
 		if hadOld {
-			d.reconcileBadge(old.SocketPath, old.SessionID)
+			d.reconcileBadge(old.SocketPath, old.SessionID, old.SessionCreated)
 		}
 		return ok(nil)
 	case "become":
@@ -815,8 +833,8 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 			// skip the badge reconcile and report unread:0 instead of failing.
 			return ok(map[string]any{"from": from, "to": to, "unread": 0})
 		}
-		d.reconcileBadge(ag.SocketPath, ag.SessionID)
-		unread, _, err := d.s.SessionUnread(ag.SocketPath, ag.SessionID)
+		d.reconcileBadge(ag.SocketPath, ag.SessionID, ag.SessionCreated)
+		unread, _, err := d.s.SessionUnread(ag.SocketPath, ag.SessionID, ag.SessionCreated)
 		if err != nil {
 			unread = 0 // best-effort: the claim already succeeded
 		}
