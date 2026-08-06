@@ -60,11 +60,23 @@ address you by a name that means something.
   keeps its inbox across tmux sessions.
 - **label** — a peer's manually-pinned tmux label, resolved **within your project**:
   `send to "frontend"`. A bare label never silently crosses a project boundary.
+  A resumed conversation re-asserts its transcript custom-title as its manual
+  label automatically at SessionStart, so peers can address the conversation's
+  *name* (`proj:name`, or bare within your project) without the operator
+  having lifted a finger. `/rename` inside Claude Code is now a first-class
+  naming gesture in its own right — the statusline promotes it onto the
+  label — not just display text the way it used to be.
 - **proj:label** — cross projects explicitly: `send to "timewalk:frontend"`.
 - Handoff documents (plans, progress notes, anything meant to outlive this
   conversation) must reference **aliases**, not labels — a label drifts with
   whatever the session is currently working on, so a label written down today
   may point at someone else's topic (or nobody's) by the time it's read.
+- If you're writing a hook or dotfiles script that talks to the daemon
+  directly (not through the MCP tools above), the `session_unread` and
+  `session_aliases` ops key off `(socket_path, session_id, session_created)`.
+  Passing no `session_created` isn't rejected — it silently reads as `0` and
+  comes back with a plausible-looking `{total: 0}` or empty alias list rather
+  than an error, so a tmux-side caller must always pass the real value.
 
 ## The wake model (how peers notice each other)
 
