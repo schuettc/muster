@@ -47,11 +47,29 @@ func cmdHook(args []string, stdin io.Reader, out io.Writer) error {
 		}
 		_ = json.Unmarshal(payload, &start)
 		if c.SocketPath != "" && c.PaneID != "" {
-			if start.Source == "resume" && hookSessionStartResume(c, h, model, out) {
-				return nil
+			// The resume path used to return early; it now only suppresses the
+			// default session-name register (handled), so BOTH a reclaimed
+			// conversation and a fresh one fall through to the projection —
+			// resuming a named conversation anywhere re-asserts its name with
+			// zero operator gestures (spec §4).
+			handled := false
+			if start.Source == "resume" {
+				handled = hookSessionStartResume(c, h, model, out)
 			}
-			if hookMayClaimIdentity(c) {
+			mayClaim := hookMayClaimIdentity(c)
+			if !handled && mayClaim {
 				hookRegisterPane(c, h, model)
+			}
+			// The projection carries the SAME pane-ownership gate as the
+			// registration (the v0.7.1 rule: a sibling pane never speaks for
+			// the session's identity). store.SetSessionLabel rewrites every
+			// row on the tuple, so an ungated projection would let a subagent
+			// pane's transcript durably rename the primary — and because
+			// labels are addresses, sends to the stolen name would silently
+			// misroute. A reclaimed conversation (handled) has proven its
+			// identity by reclaiming, so it projects regardless.
+			if handled || mayClaim {
+				hookProjectName(c, harnessenv.CustomTitle(h.TranscriptPath), out)
 			}
 		} else {
 			hookSessionStartPaneless(h, model)
@@ -70,6 +88,72 @@ func cmdHook(args []string, stdin io.Reader, out io.Writer) error {
 		hookStop(payload, out)
 	}
 	return nil
+}
+
+// hookProjectName projects the conversation's user-set name (the transcript
+// custom-title — see harnessenv.CustomTitle) onto every naming surface at
+// SessionStart: the tmux option pair (socket-aware — hooks run env-stripped,
+// so an ambient set-option would land nowhere) and the stored bus label
+// (manual, incarnation-scoped via set_label). This is the spec's
+// conversation-as-identity payoff: resume nfl-3 anywhere and "send nfl-3"
+// routes with zero gestures. Best-effort throughout — a failed write degrades
+// to pre-projection behavior, never a wrong name. Empty title = no-op: never
+// demote, never clear. A same-project manual holder elsewhere is warned
+// about, never overwritten: the set_label write is tuple-scoped by
+// construction, so stealing is impossible and the resolver's ambiguity error
+// stays the enforcement (spec §4).
+//
+// No /rename injection (the one thing `muster label` also does): the name
+// CAME from the harness side, so typing it back into the pane would loop it.
+func hookProjectName(c tmuxenv.Capture, title string, out io.Writer) {
+	if title == "" || c.SocketPath == "" || c.SessionID == "" {
+		return
+	}
+	opt := tmuxenv.LabelOption()
+	if err := tmuxenv.SetSessionOptionOn(c.SocketPath, c.SessionID, opt, title); err != nil {
+		return // tmux unreachable: leave every surface as-is
+	}
+	_ = tmuxenv.SetSessionOptionOn(c.SocketPath, c.SessionID, opt+"_manual", "1")
+	_ = tmuxenv.RefreshClientOn(c.SocketPath) // best-effort: repaint title bars
+	if _, err := callData("set_label", map[string]any{
+		"socket_path": c.SocketPath, "session_id": c.SessionID,
+		"session_created": c.SessionCreated,
+		"label":           title, "label_manual": true,
+	}); err != nil {
+		_, _ = fmt.Fprintf(out, "muster: session name %q set in tmux; bus sync failed (%v) — refreshes on next register\n", title, err)
+		return
+	}
+	_, _ = fmt.Fprintf(out, "muster: session name %q → tmux label + bus (manual)\n", title)
+	warnLabelCollision(title, c, out)
+}
+
+// warnLabelCollision surfaces (never resolves) a same-project manual-label
+// holder on a different session: the human decides who renames.
+func warnLabelCollision(title string, c tmuxenv.Capture, out io.Writer) {
+	raw, err := callData("list_agents", nil)
+	if err != nil {
+		return
+	}
+	var agents []agentRow
+	if json.Unmarshal(raw, &agents) != nil {
+		return
+	}
+	var myProject string
+	for _, a := range agents {
+		if a.SocketPath == c.SocketPath && a.SessionID == c.SessionID && a.SessionCreated == c.SessionCreated && !a.Departed {
+			myProject = a.Project
+			break
+		}
+	}
+	for _, a := range agents {
+		if a.Departed || !a.LabelManual || a.Label != title || a.Project != myProject {
+			continue
+		}
+		if a.SocketPath == c.SocketPath && a.SessionID == c.SessionID {
+			continue // my own tuple
+		}
+		_, _ = fmt.Fprintf(out, "muster: note — label %q is also held by %s; sends to the bare label will error as ambiguous until one of you renames\n", title, a.Alias)
+	}
 }
 
 // hookCapture resolves the tmux identity a hook acts on: the environment
@@ -157,7 +241,7 @@ func hookSessionStartResume(c tmuxenv.Capture, h harnessenv.Capture, model strin
 	if len(lines) == 0 {
 		return false
 	}
-	if total, _, ok := sessionUnreadForHook(c.SocketPath, c.SessionID); ok {
+	if total, _, ok := sessionUnreadForHook(c.SocketPath, c.SessionID, c.SessionCreated); ok {
 		for i := range lines {
 			lines[i].unread = total
 		}
@@ -423,7 +507,9 @@ func hookStop(payload []byte, out io.Writer) {
 // through — unchanged from before finding F1: the (socket_path, session_id)
 // tuple and the @muster_inbox cheap gate both read from the AMBIENT tmux
 // session (no -S/-t), relying on $TMUX/$TMUX_PANE in the process
-// environment.
+// environment. The incarnation the daemon queries by comes from the same
+// ambient read (tmuxenv.CurrentSessionCreated) — the walked path below gets
+// it from its Capture instead.
 func hookStopTmuxEnv(h harnessenv.Capture, out io.Writer) {
 	optCount, err := strconv.Atoi(tmuxenv.CurrentSessionOption("@muster_inbox"))
 	if err != nil || optCount <= 0 {
@@ -432,7 +518,7 @@ func hookStopTmuxEnv(h harnessenv.Capture, out io.Writer) {
 	socketPath := tmuxenv.SocketFromEnv()
 	sessionID := tmuxenv.CurrentSessionID()
 	label := tmuxenv.CurrentSessionOption(tmuxenv.LabelOption())
-	hookStopDrain(socketPath, sessionID, os.Getenv("TMUX_PANE"), optCount, label, h, out)
+	hookStopDrain(socketPath, sessionID, tmuxenv.CurrentSessionCreated(), os.Getenv("TMUX_PANE"), optCount, label, h, out)
 }
 
 // hookStopWalked is finding F1's new branch: the harness stripped $TMUX from
@@ -448,7 +534,7 @@ func hookStopWalked(c tmuxenv.Capture, h harnessenv.Capture, out io.Writer) {
 		return // cheap gate: no daemon calls unless the tmux option says there's mail
 	}
 	label, _ := tmuxenv.SessionLabel(c.SocketPath, c.PaneID)
-	hookStopDrain(c.SocketPath, c.SessionID, c.PaneID, optCount, label, h, out)
+	hookStopDrain(c.SocketPath, c.SessionID, c.SessionCreated, c.PaneID, optCount, label, h, out)
 }
 
 // hookStopDrain is the daemon-facing core shared by hookStopTmuxEnv and
@@ -460,15 +546,15 @@ func hookStopWalked(c tmuxenv.Capture, h harnessenv.Capture, out io.Writer) {
 // read the option from. Either call's failure (or an empty alias list) falls
 // back to today's single session-name behavior so the hook never goes silent
 // because of a daemon hiccup.
-func hookStopDrain(socketPath, sessionID, myPane string, optCount int, label string, h harnessenv.Capture, out io.Writer) {
-	total, action, ok := sessionUnreadForHook(socketPath, sessionID)
+func hookStopDrain(socketPath, sessionID string, sessionCreated int64, myPane string, optCount int, label string, h harnessenv.Capture, out io.Writer) {
+	total, action, ok := sessionUnreadForHook(socketPath, sessionID, sessionCreated)
 	if !ok {
 		total, action = optCount, 0 // fall back to the tmux option value on op failure
 	}
 	if total <= 0 {
 		return
 	}
-	aliases := sessionAliasesForHook(socketPath, sessionID)
+	aliases := sessionAliasesForHook(socketPath, sessionID, sessionCreated)
 
 	// Repair missing harness links (durable-alias spec: the stamp's Stop
 	// half). An alias registered via the MCP tool in an env carrying no
@@ -530,11 +616,11 @@ func hookStopPaneless(h harnessenv.Capture, out io.Writer) {
 	// split identity spanning both would need two queries whose overlapping
 	// threads can't be deduplicated client-side — the aliases list still
 	// names every identity, so nothing goes undrained.
-	sock, sid := "", h.SessionID
+	sock, sid, created := "", h.SessionID, int64(0)
 	if tup != nil {
-		sock, sid = tup.SocketPath, tup.SessionID
+		sock, sid, created = tup.SocketPath, tup.SessionID, tup.SessionCreated
 	}
-	total, action, ok := sessionUnreadForHook(sock, sid)
+	total, action, ok := sessionUnreadForHook(sock, sid, created)
 	if !ok || total <= 0 {
 		return
 	}
@@ -580,8 +666,14 @@ func stampHarnessLinks(aliases []string, h harnessenv.Capture, socketPath, sessi
 // transport/daemon failure or an empty result falls back to a single-element
 // list holding today's session-name wording (spec §3) — the hook always has
 // something to address.
-func sessionAliasesForHook(socketPath, sessionID string) []string {
-	raw, err := callData("session_aliases", map[string]any{"socket_path": socketPath, "session_id": sessionID})
+//
+// sessionCreated is the caller's live incarnation, forwarded so the daemon
+// scopes the lineage walk to it (spec §5.1): a legacy row stranded on a
+// recycled session ID is not this conversation's identity and must not be
+// named in the drain wording. 0 (a paneless tuple, or tmux not answering) is
+// the paneless/no-proof value the op already documents.
+func sessionAliasesForHook(socketPath, sessionID string, sessionCreated int64) []string {
+	raw, err := callData("session_aliases", map[string]any{"socket_path": socketPath, "session_id": sessionID, "session_created": sessionCreated})
 	if err == nil {
 		var res struct {
 			Aliases []string `json:"aliases"`
@@ -596,8 +688,10 @@ func sessionAliasesForHook(socketPath, sessionID string) []string {
 // sessionUnreadForHook calls the session_unread op. ok is false on any
 // transport/daemon failure, signaling the caller to fall back to the
 // @muster_inbox option's count (with no action-count breakdown available).
-func sessionUnreadForHook(socketPath, sessionID string) (total, action int, ok bool) {
-	raw, err := callData("session_unread", map[string]any{"socket_path": socketPath, "session_id": sessionID})
+// sessionCreated carries the caller's live incarnation, exactly as in
+// sessionAliasesForHook.
+func sessionUnreadForHook(socketPath, sessionID string, sessionCreated int64) (total, action int, ok bool) {
+	raw, err := callData("session_unread", map[string]any{"socket_path": socketPath, "session_id": sessionID, "session_created": sessionCreated})
 	if err != nil {
 		return 0, 0, false
 	}

@@ -11,6 +11,8 @@
 package harnessenv
 
 import (
+	"bufio"
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -29,6 +31,11 @@ type Capture struct {
 	// CWD is the session's working directory, the raw material for Alias and
 	// Project derivation.
 	CWD string
+	// TranscriptPath is the harness conversation's transcript file, when the
+	// hook payload provided one (Claude Code sends transcript_path in every
+	// hook payload; Codex sends none). Payload-only — the process
+	// environment has no equivalent, so FromEnv leaves it empty.
+	TranscriptPath string
 }
 
 // FromEnv captures identity from the process environment: the harness
@@ -44,8 +51,9 @@ func FromEnv() Capture {
 // tolerated — hooks must never fail on input shape.
 func FromHookPayload(payload []byte) Capture {
 	var p struct {
-		SessionID string `json:"session_id"`
-		CWD       string `json:"cwd"`
+		SessionID      string `json:"session_id"`
+		CWD            string `json:"cwd"`
+		TranscriptPath string `json:"transcript_path"`
 	}
 	_ = json.Unmarshal(payload, &p)
 	c := FromEnv()
@@ -54,6 +62,9 @@ func FromHookPayload(payload []byte) Capture {
 	}
 	if p.CWD != "" {
 		c.CWD = p.CWD
+	}
+	if p.TranscriptPath != "" {
+		c.TranscriptPath = p.TranscriptPath
 	}
 	return c
 }
@@ -111,4 +122,41 @@ func mainCheckoutFromGitFile(gitPath string) string {
 		return gd[:i]
 	}
 	return ""
+}
+
+// CustomTitle returns the conversation's user-set name: the customTitle of
+// the LAST {"type":"custom-title"} record in the transcript at path. The
+// record is written by an explicit naming gesture (/rename, `claude --name`,
+// or muster's own prefix-T injection) and re-emitted through the file, so
+// its presence is proof of intent — the signal the statusline's merged
+// session_name field cannot provide (spec §2, verified 2026-08-05). Returns
+// "" for an empty path, unreadable file, or a transcript with no record:
+// callers treat "" as "no user-set name", never as an error — a hook must
+// not fail on transcript shape.
+func CustomTitle(transcriptPath string) string {
+	if transcriptPath == "" {
+		return ""
+	}
+	f, err := os.Open(transcriptPath)
+	if err != nil {
+		return ""
+	}
+	defer func() { _ = f.Close() }()
+	var title string
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64*1024), 10*1024*1024) // transcript lines can be huge (tool results)
+	for sc.Scan() {
+		line := sc.Bytes()
+		if !bytes.Contains(line, []byte(`"custom-title"`)) {
+			continue // cheap pre-filter; the unmarshal below is the authority
+		}
+		var rec struct {
+			Type        string `json:"type"`
+			CustomTitle string `json:"customTitle"`
+		}
+		if json.Unmarshal(line, &rec) == nil && rec.Type == "custom-title" && rec.CustomTitle != "" {
+			title = rec.CustomTitle
+		}
+	}
+	return title
 }

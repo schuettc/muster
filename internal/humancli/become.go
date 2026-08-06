@@ -54,7 +54,7 @@ func cmdBecome(args []string, out io.Writer) error {
 
 	c := hookCapture()
 
-	live, err := becomeLiveAliases(c.SocketPath, c.SessionID)
+	live, err := becomeLiveAliases(c.SocketPath, c.SessionID, c.SessionCreated)
 	if err != nil {
 		return err
 	}
@@ -87,9 +87,12 @@ func cmdBecome(args []string, out io.Writer) error {
 
 // becomeLiveAliases lists the session's live (non-departed) aliases. The
 // session_aliases op includes departed aliases on purpose (history), so each
-// candidate is confirmed live via hookGetAgent here.
-func becomeLiveAliases(socketPath, sessionID string) ([]string, error) {
-	raw, err := callData("session_aliases", map[string]any{"socket_path": socketPath, "session_id": sessionID})
+// candidate is confirmed live via hookGetAgent here. sessionCreated is the
+// capture's incarnation, forwarded so the op scopes the lineage walk to THIS
+// tmux-session incarnation (spec §5.1) — a legacy row stranded on a recycled
+// session ID is not a name this session may become from.
+func becomeLiveAliases(socketPath, sessionID string, sessionCreated int64) ([]string, error) {
+	raw, err := callData("session_aliases", map[string]any{"socket_path": socketPath, "session_id": sessionID, "session_created": sessionCreated})
 	if err != nil {
 		return nil, err
 	}

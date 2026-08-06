@@ -15,17 +15,18 @@ import (
 // newLabelFlagsWithVals declares label's flags and returns typed access to
 // their values — shared by cmdLabel (real parsing) and newLabelFlags
 // (registry help/man rendering).
-func newLabelFlagsWithVals() (fs *flag.FlagSet, clearFlag *bool) {
+func newLabelFlagsWithVals() (fs *flag.FlagSet, clearFlag, noInject *bool) {
 	fs = flag.NewFlagSet("label", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	clearFlag = fs.Bool("clear", false, "clear this session's label")
-	return fs, clearFlag
+	noInject = fs.Bool("no-inject", false, "skip typing /rename into the live agent pane (for callers whose name ALREADY came from the harness side, e.g. the statusline promoting a /rename)")
+	return fs, clearFlag, noInject
 }
 
 // newLabelFlags builds label's flag.FlagSet for registry-driven help/man
 // rendering.
 func newLabelFlags() *flag.FlagSet {
-	fs, _ := newLabelFlagsWithVals()
+	fs, _, _ := newLabelFlagsWithVals()
 	return fs
 }
 
@@ -39,8 +40,14 @@ func newLabelFlags() *flag.FlagSet {
 // change to the bus via the set_label op (see syncLabelToBus). Without that
 // push, a CLI sender resolving against live tmux and an MCP sender resolving
 // against the store would disagree until the session's next re-register.
+//
+// --no-inject skips the syncAgentName /rename typing below — everything else
+// is identical. It exists for callers whose name ALREADY came from the
+// harness side (the statusline promoting a name that originated from a
+// /rename the agent itself typed): re-injecting it would loop the same text
+// back into a live pane.
 func cmdLabel(args []string, out io.Writer) error {
-	fs, clearFlag := newLabelFlagsWithVals()
+	fs, clearFlag, noInject := newLabelFlagsWithVals()
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return HelpFor("label", out)
@@ -57,6 +64,12 @@ func cmdLabel(args []string, out io.Writer) error {
 	}
 	opt := tmuxenv.LabelOption()
 	manualOpt := opt + "_manual"
+	// sessionCreated is the ambient incarnation proof (spec §5.1): the same
+	// capture hookCapture uses ambient-side (tmuxenv.CaptureEnv), so the
+	// set_label push can only ever land on THIS session's rows, never a
+	// recycled-ID ghost. socket/sessionID keep their existing ambient reads
+	// (SocketFromEnv/CurrentSessionID) — only SessionCreated is new here.
+	sessionCreated := tmuxenv.CaptureEnv().SessionCreated
 	if *clearFlag || name == "" {
 		if err := tmuxenv.UnsetSessionOption(opt); err != nil {
 			return err
@@ -67,7 +80,7 @@ func cmdLabel(args []string, out io.Writer) error {
 		_ = tmuxenv.RefreshClient() // best-effort: repaint title bars
 		socket := tmuxenv.SocketFromEnv()
 		sessionID := tmuxenv.CurrentSessionID()
-		syncLabelToBus(out, "", false, socket, sessionID)
+		syncLabelToBus(out, "", false, socket, sessionID, sessionCreated)
 		_, err := fmt.Fprintln(out, "label cleared")
 		return err
 	}
@@ -80,8 +93,8 @@ func cmdLabel(args []string, out io.Writer) error {
 	_ = tmuxenv.RefreshClient() // best-effort: repaint title bars
 	socket := tmuxenv.SocketFromEnv()
 	sessionID := tmuxenv.CurrentSessionID()
-	syncLabelToBus(out, name, true, socket, sessionID)
-	if socket != "" && sessionID != "" {
+	syncLabelToBus(out, name, true, socket, sessionID, sessionCreated)
+	if !*noInject && socket != "" && sessionID != "" {
 		syncAgentName(out, name, socket, sessionID)
 	}
 	_, err := fmt.Fprintf(out, "labeled this session %q (%s)\n", name, opt)
@@ -97,12 +110,17 @@ func cmdLabel(args []string, out io.Writer) error {
 // wrong label. It therefore warns rather than fails, and stays silent for
 // a session with no registered agents (updated=0): labeling before
 // registering is routine, and register captures the option anyway.
-func syncLabelToBus(out io.Writer, label string, manual bool, socket, sessionID string) {
+//
+// sessionCreated forwards the caller's proof of incarnation (spec §5.1) so
+// the store-side write (SetSessionLabel) can never land on a recycled-ID
+// ghost; a caller with no proof (0) still pushes, but the store then updates
+// nothing, degrading to the same "refreshes on next register" story.
+func syncLabelToBus(out io.Writer, label string, manual bool, socket, sessionID string, sessionCreated int64) {
 	if socket == "" || sessionID == "" {
 		return
 	}
 	if _, err := callData("set_label", map[string]any{
-		"socket_path": socket, "session_id": sessionID,
+		"socket_path": socket, "session_id": sessionID, "session_created": sessionCreated,
 		"label": label, "label_manual": manual,
 	}); err != nil {
 		_, _ = fmt.Fprintf(out, "warning: bus label sync failed (%v); the stored label refreshes on this session's next register\n", err)

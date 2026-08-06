@@ -3,6 +3,7 @@ package harnessenv
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -68,5 +69,45 @@ func TestProjectLinkedWorktree(t *testing.T) {
 	}
 	if got := (Capture{CWD: wt}).Project(); got != "myproj" {
 		t.Fatalf("Project from linked worktree = %q, want myproj", got)
+	}
+}
+
+func TestFromHookPayloadCapturesTranscriptPath(t *testing.T) {
+	c := FromHookPayload([]byte(`{"session_id":"u1","cwd":"/w","transcript_path":"/tmp/t.jsonl"}`))
+	if c.TranscriptPath != "/tmp/t.jsonl" {
+		t.Fatalf("TranscriptPath = %q, want /tmp/t.jsonl", c.TranscriptPath)
+	}
+}
+
+func TestCustomTitleLastRecordWins(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "t.jsonl")
+	lines := []string{
+		`{"type":"custom-title","customTitle":"old-name","sessionId":"u1"}`,
+		`{"type":"user","message":{"role":"user","content":"body mentioning custom-title"}}`,
+		`{"type":"custom-title","customTitle":"nfl-3","sessionId":"u1"}`,
+	}
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := CustomTitle(path); got != "nfl-3" {
+		t.Fatalf("CustomTitle = %q, want nfl-3", got)
+	}
+}
+
+func TestCustomTitleAbsentOrUnreadable(t *testing.T) {
+	if got := CustomTitle(""); got != "" {
+		t.Fatalf("empty path: got %q", got)
+	}
+	if got := CustomTitle(filepath.Join(t.TempDir(), "missing.jsonl")); got != "" {
+		t.Fatalf("missing file: got %q", got)
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "no-title.jsonl")
+	if err := os.WriteFile(path, []byte(`{"type":"user"}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := CustomTitle(path); got != "" {
+		t.Fatalf("no record: got %q", got)
 	}
 }

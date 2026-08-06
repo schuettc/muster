@@ -122,13 +122,13 @@ func TestHookStopUnreadEmitsBlockDecision(t *testing.T) {
 	startTestDaemon(t)
 	if _, err := callData("register_agent", map[string]any{
 		"alias": "backend", "role": "peer", "model_type": "claude",
-		"socket_path": "/tmp/sock", "session_id": "$1",
+		"socket_path": "/tmp/sock", "session_id": "$1", "session_created": 100,
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := callData("register_agent", map[string]any{
 		"alias": "other", "role": "peer", "model_type": "claude",
-		"socket_path": "/tmp/other", "session_id": "$2",
+		"socket_path": "/tmp/other", "session_id": "$2", "session_created": 100,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +140,7 @@ func TestHookStopUnreadEmitsBlockDecision(t *testing.T) {
 
 	t.Setenv("TMUX", "/tmp/sock,1,0")
 	prev := tmuxenv.Run
-	tmuxenv.Run = hookRun(map[string]string{"@muster_inbox": "3", "#{session_id}": "$1"})
+	tmuxenv.Run = hookRun(map[string]string{"@muster_inbox": "3", "#{session_id}": "$1", "#{session_created}": "100"})
 	t.Cleanup(func() { tmuxenv.Run = prev })
 
 	res := runHook(t)
@@ -164,14 +164,14 @@ func TestHookStopMultiAliasListsAllSorted(t *testing.T) {
 	for _, alias := range []string{"zeta", "alpha"} { // registered out of sorted order
 		if _, err := callData("register_agent", map[string]any{
 			"alias": alias, "role": "peer", "model_type": "claude",
-			"socket_path": "/tmp/sock2", "session_id": "$5",
+			"socket_path": "/tmp/sock2", "session_id": "$5", "session_created": 100,
 		}); err != nil {
 			t.Fatal(err)
 		}
 	}
 	if _, err := callData("register_agent", map[string]any{
 		"alias": "other", "role": "peer", "model_type": "claude",
-		"socket_path": "/tmp/other2", "session_id": "$6",
+		"socket_path": "/tmp/other2", "session_id": "$6", "session_created": 100,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -183,7 +183,7 @@ func TestHookStopMultiAliasListsAllSorted(t *testing.T) {
 
 	t.Setenv("TMUX", "/tmp/sock2,1,0")
 	prev := tmuxenv.Run
-	tmuxenv.Run = hookRun(map[string]string{"@muster_inbox": "9", "#{session_id}": "$5"})
+	tmuxenv.Run = hookRun(map[string]string{"@muster_inbox": "9", "#{session_id}": "$5", "#{session_created}": "100"})
 	t.Cleanup(func() { tmuxenv.Run = prev })
 
 	res := runHook(t)
@@ -204,13 +204,13 @@ func TestHookStopActionCountAppearsWhenActionable(t *testing.T) {
 	startTestDaemon(t)
 	if _, err := callData("register_agent", map[string]any{
 		"alias": "worker", "role": "peer", "model_type": "claude",
-		"socket_path": "/tmp/sock3", "session_id": "$7",
+		"socket_path": "/tmp/sock3", "session_id": "$7", "session_created": 100,
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := callData("register_agent", map[string]any{
 		"alias": "other", "role": "peer", "model_type": "claude",
-		"socket_path": "/tmp/other3", "session_id": "$8",
+		"socket_path": "/tmp/other3", "session_id": "$8", "session_created": 100,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -223,7 +223,7 @@ func TestHookStopActionCountAppearsWhenActionable(t *testing.T) {
 
 	t.Setenv("TMUX", "/tmp/sock3,1,0")
 	prev := tmuxenv.Run
-	tmuxenv.Run = hookRun(map[string]string{"@muster_inbox": "1", "#{session_id}": "$7"})
+	tmuxenv.Run = hookRun(map[string]string{"@muster_inbox": "1", "#{session_id}": "$7", "#{session_created}": "100"})
 	t.Cleanup(func() { tmuxenv.Run = prev })
 
 	res := runHook(t)
@@ -239,13 +239,13 @@ func TestHookStopActionCountAbsentWhenNotActionable(t *testing.T) {
 	startTestDaemon(t)
 	if _, err := callData("register_agent", map[string]any{
 		"alias": "worker", "role": "peer", "model_type": "claude",
-		"socket_path": "/tmp/sock4", "session_id": "$9",
+		"socket_path": "/tmp/sock4", "session_id": "$9", "session_created": 100,
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := callData("register_agent", map[string]any{
 		"alias": "other", "role": "peer", "model_type": "claude",
-		"socket_path": "/tmp/other4", "session_id": "$10",
+		"socket_path": "/tmp/other4", "session_id": "$10", "session_created": 100,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -258,7 +258,7 @@ func TestHookStopActionCountAbsentWhenNotActionable(t *testing.T) {
 
 	t.Setenv("TMUX", "/tmp/sock4,1,0")
 	prev := tmuxenv.Run
-	tmuxenv.Run = hookRun(map[string]string{"@muster_inbox": "1", "#{session_id}": "$9"})
+	tmuxenv.Run = hookRun(map[string]string{"@muster_inbox": "1", "#{session_id}": "$9", "#{session_created}": "100"})
 	t.Cleanup(func() { tmuxenv.Run = prev })
 
 	res := runHook(t)
@@ -370,7 +370,7 @@ func TestHookStaleBadgeSuppressedByAuthoritativeZero(t *testing.T) {
 	startTestDaemon(t)
 	if _, err := callData("register_agent", map[string]any{
 		"alias": "worker", "role": "peer", "model_type": "claude",
-		"socket_path": "/tmp/sock_stale", "session_id": "$99",
+		"socket_path": "/tmp/sock_stale", "session_id": "$99", "session_created": 100,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -379,7 +379,7 @@ func TestHookStaleBadgeSuppressedByAuthoritativeZero(t *testing.T) {
 	t.Setenv("TMUX", "/tmp/sock_stale,1,0")
 	prev := tmuxenv.Run
 	// Stub tmux to report stale @muster_inbox=2 but matching session_id.
-	tmuxenv.Run = hookRun(map[string]string{"@muster_inbox": "2", "#{session_id}": "$99"})
+	tmuxenv.Run = hookRun(map[string]string{"@muster_inbox": "2", "#{session_id}": "$99", "#{session_created}": "100"})
 	t.Cleanup(func() { tmuxenv.Run = prev })
 
 	var buf bytes.Buffer
@@ -419,7 +419,7 @@ func hookAgentPane(t *testing.T, alias string) (paneID string, found bool) {
 func TestHookSessionStartNoOpForLiveForeignOwner(t *testing.T) {
 	startTestDaemon(t)
 	if _, err := callData("register_agent", map[string]any{
-		"alias": "start-owner", "socket_path": "/tmp/sockA", "session_id": "$1", "pane_id": "%1",
+		"alias": "start-owner", "socket_path": "/tmp/sockA", "session_id": "$1", "session_created": 100, "pane_id": "%1",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -429,7 +429,7 @@ func TestHookSessionStartNoOpForLiveForeignOwner(t *testing.T) {
 	t.Setenv("MUSTER_ALIAS", "")
 	prev := tmuxenv.Run
 	tmuxenv.Run = hookRun(map[string]string{
-		"#{session_id}":   "$1",
+		"#{session_id}": "$1", "#{session_created}": "100",
 		"#{session_name}": "start-owner",
 		"#{pane_id}":      "%1", // IsPaneAlive("/tmp/sockA","%1") -> alive
 	})
@@ -481,7 +481,7 @@ func TestHookSessionStartClaims(t *testing.T) {
 			t.Setenv("MUSTER_ALIAS", "")
 			prev := tmuxenv.Run
 			tmuxenv.Run = hookRun(map[string]string{
-				"#{session_id}":   "$1",
+				"#{session_id}": "$1", "#{session_created}": "100",
 				"#{session_name}": "claim-me",
 				"#{pane_id}":      c.paneAlive,
 			})
@@ -506,12 +506,12 @@ func TestHookSessionStartClaims(t *testing.T) {
 func TestHookStopSilentForNonOwner(t *testing.T) {
 	startTestDaemon(t)
 	if _, err := callData("register_agent", map[string]any{
-		"alias": "stop-nonowner", "socket_path": "/tmp/sockB", "session_id": "$5", "pane_id": "%1",
+		"alias": "stop-nonowner", "socket_path": "/tmp/sockB", "session_id": "$5", "session_created": 100, "pane_id": "%1",
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := callData("register_agent", map[string]any{
-		"alias": "other", "socket_path": "/tmp/otherB", "session_id": "$6",
+		"alias": "other", "socket_path": "/tmp/otherB", "session_id": "$6", "session_created": 100,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -524,7 +524,7 @@ func TestHookStopSilentForNonOwner(t *testing.T) {
 	t.Setenv("TMUX", "/tmp/sockB,1,0")
 	t.Setenv("TMUX_PANE", "%2")
 	prev := tmuxenv.Run
-	tmuxenv.Run = hookRun(map[string]string{"@muster_inbox": "3", "#{session_id}": "$5"})
+	tmuxenv.Run = hookRun(map[string]string{"@muster_inbox": "3", "#{session_id}": "$5", "#{session_created}": "100"})
 	t.Cleanup(func() { tmuxenv.Run = prev })
 
 	var buf bytes.Buffer
@@ -542,12 +542,12 @@ func TestHookStopSilentForNonOwner(t *testing.T) {
 func TestHookStopDrainsForOwner(t *testing.T) {
 	startTestDaemon(t)
 	if _, err := callData("register_agent", map[string]any{
-		"alias": "stop-owner", "socket_path": "/tmp/sockD", "session_id": "$7", "pane_id": "%1",
+		"alias": "stop-owner", "socket_path": "/tmp/sockD", "session_id": "$7", "session_created": 100, "pane_id": "%1",
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := callData("register_agent", map[string]any{
-		"alias": "other", "socket_path": "/tmp/otherD", "session_id": "$8",
+		"alias": "other", "socket_path": "/tmp/otherD", "session_id": "$8", "session_created": 100,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -560,7 +560,7 @@ func TestHookStopDrainsForOwner(t *testing.T) {
 	t.Setenv("TMUX", "/tmp/sockD,1,0")
 	t.Setenv("TMUX_PANE", "%1")
 	prev := tmuxenv.Run
-	tmuxenv.Run = hookRun(map[string]string{"@muster_inbox": "3", "#{session_id}": "$7"})
+	tmuxenv.Run = hookRun(map[string]string{"@muster_inbox": "3", "#{session_id}": "$7", "#{session_created}": "100"})
 	t.Cleanup(func() { tmuxenv.Run = prev })
 
 	res := runHook(t)
@@ -576,12 +576,12 @@ func TestHookStopDrainsForOwner(t *testing.T) {
 func TestHookStopFallbackWhenPaneUnknown(t *testing.T) {
 	startTestDaemon(t)
 	if _, err := callData("register_agent", map[string]any{
-		"alias": "stop-unknown-pane", "socket_path": "/tmp/sockE", "session_id": "$9",
+		"alias": "stop-unknown-pane", "socket_path": "/tmp/sockE", "session_id": "$9", "session_created": 100,
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := callData("register_agent", map[string]any{
-		"alias": "other", "socket_path": "/tmp/otherE", "session_id": "$10",
+		"alias": "other", "socket_path": "/tmp/otherE", "session_id": "$10", "session_created": 100,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -594,7 +594,7 @@ func TestHookStopFallbackWhenPaneUnknown(t *testing.T) {
 	t.Setenv("TMUX", "/tmp/sockE,1,0")
 	t.Setenv("TMUX_PANE", "%9")
 	prev := tmuxenv.Run
-	tmuxenv.Run = hookRun(map[string]string{"@muster_inbox": "3", "#{session_id}": "$9"})
+	tmuxenv.Run = hookRun(map[string]string{"@muster_inbox": "3", "#{session_id}": "$9", "#{session_created}": "100"})
 	t.Cleanup(func() { tmuxenv.Run = prev })
 
 	res := runHook(t)
@@ -608,7 +608,7 @@ func TestHookStopFallbackWhenPaneUnknown(t *testing.T) {
 func TestHookSessionEndNoOpForNonOwner(t *testing.T) {
 	startTestDaemon(t)
 	if _, err := callData("register_agent", map[string]any{
-		"alias": "end-nonowner", "socket_path": "/tmp/sockF", "session_id": "$1", "pane_id": "%1",
+		"alias": "end-nonowner", "socket_path": "/tmp/sockF", "session_id": "$1", "session_created": 100, "pane_id": "%1",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -617,7 +617,7 @@ func TestHookSessionEndNoOpForNonOwner(t *testing.T) {
 	t.Setenv("TMUX_PANE", "%2")
 	t.Setenv("MUSTER_ALIAS", "")
 	prev := tmuxenv.Run
-	tmuxenv.Run = hookRun(map[string]string{"#{session_id}": "$1", "#{session_name}": "end-nonowner"})
+	tmuxenv.Run = hookRun(map[string]string{"#{session_id}": "$1", "#{session_created}": "100", "#{session_name}": "end-nonowner"})
 	t.Cleanup(func() { tmuxenv.Run = prev })
 
 	var buf bytes.Buffer
@@ -644,7 +644,7 @@ func TestHookSessionEndDeregistersAllOwnedAliases(t *testing.T) {
 	reg := func(alias, pane string) {
 		t.Helper()
 		if _, err := callData("register_agent", map[string]any{
-			"alias": alias, "socket_path": "/tmp/sockH", "session_id": "$1", "pane_id": pane,
+			"alias": alias, "socket_path": "/tmp/sockH", "session_id": "$1", "session_created": 100, "pane_id": pane,
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -654,7 +654,7 @@ func TestHookSessionEndDeregistersAllOwnedAliases(t *testing.T) {
 	reg("end-paneless", "")  // pane-unset row: owned per the existing gate
 	reg("end-sibling", "%7") // sibling pane on the SAME session: not ours
 	if _, err := callData("register_agent", map[string]any{
-		"alias": "end-elsewhere", "socket_path": "/tmp/sockH", "session_id": "$2", "pane_id": "%2",
+		"alias": "end-elsewhere", "socket_path": "/tmp/sockH", "session_id": "$2", "session_created": 100, "pane_id": "%2",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -663,7 +663,7 @@ func TestHookSessionEndDeregistersAllOwnedAliases(t *testing.T) {
 	t.Setenv("TMUX_PANE", "%2")
 	t.Setenv("MUSTER_ALIAS", "")
 	prev := tmuxenv.Run
-	tmuxenv.Run = hookRun(map[string]string{"#{session_id}": "$1", "#{session_name}": "end-sweep"})
+	tmuxenv.Run = hookRun(map[string]string{"#{session_id}": "$1", "#{session_created}": "100", "#{session_name}": "end-sweep"})
 	t.Cleanup(func() { tmuxenv.Run = prev })
 
 	var buf bytes.Buffer
@@ -686,7 +686,7 @@ func TestHookSessionEndDeregistersAllOwnedAliases(t *testing.T) {
 func TestHookSessionEndDeregistersForOwner(t *testing.T) {
 	startTestDaemon(t)
 	if _, err := callData("register_agent", map[string]any{
-		"alias": "end-owner", "socket_path": "/tmp/sockG", "session_id": "$1", "pane_id": "%2",
+		"alias": "end-owner", "socket_path": "/tmp/sockG", "session_id": "$1", "session_created": 100, "pane_id": "%2",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -695,7 +695,7 @@ func TestHookSessionEndDeregistersForOwner(t *testing.T) {
 	t.Setenv("TMUX_PANE", "%2")
 	t.Setenv("MUSTER_ALIAS", "")
 	prev := tmuxenv.Run
-	tmuxenv.Run = hookRun(map[string]string{"#{session_id}": "$1", "#{session_name}": "end-owner"})
+	tmuxenv.Run = hookRun(map[string]string{"#{session_id}": "$1", "#{session_created}": "100", "#{session_name}": "end-owner"})
 	t.Cleanup(func() { tmuxenv.Run = prev })
 
 	var buf bytes.Buffer
@@ -724,7 +724,7 @@ func TestHookSessionEndDeregistersForOwner(t *testing.T) {
 func TestHookSessionEndNoOpForForeignTuple(t *testing.T) {
 	startTestDaemon(t)
 	if _, err := callData("register_agent", map[string]any{
-		"alias": "end-foreign-tuple", "socket_path": "/tmp/sockOLD", "session_id": "$OLD", "pane_id": "%1",
+		"alias": "end-foreign-tuple", "socket_path": "/tmp/sockOLD", "session_id": "$OLD", "session_created": 100, "pane_id": "%1",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -733,7 +733,7 @@ func TestHookSessionEndNoOpForForeignTuple(t *testing.T) {
 	t.Setenv("TMUX_PANE", "%2")
 	t.Setenv("MUSTER_ALIAS", "")
 	prev := tmuxenv.Run
-	tmuxenv.Run = hookRun(map[string]string{"#{session_id}": "$NEW", "#{session_name}": "end-foreign-tuple"})
+	tmuxenv.Run = hookRun(map[string]string{"#{session_id}": "$NEW", "#{session_created}": "100", "#{session_name}": "end-foreign-tuple"})
 	t.Cleanup(func() { tmuxenv.Run = prev })
 
 	var buf bytes.Buffer
@@ -794,7 +794,7 @@ func TestHookSessionStartBestEffortWhenDaemonUnreachable(t *testing.T) {
 func TestHookSessionStartClaimsOverDepartedRow(t *testing.T) {
 	startTestDaemon(t)
 	if _, err := callData("register_agent", map[string]any{
-		"alias": "claim-departed", "socket_path": "/tmp/sockDep", "session_id": "$1", "pane_id": "%1",
+		"alias": "claim-departed", "socket_path": "/tmp/sockDep", "session_id": "$1", "session_created": 100, "pane_id": "%1",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -807,7 +807,7 @@ func TestHookSessionStartClaimsOverDepartedRow(t *testing.T) {
 	t.Setenv("MUSTER_ALIAS", "")
 	prev := tmuxenv.Run
 	tmuxenv.Run = hookRun(map[string]string{
-		"#{session_id}":   "$1",
+		"#{session_id}": "$1", "#{session_created}": "100",
 		"#{session_name}": "claim-departed",
 		"#{pane_id}":      "%1", // the old owner's pane is still alive
 	})
@@ -837,12 +837,12 @@ func TestHookSessionStartClaimsOverDepartedRow(t *testing.T) {
 func TestHookStopDrainsWhenOnlyNamedOwnerIsDeparted(t *testing.T) {
 	startTestDaemon(t)
 	if _, err := callData("register_agent", map[string]any{
-		"alias": "stop-departed", "socket_path": "/tmp/sockStopDep", "session_id": "$5", "pane_id": "%1",
+		"alias": "stop-departed", "socket_path": "/tmp/sockStopDep", "session_id": "$5", "session_created": 100, "pane_id": "%1",
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := callData("register_agent", map[string]any{
-		"alias": "other", "socket_path": "/tmp/otherStopDep", "session_id": "$6",
+		"alias": "other", "socket_path": "/tmp/otherStopDep", "session_id": "$6", "session_created": 100,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -858,7 +858,7 @@ func TestHookStopDrainsWhenOnlyNamedOwnerIsDeparted(t *testing.T) {
 	t.Setenv("TMUX", "/tmp/sockStopDep,1,0")
 	t.Setenv("TMUX_PANE", "%2") // not the tombstone's stored pane ('%1')
 	prev := tmuxenv.Run
-	tmuxenv.Run = hookRun(map[string]string{"@muster_inbox": "3", "#{session_id}": "$5"})
+	tmuxenv.Run = hookRun(map[string]string{"@muster_inbox": "3", "#{session_id}": "$5", "#{session_created}": "100"})
 	t.Cleanup(func() { tmuxenv.Run = prev })
 
 	res := runHook(t)
@@ -954,12 +954,12 @@ func TestHookStopStampsHarnessLink(t *testing.T) {
 	t.Setenv("TMUX", "/tmp/sock,1,0")
 	t.Setenv("TMUX_PANE", "%1")
 	if _, err := callData("register_agent", map[string]any{
-		"alias": "backend", "socket_path": "/tmp/sock", "session_id": "$1", "pane_id": "%1",
+		"alias": "backend", "socket_path": "/tmp/sock", "session_id": "$1", "session_created": 100, "pane_id": "%1",
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := callData("register_agent", map[string]any{
-		"alias": "sender", "socket_path": "/tmp/sock", "session_id": "$2",
+		"alias": "sender", "socket_path": "/tmp/sock", "session_id": "$2", "session_created": 100,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -970,8 +970,8 @@ func TestHookStopStampsHarnessLink(t *testing.T) {
 	}
 	prev := tmuxenv.Run
 	tmuxenv.Run = hookRun(map[string]string{
-		"@muster_inbox":   "1",
-		"#{session_id}":   "$1",
+		"@muster_inbox": "1",
+		"#{session_id}": "$1", "#{session_created}": "100",
 		"#{session_name}": "backend",
 	})
 	t.Cleanup(func() { tmuxenv.Run = prev })
@@ -1037,12 +1037,12 @@ func TestHookStopRepairsHarnessLinkViaAncestryWalk(t *testing.T) {
 		"#{@muster_inbox}": "1",
 	})
 	if _, err := callData("register_agent", map[string]any{
-		"alias": "walked-backend", "socket_path": sock, "session_id": "$3", "pane_id": "%7",
+		"alias": "walked-backend", "socket_path": sock, "session_id": "$3", "session_created": 555, "pane_id": "%7",
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := callData("register_agent", map[string]any{
-		"alias": "sender", "socket_path": "/tmp/otherWalk", "session_id": "$4",
+		"alias": "sender", "socket_path": "/tmp/otherWalk", "session_id": "$4", "session_created": 100,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -1097,17 +1097,17 @@ func TestStampHarnessLinksScopesToOwnedPane(t *testing.T) {
 	t.Setenv("TMUX", "/tmp/sockPane,1,0")
 	t.Setenv("TMUX_PANE", "%1")
 	if _, err := callData("register_agent", map[string]any{
-		"alias": "mine", "socket_path": "/tmp/sockPane", "session_id": "$1", "pane_id": "%1",
+		"alias": "mine", "socket_path": "/tmp/sockPane", "session_id": "$1", "session_created": 100, "pane_id": "%1",
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := callData("register_agent", map[string]any{
-		"alias": "sibling", "socket_path": "/tmp/sockPane", "session_id": "$1", "pane_id": "%2",
+		"alias": "sibling", "socket_path": "/tmp/sockPane", "session_id": "$1", "session_created": 100, "pane_id": "%2",
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := callData("register_agent", map[string]any{
-		"alias": "sender", "socket_path": "/tmp/otherPane", "session_id": "$2",
+		"alias": "sender", "socket_path": "/tmp/otherPane", "session_id": "$2", "session_created": 100,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -1118,8 +1118,8 @@ func TestStampHarnessLinksScopesToOwnedPane(t *testing.T) {
 	}
 	prev := tmuxenv.Run
 	tmuxenv.Run = hookRun(map[string]string{
-		"@muster_inbox":   "1",
-		"#{session_id}":   "$1",
+		"@muster_inbox": "1",
+		"#{session_id}": "$1", "#{session_created}": "100",
 		"#{session_name}": "mine",
 	})
 	t.Cleanup(func() { tmuxenv.Run = prev })
@@ -1163,7 +1163,7 @@ func TestHookSessionStartResumeReclaimsAlias(t *testing.T) {
 		"alias": "backend-2", "socket_path": "/tmp/sock", "session_id": "$OLD",
 		"session_created": 111, "harness_session_id": "uuid-42", "label": "lake", "label_manual": true,
 	})
-	seed("register_agent", map[string]any{"alias": "sender", "socket_path": "/tmp/sock", "session_id": "$2"})
+	seed("register_agent", map[string]any{"alias": "sender", "socket_path": "/tmp/sock", "session_id": "$2", "session_created": 100})
 	seed("send_message", map[string]any{"from": "sender", "to_kind": "agent", "to_target": "backend-2", "subject": "s", "body": "b"})
 	seed("deregister_agent", map[string]any{"alias": "backend-2"})
 
@@ -1233,5 +1233,305 @@ func TestHookSessionStartResumeSkipsLiveCollision(t *testing.T) {
 	}
 	if fallback, found := hookGetAgent("muster-3"); !found || fallback.Departed || fallback.SessionID != "$NEW" {
 		t.Fatalf("nothing reclaimed: expected the default session-name alias 'muster-3' registered on $NEW, got %+v found=%v", fallback, found)
+	}
+}
+
+// containsCall reports whether the recorded tmuxenv.Run argument lists
+// contain exactly want — the projection's writes are asserted by their full
+// argv (the "-S <socket>" prefix is the whole point: hooks run env-stripped,
+// so an ambient set-option would land nowhere).
+func containsCall(calls [][]string, want []string) bool {
+	for _, got := range calls {
+		if len(got) != len(want) {
+			continue
+		}
+		same := true
+		for i := range got {
+			if got[i] != want[i] {
+				same = false
+				break
+			}
+		}
+		if same {
+			return true
+		}
+	}
+	return false
+}
+
+// registerProjectViaDaemon registers a live row carrying BOTH an explicit
+// incarnation and a project: the incarnation so set_label's proven-match
+// write lands (spec §5.1), the project so the collision warning's
+// same-project scope has something to compare.
+func registerProjectViaDaemon(t *testing.T, alias, socketPath, sessionID string, created int64, project string) {
+	t.Helper()
+	if _, err := callData("register_agent", map[string]any{
+		"alias": alias, "socket_path": socketPath, "session_id": sessionID,
+		"session_created": created, "project": project,
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// agentRowForTest returns one alias's full roster row (agentRow, not
+// agentFull: only agentRow carries label_manual, which the projection's bus
+// half is judged on).
+func agentRowForTest(t *testing.T, alias string) agentRow {
+	t.Helper()
+	for _, a := range listAgentsForTest(t, "") {
+		if a.Alias == alias {
+			return a
+		}
+	}
+	t.Fatalf("alias %q not in roster", alias)
+	return agentRow{}
+}
+
+// captureTmuxCalls swaps tmuxenv.Run for a recorder and returns a pointer to
+// the recorded argument lists.
+func captureTmuxCalls(t *testing.T) *[][]string {
+	t.Helper()
+	var calls [][]string
+	prev := tmuxenv.Run
+	tmuxenv.Run = func(args ...string) (string, error) {
+		calls = append(calls, append([]string(nil), args...))
+		return "", nil
+	}
+	t.Cleanup(func() { tmuxenv.Run = prev })
+	return &calls
+}
+
+// writeTranscript writes a one-record custom-title transcript and returns its
+// path.
+func writeTranscript(t *testing.T, title string) string {
+	t.Helper()
+	tp := filepath.Join(t.TempDir(), "t.jsonl")
+	rec := fmt.Sprintf(`{"type":"custom-title","customTitle":%q,"sessionId":"u1"}`+"\n", title)
+	if err := os.WriteFile(tp, []byte(rec), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return tp
+}
+
+// TestHookProjectNameProjectsCustomTitle: a SessionStart whose transcript
+// carries a custom-title lands the name on (a) the tmux option pair via
+// socket-aware writes and (b) the bus label, manual, on this incarnation.
+func TestHookProjectNameProjectsCustomTitle(t *testing.T) {
+	tp := writeTranscript(t, "nfl-3")
+	calls := captureTmuxCalls(t)
+
+	startCLITestDaemon(t)
+	registerAliveViaDaemon(t, "muster-9", "/s", "$1", 200)
+
+	var buf bytes.Buffer
+	c := tmuxenv.Capture{SocketPath: "/s", SessionID: "$1", SessionCreated: 200, PaneID: "%5"}
+	hookProjectName(c, harnessenv.CustomTitle(tp), &buf)
+
+	// tmux half: option + manual flag + refresh, all socket-aware
+	wantOpt := []string{"-S", "/s", "set-option", "-t", "$1", tmuxenv.LabelOption(), "nfl-3"}
+	wantMan := []string{"-S", "/s", "set-option", "-t", "$1", tmuxenv.LabelOption() + "_manual", "1"}
+	if !containsCall(*calls, wantOpt) || !containsCall(*calls, wantMan) {
+		t.Fatalf("missing socket-aware option writes, got %v", *calls)
+	}
+	if !containsCall(*calls, []string{"-S", "/s", "refresh-client", "-S"}) {
+		t.Fatalf("missing socket-aware refresh, got %v", *calls)
+	}
+	// bus half
+	ag := agentRowForTest(t, "muster-9")
+	if ag.Label != "nfl-3" || !ag.LabelManual {
+		t.Fatalf("bus label = (%q, manual=%v), want (nfl-3, true)", ag.Label, ag.LabelManual)
+	}
+	if !strings.Contains(buf.String(), `session name "nfl-3"`) {
+		t.Fatalf("expected context line, got %q", buf.String())
+	}
+}
+
+// TestHookProjectNameNoTitleNoOp: no custom-title → no writes, no output
+// (spec: never demote, never clear; a fresh unnamed session is untouched).
+func TestHookProjectNameNoTitleNoOp(t *testing.T) {
+	calls := captureTmuxCalls(t)
+
+	var buf bytes.Buffer
+	c := tmuxenv.Capture{SocketPath: "/s", SessionID: "$1", SessionCreated: 200, PaneID: "%5"}
+	hookProjectName(c, "", &buf)
+	for _, call := range *calls {
+		for _, arg := range call {
+			if arg == "set-option" {
+				t.Fatalf("empty title must write nothing, got %v", *calls)
+			}
+		}
+	}
+	if buf.Len() != 0 {
+		t.Fatalf("empty title must print nothing, got %q", buf.String())
+	}
+}
+
+// TestHookProjectNameTmuxFailureLeavesEverythingAsIs: the tmux option write is
+// the gate — if tmux is unreachable the bus is never told either, so the
+// session degrades to its pre-projection state rather than to a name that
+// exists on one surface only.
+func TestHookProjectNameTmuxFailureLeavesEverythingAsIs(t *testing.T) {
+	tp := writeTranscript(t, "nfl-3")
+	prev := tmuxenv.Run
+	tmuxenv.Run = func(_ ...string) (string, error) { return "", fmt.Errorf("no server") }
+	t.Cleanup(func() { tmuxenv.Run = prev })
+
+	startCLITestDaemon(t)
+	registerAliveViaDaemon(t, "muster-9", "/s", "$1", 200)
+
+	var buf bytes.Buffer
+	c := tmuxenv.Capture{SocketPath: "/s", SessionID: "$1", SessionCreated: 200, PaneID: "%5"}
+	hookProjectName(c, harnessenv.CustomTitle(tp), &buf)
+
+	if ag := agentRowForTest(t, "muster-9"); ag.Label != "" || ag.LabelManual {
+		t.Fatalf("tmux failure must not push a bus label, got (%q, manual=%v)", ag.Label, ag.LabelManual)
+	}
+	if buf.Len() != 0 {
+		t.Fatalf("tmux failure must print nothing, got %q", buf.String())
+	}
+}
+
+// TestHookProjectNameWarnsOnCollision: another live agent in the SAME
+// project already holds the name as a manual label → the projection still
+// writes its own tuple (tuple-scoped, it cannot steal) but prints a warning
+// naming the holder, so the resolver's coming ambiguity error isn't a
+// surprise.
+func TestHookProjectNameWarnsOnCollision(t *testing.T) {
+	tp := writeTranscript(t, "nfl-3")
+	prev := tmuxenv.Run
+	tmuxenv.Run = func(_ ...string) (string, error) { return "", nil }
+	t.Cleanup(func() { tmuxenv.Run = prev })
+
+	startCLITestDaemon(t)
+	// mine, and a same-project holder on a DIFFERENT tuple
+	registerProjectViaDaemon(t, "muster-9", "/s", "$1", 200, "muster")
+	registerProjectViaDaemon(t, "holder", "/s", "$2", 300, "muster")
+	if _, err := callData("set_label", map[string]any{
+		"socket_path": "/s", "session_id": "$2", "session_created": int64(300),
+		"label": "nfl-3", "label_manual": true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	c := tmuxenv.Capture{SocketPath: "/s", SessionID: "$1", SessionCreated: 200, PaneID: "%5"}
+	hookProjectName(c, harnessenv.CustomTitle(tp), &buf)
+	if !strings.Contains(buf.String(), "also held by") || !strings.Contains(buf.String(), "holder") {
+		t.Fatalf("expected collision warning naming the holder, got %q", buf.String())
+	}
+	// the holder keeps its label: a projection can never steal a name
+	if h := agentRowForTest(t, "holder"); h.Label != "nfl-3" || !h.LabelManual {
+		t.Fatalf("holder's label must be untouched, got (%q, manual=%v)", h.Label, h.LabelManual)
+	}
+	if mine := agentRowForTest(t, "muster-9"); mine.Label != "nfl-3" || !mine.LabelManual {
+		t.Fatalf("my own tuple must still take the name, got (%q, manual=%v)", mine.Label, mine.LabelManual)
+	}
+}
+
+// TestHookSessionStartProjectsNameOnFreshStart wires the projection through
+// cmdHook itself: a fresh (non-resume) pane SessionStart whose payload names a
+// custom-titled transcript registers AND projects, in one hook.
+func TestHookSessionStartProjectsNameOnFreshStart(t *testing.T) {
+	startTestDaemon(t)
+	tp := writeTranscript(t, "nfl-3")
+	t.Setenv("TMUX", "/tmp/sockP,1,0")
+	t.Setenv("TMUX_PANE", "%3")
+	t.Setenv("MUSTER_ALIAS", "")
+	prev := tmuxenv.Run
+	tmuxenv.Run = hookRun(map[string]string{
+		"#{session_id}": "$1", "#{session_created}": "100", "#{session_name}": "proj-start",
+	})
+	t.Cleanup(func() { tmuxenv.Run = prev })
+
+	var buf bytes.Buffer
+	payload := fmt.Sprintf(`{"source":"startup","session_id":"uuid-7","transcript_path":%q}`, tp)
+	if err := cmdHook([]string{"SessionStart"}, strings.NewReader(payload), &buf); err != nil {
+		t.Fatal(err)
+	}
+	ag := agentRowForTest(t, "proj-start")
+	if ag.Label != "nfl-3" || !ag.LabelManual {
+		t.Fatalf("fresh SessionStart must project the name onto the bus, got (%q, manual=%v)", ag.Label, ag.LabelManual)
+	}
+	if !strings.Contains(buf.String(), `session name "nfl-3"`) {
+		t.Fatalf("expected the context line, got %q", buf.String())
+	}
+}
+
+// TestHookSessionStartProjectsNameOnResume is the spec's payoff: a resumed
+// conversation reclaims its alias AND re-asserts its custom-title as the
+// session's manual label on the NEW tuple — zero operator gestures.
+func TestHookSessionStartProjectsNameOnResume(t *testing.T) {
+	startTestDaemon(t)
+	tp := writeTranscript(t, "nfl-3")
+	t.Setenv("TMUX", "/tmp/sock,1,0")
+	t.Setenv("TMUX_PANE", "%9")
+	t.Setenv("MUSTER_ALIAS", "")
+	if _, err := callData("register_agent", map[string]any{
+		"alias": "backend-2", "socket_path": "/tmp/sock", "session_id": "$OLD",
+		"session_created": 111, "harness_session_id": "uuid-42",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := callData("deregister_agent", map[string]any{"alias": "backend-2"}); err != nil {
+		t.Fatal(err)
+	}
+	prev := tmuxenv.Run
+	tmuxenv.Run = hookRun(map[string]string{
+		"#{session_id}": "$NEW", "#{session_name}": "muster-3", "#{session_created}": "222",
+	})
+	t.Cleanup(func() { tmuxenv.Run = prev })
+
+	var buf bytes.Buffer
+	payload := fmt.Sprintf(`{"source":"resume","session_id":"uuid-42","transcript_path":%q}`, tp)
+	if err := cmdHook([]string{"SessionStart"}, strings.NewReader(payload), &buf); err != nil {
+		t.Fatal(err)
+	}
+	ag := agentRowForTest(t, "backend-2")
+	if ag.SessionID != "$NEW" || ag.Label != "nfl-3" || !ag.LabelManual {
+		t.Fatalf("resume must reclaim onto $NEW and re-assert the name, got %+v", ag)
+	}
+}
+
+// TestHookSessionStartSiblingPaneDoesNotStompName is the ownership gate on
+// the projection (same rule as the v0.7.1 hook-pane-ownership fix): the
+// primary conversation owns pane %1 of $1 and has named itself
+// "primary-name"; a SIBLING pane (%2) starts with its own custom-titled
+// transcript. hookMayClaimIdentity already refuses the registration — the
+// projection must refuse too, because SetSessionLabel rewrites every row on
+// the tuple, so an ungated projection would durably rename the primary
+// (labels are addresses: `send nfl-3` would then misroute).
+func TestHookSessionStartSiblingPaneDoesNotStompName(t *testing.T) {
+	startTestDaemon(t)
+	tp := writeTranscript(t, "nfl-3")
+	if _, err := callData("register_agent", map[string]any{
+		"alias": "primary", "socket_path": "/tmp/sockS", "session_id": "$1",
+		"session_created": 100, "pane_id": "%1",
+		"label": "primary-name", "label_manual": true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("TMUX", "/tmp/sockS,1,0")
+	t.Setenv("TMUX_PANE", "%2")
+	t.Setenv("MUSTER_ALIAS", "")
+	prev := tmuxenv.Run
+	tmuxenv.Run = hookRun(map[string]string{
+		"#{session_id}": "$1", "#{session_created}": "100",
+		"#{session_name}": "primary",
+		"#{pane_id}":      "%1", // the primary's pane is still alive
+	})
+	t.Cleanup(func() { tmuxenv.Run = prev })
+
+	var buf bytes.Buffer
+	payload := fmt.Sprintf(`{"source":"startup","session_id":"uuid-9","transcript_path":%q}`, tp)
+	if err := cmdHook([]string{"SessionStart"}, strings.NewReader(payload), &buf); err != nil {
+		t.Fatal(err)
+	}
+	ag := agentRowForTest(t, "primary")
+	if ag.Label != "primary-name" || !ag.LabelManual {
+		t.Fatalf("a sibling pane stomped the session's name: label = (%q, manual=%v), want (primary-name, true)", ag.Label, ag.LabelManual)
+	}
+	if buf.Len() != 0 {
+		t.Fatalf("a non-owning sibling must project nothing, got %q", buf.String())
 	}
 }
