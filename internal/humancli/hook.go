@@ -56,10 +56,21 @@ func cmdHook(args []string, stdin io.Reader, out io.Writer) error {
 			if start.Source == "resume" {
 				handled = hookSessionStartResume(c, h, model, out)
 			}
-			if !handled && hookMayClaimIdentity(c) {
+			mayClaim := hookMayClaimIdentity(c)
+			if !handled && mayClaim {
 				hookRegisterPane(c, h, model)
 			}
-			hookProjectName(c, harnessenv.CustomTitle(h.TranscriptPath), out)
+			// The projection carries the SAME pane-ownership gate as the
+			// registration (the v0.7.1 rule: a sibling pane never speaks for
+			// the session's identity). store.SetSessionLabel rewrites every
+			// row on the tuple, so an ungated projection would let a subagent
+			// pane's transcript durably rename the primary — and because
+			// labels are addresses, sends to the stolen name would silently
+			// misroute. A reclaimed conversation (handled) has proven its
+			// identity by reclaiming, so it projects regardless.
+			if handled || mayClaim {
+				hookProjectName(c, harnessenv.CustomTitle(h.TranscriptPath), out)
+			}
 		} else {
 			hookSessionStartPaneless(h, model)
 		}

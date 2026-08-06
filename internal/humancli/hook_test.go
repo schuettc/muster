@@ -1491,3 +1491,47 @@ func TestHookSessionStartProjectsNameOnResume(t *testing.T) {
 		t.Fatalf("resume must reclaim onto $NEW and re-assert the name, got %+v", ag)
 	}
 }
+
+// TestHookSessionStartSiblingPaneDoesNotStompName is the ownership gate on
+// the projection (same rule as the v0.7.1 hook-pane-ownership fix): the
+// primary conversation owns pane %1 of $1 and has named itself
+// "primary-name"; a SIBLING pane (%2) starts with its own custom-titled
+// transcript. hookMayClaimIdentity already refuses the registration — the
+// projection must refuse too, because SetSessionLabel rewrites every row on
+// the tuple, so an ungated projection would durably rename the primary
+// (labels are addresses: `send nfl-3` would then misroute).
+func TestHookSessionStartSiblingPaneDoesNotStompName(t *testing.T) {
+	startTestDaemon(t)
+	tp := writeTranscript(t, "nfl-3")
+	if _, err := callData("register_agent", map[string]any{
+		"alias": "primary", "socket_path": "/tmp/sockS", "session_id": "$1",
+		"session_created": 100, "pane_id": "%1",
+		"label": "primary-name", "label_manual": true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("TMUX", "/tmp/sockS,1,0")
+	t.Setenv("TMUX_PANE", "%2")
+	t.Setenv("MUSTER_ALIAS", "")
+	prev := tmuxenv.Run
+	tmuxenv.Run = hookRun(map[string]string{
+		"#{session_id}": "$1", "#{session_created}": "100",
+		"#{session_name}": "primary",
+		"#{pane_id}":      "%1", // the primary's pane is still alive
+	})
+	t.Cleanup(func() { tmuxenv.Run = prev })
+
+	var buf bytes.Buffer
+	payload := fmt.Sprintf(`{"source":"startup","session_id":"uuid-9","transcript_path":%q}`, tp)
+	if err := cmdHook([]string{"SessionStart"}, strings.NewReader(payload), &buf); err != nil {
+		t.Fatal(err)
+	}
+	ag := agentRowForTest(t, "primary")
+	if ag.Label != "primary-name" || !ag.LabelManual {
+		t.Fatalf("a sibling pane stomped the session's name: label = (%q, manual=%v), want (primary-name, true)", ag.Label, ag.LabelManual)
+	}
+	if buf.Len() != 0 {
+		t.Fatalf("a non-owning sibling must project nothing, got %q", buf.String())
+	}
+}
