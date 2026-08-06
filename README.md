@@ -180,9 +180,11 @@ auto-submit; other values are typed without submitting).
   You set one by hand with `muster label backend` (or `muster label --clear`
   to remove it) or via `prefix T` in tmux, but those aren't the only
   gestures that count: a resumed conversation re-asserts its transcript
-  custom-title as its label automatically at SessionStart, and `/rename`
-  inside Claude Code is itself a first-class naming gesture — the statusline
-  promotes it onto the label — not just display text.
+  custom-title as its label automatically at SessionStart. A mid-conversation
+  `/rename` becomes that addressable label at the *next* SessionStart (resume
+  or restart) — or immediately, once the operator's statusline is wired to
+  call `muster label --no-inject` on a rename as a companion gesture
+  (expected, not yet shipped in this repo).
   (Stored in a tmux session option — default `@claude_task`, override with
   `$MUSTER_LABEL_OPTION`.)
 

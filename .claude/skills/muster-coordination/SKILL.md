@@ -63,9 +63,11 @@ address you by a name that means something.
   A resumed conversation re-asserts its transcript custom-title as its manual
   label automatically at SessionStart, so peers can address the conversation's
   *name* (`proj:name`, or bare within your project) without the operator
-  having lifted a finger. `/rename` inside Claude Code is now a first-class
-  naming gesture in its own right — the statusline promotes it onto the
-  label — not just display text the way it used to be.
+  having lifted a finger. A mid-conversation `/rename` becomes that
+  addressable name at the *next* SessionStart (resume or restart) — or
+  immediately, once the operator's statusline is wired to call `muster label
+  --no-inject` on a rename as a companion gesture (expected, not yet
+  shipped).
 - **proj:label** — cross projects explicitly: `send to "timewalk:frontend"`.
 - Handoff documents (plans, progress notes, anything meant to outlive this
   conversation) must reference **aliases**, not labels — a label drifts with
