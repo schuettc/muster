@@ -52,19 +52,24 @@ func cmdHook(args []string, stdin io.Reader, out io.Writer) error {
 	//
 	// TWO signals, in this order (spec §3a, after the v0.10.1 acceptance
 	// failure). ARGV is authoritative: a teammate's claude process is
-	// launched with `--team-name <x>` and the hook is its descendant, so
-	// the marker exists from process birth and covers SessionStart — the
-	// most damaging event, and the one the transcript CANNOT cover,
-	// because the harness writes the transcript file only after the
-	// SessionStart hooks have run (IsTeammate then fail-opens on a
-	// missing file, which is exactly how the shipped gate was walked
-	// through live). The TRANSCRIPT scan stays as the belt: it covers
-	// spawn shapes where the ancestry is unreadable — an async or
+	// launched with `--agent-id <x> --team-name <y>` and the hook is its
+	// descendant, so the marker exists from process birth and covers
+	// SessionStart — the most damaging event, and the one the transcript
+	// CANNOT cover, because the harness writes the transcript file only
+	// after the SessionStart hooks have run (IsTeammate then fail-opens
+	// on a missing file, which is exactly how the shipped gate was walked
+	// through live). Both flags are required on ONE ancestor: either
+	// alone can show up in a non-teammate's command line by coincidence
+	// (a primary prompted with `claude -p "…--team-name…"`, a wrapper's
+	// `sh -c`), while nothing but a teammate is LAUNCHED with the pair —
+	// and a false positive here silently disables a primary's whole
+	// identity machinery. The TRANSCRIPT scan stays as the belt: it
+	// covers spawn shapes where the ancestry is unreadable — an async or
 	// reparented hook, or a harness that launches teammates some other
 	// way — on every later event once the file exists. Codex/Cursor
-	// payloads carry no transcript_path and their processes carry no
-	// --team-name, so neither signal ever matches them.
-	if tmuxenv.AncestorArgvContains("--team-name") ||
+	// payloads carry no transcript_path and their processes carry
+	// neither flag, so neither signal ever matches them.
+	if tmuxenv.AncestorArgvContainsAll("--team-name", "--agent-id") ||
 		harnessenv.IsTeammate(harnessenv.FromHookPayload(payload).TranscriptPath) {
 		return nil
 	}

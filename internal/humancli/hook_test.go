@@ -1808,3 +1808,33 @@ func TestHookMayClaimIdentityClaimsWhenRowAbsent(t *testing.T) {
 		t.Fatal("an absent row must stay claimable")
 	}
 }
+
+// TestHookPrimaryMentioningTeamFlagStillRegisters is the false-positive guard
+// on the argv signal: a PRIMARY whose command line merely mentions
+// --team-name (a prompt quoting it, a wrapper's `sh -c`, this very spec under
+// review) carries the token without being a teammate. The gate requires the
+// launch PAIR (--team-name AND --agent-id on one ancestor), so this session
+// must register and project exactly as any primary does — a false positive
+// here would silently disable a primary's whole identity machinery.
+func TestHookPrimaryMentioningTeamFlagStillRegisters(t *testing.T) {
+	startTestDaemon(t)
+	pinTeammateArgv(t, `claude -p why does the hook check --team-name here`)
+	tp := writeTranscript(t, "nfl-3")
+	t.Setenv("TMUX", "/tmp/sockQ,1,0")
+	t.Setenv("TMUX_PANE", "%3")
+	t.Setenv("MUSTER_ALIAS", "")
+	prev := tmuxenv.Run
+	tmuxenv.Run = hookRun(map[string]string{
+		"#{session_id}": "$1", "#{session_created}": "100", "#{session_name}": "prim-start",
+	})
+	t.Cleanup(func() { tmuxenv.Run = prev })
+
+	var buf bytes.Buffer
+	payload := fmt.Sprintf(`{"source":"startup","session_id":"uuid-p","transcript_path":%q}`, tp)
+	if err := cmdHook([]string{"SessionStart"}, strings.NewReader(payload), &buf); err != nil {
+		t.Fatal(err)
+	}
+	if ag := agentRowForTest(t, "prim-start"); ag.Label != "nfl-3" || !ag.LabelManual {
+		t.Fatalf("a primary that merely mentions --team-name must still register and project, got (%q, manual=%v)", ag.Label, ag.LabelManual)
+	}
+}

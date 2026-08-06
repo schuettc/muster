@@ -8,12 +8,13 @@ import (
 )
 
 // TestMain pins the ancestor-argv seam away for the whole package. cmdHook's
-// teammate gate asks tmuxenv.AncestorArgvContains whether an ANCESTOR of this
-// process was launched with --team-name — and this test binary is routinely
+// teammate gate asks tmuxenv.AncestorArgvContainsAll whether an ANCESTOR of
+// this process was launched as a teammate — and this test binary is routinely
 // run by a fleet teammate (`go test` under an agent's shell), which would make
 // every cmdHook test a silent no-op and fail the suite only on the machines
-// where it matters. Tests that mean to exercise the gate opt in explicitly via
-// pinTeammateArgv.
+// where it matters (measured 2026-08-06: 25 tests fail without this pin when
+// the suite runs under a teammate). Tests that mean to exercise the gate opt
+// in explicitly via pinTeammateArgv.
 func TestMain(m *testing.M) {
 	tmuxenv.ProcessArgv = func(int) string { return "" }
 	os.Exit(m.Run())
