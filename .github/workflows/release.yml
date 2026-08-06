@@ -10,15 +10,23 @@ name: release
 # macOS binaries are re-signed and notarized locally afterwards via
 # contrib/release-sign.sh <tag>.
 #
-# workflow_dispatch rebuilds assets for an existing release (backfill/repair).
+# workflow_dispatch does two things, chosen by whether `tag` is given:
+#   - tag set    -> rebuild assets for that EXISTING release (backfill/repair).
+#   - tag empty  -> cut a PRE-RELEASE from the branch you dispatch on, tagged
+#                   v<VERSION>-rc.<run>. This is the dev channel: a real,
+#                   pinnable tag with the same assets as a release, marked
+#                   pre-release so it never becomes "Latest" and never collides
+#                   with the v<VERSION> that main will publish later. Use it to
+#                   put a build on a second machine before promoting.
 on:
   push:
     branches: [main]
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing release tag to (re)build assets for"
-        required: true
+        description: "Existing release tag to rebuild assets for. Leave EMPTY to cut a pre-release from this branch."
+        required: false
+        default: ""
 
 permissions:
   contents: write
@@ -35,13 +43,32 @@ jobs:
         run: |
           set -euo pipefail
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
-            echo "create=false" >> "$GITHUB_OUTPUT"
-            echo "skip=false" >> "$GITHUB_OUTPUT"
+            if [ -n "${{ inputs.tag }}" ]; then
+              # Rebuild an existing release's assets. Nothing is created.
+              {
+                echo "tag=${{ inputs.tag }}"
+                echo "create=false"
+                echo "prerelease=false"
+                echo "skip=false"
+              } >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            # Pre-release from whatever branch this was dispatched on. The
+            # -rc.<run> suffix is what keeps this off main's namespace: the run
+            # number is monotonic per workflow, so repeated dispatches at the
+            # same VERSION never collide with each other OR with the eventual
+            # v<VERSION>.
+            {
+              echo "tag=v$(tr -d ' \n' < VERSION)-rc.${{ github.run_number }}"
+              echo "create=true"
+              echo "prerelease=true"
+              echo "skip=false"
+            } >> "$GITHUB_OUTPUT"
             exit 0
           fi
           tag="v$(tr -d ' \n' < VERSION)"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "prerelease=false" >> "$GITHUB_OUTPUT"
           if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "VERSION $tag already released — nothing to do."
             echo "skip=true" >> "$GITHUB_OUTPUT"
@@ -54,7 +81,7 @@ jobs:
         if: steps.rel.outputs.skip == 'false'
         with:
           go-version-file: go.mod
-      - name: Checkout the tag (dispatch mode)
+      - name: Checkout the tag (asset-rebuild mode only)
         if: steps.rel.outputs.skip == 'false' && steps.rel.outputs.create == 'false'
         run: git fetch --tags && git checkout "${{ steps.rel.outputs.tag }}"
       - name: Build and package all targets
@@ -102,7 +129,8 @@ jobs:
         run: |
           gh release create "${{ steps.rel.outputs.tag }}" \
             --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
-            --title "muster ${{ steps.rel.outputs.tag }}" --generate-notes
+            --title "muster ${{ steps.rel.outputs.tag }}" --generate-notes \
+            ${{ steps.rel.outputs.prerelease == 'true' && '--prerelease' || '' }}
       - name: Upload assets
         if: steps.rel.outputs.skip == 'false'
         env:
