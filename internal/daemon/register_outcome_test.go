@@ -15,7 +15,7 @@ func TestRegisterAgentOutcomeClassification(t *testing.T) {
 	sock := startWithNotifier(t, &fakeNotifier{})
 
 	resp := call(t, sock, "register_agent", map[string]any{
-		"alias": "backend", "socket_path": "/s", "session_id": "$1",
+		"alias": "backend", "socket_path": "/s", "session_id": "$1", "session_created": 100,
 	})
 	if !resp.OK {
 		t.Fatalf("register: %+v", resp)
@@ -26,7 +26,7 @@ func TestRegisterAgentOutcomeClassification(t *testing.T) {
 	}
 
 	resp = call(t, sock, "register_agent", map[string]any{
-		"alias": "backend", "socket_path": "/s", "session_id": "$1",
+		"alias": "backend", "socket_path": "/s", "session_id": "$1", "session_created": 100,
 	})
 	data, _ = resp.Data.(map[string]any)
 	if data["outcome"] != "refreshed" {
@@ -35,7 +35,7 @@ func TestRegisterAgentOutcomeClassification(t *testing.T) {
 
 	// Mail lands while the agent is departed; revival must report it.
 	call(t, sock, "register_agent", map[string]any{
-		"alias": "sender", "socket_path": "/s", "session_id": "$2",
+		"alias": "sender", "socket_path": "/s", "session_id": "$2", "session_created": 100,
 	})
 	call(t, sock, "send_message", map[string]any{
 		"from": "sender", "to_kind": "agent", "to_target": "backend",
@@ -44,7 +44,7 @@ func TestRegisterAgentOutcomeClassification(t *testing.T) {
 	call(t, sock, "deregister_agent", map[string]any{"alias": "backend"})
 
 	resp = call(t, sock, "register_agent", map[string]any{
-		"alias": "backend", "socket_path": "/s3", "session_id": "$9",
+		"alias": "backend", "socket_path": "/s3", "session_id": "$9", "session_created": 100,
 	})
 	data, _ = resp.Data.(map[string]any)
 	if data["outcome"] != "revived" {

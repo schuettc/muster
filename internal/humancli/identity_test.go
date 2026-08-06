@@ -48,6 +48,21 @@ func registerViaDaemon(t *testing.T, _ string, alias, socketPath, sessionID stri
 	}
 }
 
+// registerAliveViaDaemon registers an agent with an explicit non-zero
+// session_created — spec §5.1 (2026-08-05) made session_created=0 (what
+// registerViaDaemon stores) never read alive, so any test row that needs to
+// pass tmuxenv.IsSessionAlive must record a real incarnation stamp and have
+// its stub answer the matching value for #{session_created}.
+func registerAliveViaDaemon(t *testing.T, alias, socketPath, sessionID string, created int64) {
+	t.Helper()
+	if _, err := callData("register_agent", map[string]any{
+		"alias": alias, "socket_path": socketPath, "session_id": sessionID,
+		"session_created": created,
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // registerClaudeViaDaemon registers a live claude-model agent with a pane —
 // the row shape `muster label`'s /rename gate looks for.
 func registerClaudeViaDaemon(t *testing.T, alias, socketPath, sessionID, paneID string) {
@@ -133,8 +148,10 @@ func TestDeregisterUsesAliasPrecedence(t *testing.T) {
 // survives, marked Departed, while the alive one is untouched.
 func TestGCTombstonesOnlyDeadAgents(t *testing.T) {
 	sock := startCLITestDaemon(t)
-	// register two agents directly via the daemon: one "alive", one "dead"
-	registerViaDaemon(t, sock, "alive", "/s", "$ALIVE")
+	// register two agents directly via the daemon: one "alive" (a real,
+	// non-zero session_created — spec §5.1 — matching the stub's answer
+	// below), one "dead"
+	registerAliveViaDaemon(t, "alive", "/s", "$ALIVE", 1784000000)
 	registerViaDaemon(t, sock, "dead", "/s", "$DEAD")
 	prev := tmuxenv.Run
 	tmuxenv.Run = func(args ...string) (string, error) {
@@ -182,13 +199,42 @@ func TestGCTombstonesOnlyDeadAgents(t *testing.T) {
 	}
 }
 
+// TestGCSweepsLegacyZeroCreatedRows pins the spec §5.1 legacy sweep: a row
+// that cannot prove its incarnation (session_created = 0, the pre-v0.8.0
+// population) is tombstoned by plain `muster gc` EVEN IF a session with its
+// recycled ID is currently live — attribution requires proof. The tombstone
+// keeps history and revives on the row's next register, so a genuinely live
+// pre-upgrade session self-heals.
+func TestGCSweepsLegacyZeroCreatedRows(t *testing.T) {
+	sock := startCLITestDaemon(t)
+	registerViaDaemon(t, sock, "legacy", "/s", "$1") // registerViaDaemon stores session_created=0
+	prev := tmuxenv.Run
+	tmuxenv.Run = func(args ...string) (string, error) {
+		if len(args) >= 7 && args[6] == "#{session_created}" {
+			return "1784000000", nil // the recycled $1 IS live — sweep must still fire
+		}
+		return "", nil
+	}
+	t.Cleanup(func() { tmuxenv.Run = prev })
+
+	var buf bytes.Buffer
+	if err := cmdGC(nil, &buf); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(buf.String(), "tombstoned legacy (legacy row") {
+		t.Fatalf("expected legacy row tombstoned, got %q", buf.String())
+	}
+}
+
 // TestGCPurgeAgentsHardDeletes covers `muster gc --purge-agents`: the old
 // hard-delete behavior, now explicit — a departed row (from a prior plain
 // gc/deregister) and a currently-dead-but-never-deregistered row are BOTH
 // removed for good; a live agent is left alone.
 func TestGCPurgeAgentsHardDeletes(t *testing.T) {
 	sock := startCLITestDaemon(t)
-	registerViaDaemon(t, sock, "alive", "/s", "$ALIVE")
+	// "alive" needs a real, non-zero session_created (spec §5.1) matching
+	// the stub's answer below, or it would never read alive.
+	registerAliveViaDaemon(t, "alive", "/s", "$ALIVE", 1784000000)
 	registerViaDaemon(t, sock, "already-departed", "/s", "$OLD")
 	registerViaDaemon(t, sock, "freshly-dead", "/s", "$DEAD")
 	prev := tmuxenv.Run

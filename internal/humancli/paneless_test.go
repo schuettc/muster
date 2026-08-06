@@ -408,7 +408,8 @@ func TestLaunchHandshakeLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := callData("set_label", map[string]any{
-		"socket_path": "/tmp/sockHS", "session_id": "$7", "label": "debug alarms", "label_manual": true,
+		"socket_path": "/tmp/sockHS", "session_id": "$7", "session_created": 1784000123,
+		"label": "debug alarms", "label_manual": true,
 	}); err != nil {
 		t.Fatal(err)
 	}

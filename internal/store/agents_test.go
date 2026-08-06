@@ -233,14 +233,14 @@ func TestMarkReadRecordsEntryWatermark(t *testing.T) {
 func TestSessionUnreadCountsDistinctThreads(t *testing.T) {
 	s := newTestStore(t)
 	for _, alias := range []string{"session-name", "chosen-alias"} {
-		if err := s.RegisterAgent(Agent{Alias: alias, SocketPath: "/s", SessionID: "$1"}); err != nil {
+		if err := s.RegisterAgent(Agent{Alias: alias, SocketPath: "/s", SessionID: "$1", SessionCreated: 100}); err != nil {
 			t.Fatal(err)
 		}
 	}
 	if _, err := s.CreateThread(Thread{Kind: "message", FromAgent: "peer", ToKind: "broadcast"}, "hi all"); err != nil {
 		t.Fatal(err)
 	}
-	total, action, err := s.SessionUnread("/s", "$1")
+	total, action, err := s.SessionUnread("/s", "$1", 100)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -258,14 +258,14 @@ func TestSessionUnreadCountsDistinctThreads(t *testing.T) {
 func TestSessionUnreadExcludesSiblingAuthors(t *testing.T) {
 	s := newTestStore(t)
 	for _, alias := range []string{"a1", "a2"} {
-		if err := s.RegisterAgent(Agent{Alias: alias, SocketPath: "/s", SessionID: "$1"}); err != nil {
+		if err := s.RegisterAgent(Agent{Alias: alias, SocketPath: "/s", SessionID: "$1", SessionCreated: 100}); err != nil {
 			t.Fatal(err)
 		}
 	}
 	if _, err := s.CreateThread(Thread{Kind: "message", FromAgent: "a1", ToKind: "agent", ToTarget: "outsider"}, "hello"); err != nil {
 		t.Fatal(err)
 	}
-	total, action, err := s.SessionUnread("/s", "$1")
+	total, action, err := s.SessionUnread("/s", "$1", 100)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -278,13 +278,13 @@ func TestSessionUnreadExcludesSiblingAuthors(t *testing.T) {
 // action-requested) addressed to a session alias, unread, counts in action.
 func TestSessionUnreadActionCount(t *testing.T) {
 	s := newTestStore(t)
-	if err := s.RegisterAgent(Agent{Alias: "worker", SocketPath: "/s", SessionID: "$1"}); err != nil {
+	if err := s.RegisterAgent(Agent{Alias: "worker", SocketPath: "/s", SessionID: "$1", SessionCreated: 100}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.CreateThread(Thread{Kind: "task", FromAgent: "backend", ToKind: "agent", ToTarget: "worker", Status: "open"}, "please do X"); err != nil {
 		t.Fatal(err)
 	}
-	total, action, err := s.SessionUnread("/s", "$1")
+	total, action, err := s.SessionUnread("/s", "$1", 100)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -304,12 +304,64 @@ func TestSessionUnreadEmptyTupleNeverGroups(t *testing.T) {
 	if _, err := s.CreateThread(Thread{Kind: "message", FromAgent: "x", ToKind: "agent", ToTarget: "solo"}, "hi"); err != nil {
 		t.Fatal(err)
 	}
-	total, action, err := s.SessionUnread("", "")
+	total, action, err := s.SessionUnread("", "", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if total != 0 || action != 0 {
 		t.Fatalf("empty socket/session tuple must never group, got total=%d action=%d", total, action)
+	}
+}
+
+// TestSessionUnreadRequiresIncarnationMatch pins spec §5.1 at the store
+// layer: a tmux-tuple row only seeds the session's unread/alias math when
+// its session_created matches the caller's live value; 0 never matches.
+// Paneless tuples (empty socket) are exempt — harness UUIDs don't recycle.
+func TestSessionUnreadRequiresIncarnationMatch(t *testing.T) {
+	s := newTestStore(t)
+	// current incarnation
+	if err := s.RegisterAgent(Agent{Alias: "current", SocketPath: "/s", SessionID: "$1", SessionCreated: 200}); err != nil {
+		t.Fatal(err)
+	}
+	// legacy ghost on the recycled ID
+	if err := s.RegisterAgent(Agent{Alias: "ghost", SocketPath: "/s", SessionID: "$1", SessionCreated: 0}); err != nil {
+		t.Fatal(err)
+	}
+	// mail for each
+	if _, err := s.CreateThread(Thread{Kind: "message", FromAgent: "peer", ToKind: "agent", ToTarget: "current"}, "for the live one"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateThread(Thread{Kind: "message", FromAgent: "peer", ToKind: "agent", ToTarget: "ghost"}, "for the ghost"); err != nil {
+		t.Fatal(err)
+	}
+
+	total, _, err := s.SessionUnread("/s", "$1", 200)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 1 {
+		t.Fatalf("live incarnation must see ONLY its own unread, got %d", total)
+	}
+	aliases, err := s.SessionAliasLineage("/s", "$1", 200)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(aliases) != 1 || aliases[0] != "current" {
+		t.Fatalf("lineage must not include the ghost, got %v", aliases)
+	}
+	// paneless: created is irrelevant
+	if err := s.RegisterAgent(Agent{Alias: "bg", SocketPath: "", SessionID: "uuid-9", SessionCreated: 0}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateThread(Thread{Kind: "message", FromAgent: "peer", ToKind: "agent", ToTarget: "bg"}, "paneless mail"); err != nil {
+		t.Fatal(err)
+	}
+	total, _, err = s.SessionUnread("", "uuid-9", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 1 {
+		t.Fatalf("paneless tuple must be exempt from the incarnation check, got %d", total)
 	}
 }
 
@@ -378,10 +430,10 @@ func TestThreadConcernsSessionJoinEquivalence(t *testing.T) {
 func TestSessionUnreadPerAliasWatermarks(t *testing.T) {
 	s := newTestStore(t)
 	// Register two aliases sharing the same (socket_path, session_id) tuple.
-	if err := s.RegisterAgent(Agent{Alias: "aliasA", SocketPath: "/s", SessionID: "$1"}); err != nil {
+	if err := s.RegisterAgent(Agent{Alias: "aliasA", SocketPath: "/s", SessionID: "$1", SessionCreated: 100}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.RegisterAgent(Agent{Alias: "aliasB", SocketPath: "/s", SessionID: "$1"}); err != nil {
+	if err := s.RegisterAgent(Agent{Alias: "aliasB", SocketPath: "/s", SessionID: "$1", SessionCreated: 100}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -396,7 +448,7 @@ func TestSessionUnreadPerAliasWatermarks(t *testing.T) {
 	}
 
 	// Before any MarkRead, both threads unread.
-	total, _, err := s.SessionUnread("/s", "$1")
+	total, _, err := s.SessionUnread("/s", "$1", 100)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -411,7 +463,7 @@ func TestSessionUnreadPerAliasWatermarks(t *testing.T) {
 
 	// SessionUnread should still see B's thread as unread (total=1).
 	// A's read watermark must not suppress B's threads.
-	total, _, err = s.SessionUnread("/s", "$1")
+	total, _, err = s.SessionUnread("/s", "$1", 100)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -425,7 +477,7 @@ func TestSessionUnreadPerAliasWatermarks(t *testing.T) {
 	}
 
 	// SessionUnread should return total=0.
-	total, _, err = s.SessionUnread("/s", "$1")
+	total, _, err = s.SessionUnread("/s", "$1", 100)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -451,7 +503,7 @@ func TestSessionUnreadFollowsSupersessionLineage(t *testing.T) {
 	// re-registers onto a brand-new tuple (the resumed session), while the
 	// seed's row stays exactly where Become left it — on the OLD tuple,
 	// departed, superseded_by="claimed".
-	if err := s.RegisterAgent(Agent{Alias: "claimed", SocketPath: "/new", SessionID: "$new"}); err != nil {
+	if err := s.RegisterAgent(Agent{Alias: "claimed", SocketPath: "/new", SessionID: "$new", SessionCreated: 100}); err != nil {
 		t.Fatal(err)
 	}
 	seed, _, _ := s.GetAgent("seed")
@@ -464,7 +516,7 @@ func TestSessionUnreadFollowsSupersessionLineage(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	total, _, err := s.SessionUnread("/new", "$new")
+	total, _, err := s.SessionUnread("/new", "$new", 100)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -488,7 +540,7 @@ func TestSessionUnreadFollowsChainedLineage(t *testing.T) {
 	if err := s.Become("b", "c"); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.RegisterAgent(Agent{Alias: "c", SocketPath: "/new", SessionID: "$new"}); err != nil {
+	if err := s.RegisterAgent(Agent{Alias: "c", SocketPath: "/new", SessionID: "$new", SessionCreated: 100}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -496,7 +548,7 @@ func TestSessionUnreadFollowsChainedLineage(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	total, _, err := s.SessionUnread("/new", "$new")
+	total, _, err := s.SessionUnread("/new", "$new", 100)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -511,7 +563,7 @@ func TestSessionUnreadFollowsChainedLineage(t *testing.T) {
 // not miscount. UNION's row-level dedup is what bounds the recursion.
 func TestSessionUnreadLineageCycleGuard(t *testing.T) {
 	s := newTestStore(t)
-	if err := s.RegisterAgent(Agent{Alias: "x", SocketPath: "/s", SessionID: "$1"}); err != nil {
+	if err := s.RegisterAgent(Agent{Alias: "x", SocketPath: "/s", SessionID: "$1", SessionCreated: 100}); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.RegisterAgent(Agent{Alias: "y", SocketPath: "/other", SessionID: "$other"}); err != nil {
@@ -535,7 +587,7 @@ func TestSessionUnreadLineageCycleGuard(t *testing.T) {
 	var total, action int
 	var err error
 	go func() {
-		total, action, err = s.SessionUnread("/s", "$1")
+		total, action, err = s.SessionUnread("/s", "$1", 100)
 		close(done)
 	}()
 	select {

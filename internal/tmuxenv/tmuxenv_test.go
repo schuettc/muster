@@ -2,6 +2,7 @@ package tmuxenv
 
 import (
 	"fmt"
+	"reflect"
 	"testing"
 )
 
@@ -31,8 +32,11 @@ func TestIsSessionAlive(t *testing.T) {
 	if !IsSessionAlive("/s", "$1", 1784000000) {
 		t.Fatal("want alive when the session exists and its creation time matches")
 	}
-	if !IsSessionAlive("/s", "$1", 0) {
-		t.Fatal("want alive on created=0 (legacy row): bare existence must suffice")
+	// created=0 (legacy row) never reads alive, even though the session
+	// exists — spec §5.1: an unprovable incarnation can't attribute a live
+	// session. Superseded the old spare-legacy fallback (2026-08-05).
+	if IsSessionAlive("/s", "$1", 0) {
+		t.Fatal("want dead on created=0: an unprovable incarnation must never read alive (spec §5.1)")
 	}
 	if IsSessionAlive("/s", "$1", 1770000000) {
 		t.Fatal("want dead on a creation-time mismatch: same session ID, but a new server incarnation recycled it")
@@ -43,6 +47,20 @@ func TestIsSessionAlive(t *testing.T) {
 	}
 	if IsSessionAlive("", "$1", 0) || IsSessionAlive("/s", "", 0) {
 		t.Fatal("empty socket/session must be dead")
+	}
+}
+
+func TestIsSessionAliveZeroCreatedNeverMatches(t *testing.T) {
+	withRun(t, func(_ ...string) (string, error) { return "1784000000", nil }) // session exists
+
+	if IsSessionAlive("/tmp/s", "$1", 0) {
+		t.Fatal("created=0 must never attribute a live session (spec §5.1: unprovable incarnation)")
+	}
+	if !IsSessionAlive("/tmp/s", "$1", 1784000000) {
+		t.Fatal("matching non-zero created must read alive")
+	}
+	if IsSessionAlive("/tmp/s", "$1", 1700000000) {
+		t.Fatal("mismatched created must read dead")
 	}
 }
 
@@ -122,5 +140,27 @@ func TestCaptureEnvPopulated(t *testing.T) {
 	if c.Project != "muster" || c.SessionID != "$7" || c.SessionName != "muster-2" ||
 		c.SessionCreated != 1784000000 || c.Label != "backend" || !c.LabelManual {
 		t.Fatalf("capture=%+v", c)
+	}
+}
+
+func TestSetSessionOptionOnUsesExplicitSocket(t *testing.T) {
+	var calls [][]string
+	withRun(t, func(args ...string) (string, error) {
+		calls = append(calls, append([]string(nil), args...))
+		return "", nil
+	})
+
+	if err := SetSessionOptionOn("/tmp/proj-x", "$3", "@claude_task", "nfl-3"); err != nil {
+		t.Fatalf("SetSessionOptionOn: %v", err)
+	}
+	if err := RefreshClientOn("/tmp/proj-x"); err != nil {
+		t.Fatalf("RefreshClientOn: %v", err)
+	}
+	want := [][]string{
+		{"-S", "/tmp/proj-x", "set-option", "-t", "$3", "@claude_task", "nfl-3"},
+		{"-S", "/tmp/proj-x", "refresh-client", "-S"},
+	}
+	if len(calls) != 2 || !reflect.DeepEqual(calls[0], want[0]) || !reflect.DeepEqual(calls[1], want[1]) {
+		t.Fatalf("unexpected tmux calls: %v", calls)
 	}
 }

@@ -48,6 +48,19 @@ assets in place (CI attaches unsigned ones).
   option; never types into a pane). `internal/nudge` is the **only** send-keys path.
   The daemon never types.
 
+## The naming contract
+
+The tmux option pair `@claude_task` / `@claude_task_manual` is the neutral
+meeting point between muster and the operator's dotfiles (spec:
+docs/superpowers/specs/2026-08-05-conversation-identity-naming-design.md).
+Intentional gestures (prefix T, `muster label`, the SessionStart projection
+of a transcript custom-title) set both; automatic syncs write only the label
+and defer to the flag; readers trust the pair. The conversation's transcript
+custom-title is the one durable name — tmux and the bus are projections.
+Attribution requires proof: `session_created = 0` never matches a live
+session (tmuxenv.IsSessionAlive), while DepartStaleSiblings still spares
+those rows from reaping — attribution and tombstoning are distinct decisions.
+
 ## Hard rules
 
 - **stdout is sacred in `mcp` mode** — it is the MCP channel. All diagnostics go to

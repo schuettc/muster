@@ -99,6 +99,15 @@ func fetchAgentsCmd(caller render.Caller) tea.Cmd {
 // queried once per alias).
 type sessionUnreadCount struct{ total, action int }
 
+// sessionTupleKey is that cache's key: the incarnation belongs in it, since
+// session_unread now answers per (socket_path, session_id, session_created)
+// — two rows sharing a recycled session ID under different creation times
+// are different sessions and must not share a cached count (spec §5.1).
+type sessionTupleKey struct {
+	socketPath, sessionID string
+	sessionCreated        int64
+}
+
 // fetchAgents lists agents, overlays live tmux state (liveness + current
 // label, exactly like `muster agents`), and looks up each distinct live
 // session tuple's unread count once.
@@ -111,7 +120,7 @@ func fetchAgents(caller render.Caller) ([]agentEnriched, error) {
 	if err := json.Unmarshal(raw, &rows); err != nil {
 		return nil, err
 	}
-	cache := map[[2]string]sessionUnreadCount{}
+	cache := map[sessionTupleKey]sessionUnreadCount{}
 	out := make([]agentEnriched, 0, len(rows))
 	for _, a := range rows {
 		e := agentEnriched{
@@ -124,10 +133,10 @@ func fetchAgents(caller render.Caller) ([]agentEnriched, error) {
 			e.Label, e.LabelManual = tmuxenv.SessionLabel(a.SocketPath, a.SessionID)
 		}
 		if a.SocketPath != "" && a.SessionID != "" {
-			key := [2]string{a.SocketPath, a.SessionID}
+			key := sessionTupleKey{a.SocketPath, a.SessionID, a.SessionCreated}
 			u, ok := cache[key]
 			if !ok {
-				if total, action, uerr := sessionUnread(caller, a.SocketPath, a.SessionID); uerr == nil {
+				if total, action, uerr := sessionUnread(caller, a.SocketPath, a.SessionID, a.SessionCreated); uerr == nil {
 					u = sessionUnreadCount{total, action}
 					cache[key] = u
 				}
@@ -139,8 +148,8 @@ func fetchAgents(caller render.Caller) ([]agentEnriched, error) {
 	return out, nil
 }
 
-func sessionUnread(caller render.Caller, socketPath, sessionID string) (total, action int, err error) {
-	raw, err := caller.Call("session_unread", map[string]any{"socket_path": socketPath, "session_id": sessionID})
+func sessionUnread(caller render.Caller, socketPath, sessionID string, sessionCreated int64) (total, action int, err error) {
+	raw, err := caller.Call("session_unread", map[string]any{"socket_path": socketPath, "session_id": sessionID, "session_created": sessionCreated})
 	if err != nil {
 		return 0, 0, err
 	}
