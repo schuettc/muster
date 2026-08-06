@@ -1235,3 +1235,259 @@ func TestHookSessionStartResumeSkipsLiveCollision(t *testing.T) {
 		t.Fatalf("nothing reclaimed: expected the default session-name alias 'muster-3' registered on $NEW, got %+v found=%v", fallback, found)
 	}
 }
+
+// containsCall reports whether the recorded tmuxenv.Run argument lists
+// contain exactly want — the projection's writes are asserted by their full
+// argv (the "-S <socket>" prefix is the whole point: hooks run env-stripped,
+// so an ambient set-option would land nowhere).
+func containsCall(calls [][]string, want []string) bool {
+	for _, got := range calls {
+		if len(got) != len(want) {
+			continue
+		}
+		same := true
+		for i := range got {
+			if got[i] != want[i] {
+				same = false
+				break
+			}
+		}
+		if same {
+			return true
+		}
+	}
+	return false
+}
+
+// registerProjectViaDaemon registers a live row carrying BOTH an explicit
+// incarnation and a project: the incarnation so set_label's proven-match
+// write lands (spec §5.1), the project so the collision warning's
+// same-project scope has something to compare.
+func registerProjectViaDaemon(t *testing.T, alias, socketPath, sessionID string, created int64, project string) {
+	t.Helper()
+	if _, err := callData("register_agent", map[string]any{
+		"alias": alias, "socket_path": socketPath, "session_id": sessionID,
+		"session_created": created, "project": project,
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// agentRowForTest returns one alias's full roster row (agentRow, not
+// agentFull: only agentRow carries label_manual, which the projection's bus
+// half is judged on).
+func agentRowForTest(t *testing.T, alias string) agentRow {
+	t.Helper()
+	for _, a := range listAgentsForTest(t, "") {
+		if a.Alias == alias {
+			return a
+		}
+	}
+	t.Fatalf("alias %q not in roster", alias)
+	return agentRow{}
+}
+
+// captureTmuxCalls swaps tmuxenv.Run for a recorder and returns a pointer to
+// the recorded argument lists.
+func captureTmuxCalls(t *testing.T) *[][]string {
+	t.Helper()
+	var calls [][]string
+	prev := tmuxenv.Run
+	tmuxenv.Run = func(args ...string) (string, error) {
+		calls = append(calls, append([]string(nil), args...))
+		return "", nil
+	}
+	t.Cleanup(func() { tmuxenv.Run = prev })
+	return &calls
+}
+
+// writeTranscript writes a one-record custom-title transcript and returns its
+// path.
+func writeTranscript(t *testing.T, title string) string {
+	t.Helper()
+	tp := filepath.Join(t.TempDir(), "t.jsonl")
+	rec := fmt.Sprintf(`{"type":"custom-title","customTitle":%q,"sessionId":"u1"}`+"\n", title)
+	if err := os.WriteFile(tp, []byte(rec), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return tp
+}
+
+// TestHookProjectNameProjectsCustomTitle: a SessionStart whose transcript
+// carries a custom-title lands the name on (a) the tmux option pair via
+// socket-aware writes and (b) the bus label, manual, on this incarnation.
+func TestHookProjectNameProjectsCustomTitle(t *testing.T) {
+	tp := writeTranscript(t, "nfl-3")
+	calls := captureTmuxCalls(t)
+
+	startCLITestDaemon(t)
+	registerAliveViaDaemon(t, "muster-9", "/s", "$1", 200)
+
+	var buf bytes.Buffer
+	c := tmuxenv.Capture{SocketPath: "/s", SessionID: "$1", SessionCreated: 200, PaneID: "%5"}
+	hookProjectName(c, harnessenv.CustomTitle(tp), &buf)
+
+	// tmux half: option + manual flag + refresh, all socket-aware
+	wantOpt := []string{"-S", "/s", "set-option", "-t", "$1", tmuxenv.LabelOption(), "nfl-3"}
+	wantMan := []string{"-S", "/s", "set-option", "-t", "$1", tmuxenv.LabelOption() + "_manual", "1"}
+	if !containsCall(*calls, wantOpt) || !containsCall(*calls, wantMan) {
+		t.Fatalf("missing socket-aware option writes, got %v", *calls)
+	}
+	if !containsCall(*calls, []string{"-S", "/s", "refresh-client", "-S"}) {
+		t.Fatalf("missing socket-aware refresh, got %v", *calls)
+	}
+	// bus half
+	ag := agentRowForTest(t, "muster-9")
+	if ag.Label != "nfl-3" || !ag.LabelManual {
+		t.Fatalf("bus label = (%q, manual=%v), want (nfl-3, true)", ag.Label, ag.LabelManual)
+	}
+	if !strings.Contains(buf.String(), `session name "nfl-3"`) {
+		t.Fatalf("expected context line, got %q", buf.String())
+	}
+}
+
+// TestHookProjectNameNoTitleNoOp: no custom-title → no writes, no output
+// (spec: never demote, never clear; a fresh unnamed session is untouched).
+func TestHookProjectNameNoTitleNoOp(t *testing.T) {
+	calls := captureTmuxCalls(t)
+
+	var buf bytes.Buffer
+	c := tmuxenv.Capture{SocketPath: "/s", SessionID: "$1", SessionCreated: 200, PaneID: "%5"}
+	hookProjectName(c, "", &buf)
+	for _, call := range *calls {
+		for _, arg := range call {
+			if arg == "set-option" {
+				t.Fatalf("empty title must write nothing, got %v", *calls)
+			}
+		}
+	}
+	if buf.Len() != 0 {
+		t.Fatalf("empty title must print nothing, got %q", buf.String())
+	}
+}
+
+// TestHookProjectNameTmuxFailureLeavesEverythingAsIs: the tmux option write is
+// the gate — if tmux is unreachable the bus is never told either, so the
+// session degrades to its pre-projection state rather than to a name that
+// exists on one surface only.
+func TestHookProjectNameTmuxFailureLeavesEverythingAsIs(t *testing.T) {
+	tp := writeTranscript(t, "nfl-3")
+	prev := tmuxenv.Run
+	tmuxenv.Run = func(_ ...string) (string, error) { return "", fmt.Errorf("no server") }
+	t.Cleanup(func() { tmuxenv.Run = prev })
+
+	startCLITestDaemon(t)
+	registerAliveViaDaemon(t, "muster-9", "/s", "$1", 200)
+
+	var buf bytes.Buffer
+	c := tmuxenv.Capture{SocketPath: "/s", SessionID: "$1", SessionCreated: 200, PaneID: "%5"}
+	hookProjectName(c, harnessenv.CustomTitle(tp), &buf)
+
+	if ag := agentRowForTest(t, "muster-9"); ag.Label != "" || ag.LabelManual {
+		t.Fatalf("tmux failure must not push a bus label, got (%q, manual=%v)", ag.Label, ag.LabelManual)
+	}
+	if buf.Len() != 0 {
+		t.Fatalf("tmux failure must print nothing, got %q", buf.String())
+	}
+}
+
+// TestHookProjectNameWarnsOnCollision: another live agent in the SAME
+// project already holds the name as a manual label → the projection still
+// writes its own tuple (tuple-scoped, it cannot steal) but prints a warning
+// naming the holder, so the resolver's coming ambiguity error isn't a
+// surprise.
+func TestHookProjectNameWarnsOnCollision(t *testing.T) {
+	tp := writeTranscript(t, "nfl-3")
+	prev := tmuxenv.Run
+	tmuxenv.Run = func(_ ...string) (string, error) { return "", nil }
+	t.Cleanup(func() { tmuxenv.Run = prev })
+
+	startCLITestDaemon(t)
+	// mine, and a same-project holder on a DIFFERENT tuple
+	registerProjectViaDaemon(t, "muster-9", "/s", "$1", 200, "muster")
+	registerProjectViaDaemon(t, "holder", "/s", "$2", 300, "muster")
+	if _, err := callData("set_label", map[string]any{
+		"socket_path": "/s", "session_id": "$2", "session_created": int64(300),
+		"label": "nfl-3", "label_manual": true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	c := tmuxenv.Capture{SocketPath: "/s", SessionID: "$1", SessionCreated: 200, PaneID: "%5"}
+	hookProjectName(c, harnessenv.CustomTitle(tp), &buf)
+	if !strings.Contains(buf.String(), "also held by") || !strings.Contains(buf.String(), "holder") {
+		t.Fatalf("expected collision warning naming the holder, got %q", buf.String())
+	}
+	// the holder keeps its label: a projection can never steal a name
+	if h := agentRowForTest(t, "holder"); h.Label != "nfl-3" || !h.LabelManual {
+		t.Fatalf("holder's label must be untouched, got (%q, manual=%v)", h.Label, h.LabelManual)
+	}
+	if mine := agentRowForTest(t, "muster-9"); mine.Label != "nfl-3" || !mine.LabelManual {
+		t.Fatalf("my own tuple must still take the name, got (%q, manual=%v)", mine.Label, mine.LabelManual)
+	}
+}
+
+// TestHookSessionStartProjectsNameOnFreshStart wires the projection through
+// cmdHook itself: a fresh (non-resume) pane SessionStart whose payload names a
+// custom-titled transcript registers AND projects, in one hook.
+func TestHookSessionStartProjectsNameOnFreshStart(t *testing.T) {
+	startTestDaemon(t)
+	tp := writeTranscript(t, "nfl-3")
+	t.Setenv("TMUX", "/tmp/sockP,1,0")
+	t.Setenv("TMUX_PANE", "%3")
+	t.Setenv("MUSTER_ALIAS", "")
+	prev := tmuxenv.Run
+	tmuxenv.Run = hookRun(map[string]string{
+		"#{session_id}": "$1", "#{session_created}": "100", "#{session_name}": "proj-start",
+	})
+	t.Cleanup(func() { tmuxenv.Run = prev })
+
+	var buf bytes.Buffer
+	payload := fmt.Sprintf(`{"source":"startup","session_id":"uuid-7","transcript_path":%q}`, tp)
+	if err := cmdHook([]string{"SessionStart"}, strings.NewReader(payload), &buf); err != nil {
+		t.Fatal(err)
+	}
+	ag := agentRowForTest(t, "proj-start")
+	if ag.Label != "nfl-3" || !ag.LabelManual {
+		t.Fatalf("fresh SessionStart must project the name onto the bus, got (%q, manual=%v)", ag.Label, ag.LabelManual)
+	}
+	if !strings.Contains(buf.String(), `session name "nfl-3"`) {
+		t.Fatalf("expected the context line, got %q", buf.String())
+	}
+}
+
+// TestHookSessionStartProjectsNameOnResume is the spec's payoff: a resumed
+// conversation reclaims its alias AND re-asserts its custom-title as the
+// session's manual label on the NEW tuple — zero operator gestures.
+func TestHookSessionStartProjectsNameOnResume(t *testing.T) {
+	startTestDaemon(t)
+	tp := writeTranscript(t, "nfl-3")
+	t.Setenv("TMUX", "/tmp/sock,1,0")
+	t.Setenv("TMUX_PANE", "%9")
+	t.Setenv("MUSTER_ALIAS", "")
+	if _, err := callData("register_agent", map[string]any{
+		"alias": "backend-2", "socket_path": "/tmp/sock", "session_id": "$OLD",
+		"session_created": 111, "harness_session_id": "uuid-42",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := callData("deregister_agent", map[string]any{"alias": "backend-2"}); err != nil {
+		t.Fatal(err)
+	}
+	prev := tmuxenv.Run
+	tmuxenv.Run = hookRun(map[string]string{
+		"#{session_id}": "$NEW", "#{session_name}": "muster-3", "#{session_created}": "222",
+	})
+	t.Cleanup(func() { tmuxenv.Run = prev })
+
+	var buf bytes.Buffer
+	payload := fmt.Sprintf(`{"source":"resume","session_id":"uuid-42","transcript_path":%q}`, tp)
+	if err := cmdHook([]string{"SessionStart"}, strings.NewReader(payload), &buf); err != nil {
+		t.Fatal(err)
+	}
+	ag := agentRowForTest(t, "backend-2")
+	if ag.SessionID != "$NEW" || ag.Label != "nfl-3" || !ag.LabelManual {
+		t.Fatalf("resume must reclaim onto $NEW and re-assert the name, got %+v", ag)
+	}
+}

@@ -47,12 +47,19 @@ func cmdHook(args []string, stdin io.Reader, out io.Writer) error {
 		}
 		_ = json.Unmarshal(payload, &start)
 		if c.SocketPath != "" && c.PaneID != "" {
-			if start.Source == "resume" && hookSessionStartResume(c, h, model, out) {
-				return nil
+			// The resume path used to return early; it now only suppresses the
+			// default session-name register (handled), so BOTH a reclaimed
+			// conversation and a fresh one fall through to the projection —
+			// resuming a named conversation anywhere re-asserts its name with
+			// zero operator gestures (spec §4).
+			handled := false
+			if start.Source == "resume" {
+				handled = hookSessionStartResume(c, h, model, out)
 			}
-			if hookMayClaimIdentity(c) {
+			if !handled && hookMayClaimIdentity(c) {
 				hookRegisterPane(c, h, model)
 			}
+			hookProjectName(c, harnessenv.CustomTitle(h.TranscriptPath), out)
 		} else {
 			hookSessionStartPaneless(h, model)
 		}
@@ -70,6 +77,72 @@ func cmdHook(args []string, stdin io.Reader, out io.Writer) error {
 		hookStop(payload, out)
 	}
 	return nil
+}
+
+// hookProjectName projects the conversation's user-set name (the transcript
+// custom-title — see harnessenv.CustomTitle) onto every naming surface at
+// SessionStart: the tmux option pair (socket-aware — hooks run env-stripped,
+// so an ambient set-option would land nowhere) and the stored bus label
+// (manual, incarnation-scoped via set_label). This is the spec's
+// conversation-as-identity payoff: resume nfl-3 anywhere and "send nfl-3"
+// routes with zero gestures. Best-effort throughout — a failed write degrades
+// to pre-projection behavior, never a wrong name. Empty title = no-op: never
+// demote, never clear. A same-project manual holder elsewhere is warned
+// about, never overwritten: the set_label write is tuple-scoped by
+// construction, so stealing is impossible and the resolver's ambiguity error
+// stays the enforcement (spec §4).
+//
+// No /rename injection (the one thing `muster label` also does): the name
+// CAME from the harness side, so typing it back into the pane would loop it.
+func hookProjectName(c tmuxenv.Capture, title string, out io.Writer) {
+	if title == "" || c.SocketPath == "" || c.SessionID == "" {
+		return
+	}
+	opt := tmuxenv.LabelOption()
+	if err := tmuxenv.SetSessionOptionOn(c.SocketPath, c.SessionID, opt, title); err != nil {
+		return // tmux unreachable: leave every surface as-is
+	}
+	_ = tmuxenv.SetSessionOptionOn(c.SocketPath, c.SessionID, opt+"_manual", "1")
+	_ = tmuxenv.RefreshClientOn(c.SocketPath) // best-effort: repaint title bars
+	if _, err := callData("set_label", map[string]any{
+		"socket_path": c.SocketPath, "session_id": c.SessionID,
+		"session_created": c.SessionCreated,
+		"label":           title, "label_manual": true,
+	}); err != nil {
+		_, _ = fmt.Fprintf(out, "muster: session name %q set in tmux; bus sync failed (%v) — refreshes on next register\n", title, err)
+		return
+	}
+	_, _ = fmt.Fprintf(out, "muster: session name %q → tmux label + bus (manual)\n", title)
+	warnLabelCollision(title, c, out)
+}
+
+// warnLabelCollision surfaces (never resolves) a same-project manual-label
+// holder on a different session: the human decides who renames.
+func warnLabelCollision(title string, c tmuxenv.Capture, out io.Writer) {
+	raw, err := callData("list_agents", nil)
+	if err != nil {
+		return
+	}
+	var agents []agentRow
+	if json.Unmarshal(raw, &agents) != nil {
+		return
+	}
+	var myProject string
+	for _, a := range agents {
+		if a.SocketPath == c.SocketPath && a.SessionID == c.SessionID && a.SessionCreated == c.SessionCreated && !a.Departed {
+			myProject = a.Project
+			break
+		}
+	}
+	for _, a := range agents {
+		if a.Departed || !a.LabelManual || a.Label != title || a.Project != myProject {
+			continue
+		}
+		if a.SocketPath == c.SocketPath && a.SessionID == c.SessionID {
+			continue // my own tuple
+		}
+		_, _ = fmt.Fprintf(out, "muster: note — label %q is also held by %s; sends to the bare label will error as ambiguous until one of you renames\n", title, a.Alias)
+	}
 }
 
 // hookCapture resolves the tmux identity a hook acts on: the environment
