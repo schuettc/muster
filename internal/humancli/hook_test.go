@@ -1554,12 +1554,14 @@ func writeTeammateTranscript(t *testing.T) string {
 }
 
 // stubTeammateGateTmux swaps tmuxenv.Run for a recorder seeded with values,
-// keyed by the last arg (mirroring hookRun) — realistic enough that, absent
-// the gate, the pre-existing pane-anchored logic (hookCapture,
-// hookMayClaimIdentity, hookStopWalked, ...) would resolve pane %2's tuple
-// onto the primary's own session $1 exactly as the 2026-08-06 incident did.
-// Once the gate is in place, none of this is ever consulted, so the
-// recorded calls come back empty.
+// keyed by the last arg (mirroring hookRun) — the tmux answers a teammate's
+// SessionStart/SessionEnd/Stop would actually see firing from a sibling pane
+// of the primary's own session. Once the gate is in place none of this is
+// ever consulted, so the recorded calls come back empty; absent the gate,
+// these are exactly the answers the pre-existing pane-anchored logic
+// (hookCapture, hookMayClaimIdentity, hookStopWalked, ...) used on
+// 2026-08-06 to resolve pane %2's tuple onto the primary's own session $1
+// and stomp it.
 func stubTeammateGateTmux(t *testing.T, values map[string]string) *[][]string {
 	t.Helper()
 	var calls [][]string
@@ -1575,16 +1577,18 @@ func stubTeammateGateTmux(t *testing.T, values map[string]string) *[][]string {
 	return &calls
 }
 
-// registerGuardedPrimary registers the primary alias on pane %1 of session
-// $1 (socket /s, incarnation 200) and gives it a manual label via the
-// set_label op — the exact row shape the 2026-08-06 incident stomped when a
-// teammate's SessionStart fired from the sibling pane %2 of the same
-// session.
+// registerGuardedPrimary registers the primary alias on session $1 (socket
+// /s, incarnation 200) with NO stored pane_id — the unprovable-claim shape
+// of the 2026-08-06 incident: hookMayClaimIdentity's pane check
+// (`ag.PaneID == "" || ag.PaneID == c.PaneID`) treats an empty stored pane
+// as "anyone may claim", exactly what let a teammate's sibling-pane
+// SessionStart win the primary's own identity. It then gives the row a
+// manual label via the set_label op — the row shape the incident stomped.
 func registerGuardedPrimary(t *testing.T) {
 	t.Helper()
 	if _, err := callData("register_agent", map[string]any{
 		"alias": "primary", "socket_path": "/s", "session_id": "$1",
-		"session_created": int64(200), "pane_id": "%1",
+		"session_created": int64(200),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -1597,21 +1601,27 @@ func registerGuardedPrimary(t *testing.T) {
 }
 
 // teammateGateTmuxValues are the tmux stub answers shared by all three
-// teammate-gate regression tests: the primary's own session/pane identity,
-// so that (absent the gate) the pre-existing logic would resolve pane %2
-// onto the primary's tuple exactly as the incident did.
+// teammate-gate regression tests: the primary's own session identity, plus
+// a non-zero @muster_inbox so Stop's cheap gate doesn't short-circuit
+// before ever reaching the daemon — so that (absent the identity gate) the
+// pre-existing logic would resolve pane %2 onto the primary's tuple exactly
+// as the incident did.
 var teammateGateTmuxValues = map[string]string{
 	"#{session_id}":      "$1",
 	"#{session_created}": "200",
 	"#{session_name}":    "primary",
-	"#{pane_id}":         "%1", // the primary's pane is still alive
+	"@muster_inbox":      "1",
 }
 
 // TestHookTeammateSessionStartTouchesNothing is the 2026-08-06 incident as a
-// regression test: a primary registered on pane %1 of $1; a teammate's
+// regression test: a primary registered on session $1 with no stored pane
+// claim (unprovable, exactly like the incident row); a teammate's
 // SessionStart fires from pane %2 of the SAME session with a teamName-bearing
 // transcript. The row must be byte-for-byte untouched (pane, harness id,
-// label) and the roster must gain no alias.
+// label) and the roster must gain no alias. Without the gate this actually
+// stomps: hookMayClaimIdentity's empty-pane rule lets pane %2 win the
+// register, and the upsert overwrites PaneID/HarnessSessionID and clears the
+// manual label.
 func TestHookTeammateSessionStartTouchesNothing(t *testing.T) {
 	tp := writeTeammateTranscript(t)
 	calls := stubTeammateGateTmux(t, teammateGateTmuxValues)
@@ -1680,7 +1690,10 @@ func TestHookTeammateSessionEndTombstonesNothing(t *testing.T) {
 
 // TestHookTeammateStopEmitsNoWake is the Stop counterpart: with an unread
 // message waiting for the primary, the same teammate transcript's Stop must
-// neither print a wake decision nor drain the primary's unread count.
+// print no wake decision AND must not run stampHarnessLinks, which — absent
+// the gate — would stamp the teammate's harness session UUID onto the
+// primary's link-less alias (hookStop never marks mail read itself, so
+// unread count is not the vector here; the harness-id stamp is).
 func TestHookTeammateStopEmitsNoWake(t *testing.T) {
 	tp := writeTeammateTranscript(t)
 	calls := stubTeammateGateTmux(t, teammateGateTmuxValues)
@@ -1709,20 +1722,7 @@ func TestHookTeammateStopEmitsNoWake(t *testing.T) {
 	if len(*calls) != 0 {
 		t.Fatalf("a teammate Stop must make no tmux calls, got %v", *calls)
 	}
-
-	raw, err := callData("session_unread", map[string]any{
-		"socket_path": "/s", "session_id": "$1", "session_created": int64(200),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	var res struct {
-		Total int `json:"total"`
-	}
-	if err := json.Unmarshal(raw, &res); err != nil {
-		t.Fatal(err)
-	}
-	if res.Total != 1 {
-		t.Fatalf("the primary's unread count must not be drained, got total=%d", res.Total)
+	if ag := agentRowForTest(t, "primary"); ag.HarnessSessionID != "" {
+		t.Fatalf("a teammate Stop must not stamp its harness session id onto the primary, got %q", ag.HarnessSessionID)
 	}
 }
