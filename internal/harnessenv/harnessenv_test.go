@@ -111,3 +111,62 @@ func TestCustomTitleAbsentOrUnreadable(t *testing.T) {
 		t.Fatalf("no record: got %q", got)
 	}
 }
+
+func TestIsTeammateDetectsMemberTranscript(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "member.jsonl")
+	lines := []string{
+		`{"type":"mode","mode":"normal","sessionId":"u1"}`,
+		`{"type":"permission-mode","permissionMode":"auto","sessionId":"u1"}`,
+		`{"parentUuid":null,"isSidechain":false,"teamName":"session-b41c21dd","agentName":"l5-mlb-measure","type":"user","message":{"role":"user","content":"go"}}`,
+	}
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !IsTeammate(path) {
+		t.Fatal("teamName-bearing transcript must read as teammate")
+	}
+}
+
+func TestIsTeammateFalseForPrimariesAndLeads(t *testing.T) {
+	dir := t.TempDir()
+	// a lead/primary: custom-title + agent-name records but NO teamName —
+	// the spec's verified shape (an agent-name record alone must not match)
+	path := filepath.Join(dir, "primary.jsonl")
+	lines := []string{
+		`{"type":"custom-title","customTitle":"nfl-3","sessionId":"u2"}`,
+		`{"type":"agent-name","agentName":"nfl-3","sessionId":"u2"}`,
+		`{"type":"user","message":{"role":"user","content":"body mentioning teamName in prose"}}`,
+	}
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if IsTeammate(path) {
+		t.Fatal("primary transcript must not read as teammate")
+	}
+}
+
+func TestIsTeammateFailOpenAndBounded(t *testing.T) {
+	if IsTeammate("") {
+		t.Fatal("empty path must be false")
+	}
+	if IsTeammate(filepath.Join(t.TempDir(), "missing.jsonl")) {
+		t.Fatal("missing file must be false")
+	}
+	// teamName appearing only AFTER line 30 does not match: the signal
+	// sits in the first few lines by construction, and an unbounded scan
+	// would false-positive on conversation text echoing transcripts.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "late.jsonl")
+	var lines []string
+	for i := 0; i < 30; i++ {
+		lines = append(lines, `{"type":"user","message":{"role":"user","content":"x"}}`)
+	}
+	lines = append(lines, `{"teamName":"t","agentName":"a","type":"user"}`)
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if IsTeammate(path) {
+		t.Fatal("teamName beyond line 30 must not match (bounded scan)")
+	}
+}

@@ -38,6 +38,21 @@ func cmdHook(args []string, stdin io.Reader, out io.Writer) error {
 		model = args[1]
 	}
 	payload, _ := io.ReadAll(io.LimitReader(stdin, 1<<20)) // a hook payload is small; the cap only guards a pathological writer
+	// A fleet TEAMMATE's hooks are no-ops (teammate-identity-refusal spec
+	// §3): a teammate is a full Claude session in a pane of some
+	// primary's tmux session, so without this gate it races the primary
+	// for the session's bus identity at every register, resume-reclaim,
+	// projection, tombstone sweep, and stamp — and the pane-ownership
+	// guard only protects a primary while its pane claim is provable
+	// (caught live 2026-08-06: a teammate stamped its pane + harness id
+	// onto two primaries' rows). Explicit registration (MCP
+	// register_agent, `muster register`) is deliberately untouched — a
+	// teammate can still be GIVEN an identity on purpose; what is barred
+	// is automatic capture. Codex/Cursor payloads carry no
+	// transcript_path, so they never match.
+	if harnessenv.IsTeammate(harnessenv.FromHookPayload(payload).TranscriptPath) {
+		return nil
+	}
 	switch args[0] {
 	case "SessionStart":
 		c := hookCapture()

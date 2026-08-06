@@ -160,3 +160,41 @@ func CustomTitle(transcriptPath string) string {
 	}
 	return title
 }
+
+// IsTeammate reports whether the transcript at path belongs to a fleet
+// TEAMMATE session — a member spawned into a pane of some primary's tmux
+// session. Members' transcripts carry a top-level teamName (with
+// agentName) on their records from the first few lines; team LEADS and
+// plain primaries never do (verified over 46 transcripts, 2026-08-06 —
+// see the teammate-identity-refusal spec §2; a bare agent-name record
+// does NOT discriminate, /rename'd primaries have those). The scan is
+// bounded to the first 30 lines: the signal sits at the top by
+// construction, and an unbounded scan would false-positive on
+// conversation text that quotes transcripts. Empty path, unreadable
+// file, or no match read as NOT a teammate — hooks fail open, they never
+// block a session.
+func IsTeammate(transcriptPath string) bool {
+	if transcriptPath == "" {
+		return false
+	}
+	f, err := os.Open(transcriptPath)
+	if err != nil {
+		return false
+	}
+	defer func() { _ = f.Close() }()
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64*1024), 10*1024*1024)
+	for i := 0; i < 30 && sc.Scan(); i++ {
+		line := sc.Bytes()
+		if !bytes.Contains(line, []byte(`"teamName"`)) {
+			continue
+		}
+		var rec struct {
+			TeamName string `json:"teamName"`
+		}
+		if json.Unmarshal(line, &rec) == nil && rec.TeamName != "" {
+			return true
+		}
+	}
+	return false
+}
