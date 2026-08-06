@@ -85,6 +85,40 @@ day. Standing repair for any straggler: re-register from the live pane
 (`TMUX=<socket>,x,x TMUX_PANE=<pane> muster register <alias> --model
 claude --harness-session <uuid>`).
 
+## 3a. Addendum (2026-08-06, post-v0.10.1 live acceptance FAILURE)
+
+The v0.10.1 acceptance test — spawn a teammate seconds after the installer
+restarted the daemon — reproduced the theft THROUGH the shipped gate. Two
+gaps, both confirmed by evidence:
+
+1. **The transcript does not exist when SessionStart fires.** The
+   teammate's transcript records the SessionStart hook_success in its FIRST
+   flush — the file is written after the hooks run. `IsTeammate` fail-opens
+   on the missing file, so the transcript predicate covers Stop/SessionEnd
+   but never SessionStart, the most damaging event. §2's timing probe
+   measured file-appearance, not hook-fire, and drew the wrong conclusion.
+2. **`hookMayClaimIdentity` fails open when the daemon is unreachable.**
+   `hookGetAgent` treats a dial error as not-found → claimable. The
+   install's LaunchAgent restart put the daemon mid-restart exactly when
+   the probe's SessionStart ran its ownership check.
+
+**The durable signal is process argv.** Teammate Claude processes launch as
+`claude --agent-id … --agent-name … --team-name … --parent-session-id …`
+(verified live on the probe; a primary's process carries none of these).
+Argv exists from process birth — no fail-open window — and the hook is a
+descendant of that process, reachable by the same ancestry walk the capture
+already does.
+
+Revised design:
+- **Detection = argv first, transcript second.** `IsTeammate` becomes an
+  OR: an ancestor process whose argv carries `--team-name` (authoritative,
+  covers SessionStart), or the transcript teamName scan (belt, covers any
+  spawn shape where argv is unavailable).
+- **Ownership fails closed on daemon errors.** `hookGetAgent` distinguishes
+  "row absent" (claimable) from "daemon unreachable" (NOT claimable this
+  event — skip registration; the next hook event heals once the daemon is
+  back). A hook still never blocks the session; it just declines to write.
+
 ## 4. Testing
 
 The regression scenario is not hypothetical — it is the day's incident:
