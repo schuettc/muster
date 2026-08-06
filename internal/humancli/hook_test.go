@@ -817,7 +817,7 @@ func TestHookSessionStartClaimsOverDepartedRow(t *testing.T) {
 	if err := cmdHook([]string{"SessionStart"}, strings.NewReader(""), &buf); err != nil {
 		t.Fatalf("SessionStart: %v", err)
 	}
-	ag, found := hookGetAgent("claim-departed")
+	ag, found, _ := hookGetAgent("claim-departed")
 	if !found {
 		t.Fatal("expected claim-departed to still be registered")
 	}
@@ -980,7 +980,7 @@ func TestHookStopStampsHarnessLink(t *testing.T) {
 	if err := cmdHook([]string{"Stop"}, strings.NewReader(`{"session_id":"uuid-9"}`), &buf); err != nil {
 		t.Fatal(err)
 	}
-	ag, ok := hookGetAgent("backend")
+	ag, ok, _ := hookGetAgent("backend")
 	if !ok || ag.HarnessSessionID != "uuid-9" {
 		t.Fatalf("harness link after Stop = %q (found=%v), want uuid-9", ag.HarnessSessionID, ok)
 	}
@@ -1062,7 +1062,7 @@ func TestHookStopRepairsHarnessLinkViaAncestryWalk(t *testing.T) {
 	if !strings.Contains(buf.String(), "alias 'walked-backend'") {
 		t.Fatalf("expected the walked pane's Stop to drain, got %q", buf.String())
 	}
-	ag, ok := hookGetAgent("walked-backend")
+	ag, ok, _ := hookGetAgent("walked-backend")
 	if !ok || ag.HarnessSessionID != "uuid-walk" {
 		t.Fatalf("harness link after walked Stop = %q (found=%v), want uuid-walk", ag.HarnessSessionID, ok)
 	}
@@ -1130,8 +1130,8 @@ func TestStampHarnessLinksScopesToOwnedPane(t *testing.T) {
 	// concern already covered elsewhere.
 	stampHarnessLinks([]string{"mine", "sibling"}, harnessenv.Capture{SessionID: "uuid-pane"}, "/tmp/sockPane", "$1", "%1")
 
-	mine, _ := hookGetAgent("mine")
-	sibling, _ := hookGetAgent("sibling")
+	mine, _, _ := hookGetAgent("mine")
+	sibling, _, _ := hookGetAgent("sibling")
 	if mine.HarnessSessionID != "uuid-pane" {
 		t.Fatalf("my own alias must be stamped, got %+v", mine)
 	}
@@ -1183,11 +1183,11 @@ func TestHookSessionStartResumeReclaimsAlias(t *testing.T) {
 	if !strings.Contains(out, "backend-2") || !strings.Contains(out, "1 unread") {
 		t.Fatalf("resume summary missing alias/backlog:\n%s", out)
 	}
-	ag, ok := hookGetAgent("backend-2")
+	ag, ok, _ := hookGetAgent("backend-2")
 	if !ok || ag.Departed || ag.SessionID != "$NEW" || ag.Label != "lake" {
 		t.Fatalf("reclaimed row = %+v (found=%v), want live on $NEW with label kept", ag, ok)
 	}
-	if _, exists := hookGetAgent("muster-3"); exists {
+	if _, exists, _ := hookGetAgent("muster-3"); exists {
 		t.Fatalf("resume must not also register a fresh session-name alias")
 	}
 }
@@ -1227,11 +1227,11 @@ func TestHookSessionStartResumeSkipsLiveCollision(t *testing.T) {
 	if !strings.Contains(buf.String(), "not reclaimed") {
 		t.Fatalf("expected a collision notice, got:\n%s", buf.String())
 	}
-	ag, _ := hookGetAgent("backend-2")
+	ag, _, _ := hookGetAgent("backend-2")
 	if ag.SessionID != "$OLD" {
 		t.Fatalf("collision row moved to %q — must stay on $OLD", ag.SessionID)
 	}
-	if fallback, found := hookGetAgent("muster-3"); !found || fallback.Departed || fallback.SessionID != "$NEW" {
+	if fallback, found, _ := hookGetAgent("muster-3"); !found || fallback.Departed || fallback.SessionID != "$NEW" {
 		t.Fatalf("nothing reclaimed: expected the default session-name alias 'muster-3' registered on $NEW, got %+v found=%v", fallback, found)
 	}
 }
@@ -1724,5 +1724,87 @@ func TestHookTeammateStopEmitsNoWake(t *testing.T) {
 	}
 	if ag := agentRowForTest(t, "primary"); ag.HarnessSessionID != "" {
 		t.Fatalf("a teammate Stop must not stamp its harness session id onto the primary, got %q", ag.HarnessSessionID)
+	}
+}
+
+// TestHookTeammateSessionStartArgvGate is the v0.10.1 live-acceptance FAILURE
+// as a regression test (spec §3a): the teammate's SessionStart fires BEFORE
+// its transcript file exists, so the transcript predicate fail-opens and the
+// shipped gate let the theft through. The durable signal is process argv —
+// the teammate's claude process carries --team-name from birth and the hook is
+// its descendant. Same incident row as TestHookTeammateSessionStartTouchesNothing
+// (a primary with no provable pane claim), but the payload points at a
+// transcript path that does NOT exist yet.
+func TestHookTeammateSessionStartArgvGate(t *testing.T) {
+	calls := stubTeammateGateTmux(t, teammateGateTmuxValues)
+	pinTeammateArgv(t, "claude --agent-id a1 --agent-name l5-mlb-measure --team-name session-b41c21dd --parent-session-id p9")
+
+	startCLITestDaemon(t)
+	registerGuardedPrimary(t)
+	before := agentRowForTest(t, "primary")
+
+	t.Setenv("TMUX", "/s,1,0")
+	t.Setenv("TMUX_PANE", "%2")
+	t.Setenv("MUSTER_ALIAS", "")
+
+	// The transcript the harness WILL write, but hasn't yet at hook-fire time.
+	unwritten := filepath.Join(t.TempDir(), "not-yet.jsonl")
+	var buf bytes.Buffer
+	payload := fmt.Sprintf(`{"source":"startup","session_id":"uuid-tm","transcript_path":%q}`, unwritten)
+	if err := cmdHook([]string{"SessionStart"}, strings.NewReader(payload), &buf); err != nil {
+		t.Fatal(err)
+	}
+
+	if buf.Len() != 0 {
+		t.Fatalf("a teammate SessionStart must print nothing, got %q", buf.String())
+	}
+	if len(*calls) != 0 {
+		t.Fatalf("a teammate SessionStart must make no tmux calls, got %v", *calls)
+	}
+	if agents := listAgentsForTest(t, ""); len(agents) != 1 {
+		t.Fatalf("the roster must gain no alias, got %d rows: %+v", len(agents), agents)
+	}
+	after := agentRowForTest(t, "primary")
+	if after.PaneID != before.PaneID || after.HarnessSessionID != before.HarnessSessionID ||
+		after.Label != before.Label || after.LabelManual != before.LabelManual {
+		t.Fatalf("the primary row must be untouched: before=%+v after=%+v", before, after)
+	}
+}
+
+// TestHookMayClaimIdentityFailsClosedOnDaemonError is the second half of the
+// v0.10.1 acceptance failure (spec §3a): the installer's LaunchAgent restart
+// put the daemon mid-restart exactly when a foreign pane's SessionStart ran
+// its ownership check, and hookGetAgent's dial error read as "no row" — i.e.
+// "claimable". An unanswerable roster is not evidence of a free identity, so
+// the gate now declines to write for this event; the next hook event re-runs
+// the check once the daemon is back.
+func TestHookMayClaimIdentityFailsClosedOnDaemonError(t *testing.T) {
+	dir, cleanup, err := mustertest.ShortHome()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(cleanup)
+	t.Setenv("MUSTER_HOME", dir) // nothing is listening on this socket path
+	// Skip client.dialOrSpawn's auto-start: under `go test` os.Executable() is
+	// the test binary, so the fallback re-execs the whole suite (see
+	// TestHookSessionStartBestEffortWhenDaemonUnreachable).
+	t.Setenv("MUSTER_NO_AUTOSPAWN", "1")
+	t.Setenv("MUSTER_ALIAS", "")
+
+	c := tmuxenv.Capture{SocketPath: "/s", PaneID: "%2", SessionID: "$1", SessionName: "primary"}
+	if hookMayClaimIdentity(c) {
+		t.Fatal("an unreachable daemon must NOT read as a claimable identity")
+	}
+}
+
+// TestHookMayClaimIdentityClaimsWhenRowAbsent is the fail-closed change's
+// counterweight: a daemon that ANSWERS "no such alias" still means the name is
+// free, and a fresh session must claim it exactly as before.
+func TestHookMayClaimIdentityClaimsWhenRowAbsent(t *testing.T) {
+	startTestDaemon(t)
+	t.Setenv("MUSTER_ALIAS", "")
+	c := tmuxenv.Capture{SocketPath: "/s", PaneID: "%2", SessionID: "$1", SessionName: "nobody-here"}
+	if !hookMayClaimIdentity(c) {
+		t.Fatal("an absent row must stay claimable")
 	}
 }

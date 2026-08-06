@@ -31,7 +31,7 @@ func TestBecomeClaimsSingleAliasSession(t *testing.T) {
 	if !strings.Contains(buf.String(), "you are now 'alias-routing' (was 'muster-2')") {
 		t.Fatalf("output = %q", buf.String())
 	}
-	ag, ok := hookGetAgent("alias-routing")
+	ag, ok, _ := hookGetAgent("alias-routing")
 	if !ok || ag.Departed || ag.SessionID != "$1" {
 		t.Fatalf("claimed row = %+v (ok=%v)", ag, ok)
 	}
@@ -92,10 +92,10 @@ func TestBecomeRejectsEmptyAlias(t *testing.T) {
 	}
 
 	// No row must have been created for either rejected name.
-	if _, found := hookGetAgent(""); found {
+	if _, found, _ := hookGetAgent(""); found {
 		t.Fatal("empty alias must never reach the daemon")
 	}
-	if _, found := hookGetAgent("   "); found {
+	if _, found, _ := hookGetAgent("   "); found {
 		t.Fatal("whitespace-only alias must never reach the daemon")
 	}
 }

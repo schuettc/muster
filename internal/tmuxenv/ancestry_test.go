@@ -28,6 +28,69 @@ func containsSuffix(args []string, suffix string) bool {
 	return false
 }
 
+// TestAncestorArgvContains covers the teammate signal the hook gate leans on
+// (teammate-identity-refusal spec §3a): a fleet teammate's claude process is
+// launched with `--team-name <x>` and the hook is its descendant, so the flag
+// is findable by the same ancestor walk CaptureFromAncestry does. Matching is
+// per argv TOKEN, never a substring — `--team-names-file` must not read as a
+// team marker — and every failure mode (empty chain, unreadable argv) comes
+// back false, because a hook must never block a session.
+func TestAncestorArgvContains(t *testing.T) {
+	prevAnc, prevArgv := AncestorPIDs, ProcessArgv
+	t.Cleanup(func() { AncestorPIDs, ProcessArgv = prevAnc, prevArgv })
+
+	argv := map[int]string{}
+	AncestorPIDs = func() []int { return []int{10, 20, 30} }
+	ProcessArgv = func(pid int) string { return argv[pid] }
+
+	// The live shape (verified 2026-08-06): the hook process, its shell, then
+	// the teammate's claude process carrying the flag.
+	argv = map[int]string{
+		10: "muster hook SessionStart claude",
+		20: "-zsh",
+		30: "claude --agent-id a1 --agent-name l5-mlb-measure --team-name session-b41c21dd --parent-session-id p9",
+	}
+	if !AncestorArgvContains("--team-name") {
+		t.Fatal("an ancestor launched with --team-name must read as a teammate")
+	}
+
+	// A primary's chain: same walk, no marker anywhere.
+	argv = map[int]string{
+		10: "muster hook SessionStart claude",
+		20: "-zsh",
+		30: "claude",
+	}
+	if AncestorArgvContains("--team-name") {
+		t.Fatal("a chain with no --team-name must not read as a teammate")
+	}
+
+	// Token discipline: a flag that merely CONTAINS the token is not it.
+	argv = map[int]string{30: "claude --team-names-file /tmp/x --no-team-name-check"}
+	if AncestorArgvContains("--team-name") {
+		t.Fatal("--team-names-file must not match the --team-name token")
+	}
+
+	// The =-joined spelling is still a discrete token for the same flag.
+	argv = map[int]string{30: "claude --team-name=session-b41c21dd"}
+	if !AncestorArgvContains("--team-name") {
+		t.Fatal("--team-name=<x> must read as the same flag")
+	}
+
+	// Fail-open: an unreadable argv (ps failed) and an empty chain (walk
+	// failed) both mean "not a teammate", never a blocked session.
+	argv = map[int]string{}
+	if AncestorArgvContains("--team-name") {
+		t.Fatal("unreadable argv must fail open to not-a-teammate")
+	}
+	AncestorPIDs = func() []int { return nil }
+	if AncestorArgvContains("--team-name") {
+		t.Fatal("an empty ancestor chain must fail open to not-a-teammate")
+	}
+	if AncestorArgvContains("") {
+		t.Fatal("an empty token must never match")
+	}
+}
+
 // TestCaptureFromAncestryMatchesPanePID: the walk must find the pane whose
 // #{pane_pid} is one of this process's ancestors, capture the full tuple
 // from THAT socket, and come back empty (fail-safe) when no pane matches —

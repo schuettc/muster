@@ -48,9 +48,24 @@ func cmdHook(args []string, stdin io.Reader, out io.Writer) error {
 	// onto two primaries' rows). Explicit registration (MCP
 	// register_agent, `muster register`) is deliberately untouched — a
 	// teammate can still be GIVEN an identity on purpose; what is barred
-	// is automatic capture. Codex/Cursor payloads carry no
-	// transcript_path, so they never match.
-	if harnessenv.IsTeammate(harnessenv.FromHookPayload(payload).TranscriptPath) {
+	// is automatic capture.
+	//
+	// TWO signals, in this order (spec §3a, after the v0.10.1 acceptance
+	// failure). ARGV is authoritative: a teammate's claude process is
+	// launched with `--team-name <x>` and the hook is its descendant, so
+	// the marker exists from process birth and covers SessionStart — the
+	// most damaging event, and the one the transcript CANNOT cover,
+	// because the harness writes the transcript file only after the
+	// SessionStart hooks have run (IsTeammate then fail-opens on a
+	// missing file, which is exactly how the shipped gate was walked
+	// through live). The TRANSCRIPT scan stays as the belt: it covers
+	// spawn shapes where the ancestry is unreadable — an async or
+	// reparented hook, or a harness that launches teammates some other
+	// way — on every later event once the file exists. Codex/Cursor
+	// payloads carry no transcript_path and their processes carry no
+	// --team-name, so neither signal ever matches them.
+	if tmuxenv.AncestorArgvContains("--team-name") ||
+		harnessenv.IsTeammate(harnessenv.FromHookPayload(payload).TranscriptPath) {
 		return nil
 	}
 	switch args[0] {
@@ -324,32 +339,54 @@ func hookAlias(c tmuxenv.Capture) string {
 }
 
 // hookGetAgent fetches an alias's full roster row via the daemon's get_agent
-// op, decoded exactly like cmdNudge's pane resolution. false on any
-// transport/daemon failure or a not-found alias — callers degrade to
-// today's behavior in that case, never block on it.
-func hookGetAgent(alias string) (agentFull, bool) {
+// op, decoded exactly like cmdNudge's pane resolution. The three results are
+// deliberately distinct (spec §3a): found=true with the row; found=false with
+// err=nil when the daemon ANSWERED "no such alias"; and err!=nil when the
+// roster could not be consulted at all (dial failure mid-daemon-restart,
+// daemon error, undecodable reply). "Absent" and "unknown" are different
+// facts — collapsing them is what let a foreign pane claim a live identity
+// during the v0.10.1 acceptance run — so every caller decides for itself
+// which way an unanswerable roster falls.
+func hookGetAgent(alias string) (agentFull, bool, error) {
 	raw, err := callData("get_agent", map[string]any{"alias": alias})
 	if err != nil {
-		return agentFull{}, false
+		return agentFull{}, false, err
 	}
 	var res struct {
 		Found bool      `json:"found"`
 		Agent agentFull `json:"agent"`
 	}
-	if json.Unmarshal(raw, &res) != nil || !res.Found {
-		return agentFull{}, false
+	if err := json.Unmarshal(raw, &res); err != nil {
+		return agentFull{}, false, err
 	}
-	return res.Agent, true
+	if !res.Found {
+		return agentFull{}, false, nil
+	}
+	return res.Agent, true, nil
 }
 
 // hookMayClaimIdentity is the SessionStart gate (spec: first live claimant
 // wins the session's primary-agent pane). Degrades to true — today's
-// register — whenever tmux identity or the roster can't answer.
+// register — whenever tmux identity can't answer, or the roster answers that
+// nothing live holds the name.
+//
+// A roster that cannot answer at all is the one case that falls the other way
+// (spec §3a): an unreachable daemon is not evidence of a free identity, and
+// this is exactly how the v0.10.1 live acceptance failed — the installer's
+// LaunchAgent restart had the daemon down for the instant a foreign pane's
+// SessionStart ran its check, the dial error read as "no row", and the pane
+// claimed the primary's identity. Declining to write costs nothing: a hook
+// never blocks a session either way, primaries re-register at every
+// SessionStart, and the very next hook event re-runs this check once the
+// daemon is back.
 func hookMayClaimIdentity(c tmuxenv.Capture) bool {
 	if c.SocketPath == "" || c.PaneID == "" {
 		return true
 	}
-	ag, found := hookGetAgent(hookAlias(c))
+	ag, found, err := hookGetAgent(hookAlias(c))
+	if err != nil {
+		return false
+	}
 	if !found {
 		return true
 	}
@@ -446,8 +483,12 @@ func hookOwnsIdentity(c tmuxenv.Capture) bool {
 		// deregister, and never dial the daemon from an identity-less hook.
 		return false
 	}
-	ag, found := hookGetAgent(hookAlias(c))
-	if !found {
+	// An unanswerable roster falls the same way as an absent row here, and
+	// that is already fail-CLOSED: with no proof of ownership this hook
+	// deregisters nothing. Same posture as hookMayClaimIdentity — decline to
+	// write — reached from the opposite direction.
+	ag, found, err := hookGetAgent(hookAlias(c))
+	if err != nil || !found {
 		return false
 	}
 	if ag.Departed {
@@ -662,8 +703,11 @@ func stampHarnessLinks(aliases []string, h harnessenv.Capture, socketPath, sessi
 		return
 	}
 	for _, alias := range aliases {
-		ag, ok := hookGetAgent(alias)
-		if !ok || ag.Departed || ag.HarnessSessionID != "" ||
+		// Unanswerable roster ⇒ skip this alias: the stamp is a WRITE, and
+		// stamping a row whose ownership fields could not be read is the
+		// same class of mistake as claiming an identity blind.
+		ag, ok, err := hookGetAgent(alias)
+		if err != nil || !ok || ag.Departed || ag.HarnessSessionID != "" ||
 			ag.SocketPath != socketPath || ag.SessionID != sessionID {
 			continue
 		}
@@ -736,8 +780,13 @@ func hookStopOwnsAnyAlias(aliases []string, myPane string) bool {
 	}
 	sawNamedOwner := false
 	for _, alias := range aliases {
-		ag, found := hookGetAgent(alias)
-		if !found || ag.Departed || ag.PaneID == "" {
+		// An unanswerable roster is treated exactly like a row that names no
+		// owner: it neither grants nor denies. This gate guards a READ (should
+		// this pane drain its mail), and if the daemon is down the drain the
+		// wake text asks for will simply find nothing — no write, nothing to
+		// steal, so the pre-existing permissive posture stands.
+		ag, found, err := hookGetAgent(alias)
+		if err != nil || !found || ag.Departed || ag.PaneID == "" {
 			continue // a tombstoned row neither grants nor denies ownership
 		}
 		if ag.PaneID == myPane {

@@ -33,6 +33,48 @@ var AncestorPIDs = func() []int {
 	return pids
 }
 
+// ProcessArgv returns pid's command line as `ps` renders it ("claude
+// --agent-id a1 --team-name session-b41c"), or "" when it can't be read.
+// Injectable for tests — the sibling seam to AncestorPIDs, shelling out the
+// same way for the same reason: portable across macOS/Linux without cgo.
+var ProcessArgv = func(pid int) string {
+	out, err := exec.Command("ps", "-o", "command=", "-p", strconv.Itoa(pid)).Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// AncestorArgvContains reports whether any process in this process's parent
+// chain was launched with token in its argv — the same walk, the same bounds,
+// and the same fail-safe posture as CaptureFromAncestry, reading each hop's
+// command line instead of matching it against pane PIDs.
+//
+// The hook layer uses it to recognize a fleet TEAMMATE: teammate Claude
+// processes launch as `claude --agent-id … --team-name … --parent-session-id …`
+// while primaries carry none of those, and a hook is a DESCENDANT of the
+// process that spawned it — so the flag is reachable from here and, unlike the
+// transcript, exists from process birth (a teammate's transcript file is not
+// written until after its SessionStart hooks have already run).
+//
+// Matching is per argv token — a bare token, or the `token=value` spelling of
+// the same flag — never a substring, so `--team-names-file` is not a match.
+// Every failure (walk failed, ps unreadable, empty token) returns false: a
+// hook must never block a session on an ancestry it couldn't read.
+func AncestorArgvContains(token string) bool {
+	if token == "" {
+		return false
+	}
+	for _, pid := range AncestorPIDs() {
+		for _, field := range strings.Fields(ProcessArgv(pid)) {
+			if field == token || strings.HasPrefix(field, token+"=") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // SocketDir returns the directory holding this user's tmux server sockets:
 // $TMUX_TMPDIR if set (tmux's own knob — our operator-tunable too), else
 // /tmp/tmux-<uid>, tmux's default. Injectable for tests.
