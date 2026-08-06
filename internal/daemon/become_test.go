@@ -47,6 +47,86 @@ func TestBecomeOpClaimsAndReports(t *testing.T) {
 	}
 }
 
+// TestBecomeUnreadResolvesIncarnationOnTheClaimersDevice is the cross-device
+// tuple collision. (socket_path, session_id) is unique per MACHINE, not per
+// bus: two laptops' tmux servers both use /private/tmp/tmux-501/default and
+// both hand out $1. On the hosted backend one daemon fronts a store holding
+// every device's rows, so a peer laptop whose tmux server started later
+// carries a HIGHER session_created on the identical tuple.
+//
+// If the incarnation feeding become's unread count is resolved on the tuple
+// alone, the peer's creation time wins the "highest non-zero created" rule,
+// no row of the claiming device carries it, SessionUnread's device-scoped
+// base case comes back empty, and become reports 0 unread to a session that
+// has mail. Which laptop's tmux started first decides whether it misreports —
+// that is the whole bug. The resolution must be scoped to the CLAIMER's
+// device.
+//
+// The lambda is built with daemon.New(s, nil), so d.up == nil on the server
+// and sessionIncarnation's remote-mode guard does NOT fire there: the local
+// path with a shared store is exactly the hosted configuration. This test
+// reproduces it over the wire against SQLite by registering two devices onto
+// one tuple.
+func TestBecomeUnreadResolvesIncarnationOnTheClaimersDevice(t *testing.T) {
+	sock := startWithNotifier(t, &fakeNotifier{})
+	const tmuxSock, tmuxSess = "/private/tmp/tmux-501/default", "$1"
+	const mine, theirs = 1700000000, 1900000000 // their tmux server started later
+
+	call(t, sock, "register_agent", map[string]any{
+		"alias": "here", "device_id": "laptop-a",
+		"socket_path": tmuxSock, "session_id": tmuxSess, "session_created": mine,
+	})
+	// The colliding row: a DIFFERENT machine, identical tuple, higher created.
+	// DepartStaleSiblings is device-scoped, so this does not tombstone "here".
+	call(t, sock, "register_agent", map[string]any{
+		"alias": "elsewhere", "device_id": "laptop-b",
+		"socket_path": tmuxSock, "session_id": tmuxSess, "session_created": theirs,
+	})
+	call(t, sock, "register_agent", map[string]any{
+		"alias": "sender", "device_id": "laptop-a",
+		"socket_path": tmuxSock, "session_id": "$9", "session_created": mine,
+	})
+	call(t, sock, "send_message", map[string]any{
+		"from": "sender", "to_kind": "agent", "to_target": "here", "subject": "s", "body": "b",
+	})
+
+	resp := call(t, sock, "become", map[string]any{"from": "here", "to": "here-renamed"})
+	if !resp.OK {
+		t.Fatalf("become: %+v", resp)
+	}
+	data, _ := resp.Data.(map[string]any)
+	if n, _ := data["unread"].(float64); n < 1 {
+		t.Fatalf("unread = %v, want >= 1: a peer device's row on the same "+
+			"(socket, session) tuple must not decide this device's incarnation",
+			data["unread"])
+	}
+}
+
+// TestSessionIncarnationOfIsDeviceScoped pins the resolver directly: the same
+// colliding tuple, asked from each side, must answer with the asking device's
+// own incarnation — never the highest on the bus.
+func TestSessionIncarnationOfIsDeviceScoped(t *testing.T) {
+	const sock, sess = "/private/tmp/tmux-501/default", "$1"
+	roster := []store.Agent{
+		{Alias: "here", DeviceID: "laptop-a", SocketPath: sock, SessionID: sess, SessionCreated: 1700000000},
+		{Alias: "elsewhere", DeviceID: "laptop-b", SocketPath: sock, SessionID: sess, SessionCreated: 1900000000},
+		{Alias: "ghost", DeviceID: "laptop-a", SocketPath: sock, SessionID: sess, SessionCreated: 1600000000, Departed: true},
+	}
+	for _, tc := range []struct {
+		device   string
+		fallback int64
+		want     int64
+	}{
+		{"laptop-a", 1700000000, 1700000000}, // its own, not laptop-b's higher one
+		{"laptop-b", 1900000000, 1900000000},
+		{"laptop-c", 42, 42}, // no row on this device proves anything: fallback stands
+	} {
+		if got := sessionIncarnationOf(roster, tc.device, sock, sess, tc.fallback); got != tc.want {
+			t.Errorf("sessionIncarnationOf(%q) = %d, want %d", tc.device, got, tc.want)
+		}
+	}
+}
+
 // getAgentFailStore wraps a real *store.Store and injects a GetAgent failure
 // for one alias, leaving every other storeAPI method (including Become
 // itself) untouched — the error-injecting-wrapper pattern storeAPI's doc

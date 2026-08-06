@@ -301,11 +301,12 @@ func (d *Daemon) ReconcileLocalSessions() {
 		// group's recompute to zero. Same rule the local path applies in
 		// notifyForThread — sessionIncarnationOf is that rule, called here
 		// over `local` because remote mode's sessionIncarnation cannot read a
-		// store (see its doc). It MUST be `local`, never `agents`: an
-		// un-narrowed hosted roster would let a colliding tuple on a peer
-		// machine contribute its own unrelated creation time.
+		// store (see its doc). Passing `local` AND d.deviceID is belt and
+		// braces on purpose: the resolver now filters by device itself, so a
+		// colliding tuple on a peer machine cannot contribute its unrelated
+		// creation time even if a future caller hands it `agents`.
 		sessions = append(sessions, tuple{ag.SocketPath, ag.SessionID,
-			sessionIncarnationOf(local, ag.SocketPath, ag.SessionID, ag.SessionCreated)})
+			sessionIncarnationOf(local, d.deviceID, ag.SocketPath, ag.SessionID, ag.SessionCreated)})
 	}
 	sort.Slice(sessions, func(i, j int) bool {
 		if sessions[i].socketPath != sessions[j].socketPath {
@@ -454,7 +455,7 @@ func (d *Daemon) reconcileSessions(sessions []store.SessionRef) {
 		// fallback 0: an unprovable tuple (no live row carries a non-zero
 		// created) genuinely has no incarnation to badge, and 0 correctly
 		// resolves to an empty answer rather than another incarnation's mail.
-		created := sessionIncarnationOf(local, s.SocketPath, s.SessionID, 0)
+		created := sessionIncarnationOf(local, d.deviceID, s.SocketPath, s.SessionID, 0)
 		if _, err := d.setSessionBadge(s.SocketPath, s.SessionID, created); err != nil {
 			fmt.Fprintln(os.Stderr, "muster: poll reconcile:", s.SessionID, err)
 		}

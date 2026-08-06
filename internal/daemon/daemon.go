@@ -363,7 +363,8 @@ func (d *Daemon) setSessionBadge(socketPath, sessionID string, sessionCreated in
 	mu := d.sessionLock(socketPath, sessionID)
 	mu.Lock()
 	defer mu.Unlock()
-	total, err = d.sessionUnread(socketPath, sessionID, d.sessionIncarnation(socketPath, sessionID, sessionCreated))
+	total, err = d.sessionUnread(socketPath, sessionID,
+		d.sessionIncarnation(d.deviceID, socketPath, sessionID, sessionCreated))
 	if err != nil {
 		return 0, err
 	}
@@ -376,9 +377,10 @@ func (d *Daemon) setSessionBadge(socketPath, sessionID string, sessionCreated in
 }
 
 // sessionIncarnation resolves which incarnation currently OCCUPIES a tmux
-// tuple, from stored rows only (the daemon stays tmux-agnostic — it never
-// queries tmux). The answer is the highest non-zero session_created among
-// the tuple's non-departed rows: a live registrant captured that value from
+// tuple ON ONE DEVICE, from stored rows only (the daemon stays tmux-agnostic
+// — it never queries tmux). The answer is the highest non-zero session_created
+// among that device's non-departed rows for the tuple: a live registrant
+// captured that value from
 // the pane it is running in, so a row carrying it is proof the session
 // exists under that incarnation, while a 0-created row (pre-v0.8.0, or a
 // registrant outside tmux) proves nothing and never wins. Departed rows are
@@ -389,19 +391,29 @@ func (d *Daemon) setSessionBadge(socketPath, sessionID string, sessionCreated in
 // holding only 0-created rows that value is itself 0, which seeds nothing —
 // attribution requires proof, spec §5.1).
 //
+// deviceID is a REQUIRED dimension of the question, not a refinement of it:
+// (socket_path, session_id) is only unique per machine — two laptops' tmux
+// servers both use /private/tmp/tmux-501/default and both hand out $1 — so a
+// resolution that matched on the tuple alone would let a peer's unrelated
+// creation time win the "highest non-zero created" rule outright and answer
+// with an incarnation no row of the asking device carries. The store's own
+// session ops (SessionUnread, SessionAliasLineage) are device-scoped for
+// exactly this reason; resolving the incarnation that feeds them must be too.
+// Local mode passes "" and matches the "" every local row carries, exactly as
+// it always did; the LAMBDA daemon fronts a shared store holding every
+// device's rows, and there the parameter is what keeps the answer honest.
+//
 // REMOTE MODE resolves ELSEWHERE, and this returns fallback untouched. There
-// is no local store to read, and the roster upstream is the whole bus's — a
-// tuple colliding on a peer machine would contribute its own unrelated
-// creation times, so resolving here against an un-narrowed roster would be
-// worse than not resolving at all. Both remote callers of setSessionBadge
-// therefore resolve first, against a roster narrowed to THIS DEVICE, and pass
-// the proven value in: ReconcileLocalSessions from the roster it already
-// holds, and reconcileSessions from one it fetches once per batch. The
-// asymmetry is real and is why this is a seam rather than a bare read; the
+// is no local store to read, and the roster upstream is the whole bus's, which
+// this daemon would have to fetch to filter. Both remote callers of
+// setSessionBadge therefore resolve first, against a roster narrowed to THIS
+// DEVICE, and pass the proven value in: ReconcileLocalSessions from the roster
+// it already holds, and reconcileSessions from one it fetches once per batch.
+// The asymmetry is real and is why this is a seam rather than a bare read; the
 // property it protects — a badge write is driven by the incarnation that
-// OCCUPIES the tuple, never by whichever row happened to name it — holds in
-// both modes.
-func (d *Daemon) sessionIncarnation(socketPath, sessionID string, fallback int64) int64 {
+// OCCUPIES the tuple on the device asking, never by whichever row happened to
+// name it — holds in both modes.
+func (d *Daemon) sessionIncarnation(deviceID, socketPath, sessionID string, fallback int64) int64 {
 	if d.up != nil {
 		return fallback
 	}
@@ -409,17 +421,23 @@ func (d *Daemon) sessionIncarnation(socketPath, sessionID string, fallback int64
 	if err != nil {
 		return fallback // best-effort: a roster read failure must not change badge behavior
 	}
-	return sessionIncarnationOf(agents, socketPath, sessionID, fallback)
+	return sessionIncarnationOf(agents, deviceID, socketPath, sessionID, fallback)
 }
 
 // sessionIncarnationOf is sessionIncarnation over an already-loaded roster,
 // for callers that hold one — notifyForThread in local mode, and both remote
-// reconcile paths (which MUST narrow that roster to this device first; see
-// sessionIncarnation). Same rule, no second read.
-func sessionIncarnationOf(agents []store.Agent, socketPath, sessionID string, fallback int64) int64 {
+// reconcile paths. Same rule, no second read.
+//
+// The device is a parameter here too, so the rule cannot be applied without
+// one: the remote paths hand it an already-narrowed roster, but narrowing at
+// the call site is a thing every future caller has to remember, and the
+// `become` misreport this parameter fixes came from precisely that. Callers
+// that hold a per-agent roster pass THAT AGENT's device, not the daemon's — a
+// daemon fronting a shared store carries none of its own.
+func sessionIncarnationOf(agents []store.Agent, deviceID, socketPath, sessionID string, fallback int64) int64 {
 	var proven int64
 	for _, a := range agents {
-		if a.Departed || a.SocketPath != socketPath || a.SessionID != sessionID {
+		if a.Departed || a.DeviceID != deviceID || a.SocketPath != socketPath || a.SessionID != sessionID {
 			continue
 		}
 		if a.SessionCreated > proven {
@@ -609,10 +627,12 @@ func (d *Daemon) notifyForThread(threadID int64, actor string) {
 		// legacy 0-created ghost sharing a recycled session ID would drive
 		// the whole group's recompute to zero (see
 		// TestNotifyBadgeIgnoresGhostIncarnationOrdering). a.SessionCreated
-		// stays the fallback for a tuple no row proves.
+		// stays the fallback for a tuple no row proves, and a.DeviceID keeps
+		// the resolution on this agent's machine — `agents` is the whole
+		// store's roster, which on a hosted store is every device's.
 		groups = append(groups, sessionGroup{
 			socketPath: a.SocketPath, sessionID: a.SessionID,
-			sessionCreated: sessionIncarnationOf(agents, a.SocketPath, a.SessionID, a.SessionCreated),
+			sessionCreated: sessionIncarnationOf(agents, a.DeviceID, a.SocketPath, a.SessionID, a.SessionCreated),
 			journalAlias:   alias,
 		})
 	}
@@ -1045,9 +1065,13 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 		//
 		// The incarnation is the same one the badge just used
 		// (sessionIncarnation), so the number reported back to the claimer and
-		// the number on its tmux badge can never disagree.
+		// the number on its tmux badge can never disagree — and it is resolved
+		// on ag.DeviceID, the same device the count is read for: the hosted
+		// daemon's store holds every machine's rows, and a peer laptop whose
+		// tmux happened to start later carries a higher created on the very
+		// same (socket, session) tuple.
 		unread, _, err := d.s.SessionUnread(ag.DeviceID, ag.SocketPath, ag.SessionID,
-			d.sessionIncarnation(ag.SocketPath, ag.SessionID, ag.SessionCreated))
+			d.sessionIncarnation(ag.DeviceID, ag.SocketPath, ag.SessionID, ag.SessionCreated))
 		if err != nil {
 			unread = 0 // best-effort: the claim already succeeded
 		}
