@@ -34,7 +34,7 @@ type storeAPI interface {
 	GetAgent(alias string) (store.Agent, bool, error)
 	DepartAgent(alias string) error
 	DepartStaleSiblings(socketPath, sessionID string, created int64, keepAlias string) ([]string, error)
-	SetSessionLabel(socketPath, sessionID, label string, manual bool) (int64, error)
+	SetSessionLabel(socketPath, sessionID string, sessionCreated int64, label string, manual bool) (int64, error)
 	SetHarnessSessionID(alias, id string) error
 	DeleteAgent(alias string) error
 	Become(from, to string) error
@@ -838,7 +838,12 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 		// same value in the store so the daemon's resolver (which never
 		// re-reads tmux) agrees with the CLI's live-label resolution
 		// immediately, not at the next register_agent upsert.
-		n, err := d.s.SetSessionLabel(str(a, "socket_path"), str(a, "session_id"), str(a, "label"), boolArg(a, "label_manual"))
+		// session_created scopes the write to the caller's proven incarnation
+		// (spec §5.1): an old caller omitting it now updates 0 rows and the
+		// CLI's existing "bus label sync failed / refreshes on next
+		// register" warning path already communicates a 0-update as
+		// silence — acceptable single-binary skew.
+		n, err := d.s.SetSessionLabel(str(a, "socket_path"), str(a, "session_id"), i64(a, "session_created"), str(a, "label"), boolArg(a, "label_manual"))
 		if err != nil {
 			return fail(err)
 		}

@@ -31,7 +31,7 @@ func TestSetLabelMakesLabelResolvableImmediately(t *testing.T) {
 	}
 
 	resp := call(t, sock, "set_label", map[string]any{
-		"socket_path": "/s", "session_id": "$0",
+		"socket_path": "/s", "session_id": "$0", "session_created": 100,
 		"label": "datalake", "label_manual": true,
 	})
 	if !resp.OK {
@@ -58,7 +58,8 @@ func TestSetLabelMakesLabelResolvableImmediately(t *testing.T) {
 
 	// Clearing withdraws addressability again.
 	call(t, sock, "set_label", map[string]any{
-		"socket_path": "/s", "session_id": "$0", "label": "", "label_manual": false,
+		"socket_path": "/s", "session_id": "$0", "session_created": 100,
+		"label": "", "label_manual": false,
 	})
 	cleared := call(t, sock, "send_message", map[string]any{
 		"from": "sender", "to_kind": "agent", "to_target": "datalake", "body": "hi",

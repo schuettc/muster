@@ -79,9 +79,9 @@ func TestRegisterAgentRoundTripsSessionCreated(t *testing.T) {
 func TestSetSessionLabel(t *testing.T) {
 	s := newTestStore(t)
 	for _, a := range []Agent{
-		{Alias: "a", SocketPath: "/s", SessionID: "$0"},
-		{Alias: "b", SocketPath: "/s", SessionID: "$0"},
-		{Alias: "other", SocketPath: "/s", SessionID: "$1"},
+		{Alias: "a", SocketPath: "/s", SessionID: "$0", SessionCreated: 200},
+		{Alias: "b", SocketPath: "/s", SessionID: "$0", SessionCreated: 200},
+		{Alias: "other", SocketPath: "/s", SessionID: "$1", SessionCreated: 200},
 	} {
 		if err := s.RegisterAgent(a); err != nil {
 			t.Fatal(err)
@@ -90,7 +90,7 @@ func TestSetSessionLabel(t *testing.T) {
 	if err := s.DepartAgent("b"); err != nil {
 		t.Fatal(err)
 	}
-	n, err := s.SetSessionLabel("/s", "$0", "datalake", true)
+	n, err := s.SetSessionLabel("/s", "$0", 200, "datalake", true)
 	if err != nil || n != 1 {
 		t.Fatalf("SetSessionLabel = (%d, %v), want 1 row (departed sibling and other session spared)", n, err)
 	}
@@ -100,7 +100,35 @@ func TestSetSessionLabel(t *testing.T) {
 			t.Errorf("%s: label=%q (err %v), want %q", alias, got.Label, err, want)
 		}
 	}
-	if n, err := s.SetSessionLabel("", "$0", "x", true); err != nil || n != 0 {
+	if n, err := s.SetSessionLabel("", "$0", 200, "x", true); err != nil || n != 0 {
 		t.Fatalf("empty socket must be a no-op, got (%d, %v)", n, err)
+	}
+}
+
+// TestSetSessionLabelScopedToIncarnation: a label write only lands on rows
+// of the proven incarnation — never on a recycled-ID ghost (created
+// mismatch) or an unprovable legacy row (created 0).
+func TestSetSessionLabelScopedToIncarnation(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.RegisterAgent(Agent{Alias: "current", SocketPath: "/s", SessionID: "$1", SessionCreated: 200}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RegisterAgent(Agent{Alias: "ghost", SocketPath: "/s", SessionID: "$1", SessionCreated: 0}); err != nil {
+		t.Fatal(err)
+	}
+
+	n, err := s.SetSessionLabel("/s", "$1", 200, "nfl-3", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("expected exactly the current row labeled, got %d", n)
+	}
+	ghost, _, err := s.GetAgent("ghost")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ghost.Label != "" || ghost.LabelManual {
+		t.Fatalf("ghost must be untouched, got label=%q manual=%v", ghost.Label, ghost.LabelManual)
 	}
 }
