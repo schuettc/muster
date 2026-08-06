@@ -471,8 +471,14 @@ func TestRegisterStationIfAbsentRaceFailsOverToNextSuffix(t *testing.T) {
 	stubTmuxAllAlive(t) // every tuple alive: collisions defer, never take over
 	caller := daemonCaller{}
 
-	c1 := tmuxenv.Capture{SocketPath: "/s1", SessionID: "$1", SessionName: "sess1", PaneID: "%1"}
-	c2 := tmuxenv.Capture{SocketPath: "/s2", SessionID: "$2", SessionName: "sess2", PaneID: "%2"}
+	// SessionCreated must be explicit and non-zero, matching
+	// stubTmuxAllAlive's answer: spec §5.1 (2026-08-05) made
+	// SessionCreated=0 never read alive, so a racer that observes the
+	// other's freshly-registered (and otherwise-zero) row would misjudge it
+	// dead and take it over instead of failing over — reintroducing flake
+	// #54 under single-core/serialized timing.
+	c1 := tmuxenv.Capture{SocketPath: "/s1", SessionID: "$1", SessionName: "sess1", PaneID: "%1", SessionCreated: 1784000000}
+	c2 := tmuxenv.Capture{SocketPath: "/s2", SessionID: "$2", SessionName: "sess2", PaneID: "%2", SessionCreated: 1784000000}
 
 	var wg sync.WaitGroup
 	results := make([]string, 2)
