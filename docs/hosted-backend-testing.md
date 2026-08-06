@@ -48,6 +48,46 @@ you see `ok`, not `no test files` or a skip count.
 
 ---
 
+## Before you start — install side by side
+
+Every stage below invokes **`muster-rc`**, not `muster`. That is deliberate: the
+release candidate installs alongside your working muster rather than replacing
+it, so your live bus keeps running the released build throughout and a bad rc
+costs you nothing but two deletions.
+
+On **each** machine:
+
+```bash
+# 1. the binary, under a distinct name.
+#    Swap darwin_arm64 for your platform: the four assets are
+#    muster_{darwin,linux}_{arm64,amd64}.tar.gz — NOT version-stamped,
+#    the tag in the URL path is what selects the build.
+curl -fsSL -o /tmp/muster-rc.tar.gz \
+  https://github.com/schuettc/muster/releases/download/<rc-tag>/muster_darwin_arm64.tar.gz
+tar xzf /tmp/muster-rc.tar.gz -C /tmp
+install -m755 /tmp/muster ~/.local/bin/muster-rc
+muster-rc --version        # expect 0.11.0
+
+# 2. a distinct home, so the test bus never touches your live one
+export MUSTER_HOME=~/.muster-rc
+mkdir -p "$MUSTER_HOME"
+```
+
+`muster` keeps meaning your released build with its own `~/.local/share/muster`.
+`muster-rc` with `MUSTER_HOME` set is the test bus. They share nothing — not the
+database, not the socket, not the roster.
+
+**Keep `MUSTER_HOME` exported in every shell you test from.** A `muster-rc`
+invocation without it talks to your *live* bus, which is both confusing and the
+one way this test can disturb something you care about.
+
+To undo everything afterwards:
+
+```bash
+rm ~/.local/bin/muster-rc
+rm -rf ~/.muster-rc
+```
+
 ## Stage 1 — local-mode regression
 
 **Cost:** no AWS, ~10 minutes. **Run this before anything else.**
@@ -63,32 +103,32 @@ Register an agent from inside a tmux session (registration captures the calling
 session's tmux identity, so it must run in one):
 
 ```bash
-muster register test-a --role worker
-muster agents           # test-a present, live dot, correct project/label
+muster-rc register test-a --role worker
+muster-rc agents           # test-a present, live dot, correct project/label
 ```
 
 Then, from a second tmux session, exercise the loop that produces a wake:
 
 ```bash
 # session 2
-muster register test-b --role worker
+muster-rc register test-b --role worker
 
 # session 1 — target is POSITIONAL, not a flag
-muster send test-b "does the badge light" --from test-a
+muster-rc send test-b "does the badge light" --from test-a
 
 # session 2 — the badge should light within a second
-muster inbox test-b     # message present
-muster reply <thread-id> "yes" --from test-b
+muster-rc inbox test-b     # message present
+muster-rc reply <thread-id> "yes" --from test-b
 ```
 
 And the task path. Note the human CLI has no task-creation command — tasks are
 created by agents over MCP, so use the raw op sender:
 
 ```bash
-muster debug task_create from=test-a to_kind=role to_target=worker \
+muster-rc debug task_create from=test-a to_kind=role to_target=worker \
   subject="claim me" body="please take this"
 
-muster tasks test-b     # the task is visible
+muster-rc tasks test-b     # the task is visible
 ```
 
 **Proves:** the merge did not break the existing bus — registration, addressing,
@@ -117,17 +157,17 @@ real resume.
 5. In the resumed session:
 
 ```bash
-muster whereami           # should resolve to the SAME alias as before the resume
-muster inbox <that-alias> # the pre-resume history must still be there
-muster agents             # ONE live row for that alias, not a ghost pair
+muster-rc whereami           # should resolve to the SAME alias as before the resume
+muster-rc inbox <that-alias> # the pre-resume history must still be there
+muster-rc agents             # ONE live row for that alias, not a ghost pair
 ```
 
 Then the claim path:
 
 ```bash
-muster become <a-name-you-choose>
-muster agents           # the old alias retired, the new one live and carrying the history
-muster whereami
+muster-rc become <a-name-you-choose>
+muster-rc agents           # the old alias retired, the new one live and carrying the history
+muster-rc whereami
 ```
 
 **Proves:** alias durability across a resume, and that `become` still clones
@@ -161,9 +201,9 @@ exports** (a shell that does not will silently start a *local* daemon — see th
 doc's troubleshooting section), then repeat Stage 1's loop.
 
 ```bash
-muster agents               # roster now comes from DynamoDB
-muster send <alias> "over the wire" --from <your-alias>
-muster inbox <alias>
+muster-rc agents               # roster now comes from DynamoDB
+muster-rc send <alias> "over the wire" --from <your-alias>
+muster-rc inbox <alias>
 ```
 
 **Proves:** the transport, bearer auth, Lambda, and DynamoDB path work at all,
@@ -197,27 +237,27 @@ every macOS box), but here you get it guaranteed rather than by luck.
 **Device A**, in one terminal:
 
 ```bash
-export MUSTER_HOME=~/.muster-dev-a
+export MUSTER_HOME=~/.muster-rc-dev-a
 export MUSTER_DEVICE_ID=dev-a
 export MUSTER_BACKEND=remote
 export MUSTER_REMOTE_URL=https://<your-function-url>/
 mkdir -p "$MUSTER_HOME"
 cp ~/.local/share/muster/remote-token "$MUSTER_HOME/remote-token"
 chmod 600 "$MUSTER_HOME/remote-token"
-muster register agent-a --role worker
+muster-rc register agent-a --role worker
 ```
 
 **Device B**, in another terminal — identical but for the home and id:
 
 ```bash
-export MUSTER_HOME=~/.muster-dev-b
+export MUSTER_HOME=~/.muster-rc-dev-b
 export MUSTER_DEVICE_ID=dev-b
 export MUSTER_BACKEND=remote
 export MUSTER_REMOTE_URL=https://<your-function-url>/
 mkdir -p "$MUSTER_HOME"
 cp ~/.local/share/muster/remote-token "$MUSTER_HOME/remote-token"
 chmod 600 "$MUSTER_HOME/remote-token"
-muster register agent-b --role worker
+muster-rc register agent-b --role worker
 ```
 
 Shorten the poll so you are not waiting on the default 10s:
@@ -230,10 +270,10 @@ export MUSTER_POLL_INTERVAL=2s
 
 ```bash
 # on device A
-muster send agent-b "cross-device hello" --from agent-a
+muster-rc send agent-b "cross-device hello" --from agent-a
 
 # on device B, within a poll interval
-muster inbox agent-b    # the message is there
+muster-rc inbox agent-b    # the message is there
 ```
 
 **The badge on B must light.** That is the assertion — not that the message
@@ -245,7 +285,7 @@ than A's inline reconcile).
 ### 4b — the roster is shared but badges are not
 
 ```bash
-muster agents           # on BOTH devices: the full roster, agent-a and agent-b
+muster-rc agents           # on BOTH devices: the full roster, agent-a and agent-b
 ```
 
 Each device's own badge must reflect only its own sessions. A badge on A that
@@ -263,7 +303,7 @@ the plan once and would have regressed silently.
 
 ```bash
 # on device A, with the two agents in DIFFERENT projects
-muster send --broadcast --project <a-project> "scoped" --from agent-a
+muster-rc send --broadcast --project <a-project> "scoped" --from agent-a
 ```
 
 Only agents in that project may receive it. A broadcast that lights every badge
@@ -274,11 +314,11 @@ review, and it is invisible unless you deliberately test with two projects.
 
 ```bash
 # on device A — the human CLI has no task-creation command, so use the raw op
-muster debug task_create from=agent-a to_kind=role to_target=worker \
+muster-rc debug task_create from=agent-a to_kind=role to_target=worker \
   subject="handoff" body="claim me"
 
 # on device B
-muster tasks agent-b    # the task is visible; claim it from the agent side
+muster-rc tasks agent-b    # the task is visible; claim it from the agent side
 ```
 
 Exactly one device may win the claim. This is the path that most resembles real
@@ -287,7 +327,7 @@ use and the one where a dropped wake hurts most — the sender is blocking.
 ### Cleanup
 
 ```bash
-rm -rf ~/.muster-dev-a ~/.muster-dev-b
+rm -rf ~/.muster-rc-dev-a ~/.muster-rc-dev-b
 ```
 
 **Failure looks like:** a badge that never lights (dropped wake), a badge
