@@ -14,7 +14,7 @@ func TestRegisterAgentIfAbsentSucceedsWhenAbsent(t *testing.T) {
 	sock := startWithNotifier(t, &fakeNotifier{})
 	resp := call(t, sock, "register_agent", map[string]any{
 		"alias": "station", "role": "operator", "model_type": "station",
-		"socket_path": "/s", "session_id": "$1", "if_absent": true,
+		"socket_path": "/s", "session_id": "$1", "session_created": 100, "if_absent": true,
 	})
 	if !resp.OK {
 		t.Fatalf("if_absent register on an absent alias should succeed: %+v", resp)
@@ -28,11 +28,11 @@ func TestRegisterAgentIfAbsentSucceedsWhenAbsent(t *testing.T) {
 func TestRegisterAgentIfAbsentIdempotentOnSameTuple(t *testing.T) {
 	sock := startWithNotifier(t, &fakeNotifier{})
 	call(t, sock, "register_agent", map[string]any{
-		"alias": "station", "socket_path": "/s", "session_id": "$1",
+		"alias": "station", "socket_path": "/s", "session_id": "$1", "session_created": 100,
 	})
 	resp := call(t, sock, "register_agent", map[string]any{
 		"alias": "station", "role": "operator", "model_type": "station",
-		"socket_path": "/s", "session_id": "$1", "if_absent": true,
+		"socket_path": "/s", "session_id": "$1", "session_created": 100, "if_absent": true,
 	})
 	if !resp.OK {
 		t.Fatalf("if_absent register with the SAME tuple already present should succeed, got %+v", resp)
@@ -45,10 +45,10 @@ func TestRegisterAgentIfAbsentIdempotentOnSameTuple(t *testing.T) {
 func TestRegisterAgentIfAbsentConflictsOnDifferentTuple(t *testing.T) {
 	sock := startWithNotifier(t, &fakeNotifier{})
 	call(t, sock, "register_agent", map[string]any{
-		"alias": "station", "socket_path": "/other", "session_id": "$OTHER",
+		"alias": "station", "socket_path": "/other", "session_id": "$OTHER", "session_created": 100,
 	})
 	resp := call(t, sock, "register_agent", map[string]any{
-		"alias": "station", "socket_path": "/mine", "session_id": "$MINE", "if_absent": true,
+		"alias": "station", "socket_path": "/mine", "session_id": "$MINE", "session_created": 100, "if_absent": true,
 	})
 	if resp.OK {
 		t.Fatalf("if_absent register over a different existing tuple should fail, got %+v", resp)
@@ -75,10 +75,10 @@ func TestRegisterAgentIfAbsentConflictsOnDifferentTuple(t *testing.T) {
 func TestRegisterAgentPlainCallStillUpsertsOverDifferentTuple(t *testing.T) {
 	sock := startWithNotifier(t, &fakeNotifier{})
 	call(t, sock, "register_agent", map[string]any{
-		"alias": "station", "socket_path": "/other", "session_id": "$OTHER",
+		"alias": "station", "socket_path": "/other", "session_id": "$OTHER", "session_created": 100,
 	})
 	resp := call(t, sock, "register_agent", map[string]any{
-		"alias": "station", "socket_path": "/mine", "session_id": "$MINE",
+		"alias": "station", "socket_path": "/mine", "session_id": "$MINE", "session_created": 100,
 	})
 	if !resp.OK {
 		t.Fatalf("a plain register_agent call (if_absent absent) must still upsert, got %+v", resp)
@@ -110,7 +110,7 @@ func TestRegisterAgentIfAbsentConcurrentRaceExactlyOneWins(t *testing.T) {
 			defer wg.Done()
 			resp := call(t, sock, "register_agent", map[string]any{
 				"alias": "station", "role": "operator", "model_type": "station",
-				"socket_path": "/s", "session_id": string(rune('A' + i)), "if_absent": true,
+				"socket_path": "/s", "session_id": string(rune('A' + i)), "session_created": 100, "if_absent": true,
 			})
 			oks[i] = resp.OK
 		}(i)

@@ -153,8 +153,8 @@ func decode(t *testing.T, resp proto.Response, out any) {
 func TestNotifyDirectedExcludesActorBySession(t *testing.T) {
 	n := &fakeNotifier{}
 	sock := startWithNotifier(t, n)
-	call(t, sock, "register_agent", map[string]any{"alias": "backend", "role": "producer", "model_type": "claude", "socket_path": "/s", "session_id": "$1"})
-	call(t, sock, "register_agent", map[string]any{"alias": "consumer", "role": "consumer", "model_type": "codex", "socket_path": "/s", "session_id": "$2"})
+	call(t, sock, "register_agent", map[string]any{"alias": "backend", "role": "producer", "model_type": "claude", "socket_path": "/s", "session_id": "$1", "session_created": 100})
+	call(t, sock, "register_agent", map[string]any{"alias": "consumer", "role": "consumer", "model_type": "codex", "socket_path": "/s", "session_id": "$2", "session_created": 100})
 	call(t, sock, "send_message", map[string]any{"from": "backend", "to_kind": "agent", "to_target": "consumer", "subject": "hi", "body": "x"})
 	got := n.snap(&n.notified)
 	if len(got) != 1 || got[0] != "$2" {
@@ -190,7 +190,7 @@ func TestNilNotifierIsSafe(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = d.Close() })
-	call(t, paths.SocketPath(), "register_agent", map[string]any{"alias": "a", "role": "r", "model_type": "claude", "socket_path": "/s", "session_id": "$1"})
+	call(t, paths.SocketPath(), "register_agent", map[string]any{"alias": "a", "role": "r", "model_type": "claude", "socket_path": "/s", "session_id": "$1", "session_created": 100})
 	if resp := call(t, paths.SocketPath(), "send_message", map[string]any{"from": "a", "to_kind": "broadcast", "subject": "s", "body": "b"}); !resp.OK {
 		t.Fatalf("op should succeed with nil notifier: %+v", resp)
 	}
@@ -199,7 +199,7 @@ func TestNilNotifierIsSafe(t *testing.T) {
 func TestGetInboxClearsFlag(t *testing.T) {
 	n := &fakeNotifier{}
 	sock := startWithNotifier(t, n)
-	call(t, sock, "register_agent", map[string]any{"alias": "reviewer", "role": "reviewer", "model_type": "codex", "socket_path": "/s", "session_id": "$5"})
+	call(t, sock, "register_agent", map[string]any{"alias": "reviewer", "role": "reviewer", "model_type": "codex", "socket_path": "/s", "session_id": "$5", "session_created": 100})
 	// register_agent itself now reconciles the fresh session's badge (spec
 	// §3), so it already emits one Clear($5) before get_inbox runs — assert
 	// the DELTA get_inbox contributes, not the raw total.
@@ -226,7 +226,7 @@ func TestGetInboxMarksRead(t *testing.T) {
 
 	n := &fakeNotifier{}
 	sock, s := startWithNotifierAndStore(t, n)
-	call(t, sock, "register_agent", map[string]any{"alias": "reviewer", "role": "reviewer", "model_type": "codex", "socket_path": "/s", "session_id": "$5"})
+	call(t, sock, "register_agent", map[string]any{"alias": "reviewer", "role": "reviewer", "model_type": "codex", "socket_path": "/s", "session_id": "$5", "session_created": 100})
 	call(t, sock, "send_message", map[string]any{"from": "backend", "to_kind": "agent", "to_target": "reviewer", "subject": "hi", "body": "x"})
 	if n, err := s.UnreadCount("reviewer"); err != nil || n != 1 {
 		t.Fatalf("unread before get_inbox = %d (%v), want 1", n, err)
@@ -252,8 +252,8 @@ func TestReplyNotifiesOriginatorWithUnread(t *testing.T) {
 
 	n := &fakeNotifier{}
 	sock := startWithNotifier(t, n)
-	call(t, sock, "register_agent", map[string]any{"alias": "web", "model_type": "claude", "socket_path": "/s", "session_id": "$1"})
-	call(t, sock, "register_agent", map[string]any{"alias": "api", "model_type": "claude", "socket_path": "/s", "session_id": "$2"})
+	call(t, sock, "register_agent", map[string]any{"alias": "web", "model_type": "claude", "socket_path": "/s", "session_id": "$1", "session_created": 100})
+	call(t, sock, "register_agent", map[string]any{"alias": "api", "model_type": "claude", "socket_path": "/s", "session_id": "$2", "session_created": 100})
 	resp := call(t, sock, "send_message", map[string]any{"from": "web", "to_kind": "agent", "to_target": "api", "subject": "req", "body": "x"})
 	tid := threadIDOf(t, resp)
 	call(t, sock, "reply", map[string]any{"thread_id": tid, "from": "api", "body": "done"})
@@ -289,7 +289,7 @@ func TestEventsLogged(t *testing.T) {
 
 	n := &fakeNotifier{}
 	sock := startWithNotifier(t, n)
-	call(t, sock, "register_agent", map[string]any{"alias": "api", "model_type": "claude", "socket_path": "/s", "session_id": "$2"})
+	call(t, sock, "register_agent", map[string]any{"alias": "api", "model_type": "claude", "socket_path": "/s", "session_id": "$2", "session_created": 100})
 	call(t, sock, "send_message", map[string]any{"from": "web", "to_kind": "agent", "to_target": "api", "subject": "req", "body": "x"})
 	call(t, sock, "get_inbox", map[string]any{"alias": "api"})
 
@@ -319,8 +319,8 @@ func TestEventsLogged(t *testing.T) {
 func TestBusActionsJournalInOrder(t *testing.T) {
 	n := &fakeNotifier{}
 	sock, s := startWithNotifierAndStore(t, n)
-	call(t, sock, "register_agent", map[string]any{"alias": "web", "model_type": "claude", "socket_path": "/s", "session_id": "$1"})
-	call(t, sock, "register_agent", map[string]any{"alias": "api", "model_type": "claude", "socket_path": "/s", "session_id": "$2"})
+	call(t, sock, "register_agent", map[string]any{"alias": "web", "model_type": "claude", "socket_path": "/s", "session_id": "$1", "session_created": 100})
+	call(t, sock, "register_agent", map[string]any{"alias": "api", "model_type": "claude", "socket_path": "/s", "session_id": "$2", "session_created": 100})
 	resp := call(t, sock, "send_message", map[string]any{"from": "web", "to_kind": "agent", "to_target": "api", "subject": "subj", "body": "x"})
 	tid := threadIDOf(t, resp) // helper: unmarshal resp.Data.thread_id (extract from TestReplyNotifiesOriginatorWithUnread)
 	call(t, sock, "reply", map[string]any{"thread_id": tid, "from": "api", "body": "done"})
@@ -349,8 +349,8 @@ func TestBusActionsJournalInOrder(t *testing.T) {
 func TestTaskClaimJournalsAndNotifies(t *testing.T) {
 	n := &fakeNotifier{}
 	sock, s := startWithNotifierAndStore(t, n)
-	call(t, sock, "register_agent", map[string]any{"alias": "web", "model_type": "claude", "socket_path": "/s", "session_id": "$1"})
-	call(t, sock, "register_agent", map[string]any{"alias": "api", "model_type": "claude", "socket_path": "/s", "session_id": "$2"})
+	call(t, sock, "register_agent", map[string]any{"alias": "web", "model_type": "claude", "socket_path": "/s", "session_id": "$1", "session_created": 100})
+	call(t, sock, "register_agent", map[string]any{"alias": "api", "model_type": "claude", "socket_path": "/s", "session_id": "$2", "session_created": 100})
 	resp := call(t, sock, "task_create", map[string]any{"from": "web", "to_kind": "agent", "to_target": "api", "subject": "do it", "body": "x"})
 	tid := threadIDOf(t, resp)
 	before := len(n.snap(&n.notified))
@@ -382,8 +382,8 @@ func countsSnap(n *fakeNotifier) []int {
 func TestNotifyCoalescesSiblingAliases(t *testing.T) {
 	n := &fakeNotifier{}
 	sock, s := startWithNotifierAndStore(t, n)
-	call(t, sock, "register_agent", map[string]any{"alias": "sess-name", "role": "peer", "model_type": "claude", "socket_path": "/s", "session_id": "$9"})
-	call(t, sock, "register_agent", map[string]any{"alias": "chosen", "role": "peer", "model_type": "claude", "socket_path": "/s", "session_id": "$9"})
+	call(t, sock, "register_agent", map[string]any{"alias": "sess-name", "role": "peer", "model_type": "claude", "socket_path": "/s", "session_id": "$9", "session_created": 100})
+	call(t, sock, "register_agent", map[string]any{"alias": "chosen", "role": "peer", "model_type": "claude", "socket_path": "/s", "session_id": "$9", "session_created": 100})
 
 	call(t, sock, "send_message", map[string]any{"from": "operator", "to_kind": "broadcast", "subject": "s", "body": "b"})
 
@@ -416,14 +416,14 @@ func TestNotifyCoalescesSiblingAliases(t *testing.T) {
 func TestLit2Regression(t *testing.T) {
 	n := &fakeNotifier{}
 	sock, s := startWithNotifierAndStore(t, n)
-	call(t, sock, "register_agent", map[string]any{"alias": "aliasA", "role": "peer", "model_type": "claude", "socket_path": "/s", "session_id": "$9"})
-	call(t, sock, "register_agent", map[string]any{"alias": "aliasB", "role": "peer", "model_type": "claude", "socket_path": "/s", "session_id": "$9"})
-	call(t, sock, "register_agent", map[string]any{"alias": "peer", "role": "other", "model_type": "codex", "socket_path": "/p", "session_id": "$1"})
+	call(t, sock, "register_agent", map[string]any{"alias": "aliasA", "role": "peer", "model_type": "claude", "socket_path": "/s", "session_id": "$9", "session_created": 100})
+	call(t, sock, "register_agent", map[string]any{"alias": "aliasB", "role": "peer", "model_type": "claude", "socket_path": "/s", "session_id": "$9", "session_created": 100})
+	call(t, sock, "register_agent", map[string]any{"alias": "peer", "role": "other", "model_type": "codex", "socket_path": "/p", "session_id": "$1", "session_created": 100})
 
 	call(t, sock, "send_message", map[string]any{"from": "peer", "to_kind": "agent", "to_target": "aliasA", "subject": "a", "body": "x"})
 	call(t, sock, "send_message", map[string]any{"from": "peer", "to_kind": "agent", "to_target": "aliasB", "subject": "b", "body": "y"})
 
-	total, _, err := s.SessionUnread("/s", "$9")
+	total, _, err := s.SessionUnread("/s", "$9", 100)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -434,7 +434,7 @@ func TestLit2Regression(t *testing.T) {
 	// Drain ONLY aliasA.
 	call(t, sock, "get_inbox", map[string]any{"alias": "aliasA"})
 
-	remainder, _, err := s.SessionUnread("/s", "$9")
+	remainder, _, err := s.SessionUnread("/s", "$9", 100)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -489,7 +489,7 @@ func TestGetInboxFailsWhenMarkReadFails(t *testing.T) {
 	t.Cleanup(func() { _ = d.Close() })
 	sock := paths.SocketPath()
 
-	call(t, sock, "register_agent", map[string]any{"alias": "reviewer", "role": "reviewer", "model_type": "codex", "socket_path": "/s", "session_id": "$5"})
+	call(t, sock, "register_agent", map[string]any{"alias": "reviewer", "role": "reviewer", "model_type": "codex", "socket_path": "/s", "session_id": "$5", "session_created": 100})
 	call(t, sock, "send_message", map[string]any{"from": "backend", "to_kind": "agent", "to_target": "reviewer", "subject": "hi", "body": "x"})
 
 	beforeCleared := len(n.snap(&n.cleared))
@@ -565,8 +565,8 @@ func TestNotifyDrainInterleaving(t *testing.T) {
 	t.Cleanup(func() { _ = d.Close() })
 	sock := paths.SocketPath()
 
-	call(t, sock, "register_agent", map[string]any{"alias": "solo", "role": "peer", "model_type": "claude", "socket_path": "/s", "session_id": "$9"})
-	call(t, sock, "register_agent", map[string]any{"alias": "author", "role": "other", "model_type": "codex", "socket_path": "/p", "session_id": "$1"})
+	call(t, sock, "register_agent", map[string]any{"alias": "solo", "role": "peer", "model_type": "claude", "socket_path": "/s", "session_id": "$9", "session_created": 100})
+	call(t, sock, "register_agent", map[string]any{"alias": "author", "role": "other", "model_type": "codex", "socket_path": "/p", "session_id": "$1", "session_created": 100})
 
 	// Seed one unread thread while the block is still disarmed.
 	resp := call(t, sock, "send_message", map[string]any{"from": "author", "to_kind": "agent", "to_target": "solo", "subject": "s1", "body": "x"})
@@ -595,7 +595,7 @@ func TestNotifyDrainInterleaving(t *testing.T) {
 	<-replyDone
 	<-getInboxDone
 
-	remainder, _, err := s.SessionUnread("/s", "$9")
+	remainder, _, err := s.SessionUnread("/s", "$9", 100)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -625,8 +625,8 @@ func TestNotifyDrainInterleaving(t *testing.T) {
 func TestSessionAliasesRejectsEmptyTuple(t *testing.T) {
 	n := &fakeNotifier{}
 	sock := startWithNotifier(t, n)
-	call(t, sock, "register_agent", map[string]any{"alias": "solo", "role": "peer", "model_type": "claude", "socket_path": "/s", "session_id": "$9"})
-	call(t, sock, "register_agent", map[string]any{"alias": "twin", "role": "peer", "model_type": "claude", "socket_path": "/s", "session_id": "$9"})
+	call(t, sock, "register_agent", map[string]any{"alias": "solo", "role": "peer", "model_type": "claude", "socket_path": "/s", "session_id": "$9", "session_created": 100})
+	call(t, sock, "register_agent", map[string]any{"alias": "twin", "role": "peer", "model_type": "claude", "socket_path": "/s", "session_id": "$9", "session_created": 100})
 
 	if resp := call(t, sock, "session_aliases", map[string]any{"socket_path": "/s", "session_id": ""}); resp.OK {
 		t.Fatal("session_aliases must reject an empty session_id")
@@ -634,7 +634,7 @@ func TestSessionAliasesRejectsEmptyTuple(t *testing.T) {
 
 	// The paneless tuple ("", uuid) is valid and matches only paneless rows —
 	// never tmux rows, even ones whose session_id coincides.
-	call(t, sock, "register_agent", map[string]any{"alias": "paneless-1", "role": "peer", "model_type": "claude", "socket_path": "", "session_id": "hs-uuid"})
+	call(t, sock, "register_agent", map[string]any{"alias": "paneless-1", "role": "peer", "model_type": "claude", "socket_path": "", "session_id": "hs-uuid", "session_created": 100})
 	respPaneless := call(t, sock, "session_aliases", map[string]any{"socket_path": "", "session_id": "hs-uuid"})
 	if !respPaneless.OK {
 		t.Fatalf("session_aliases must accept the paneless tuple: %+v", respPaneless)
@@ -658,7 +658,7 @@ func TestSessionAliasesRejectsEmptyTuple(t *testing.T) {
 		t.Fatalf("(\"\", $9) must not match tmux rows on socket /s, got %v", emptyOut.Aliases)
 	}
 
-	resp := call(t, sock, "session_aliases", map[string]any{"socket_path": "/s", "session_id": "$9"})
+	resp := call(t, sock, "session_aliases", map[string]any{"socket_path": "/s", "session_id": "$9", "session_created": 100})
 	if !resp.OK {
 		t.Fatalf("session_aliases: %+v", resp)
 	}
@@ -679,8 +679,8 @@ func TestSessionAliasesRejectsEmptyTuple(t *testing.T) {
 // pair as-is.
 func TestSessionUnreadOpRejectsEmptyTupleAndReturnsCounts(t *testing.T) {
 	sock := startWithNotifier(t, &fakeNotifier{})
-	call(t, sock, "register_agent", map[string]any{"alias": "worker", "role": "peer", "model_type": "claude", "socket_path": "/s", "session_id": "$9"})
-	call(t, sock, "register_agent", map[string]any{"alias": "other", "role": "peer", "model_type": "claude", "socket_path": "/p", "session_id": "$2"})
+	call(t, sock, "register_agent", map[string]any{"alias": "worker", "role": "peer", "model_type": "claude", "socket_path": "/s", "session_id": "$9", "session_created": 100})
+	call(t, sock, "register_agent", map[string]any{"alias": "other", "role": "peer", "model_type": "claude", "socket_path": "/p", "session_id": "$2", "session_created": 100})
 	call(t, sock, "send_message", map[string]any{"from": "other", "to_kind": "agent", "to_target": "worker", "subject": "s", "body": "b", "intent": "action-requested"})
 
 	if resp := call(t, sock, "session_unread", map[string]any{"socket_path": "", "session_id": "$9"}); !resp.OK {
@@ -690,7 +690,7 @@ func TestSessionUnreadOpRejectsEmptyTupleAndReturnsCounts(t *testing.T) {
 		t.Fatal("session_unread must reject an empty session_id")
 	}
 
-	resp := call(t, sock, "session_unread", map[string]any{"socket_path": "/s", "session_id": "$9"})
+	resp := call(t, sock, "session_unread", map[string]any{"socket_path": "/s", "session_id": "$9", "session_created": 100})
 	if !resp.OK {
 		t.Fatalf("session_unread: %+v", resp)
 	}
@@ -714,7 +714,7 @@ func TestSessionUnreadOpRejectsEmptyTupleAndReturnsCounts(t *testing.T) {
 func TestNotifyForThreadSkipsDepartedAgent(t *testing.T) {
 	n := &fakeNotifier{}
 	sock, s := startWithNotifierAndStore(t, n)
-	call(t, sock, "register_agent", map[string]any{"alias": "left", "role": "peer", "model_type": "claude", "socket_path": "/s", "session_id": "$9"})
+	call(t, sock, "register_agent", map[string]any{"alias": "left", "role": "peer", "model_type": "claude", "socket_path": "/s", "session_id": "$9", "session_created": 100})
 	call(t, sock, "deregister_agent", map[string]any{"alias": "left"})
 
 	call(t, sock, "send_message", map[string]any{"from": "peer", "to_kind": "agent", "to_target": "left", "subject": "s", "body": "x"})
@@ -744,8 +744,8 @@ func TestNotifyForThreadSkipsDepartedAgent(t *testing.T) {
 func TestReRegisterReconcilesOldSessionBadge(t *testing.T) {
 	n := &fakeNotifier{}
 	sock := startWithNotifier(t, n)
-	call(t, sock, "register_agent", map[string]any{"alias": "roamer", "role": "peer", "model_type": "claude", "socket_path": "/s", "session_id": "$1"})
-	call(t, sock, "register_agent", map[string]any{"alias": "author", "role": "other", "model_type": "codex", "socket_path": "/p", "session_id": "$2"})
+	call(t, sock, "register_agent", map[string]any{"alias": "roamer", "role": "peer", "model_type": "claude", "socket_path": "/s", "session_id": "$1", "session_created": 100})
+	call(t, sock, "register_agent", map[string]any{"alias": "author", "role": "other", "model_type": "codex", "socket_path": "/p", "session_id": "$2", "session_created": 100})
 	call(t, sock, "send_message", map[string]any{"from": "author", "to_kind": "agent", "to_target": "roamer", "subject": "s", "body": "x"})
 
 	notified := n.snap(&n.notified)
@@ -754,7 +754,7 @@ func TestReRegisterReconcilesOldSessionBadge(t *testing.T) {
 	}
 
 	// Move roamer to a new session — its OLD session ($1) must be reconciled.
-	call(t, sock, "register_agent", map[string]any{"alias": "roamer", "role": "peer", "model_type": "claude", "socket_path": "/s", "session_id": "$9"})
+	call(t, sock, "register_agent", map[string]any{"alias": "roamer", "role": "peer", "model_type": "claude", "socket_path": "/s", "session_id": "$9", "session_created": 100})
 
 	cleared := n.snap(&n.cleared)
 	if !slices.Contains(cleared, "$1") {
@@ -777,12 +777,12 @@ func lastAgentSetFor(sets []agentSet, session string) *agentSet {
 func TestRegisterPushesAgentBadge(t *testing.T) {
 	n := &fakeNotifier{}
 	sock := startWithNotifier(t, n)
-	call(t, sock, "register_agent", map[string]any{"alias": "solo", "role": "peer", "model_type": "claude", "socket_path": "/s", "session_id": "$9"})
+	call(t, sock, "register_agent", map[string]any{"alias": "solo", "role": "peer", "model_type": "claude", "socket_path": "/s", "session_id": "$9", "session_created": 100})
 	got := lastAgentSetFor(n.snapAgentSets(), "$9")
 	if got == nil || !slices.Equal(got.aliases, []string{"solo"}) {
 		t.Fatalf("register must push [solo] to $9, got %+v", got)
 	}
-	call(t, sock, "register_agent", map[string]any{"alias": "chosen", "role": "peer", "model_type": "claude", "socket_path": "/s", "session_id": "$9"})
+	call(t, sock, "register_agent", map[string]any{"alias": "chosen", "role": "peer", "model_type": "claude", "socket_path": "/s", "session_id": "$9", "session_created": 100})
 	got = lastAgentSetFor(n.snapAgentSets(), "$9")
 	if got == nil || !slices.Equal(got.aliases, []string{"chosen", "solo"}) {
 		t.Fatalf("sibling register must push sorted [chosen solo] to $9, got %+v", got)
@@ -795,8 +795,8 @@ func TestRegisterPushesAgentBadge(t *testing.T) {
 func TestDeregisterUnsetsAgentBadgeWhenLastAliasLeaves(t *testing.T) {
 	n := &fakeNotifier{}
 	sock := startWithNotifier(t, n)
-	call(t, sock, "register_agent", map[string]any{"alias": "solo", "role": "peer", "model_type": "claude", "socket_path": "/s", "session_id": "$9"})
-	call(t, sock, "register_agent", map[string]any{"alias": "twin", "role": "peer", "model_type": "claude", "socket_path": "/s", "session_id": "$9"})
+	call(t, sock, "register_agent", map[string]any{"alias": "solo", "role": "peer", "model_type": "claude", "socket_path": "/s", "session_id": "$9", "session_created": 100})
+	call(t, sock, "register_agent", map[string]any{"alias": "twin", "role": "peer", "model_type": "claude", "socket_path": "/s", "session_id": "$9", "session_created": 100})
 	call(t, sock, "deregister_agent", map[string]any{"alias": "twin"})
 	got := lastAgentSetFor(n.snapAgentSets(), "$9")
 	if got == nil || !slices.Equal(got.aliases, []string{"solo"}) {
@@ -814,7 +814,7 @@ func TestDeregisterUnsetsAgentBadgeWhenLastAliasLeaves(t *testing.T) {
 func TestPurgeAgentUpdatesAgentBadge(t *testing.T) {
 	n := &fakeNotifier{}
 	sock := startWithNotifier(t, n)
-	call(t, sock, "register_agent", map[string]any{"alias": "gone", "role": "peer", "model_type": "claude", "socket_path": "/s", "session_id": "$4"})
+	call(t, sock, "register_agent", map[string]any{"alias": "gone", "role": "peer", "model_type": "claude", "socket_path": "/s", "session_id": "$4", "session_created": 100})
 	call(t, sock, "purge_agent", map[string]any{"alias": "gone"})
 	got := lastAgentSetFor(n.snapAgentSets(), "$4")
 	if got == nil || len(got.aliases) != 0 {
@@ -828,8 +828,8 @@ func TestPurgeAgentUpdatesAgentBadge(t *testing.T) {
 func TestReRegisterMovesAgentBadgeBetweenSessions(t *testing.T) {
 	n := &fakeNotifier{}
 	sock := startWithNotifier(t, n)
-	call(t, sock, "register_agent", map[string]any{"alias": "roamer", "role": "peer", "model_type": "claude", "socket_path": "/s", "session_id": "$1"})
-	call(t, sock, "register_agent", map[string]any{"alias": "roamer", "role": "peer", "model_type": "claude", "socket_path": "/s", "session_id": "$9"})
+	call(t, sock, "register_agent", map[string]any{"alias": "roamer", "role": "peer", "model_type": "claude", "socket_path": "/s", "session_id": "$1", "session_created": 100})
+	call(t, sock, "register_agent", map[string]any{"alias": "roamer", "role": "peer", "model_type": "claude", "socket_path": "/s", "session_id": "$9", "session_created": 100})
 	sets := n.snapAgentSets()
 	if got := lastAgentSetFor(sets, "$1"); got == nil || len(got.aliases) != 0 {
 		t.Fatalf("old session $1 must end empty after the move, got %+v", got)

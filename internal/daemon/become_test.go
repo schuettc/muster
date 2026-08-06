@@ -17,9 +17,9 @@ import (
 func TestBecomeOpClaimsAndReports(t *testing.T) {
 	sock := startWithNotifier(t, &fakeNotifier{})
 	call(t, sock, "register_agent", map[string]any{
-		"alias": "muster-2", "socket_path": "/s", "session_id": "$1", "harness_session_id": "uuid-1",
+		"alias": "muster-2", "socket_path": "/s", "session_id": "$1", "session_created": 100, "harness_session_id": "uuid-1",
 	})
-	call(t, sock, "register_agent", map[string]any{"alias": "peer", "socket_path": "/s", "session_id": "$2"})
+	call(t, sock, "register_agent", map[string]any{"alias": "peer", "socket_path": "/s", "session_id": "$2", "session_created": 100})
 	call(t, sock, "send_message", map[string]any{
 		"from": "peer", "to_kind": "agent", "to_target": "muster-2", "subject": "s", "body": "b",
 	})
@@ -92,7 +92,7 @@ func TestBecomeOpDegradesOnPostCommitGetAgentFailure(t *testing.T) {
 	sock := paths.SocketPath()
 
 	call(t, sock, "register_agent", map[string]any{
-		"alias": "muster-2", "socket_path": "/s", "session_id": "$1",
+		"alias": "muster-2", "socket_path": "/s", "session_id": "$1", "session_created": 100,
 	})
 
 	resp := call(t, sock, "become", map[string]any{"from": "muster-2", "to": "alias-routing"})

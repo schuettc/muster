@@ -160,7 +160,16 @@ func TestRegisterStationFreshAliasRegisters(t *testing.T) {
 func TestRegisterStationFailsOverOnLiveCollision(t *testing.T) {
 	startStationTestDaemon(t)
 	caller := daemonCaller{}
-	registerDirect(t, caller, "station", "/other", "$OTHER")
+	// A real, non-zero session_created: spec §5.1 (2026-08-05) made
+	// session_created=0 (what plain registerDirect stores) never read
+	// alive, so this row needs one matching stubTmuxAlive's answer below to
+	// actually prove the collision live.
+	if _, err := caller.Call("register_agent", map[string]any{
+		"alias": "station", "role": "operator", "model_type": "station",
+		"socket_path": "/other", "session_id": "$OTHER", "session_created": 1784000000,
+	}); err != nil {
+		t.Fatal(err)
+	}
 	stubTmuxAlive(t, "/other", "$OTHER") // the existing "station" record is alive
 
 	c := tmuxenv.Capture{SocketPath: "/s", SessionID: "$1", SessionName: "sess", PaneID: "%1"}
@@ -462,8 +471,14 @@ func TestRegisterStationIfAbsentRaceFailsOverToNextSuffix(t *testing.T) {
 	stubTmuxAllAlive(t) // every tuple alive: collisions defer, never take over
 	caller := daemonCaller{}
 
-	c1 := tmuxenv.Capture{SocketPath: "/s1", SessionID: "$1", SessionName: "sess1", PaneID: "%1"}
-	c2 := tmuxenv.Capture{SocketPath: "/s2", SessionID: "$2", SessionName: "sess2", PaneID: "%2"}
+	// SessionCreated must be explicit and non-zero, matching
+	// stubTmuxAllAlive's answer: spec §5.1 (2026-08-05) made
+	// SessionCreated=0 never read alive, so a racer that observes the
+	// other's freshly-registered (and otherwise-zero) row would misjudge it
+	// dead and take it over instead of failing over — reintroducing flake
+	// #54 under single-core/serialized timing.
+	c1 := tmuxenv.Capture{SocketPath: "/s1", SessionID: "$1", SessionName: "sess1", PaneID: "%1", SessionCreated: 1784000000}
+	c2 := tmuxenv.Capture{SocketPath: "/s2", SessionID: "$2", SessionName: "sess2", PaneID: "%2", SessionCreated: 1784000000}
 
 	var wg sync.WaitGroup
 	results := make([]string, 2)
