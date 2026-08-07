@@ -43,7 +43,7 @@ type Upstream interface {
 // machines.
 //
 // n may be nil, in which case no badges are written and reconcile is a no-op.
-func ServeRemote(socketPath string, up Upstream, n wake.Notifier, deviceID string) (*Daemon, error) {
+func ServeRemote(socketPath string, up Upstream, n wake.Notifier, deviceID, deviceName string) (*Daemon, error) {
 	if up == nil {
 		return nil, errors.New("daemon: remote mode requires an upstream")
 	}
@@ -56,7 +56,7 @@ func ServeRemote(socketPath string, up Upstream, n wake.Notifier, deviceID strin
 	if err != nil {
 		return nil, err
 	}
-	d := &Daemon{n: n, up: up, deviceID: deviceID, recStop: make(chan struct{})}
+	d := &Daemon{n: n, up: up, deviceID: deviceID, deviceName: deviceName, recStop: make(chan struct{})}
 	d.ln = ln
 	go d.acceptLoop()
 	return d, nil
@@ -172,6 +172,10 @@ func (d *Daemon) stampDevice(req proto.Request) proto.Request {
 		args[k] = v
 	}
 	args["device_id"] = d.deviceID
+	// Stamped here for the same reason as the id: no layer above the daemon
+	// knows which machine it is on. Empty is fine — the roster just shows the
+	// short id instead.
+	args["device_name"] = d.deviceName
 	req.Args = args
 	return req
 }

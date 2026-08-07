@@ -202,7 +202,7 @@ func serveRemote(n wake.Notifier) (*daemon.Daemon, error) {
 	if err != nil {
 		return nil, fmt.Errorf("device id: %w", err)
 	}
-	return daemon.ServeRemote(paths.SocketPath(), up, n, id)
+	return daemon.ServeRemote(paths.SocketPath(), up, n, id, device.Name())
 }
 
 // runDebug sends a raw op with key=value string args. Example:

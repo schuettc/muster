@@ -42,6 +42,10 @@ type Daemon struct {
 	// are zero in local mode, which is what keeps local behaviour identical.
 	up       Upstream
 	deviceID string
+	// deviceName rides alongside deviceID on forwarded registrations. It is
+	// display only — nothing routes, scopes, or compares by it — so unlike
+	// deviceID a wrong or empty value costs legibility, never correctness.
+	deviceName string
 
 	// recClosed is set by Close and is the reconcile loop's stop signal;
 	// recWG is how Close waits for an in-flight reconcile to finish, so a
@@ -261,6 +265,7 @@ func (d *Daemon) handleRegisterAgent(a map[string]any) proto.Response {
 		// remotemode.go) and absent from every local client's args, so local
 		// mode records "" exactly as it did before this column existed.
 		DeviceID:         str(a, "device_id"),
+		DeviceName:       str(a, "device_name"),
 		HarnessSessionID: str(a, "harness_session_id"),
 		Project:          str(a, "project"), Label: str(a, "label"), LabelManual: boolArg(a, "label_manual"),
 	}

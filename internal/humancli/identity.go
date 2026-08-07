@@ -68,7 +68,9 @@ func cmdRegister(args []string, out io.Writer) error {
 	case os.Getenv("MUSTER_ALIAS") != "":
 		alias = os.Getenv("MUSTER_ALIAS")
 	case c.SessionName != "":
-		alias = c.SessionName
+		// Derived, so seeded with the device name when one is configured —
+		// two machines can easily share a tmux session name.
+		alias = seedAlias(c.SessionName)
 	default:
 		// Paneless cwd fallback: every session in a directory derives the
 		// same base, so the alias must be ALLOCATED unique (base, base-2, …)

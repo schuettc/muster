@@ -79,7 +79,11 @@ type agentRow struct {
 	// cmdAgents renders it purely so an operator can answer "which box is
 	// that on", a question a bus spanning machines makes askable and
 	// nothing else in the CLI could answer.
-	DeviceID    string `json:"device_id"`
+	DeviceID string `json:"device_id"`
+	// DeviceName is that machine's operator-chosen name, rendered in the
+	// DEVICE column because "work-laptop" is what someone would say and
+	// "cd59b4cb" is not. Display only; scoping keys off DeviceID.
+	DeviceName  string `json:"device_name"`
 	Project     string `json:"project"`
 	Label       string `json:"label"`
 	LabelManual bool   `json:"label_manual"`
@@ -231,7 +235,7 @@ func cmdAgents(out io.Writer) error {
 		var err error
 		if showDevice {
 			_, err = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
-				proj, a.Alias, label, a.ModelType, deviceCell(a.DeviceID, localDevice), live)
+				proj, a.Alias, label, a.ModelType, deviceCell(a.DeviceID, a.DeviceName, localDevice), live)
 		} else {
 			_, err = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", proj, a.Alias, label, a.ModelType, live)
 		}
@@ -247,18 +251,25 @@ func cmdAgents(out io.Writer) error {
 // plausible number of machines while staying narrow enough to sit in a table.
 const deviceShortLen = 8
 
-// deviceCell renders one agent's device for the roster: "this" for the
-// machine the command is running on, a short id for any other, and "—" for a
-// row that predates device ids or was written by a backend that does not set
-// them. Naming the local device rather than showing its id is the point —
-// "is that agent here or somewhere else" is the question being asked, and an
-// operator cannot answer it by comparing two hex strings at a glance.
-func deviceCell(id, local string) string {
+// deviceCell renders one agent's device for the roster. The precedence is
+// "this" for the machine the command is running on, then the machine's
+// operator-chosen name, then a short id, then "—" for a row that predates
+// device ids.
+//
+// "this" outranks the name deliberately: the question an operator asks of
+// this column is "is that agent here or somewhere else", and answering it
+// should not require them to remember what they called the machine they are
+// sitting at. The name is what makes the OTHER rows legible — and what a
+// model matches when a human says "on my work laptop", which a hex prefix
+// could never support.
+func deviceCell(id, name, local string) string {
 	switch {
-	case id == "":
+	case id == "" && name == "":
 		return "—"
 	case local != "" && id == local:
 		return "this"
+	case name != "":
+		return name
 	case len(id) > deviceShortLen:
 		return id[:deviceShortLen]
 	default:

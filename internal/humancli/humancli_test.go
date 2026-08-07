@@ -125,6 +125,30 @@ func TestAgentsShowsDeviceColumnAcrossDevices(t *testing.T) {
 	}
 }
 
+// TestDeviceCellPrecedence pins the order the roster's DEVICE column resolves
+// in. "this" outranking the machine's own name is the deliberate part: the
+// question the column answers is "here or elsewhere", and an operator should
+// not have to recall what they named the machine they are sitting at.
+func TestDeviceCellPrecedence(t *testing.T) {
+	const local = "device-here"
+	for _, tc := range []struct {
+		name, id, devName, want string
+	}{
+		{"local machine wins over its own name", local, "work-laptop", "this"},
+		{"another machine shows its name", "other", "desktop", "desktop"},
+		{"unnamed machine falls back to a short id", "abcdef0123456789", "", "abcdef01"},
+		{"short id is not truncated further", "dev-b", "", "dev-b"},
+		{"nothing known at all", "", "", "—"},
+		{"named but id-less row still reads", "", "desktop", "desktop"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := deviceCell(tc.id, tc.devName, local); got != tc.want {
+				t.Fatalf("deviceCell(%q, %q, %q) = %q, want %q", tc.id, tc.devName, local, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestDispatchUnknownCommand(t *testing.T) {
 	if err := Dispatch([]string{"bogus"}, nil); err == nil {
 		t.Fatalf("expected error for unknown subcommand")

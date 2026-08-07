@@ -316,7 +316,8 @@ func testRegisterAgentRoundTrip(t *testing.T, s store.API) {
 		Alias: "a1", Role: "worker", ModelType: "claude",
 		SocketPath: "/tmp/tmux-501/default", PaneID: "%1",
 		SessionName: "muster-1", SessionID: "$1", SessionCreated: 1700000000,
-		DeviceID: "dev-1", Project: "muster", Label: "backend", LabelManual: true,
+		DeviceID: "dev-1", DeviceName: "work-laptop",
+		Project: "muster", Label: "backend", LabelManual: true,
 	}
 	mustRegister(t, s, want)
 	got, ok, err := s.GetAgent("a1")
@@ -327,6 +328,7 @@ func testRegisterAgentRoundTrip(t *testing.T, s store.API) {
 		got.SocketPath != want.SocketPath || got.PaneID != want.PaneID ||
 		got.SessionName != want.SessionName || got.SessionID != want.SessionID ||
 		got.SessionCreated != want.SessionCreated || got.DeviceID != want.DeviceID ||
+		got.DeviceName != want.DeviceName ||
 		got.Project != want.Project || got.Label != want.Label || got.LabelManual != want.LabelManual {
 		t.Fatalf("round trip lost fields:\n got %+v\nwant %+v", got, want)
 	}
@@ -334,7 +336,8 @@ func testRegisterAgentRoundTrip(t *testing.T, s store.API) {
 	if err != nil || len(list) != 1 {
 		t.Fatalf("ListAgents: %d rows (%v)", len(list), err)
 	}
-	if list[0].SessionCreated != want.SessionCreated || list[0].DeviceID != want.DeviceID {
+	if list[0].SessionCreated != want.SessionCreated || list[0].DeviceID != want.DeviceID ||
+		list[0].DeviceName != want.DeviceName {
 		t.Fatalf("ListAgents dropped identity fields: %+v", list[0])
 	}
 }

@@ -65,7 +65,7 @@ func startRemote(t *testing.T, up Upstream, n *fakeNotifier) string {
 	if n != nil {
 		notifier = n
 	}
-	d, err := ServeRemote(sock, up, notifier, "dev-1")
+	d, err := ServeRemote(sock, up, notifier, "dev-1", "")
 	if err != nil {
 		t.Fatalf("ServeRemote: %v", err)
 	}
@@ -120,10 +120,10 @@ func TestRemoteModeDoesNotDispatchLocally(t *testing.T) {
 // another's — it would badge-write into sessions on other machines.
 func TestServeRemoteRequiresUpstreamAndDevice(t *testing.T) {
 	home := testHome(t)
-	if _, err := ServeRemote(filepath.Join(home, "s1"), nil, nil, "dev-1"); err == nil {
+	if _, err := ServeRemote(filepath.Join(home, "s1"), nil, nil, "dev-1", ""); err == nil {
 		t.Fatal("ServeRemote accepted a nil upstream")
 	}
-	if _, err := ServeRemote(filepath.Join(home, "s2"), &fakeUpstream{}, nil, "  "); err == nil {
+	if _, err := ServeRemote(filepath.Join(home, "s2"), &fakeUpstream{}, nil, "  ", ""); err == nil {
 		t.Fatal("ServeRemote accepted an empty device id")
 	}
 }
@@ -236,7 +236,7 @@ func TestReconcileLocalSessionsBadgesThisDeviceOnly(t *testing.T) {
 	}}
 	n := &fakeNotifier{}
 	home := testHome(t)
-	d, err := ServeRemote(filepath.Join(home, "sock"), up, n, "dev-1")
+	d, err := ServeRemote(filepath.Join(home, "sock"), up, n, "dev-1", "")
 	if err != nil {
 		t.Fatalf("ServeRemote: %v", err)
 	}
@@ -289,7 +289,7 @@ func TestReconcileClearsWhenUpstreamReportsZero(t *testing.T) {
 	}}
 	n := &fakeNotifier{}
 	home := testHome(t)
-	d, err := ServeRemote(filepath.Join(home, "sock"), up, n, "dev-1")
+	d, err := ServeRemote(filepath.Join(home, "sock"), up, n, "dev-1", "")
 	if err != nil {
 		t.Fatalf("ServeRemote: %v", err)
 	}
@@ -321,7 +321,7 @@ func TestReconcileDoesNotMixDevicesSharingATuple(t *testing.T) {
 	}}
 	n := &fakeNotifier{}
 	home := testHome(t)
-	d, err := ServeRemote(filepath.Join(home, "sock"), up, n, "dev-1")
+	d, err := ServeRemote(filepath.Join(home, "sock"), up, n, "dev-1", "")
 	if err != nil {
 		t.Fatalf("ServeRemote: %v", err)
 	}
@@ -344,7 +344,7 @@ func TestReconcileDoesNotMixDevicesSharingATuple(t *testing.T) {
 func TestReconcileIsSkippedWithoutANotifier(t *testing.T) {
 	up := &fakeUpstream{resp: proto.Response{OK: true}}
 	home := testHome(t)
-	d, err := ServeRemote(filepath.Join(home, "sock"), up, nil, "dev-1")
+	d, err := ServeRemote(filepath.Join(home, "sock"), up, nil, "dev-1", "")
 	if err != nil {
 		t.Fatalf("ServeRemote: %v", err)
 	}
@@ -455,7 +455,7 @@ func TestCloseStopsTheReconcileLoop(t *testing.T) {
 	up.resp = proto.Response{OK: true}
 	n := &fakeNotifier{}
 	home := testHome(t)
-	d, err := ServeRemote(filepath.Join(home, "sock"), up, n, "dev-1")
+	d, err := ServeRemote(filepath.Join(home, "sock"), up, n, "dev-1", "")
 	if err != nil {
 		t.Fatalf("ServeRemote: %v", err)
 	}
@@ -656,7 +656,7 @@ func TestRemoteBadgeSendsTheProvenIncarnation(t *testing.T) {
 	}}
 	n := &fakeNotifier{}
 	home := testHome(t)
-	d, err := ServeRemote(filepath.Join(home, "sock"), up, n, "dev-1")
+	d, err := ServeRemote(filepath.Join(home, "sock"), up, n, "dev-1", "")
 	if err != nil {
 		t.Fatalf("ServeRemote: %v", err)
 	}
@@ -688,7 +688,7 @@ func TestRemoteBadgeIgnoresAnotherDevicesIncarnation(t *testing.T) {
 	}}
 	n := &fakeNotifier{}
 	home := testHome(t)
-	d, err := ServeRemote(filepath.Join(home, "sock"), up, n, "dev-1")
+	d, err := ServeRemote(filepath.Join(home, "sock"), up, n, "dev-1", "")
 	if err != nil {
 		t.Fatalf("ServeRemote: %v", err)
 	}
@@ -718,7 +718,7 @@ func TestPollReconcileResolvesTheIncarnation(t *testing.T) {
 	}}
 	n := &fakeNotifier{}
 	home := testHome(t)
-	d, err := ServeRemote(filepath.Join(home, "sock"), up, n, "dev-1")
+	d, err := ServeRemote(filepath.Join(home, "sock"), up, n, "dev-1", "")
 	if err != nil {
 		t.Fatalf("ServeRemote: %v", err)
 	}
@@ -748,7 +748,7 @@ func TestPollReconcileSkipsTheBatchOnARosterError(t *testing.T) {
 	}
 	n := &fakeNotifier{}
 	home := testHome(t)
-	d, err := ServeRemote(filepath.Join(home, "sock"), up, n, "dev-1")
+	d, err := ServeRemote(filepath.Join(home, "sock"), up, n, "dev-1", "")
 	if err != nil {
 		t.Fatalf("ServeRemote: %v", err)
 	}

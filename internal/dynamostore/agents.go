@@ -89,6 +89,7 @@ func (s *Store) RegisterAgent(a store.Agent) error {
 		"session_id":      attrS(a.SessionID),
 		"session_created": attrN(a.SessionCreated),
 		"device_id":       attrS(a.DeviceID),
+		"device_name":     attrS(a.DeviceName),
 		// superseded_by is reset to "" on every register, exactly like
 		// departed: a revived or re-registered alias is no longer superseded by
 		// whatever claimed it before (the operator may have purged the
@@ -726,6 +727,7 @@ func itemToAgent(item map[string]types.AttributeValue) store.Agent {
 		SessionID:        strAttr(item, "session_id"),
 		SessionCreated:   numAttr(item, "session_created"),
 		DeviceID:         strAttr(item, "device_id"),
+		DeviceName:       strAttr(item, "device_name"),
 		HarnessSessionID: strAttr(item, "harness_session_id"),
 		Project:          strAttr(item, "project"),
 		Label:            strAttr(item, "label"),

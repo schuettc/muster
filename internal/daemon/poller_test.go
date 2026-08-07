@@ -79,7 +79,7 @@ func (s *scriptedUpstream) countOp(op string) int {
 func startRemoteDaemon(t *testing.T, up Upstream, n wake.Notifier) (*Daemon, string) {
 	t.Helper()
 	sock := filepath.Join(testHome(t), "sock")
-	d, err := ServeRemote(sock, up, n, "dev-1")
+	d, err := ServeRemote(sock, up, n, "dev-1", "")
 	if err != nil {
 		t.Fatalf("ServeRemote: %v", err)
 	}

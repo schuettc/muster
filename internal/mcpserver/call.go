@@ -96,6 +96,7 @@ type AgentView struct {
 	Role         string `json:"role" jsonschema:"the agent's role (producer, consumer, reviewer, ...)"`
 	ModelType    string `json:"model_type" jsonschema:"the agent's model (claude, codex, or cursor)"`
 	SessionName  string `json:"session_name" jsonschema:"the tmux session the agent runs in"`
+	DeviceName   string `json:"device_name" jsonschema:"the machine this agent runs on, named by its operator (e.g. 'work-laptop'). Match this when the human names a machine — 'the ci-cd session on my work laptop' means the agent whose device_name is work-laptop. Empty on a single-machine bus, where it carries no information. It is NOT part of the address: having found the right row, send to its alias."`
 	Project      string `json:"project" jsonschema:"the project the agent is registered under; the qualifier in a 'project:label' address"`
 	Label        string `json:"label" jsonschema:"what the agent is working on right now; addressable as 'project:label' (or bare within your own project) only when label_manual is true"`
 	LabelManual  bool   `json:"label_manual" jsonschema:"true when a human pinned this label, which is what makes it addressable; an auto-generated label is display-only and will not resolve"`

@@ -280,6 +280,29 @@ cwd guess.`,
 			Run:      cmdWhereami,
 		},
 		{
+			Name:     "device",
+			Synopsis: "device [<name>]",
+			Summary:  "Show or set this machine's device name.",
+			Help: `With no argument, prints this machine's device name, where it came from,
+and its device id. With one argument, sets the name.
+
+The name is how a human refers to this machine — "the ci-cd session on my
+work laptop" — and it appears in the roster's DEVICE column so an agent can
+resolve that phrase to an alias. It defaults to the hostname reduced to
+lowercase letters, digits and dashes, which is matchable but rarely what
+anyone says out loud, so setting it deliberately is the expected gesture.
+
+Setting writes <MUSTER_HOME>/device-name. That is a file rather than an
+export on purpose: it survives reboots with no shell configuration, and
+every process reads the same answer however it was launched.
+$MUSTER_DEVICE_NAME overrides it for a single shell.
+
+Existing roster rows keep whatever name they registered with — re-register
+to update them.`,
+			Group: GroupIdentity,
+			Run:   cmdDevice,
+		},
+		{
 			Name:     "gc",
 			Synopsis: "gc [--events-keep <dur>] [--purge-agents]",
 			Summary:  "Reap dead agents and prune old journal events.",
