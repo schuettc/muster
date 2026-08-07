@@ -283,8 +283,21 @@ type explicitly are never rewritten.
 The name lives in `<MUSTER_HOME>/device-name`, not an environment variable, so
 it survives reboots without touching a shell profile and every process agrees
 on it however it was launched. `$MUSTER_DEVICE_NAME` overrides it for one
-shell. Existing roster rows keep whatever they registered with — re-register to
-update them.
+shell.
+
+**Naming a machine after it has already registered is safe, but it is not
+retroactive and re-registering will not fix it.** A seeded alias is a
+*different* alias, so re-registering creates a second identity and leaves your
+inbox and read-state on the first. Nothing is lost, and mail to the old alias
+still arrives — you just end up with two names for one session. To carry the
+identity across properly, use the command built for exactly this:
+
+```sh
+muster become work-laptop-ci-cd
+```
+
+That tombstones the old row, marks it superseded, and moves the identity and
+its mail to the new alias.
 
 ### Getting the URL and token onto the other machine
 

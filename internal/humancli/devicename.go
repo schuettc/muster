@@ -59,7 +59,12 @@ func cmdDevice(args []string, out io.Writer) error {
 				return err
 			}
 		}
-		_, err = fmt.Fprintln(out, "agents registered from this machine will carry it; re-register to update existing rows")
+		_, err = fmt.Fprintln(out, "new registrations from this machine will carry it.")
+		if _, err2 := fmt.Fprintln(out,
+			"already registered under an unseeded alias? plain re-registration makes a SECOND identity\n"+
+				"and leaves your mail on the first — carry it over with `muster become <new-alias>` instead."); err2 != nil {
+			return err2
+		}
 		return err
 	default:
 		return usageErrorf("usage: muster device [<name>]")

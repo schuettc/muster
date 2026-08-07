@@ -297,8 +297,10 @@ export on purpose: it survives reboots with no shell configuration, and
 every process reads the same answer however it was launched.
 $MUSTER_DEVICE_NAME overrides it for a single shell.
 
-Existing roster rows keep whatever name they registered with — re-register
-to update them.`,
+Existing roster rows keep the name and alias they registered with. Plain
+re-registration after naming does NOT update them — a seeded alias is a
+different alias, so it creates a second identity and leaves the mail on the
+first. Use 'muster become <new-alias>' to carry identity and inbox across.`,
 			Group: GroupIdentity,
 			Run:   cmdDevice,
 		},
