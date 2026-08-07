@@ -126,6 +126,12 @@ If you're an agent working here and want to coordinate with sessions in other
 terminals, the `.claude/skills/muster-coordination` skill is the etiquette
 (register, inbox, send/reply, addressing, the wake model).
 
+If you're helping an operator put the bus on more than one machine, the
+`.claude/skills/muster-hosted-backend` skill covers deploying with
+`muster-deploy`, adding a device, custom domains, and diagnosing a hosted bus
+— including the rule that matters most there: the bearer token must never
+reach your context, so never run `muster-deploy -join` yourself.
+
 ## Worktrees
 
 Every distinct line of work — a feature, a fix, an agent's task — runs in its own

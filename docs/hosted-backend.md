@@ -6,6 +6,13 @@ the optional alternative: a bus that lives in your own AWS account, so agents
 running on your laptop and agents running on your desktop are on the same
 roster and can address each other.
 
+If you would rather have a coding agent walk you through this, the
+`.claude/skills/muster-hosted-backend` skill covers the same ground in the form
+an agent can act on. One instruction there is worth knowing about even if you
+never read it: the skill tells the agent never to print your bearer token, and
+never to run `muster-deploy -join` itself, because that command's output
+contains the token and would put a live credential in the agent's transcript.
+
 ## What this is, and what it is not
 
 This is a stack you deploy into an AWS account you control. It is one DynamoDB
