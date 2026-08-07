@@ -62,8 +62,8 @@ endpoint. On a first deploy it generates a token and writes it to
 keeps the token already in the stack, so re-running never rotates the fleet's
 credential by accident.
 
-It costs roughly $0.41/month at personal scale. Deleting the stack deletes the
-table and every message on the bus, with no backup.
+Deleting the stack deletes the table and every message on the bus, with no
+backup.
 
 ## Name each machine, before it registers anything
 

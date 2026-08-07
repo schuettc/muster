@@ -445,8 +445,7 @@ not on the known list.
 
 Stages 3–5 run against real AWS. At the volume this testing produces the bill
 is effectively zero — DynamoDB on-demand and Lambda's always-free tier cover
-it. See the cost section of `docs/hosted-backend.md` for the steady-state
-model.
+it.
 
 Tear the stack down when finished if you are not keeping it:
 

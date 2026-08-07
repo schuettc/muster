@@ -331,10 +331,10 @@ muster-deploy --region us-east-1
 is the same file `muster-deploy` embeds. Devices authenticate with a shared
 bearer token and need no AWS credentials at all.
 
-It costs a few cents a month at personal scale, it is opt-in, and the local path
-is untouched if you never want it — the AWS SDK is not even compiled into the
-binary you install. Setup, the security model, cost, and the known limitations
-are in [`docs/hosted-backend.md`](docs/hosted-backend.md); read the security
+It is opt-in, and the local path is untouched if you never want it — the AWS
+SDK is not compiled into the binary you install. Setup, the security model, and
+the known limitations are in
+[`docs/hosted-backend.md`](docs/hosted-backend.md); read the security
 section before deploying, because the endpoint is publicly reachable and the
 token is the only thing protecting it.
 

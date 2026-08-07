@@ -75,10 +75,6 @@ below and is designed to be doable without downtime, which is the point — a
 rotation procedure that breaks every device at once is a rotation procedure
 nobody ever runs.
 
-Per-device hashed tokens stored in the table, giving single-device revocation,
-are the intended next step. OIDC with short-lived tokens is the destination
-after that. Neither is in this version.
-
 ## Before you start
 
 You need an AWS account, credentials on the machine you deploy from, and a
@@ -459,58 +455,6 @@ builds it, with `-trimpath -ldflags "-s -w"`. Build it yourself without those
 flags and you will see roughly 20MB instead; that is the debug information, not
 something anyone downloads. The AWS SDK is *not* in either one — it is
 compiled only into the Lambda artifact, behind a build tag.
-
-## Cost
-
-Rates below are AWS list prices for `us-east-1`, DynamoDB Standard table class,
-on-demand capacity, **verified against the AWS pricing pages on 2026-08-04**.
-Prices change; re-check before relying on them.
-
-The model is two devices, a ten-second poll, daemons up twelve hours a day, and
-a few hundred real operations a day — roughly 275,000 invocations a month.
-
-| Line item | Volume/month | Rate | Cost |
-|---|---|---|---|
-| Lambda requests | 275k | 1M/mo always-free tier | $0 |
-| Lambda duration (arm64) | ~700 GB-s | 400k GB-s/mo always-free tier | $0 |
-| API Gateway requests | 275k | $1.00 per million (first 300M/mo) | ~$0.28 |
-| DynamoDB writes | ~180k WRU | $0.625 per million WRU | ~$0.11 |
-| DynamoDB reads | ~138k RRU | $0.125 per million RRU | ~$0.02 |
-| DynamoDB storage | megabytes | 25GB always-free tier | $0 |
-| **Total** | | | **~$0.41/mo** |
-
-Four things worth knowing about that table:
-
-The Lambda free tiers used here are the *always-free* ones, which do not expire
-after twelve months. The whole workload fits inside them at this scale, which
-is why Lambda itself contributes nothing.
-
-API Gateway is the largest single line and the only one with no free tier at
-all — it is what you pay for not needing AWS credentials on your devices. A
-Lambda Function URL would make this row $0, and an earlier version of this
-design used one; the reasons it does not any more are in the template header,
-and they come down to the fact that a Function URL cannot carry the JWT
-authorizer this backend is heading toward.
-
-The write volume already includes the idempotency record written alongside each
-mutation. It does not separately account for the fact that a transactional
-write consumes two write units rather than one, and most mutations on this
-backend go through a transaction — so treat the DynamoDB line as the right
-order of magnitude rather than a precise forecast.
-
-Poll cadence now matters more than it used to. Polling every two seconds around
-the clock instead of every ten seconds during a working day — the aggressive
-case — is about 2.6M requests a month rather than 275k, which lands near
-$2.90/mo. Roughly $2.60 of that is API Gateway. Under the old Function URL the
-same aggressive case cost about $0.33, because polls were reads against
-DynamoDB and nothing charged per request; now every poll is a billable request
-whether or not it finds mail. If you raise the cadence, raise it deliberately.
-
-Set an AWS Budgets alert anyway. The reserved concurrency cap of 10 bounds what
-a runaway poller or a stranger who finds your URL can cost you, but a budget
-alert is what tells you it happened — and if you had to deploy with
-`ReservedConcurrency=0` because of the account quota floor (see
-troubleshooting), the alert is the only bound you have.
 
 ## Rotating the token
 
