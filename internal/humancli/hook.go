@@ -318,9 +318,9 @@ func hookSessionStartPaneless(h harnessenv.Capture, model string) {
 // captured tmux session name.
 func hookAlias(c tmuxenv.Capture) string {
 	if v := os.Getenv("MUSTER_ALIAS"); v != "" {
-		return v
+		return v // explicit operator choice: never rewritten
 	}
-	return c.SessionName
+	return seedAlias(c.SessionName)
 }
 
 // hookGetAgent fetches an alias's full roster row via the daemon's get_agent

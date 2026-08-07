@@ -7,6 +7,8 @@ CREATE TABLE IF NOT EXISTS agents (
     session_name  TEXT NOT NULL DEFAULT '',
     session_id    TEXT NOT NULL DEFAULT '',
     session_created INTEGER NOT NULL DEFAULT 0, -- tmux #{session_created} (unix seconds) at register time: discriminates recycled session IDs across tmux server restarts (0 = unknown/pre-upgrade); see tmuxenv.IsSessionAlive and Store.DepartStaleSiblings
+    device_id     TEXT NOT NULL DEFAULT '', -- the machine this agent registered from (wake-routing key across devices); '' = unknown/pre-upgrade; see internal/device
+    device_name   TEXT NOT NULL DEFAULT '', -- that machine's human-meaningful name, for display and for matching "on my work laptop"; never identity
     project       TEXT NOT NULL DEFAULT '',
     label         TEXT NOT NULL DEFAULT '',
     label_manual  INTEGER NOT NULL DEFAULT 0,
@@ -62,3 +64,18 @@ CREATE TABLE IF NOT EXISTS events (
     detail    TEXT NOT NULL DEFAULT ''       -- 'lit' | 'cleared' | 'skipped: …' | 'error: …'
 );
 CREATE INDEX IF NOT EXISTS idx_events_agent ON events(agent, id);
+
+-- Server-side idempotency records: one row per client IdemKey, claimed by the
+-- caller that gets to execute the op and completed with that op's response so
+-- a redelivery replays it instead of re-running it (see internal/store/idem.go).
+-- Local mode never populates this table — a local client sends no IdemKey — but
+-- the table and its methods exist on both backends so the interface is honest
+-- and the conformance suite can hold them to the same behaviour.
+-- No ALTER migration is needed: CREATE TABLE IF NOT EXISTS here covers
+-- pre-existing databases, since store.Open applies this whole file every time.
+CREATE TABLE IF NOT EXISTS idem (
+    key        TEXT PRIMARY KEY,
+    state      TEXT NOT NULL,          -- 'pending' | 'done'
+    resp       BLOB,
+    created_at INTEGER NOT NULL
+);

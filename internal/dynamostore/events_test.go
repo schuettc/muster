@@ -1,0 +1,177 @@
+package dynamostore
+
+import (
+	"context"
+	"os"
+	"testing"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+
+	"github.com/schuettc/muster/internal/clock"
+	"github.com/schuettc/muster/internal/store"
+)
+
+// --- endpoint-free tests ----------------------------------------------------
+//
+// The pieces of the events implementation that are pure logic are tested
+// without an endpoint on purpose: they then run in `just verify` on every
+// machine, and the endpoint-backed tests below are left to cover only what
+// genuinely needs DynamoDB.
+
+func TestClampEventLimit(t *testing.T) {
+	// Mirrors internal/store/events.go: <=0 and anything over the cap both
+	// become maxEventLimit; in between is passed through untouched.
+	tests := []struct{ in, want int }{
+		{0, maxEventLimit},
+		{-1, maxEventLimit},
+		{1, 1},
+		{999, 999},
+		{maxEventLimit, maxEventLimit},
+		{maxEventLimit + 1, maxEventLimit},
+	}
+	for _, tc := range tests {
+		if got := clampEventLimit(tc.in); got != tc.want {
+			t.Errorf("clampEventLimit(%d) = %d, want %d", tc.in, got, tc.want)
+		}
+	}
+}
+
+// TestEventConcernsMatchesEveryArm pins the Go translation of the SQLite
+// agent-filter predicate. All four arms matter, and the two that are easiest
+// to lose are the bare-alias target (a nudge) and the thread concern (a reply
+// row carries an empty target, so only the thread can match the originator).
+func TestEventConcernsMatchesEveryArm(t *testing.T) {
+	concerning := map[int64]bool{7: true}
+	tests := []struct {
+		name string
+		e    store.Event
+		want bool
+	}{
+		{"actor", store.Event{Agent: "web"}, true},
+		{"addressed target", store.Event{Target: "agent:web"}, true},
+		{"bare target (nudge)", store.Event{Target: "web"}, true},
+		{"thread concern", store.Event{Agent: "api", ThreadID: 7}, true},
+		{"unrelated", store.Event{Agent: "x", Target: "agent:zzz", ThreadID: 999}, false},
+		{"role target is not a bare alias", store.Event{Target: "role:web"}, false},
+		{"thread-less and unrelated", store.Event{Agent: "x"}, false},
+		// thread_id 0 must never consult the concerning set, or every
+		// thread-less event would match once id 0 crept in.
+		{"thread id zero", store.Event{Agent: "x", ThreadID: 0}, false},
+	}
+	for _, tc := range tests {
+		if got := eventConcerns(tc.e, "web", concerning); got != tc.want {
+			t.Errorf("%s: eventConcerns = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestEventRetentionKnob(t *testing.T) {
+	t.Setenv(EventRetentionEnv, "")
+	d, err := eventRetention()
+	if err != nil || d != defaultEventRetention {
+		t.Fatalf("unset: got %v (%v), want the %v default", d, err, defaultEventRetention)
+	}
+	t.Setenv(EventRetentionEnv, "48h")
+	if d, err := eventRetention(); err != nil || d != 48*time.Hour {
+		t.Fatalf("48h: got %v (%v)", d, err)
+	}
+	t.Setenv(EventRetentionEnv, "banana")
+	if _, err := eventRetention(); err == nil {
+		t.Fatal("an unparseable retention must fail loudly, not silently default")
+	}
+	t.Setenv(EventRetentionEnv, "0s")
+	if _, err := eventRetention(); err == nil {
+		t.Fatal("a non-positive retention must be rejected: it would expire every event on write")
+	}
+}
+
+// TestPruneEventsIsANoOpOnThisBackend pins the documented contract: native TTL
+// supersedes it here, so it deletes nothing and reports nothing. It needs no
+// endpoint precisely because it touches no storage.
+func TestPruneEventsIsANoOpOnThisBackend(t *testing.T) {
+	s := &Store{table: "muster-test-unused"}
+	n, err := s.PruneEvents(clock.NowMillis())
+	if err != nil || n != 0 {
+		t.Fatalf("PruneEvents = %d (%v), want 0, nil", n, err)
+	}
+}
+
+// --- endpoint-backed tests --------------------------------------------------
+
+func TestEventsBacklogAndFollowModes(t *testing.T) {
+	s := newTestStore(t)
+	for i, k := range []string{"send", "reply", "notify"} {
+		if err := s.AppendEvent(store.Event{Kind: k, Agent: "web", ThreadID: int64(i + 1)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	back, err := s.Events(store.EventQuery{Backlog: true, Limit: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(back) != 2 || back[0].Kind != "notify" || back[1].Kind != "reply" {
+		t.Fatalf("backlog newest-first limit 2: %+v", back)
+	}
+	follow, err := s.Events(store.EventQuery{AfterID: back[1].ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(follow) != 1 || follow[0].Kind != "notify" {
+		t.Fatalf("follow after id %d: %+v", back[1].ID, follow)
+	}
+	if none, _ := s.Events(store.EventQuery{Backlog: true, Limit: 0}); len(none) != 0 {
+		t.Fatalf("backlog limit 0 must return no rows, got %d", len(none))
+	}
+	if _, err := s.Events(store.EventQuery{AfterID: -1}); err == nil {
+		t.Fatal("negative AfterID must error")
+	}
+	if _, err := s.Events(store.EventQuery{ThreadID: -1}); err == nil {
+		t.Fatal("negative ThreadID must error")
+	}
+	maxID, err := s.MaxEventID()
+	if err != nil || maxID != back[0].ID {
+		t.Fatalf("MaxEventID = %d (%v), want %d", maxID, err, back[0].ID)
+	}
+}
+
+// TestAppendEventStampsTTL is the whole reason PruneEvents is a no-op here:
+// every event item carries a `ttl` attribute in epoch SECONDS (DynamoDB's
+// required unit — milliseconds would put the expiry ~50000 years out and
+// nothing would ever be reaped) at now + the retention knob.
+func TestAppendEventStampsTTL(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.AppendEvent(store.Event{Kind: "read", Agent: "a"}); err != nil {
+		t.Fatal(err)
+	}
+	evs, err := s.Events(store.EventQuery{Backlog: true, Limit: 1})
+	if err != nil || len(evs) != 1 {
+		t.Fatalf("Events: %d rows (%v)", len(evs), err)
+	}
+	out, err := s.c.GetItem(context.Background(), &dynamodb.GetItemInput{
+		TableName:      aws.String(s.table),
+		Key:            eventKey(evs[0].ID),
+		ConsistentRead: aws.Bool(true),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ttl := numAttr(out.Item, "ttl")
+	want := clock.NowMillis()/1000 + int64(defaultEventRetention/time.Second)
+	if ttl < want-60 || ttl > want+60 {
+		t.Fatalf("ttl = %d, want ~%d (now + %v, in seconds)", ttl, want, defaultEventRetention)
+	}
+}
+
+// TestOpenRejectsAnUnparseableRetention keeps a typo in the knob from
+// silently falling back to 30 days at deploy time.
+func TestOpenRejectsAnUnparseableRetention(t *testing.T) {
+	if os.Getenv(EndpointEnv) == "" {
+		t.Skipf("%s unset; run `just verify-dynamo`", EndpointEnv)
+	}
+	t.Setenv(EventRetentionEnv, "not-a-duration")
+	if _, err := Open(context.Background(), testTableName(t)); err == nil {
+		t.Fatal("Open must refuse an unparseable retention knob")
+	}
+}

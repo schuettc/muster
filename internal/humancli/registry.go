@@ -139,8 +139,15 @@ when a session has no muster MCP connection.`,
 			Name:     "agents",
 			Synopsis: "agents",
 			Summary:  "List registered agents, grouped by project, with live status.",
-			Help:     `Shows every registered agent's project, alias, label, model, and whether its tmux session is still alive.`,
-			Group:    GroupWatch,
+			Help: `Shows every registered agent's project, alias, label, model, and whether
+its tmux session is still alive.
+
+A DEVICE column appears only when the roster spans more than one machine —
+that is, on a hosted bus with devices in it. Your own machine reads "this";
+others show the first characters of their device id. Device is LOCATION, not
+identity: nothing is addressed by it, and an alias means the same agent from
+every device on the bus.`,
+			Group: GroupWatch,
 			Run: func(args []string, out io.Writer) error {
 				if helpRequested(args) {
 					return HelpFor("agents", out)
@@ -273,6 +280,31 @@ cwd guess.`,
 			Run:      cmdWhereami,
 		},
 		{
+			Name:     "device",
+			Synopsis: "device [<name>]",
+			Summary:  "Show or set this machine's device name.",
+			Help: `With no argument, prints this machine's device name, where it came from,
+and its device id. With one argument, sets the name.
+
+The name is how a human refers to this machine — "the ci-cd session on my
+work laptop" — and it appears in the roster's DEVICE column so an agent can
+resolve that phrase to an alias. It defaults to the hostname reduced to
+lowercase letters, digits and dashes, which is matchable but rarely what
+anyone says out loud, so setting it deliberately is the expected gesture.
+
+Setting writes <MUSTER_HOME>/device-name. That is a file rather than an
+export on purpose: it survives reboots with no shell configuration, and
+every process reads the same answer however it was launched.
+$MUSTER_DEVICE_NAME overrides it for a single shell.
+
+Existing roster rows keep the name and alias they registered with. Plain
+re-registration after naming does NOT update them — a seeded alias is a
+different alias, so it creates a second identity and leaves the mail on the
+first. Use 'muster become <new-alias>' to carry identity and inbox across.`,
+			Group: GroupIdentity,
+			Run:   cmdDevice,
+		},
+		{
 			Name:     "gc",
 			Synopsis: "gc [--events-keep <dur>] [--purge-agents]",
 			Summary:  "Reap dead agents and prune old journal events.",
@@ -302,6 +334,19 @@ SIGINT/SIGTERM.`,
 			Help: `Exposes the daemon's operations as MCP tools over stdio, for a coding
 agent (Claude Code, Codex, Cursor, ...) to call directly. stdout is the MCP
 protocol channel — all diagnostics go to stderr.`,
+			Group: GroupPlumbing,
+		},
+		{
+			Name:     "lambda",
+			Synopsis: "lambda",
+			Summary:  "Serve the hosted bus from an AWS Lambda behind an HTTP API.",
+			Help: `Runs the AWS Lambda runtime, adapting API Gateway requests to the same
+daemon operations the unix socket serves, over a DynamoDB table
+($MUSTER_DDB_TABLE) instead of SQLite. Requests carry a bearer token in the
+Authorization header, matched against $MUSTER_TOKEN (and, during a rotation,
+$MUSTER_TOKEN_PREVIOUS); with no token configured every request is rejected.
+Only the Lambda release artifact is built with lambda mode compiled in (-tags
+lambda) — the binary devices run reports that and exits.`,
 			Group: GroupPlumbing,
 		},
 		{

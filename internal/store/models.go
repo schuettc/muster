@@ -28,6 +28,22 @@ type Agent struct {
 	// then falls back to bare session existence. See tmuxenv.IsSessionAlive
 	// and Store.DepartStaleSiblings.
 	SessionCreated int64 `json:"session_created"`
+	// DeviceID identifies the machine this agent registered from — the
+	// wake-routing key once a bus spans devices. SocketPath cannot serve
+	// this purpose (two machines can both have /tmp/tmux-501/default).
+	// '' = unknown (registered before this column existed).
+	DeviceID string `json:"device_id"`
+	// DeviceName is the human-meaningful name of that same machine
+	// ("work-laptop"), captured at registration. It exists because DeviceID
+	// is a UUID and nobody says a UUID out loud: an operator asks for "the
+	// ci-cd session on my work laptop", and a model matching that phrase
+	// against the roster needs a string shaped like the phrase.
+	//
+	// It is DISPLAY, never identity. Nothing is keyed, scoped, or compared by
+	// it — DeviceID does all of that — which is precisely what lets an
+	// operator rename a machine without re-keying a single row or orphaning
+	// any mail. '' = unknown (pre-upgrade, or a machine with no hostname).
+	DeviceName string `json:"device_name"`
 	// HarnessSessionID is the agent-harness session UUID (e.g. Claude Code's
 	// session id) when known — the deterministic link between a roster row
 	// and the harness session it belongs to. The pane-side launch handshake
