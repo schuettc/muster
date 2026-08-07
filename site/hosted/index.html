@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>muster — hosted backend</title>
-<meta name="description" content="muster's optional hosted backend: a DynamoDB table and a Lambda deployed to your own AWS account, so agent sessions on several machines share one roster. Deployment, device setup, naming, the security model, and cost.">
+<meta name="description" content="muster's optional hosted backend: a DynamoDB table and a Lambda deployed to your own AWS account, so agent sessions on several machines share one roster. Deployment, device setup, naming, and the security model.">
 <meta property="og:title" content="muster — hosted backend">
 <meta property="og:description" content="Deploying muster's bus to your own AWS account so several machines share one roster. Devices authenticate with a bearer token and need no AWS credentials.">
 <meta property="og:url" content="https://muster.tools/hosted/">
@@ -38,7 +38,6 @@
   <a href="#devices">devices</a>
   <a href="#naming">naming a machine</a>
   <a href="#security">security</a>
-  <a href="#cost">cost</a>
 </nav>
 
 <header class="hero" id="top">
@@ -164,30 +163,12 @@ export MUSTER_REMOTE_URL=<span class="c-sig">https://muster.example.com</span>
         <span class="k">One token for all devices</span>
         <span class="d">There is no per-device attribution and no way to revoke one machine without changing the token everywhere. The function accepts two tokens at once, so a replacement can be rolled out across devices before the previous one is removed.</span>
       </div>
-      <div class="row2">
-        <span class="k">Planned changes</span>
-        <span class="d">Per-device hashed tokens, which would allow revoking one machine, are the next step; OIDC with short-lived tokens comes after that. The backend uses an HTTP API rather than a Lambda Function URL partly because an HTTP API accepts a JWT authorizer as configuration.</span>
-      </div>
     </div>
     <p class="note">The endpoint hostname is a ten-character api-id, or whatever custom domain you set. Treat it as one less thing an attacker knows, not as a second credential.</p>
+    <p class="lead">The operator guide in the repository covers token rotation, upgrading the function, troubleshooting, and the known limitations: <a href="https://github.com/schuettc/muster/blob/main/docs/hosted-backend.md">docs/hosted-backend.md</a>. Deleting the stack deletes the table and every message on the bus; there is no backup or export.</p>
   </div>
 </section>
 
-<section id="cost">
-  <div class="wrap">
-    <p class="kicker">cost</p>
-    <h2>Roughly $0.41 a month at personal scale.</h2>
-    <p class="lead">Calculated for two devices, a ten-second poll, daemons running twelve hours a day, and a few hundred operations a day — about 275,000 requests a month. Rates are AWS list prices for <code>us-east-1</code> and change over time.</p>
-    <div class="adr cliref">
-      <div class="row2"><span class="k">Lambda</span><span class="d">Requests and duration both fall inside the always-free tiers at this volume, which do not expire after twelve months.</span></div>
-      <div class="row2"><span class="k">API Gateway</span><span class="d">$1.00 per million requests, about $0.28 a month. This is the only line with no free tier.</span></div>
-      <div class="row2"><span class="k">DynamoDB</span><span class="d">On-demand reads and writes come to about $0.13 a month. Storage is a few megabytes, inside the 25GB free tier.</span></div>
-      <div class="row2"><span class="k">Poll cadence</span><span class="d">Polling every two seconds around the clock is about 2.6M requests a month and costs near $2.90, since each poll is a billable request whether or not it finds mail.</span></div>
-    </div>
-    <p class="note codegap">The stack sets a reserved concurrency limit, which bounds what a runaway poller or an unknown caller can spend. An AWS Budgets alert is what tells you it happened.</p>
-    <p class="lead">The operator guide in the repository covers the security model in more detail, token rotation, upgrading the function, troubleshooting, and the known limitations: <a href="https://github.com/schuettc/muster/blob/main/docs/hosted-backend.md">docs/hosted-backend.md</a>. Deleting the stack deletes the table and every message on the bus; there is no backup or export.</p>
-  </div>
-</section>
 
 <footer>
   <div class="wrap foot">

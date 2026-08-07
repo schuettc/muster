@@ -85,8 +85,7 @@ SigV4 and has no bearer-token equivalent.
 - `muster device <name>` names a machine, which makes the roster legible
   ("the ci-cd session on my work laptop") and stops two machines with the same
   repos checked out from claiming the same alias.
-- Roughly $0.41/month at personal scale. Deleting the stack deletes the table
-  and every message on the bus.
+- Deleting the stack deletes the table and every message on the bus.
 
 ## Setup
 
