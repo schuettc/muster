@@ -210,11 +210,26 @@ Follow `docs/hosted-backend.md` end to end — that document is the deploy
 instruction set and this stage is partly a test *of it*. If you have to work
 anything out that the doc did not tell you, that is a doc bug worth filing.
 
+Before wiring a device, check the endpoint answers at all. This separates a
+deployment problem from a muster problem, and it is worth thirty seconds:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' -X POST "$URL" \
+  -H "Authorization: Bearer $(cat ~/.muster-rc/remote-token)" \
+  -d '{"op":"list_agents"}'
+```
+
+`200` means the whole path works. `401` means the token does not match what you
+deployed. `500` with nothing in the Lambda log group means the request never
+reached the function — check the API access log group, which is the only place
+that failure is visible. Anything else, see the doc's troubleshooting section
+before going further.
+
 Then, on one machine:
 
 ```bash
 export MUSTER_BACKEND=remote
-export MUSTER_REMOTE_URL=https://<your-function-url>/
+export MUSTER_REMOTE_URL=https://<api-id>.execute-api.<region>.amazonaws.com
 # token at $MUSTER_HOME/remote-token, mode 0600 — the daemon refuses looser modes
 ```
 
@@ -262,7 +277,7 @@ every macOS box), but here you get it guaranteed rather than by luck.
 export MUSTER_HOME=~/.muster-rc-dev-a
 export MUSTER_DEVICE_ID=dev-a
 export MUSTER_BACKEND=remote
-export MUSTER_REMOTE_URL=https://<your-function-url>/
+export MUSTER_REMOTE_URL=https://<api-id>.execute-api.<region>.amazonaws.com
 mkdir -p "$MUSTER_HOME"
 cp ~/.local/share/muster/remote-token "$MUSTER_HOME/remote-token"
 chmod 600 "$MUSTER_HOME/remote-token"
@@ -275,7 +290,7 @@ muster-rc register agent-a --role worker
 export MUSTER_HOME=~/.muster-rc-dev-b
 export MUSTER_DEVICE_ID=dev-b
 export MUSTER_BACKEND=remote
-export MUSTER_REMOTE_URL=https://<your-function-url>/
+export MUSTER_REMOTE_URL=https://<api-id>.execute-api.<region>.amazonaws.com
 mkdir -p "$MUSTER_HOME"
 cp ~/.local/share/muster/remote-token "$MUSTER_HOME/remote-token"
 chmod 600 "$MUSTER_HOME/remote-token"

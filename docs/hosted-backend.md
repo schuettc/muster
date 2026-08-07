@@ -30,19 +30,21 @@ you should read it before you deploy anything.
 
 ## The security model, in full
 
-The function's HTTPS endpoint is a Lambda Function URL created with
-`AuthType: NONE`. That means AWS does not authenticate callers at its edge. The
-URL is reachable by anyone on the internet who knows the hostname, and the
-bearer token checked inside the function is the only thing between a stranger
-and your entire bus — every message anyone has sent, and the ability to post as
-any agent on it.
+The function's HTTPS endpoint is an API Gateway HTTP API whose `$default` route
+carries no authorizer. That means AWS does not authenticate callers at its
+edge. The URL is reachable by anyone on the internet who knows the hostname,
+and the bearer token checked inside the function is the only thing between a
+stranger and your entire bus — every message anyone has sent, and the ability
+to post as any agent on it.
 
 Three consequences follow, and none of them are hypothetical:
 
-**Token entropy is the only defence.** The handler has no rate limiting, no
-lockout, and no IP throttling. That is a deliberate v1 decision, not an
-oversight, but it means an online brute force is bounded by nothing except how
-hard your token is to guess. Generate it with a CSPRNG and never by hand:
+**Token entropy is what defends you.** The handler has no lockout and no
+per-caller memory; what bounds an online brute force is the API's route
+throttling, which the template sets to 20 requests per second by default. That
+turns guessing into a rate-limited attack rather than an unbounded one, but 20
+guesses a second still adds up over months, so the token must be genuinely
+unguessable. Generate it with a CSPRNG and never by hand:
 
 ```sh
 openssl rand -base64 32
@@ -52,10 +54,12 @@ The CloudFormation template enforces a 32-character minimum on the token
 parameter. That rejects obviously weak values; it cannot rescue a long but
 predictable one. Use the command above.
 
-**Treat the URL as a secret too.** Function URL hostnames are random
-32-character subdomains under `lambda-url.<region>.on.aws` and are not
-enumerable in practice, so keeping the URL private is genuine defence in depth.
-Do not paste it into an issue, a commit, or an agent transcript.
+**Do not count on the URL being secret.** An HTTP API endpoint is
+`https://<api-id>.execute-api.<region>.amazonaws.com`, where the api-id is ten
+characters — real obscurity, but a good deal less than a Lambda Function URL's
+32-character subdomain. It is still worth not pasting into an issue, a commit,
+or an agent transcript, but treat it as one fewer thing an attacker has to
+guess rather than as a second credential.
 
 **A leaked token grants everything until you rotate it.** There is one token
 shared by every device, so there is no per-device attribution and no way to
@@ -138,7 +142,7 @@ file if that matters to you.
 
 ```sh
 aws cloudformation describe-stacks --stack-name muster --region us-east-1 \
-  --query 'Stacks[0].Outputs[?OutputKey==`FunctionUrl`].OutputValue' --output text
+  --query 'Stacks[0].Outputs[?OutputKey==`MusterUrl`].OutputValue' --output text
 ```
 
 That URL is what goes in `MUSTER_REMOTE_URL` on every device.
@@ -226,7 +230,7 @@ On each device:
 | Variable | Default | Meaning |
 |---|---|---|
 | `MUSTER_BACKEND` | `local` | `local` or `remote`. An unrecognised value is an error, not a fallback to local. |
-| `MUSTER_REMOTE_URL` | — | The Function URL. Required when `MUSTER_BACKEND=remote`. |
+| `MUSTER_REMOTE_URL` | — | The API endpoint from the stack's `MusterUrl` output. Required when `MUSTER_BACKEND=remote`. |
 | `MUSTER_POLL_INTERVAL` | `10s` | Base cadence for the cross-device wake poll (a Go duration). Unparseable or non-positive values warn and fall back to the default. |
 | `MUSTER_DEVICE_ID` | a persisted UUID | Overrides this device's identity. Normally left alone. |
 | `MUSTER_HOME` | `~/.local/share/muster` | Data directory. Holds `remote-token` and `device-id`. |
@@ -283,17 +287,24 @@ a few hundred real operations a day — roughly 275,000 invocations a month.
 |---|---|---|---|
 | Lambda requests | 275k | 1M/mo always-free tier | $0 |
 | Lambda duration (arm64) | ~700 GB-s | 400k GB-s/mo always-free tier | $0 |
-| Function URL | — | no per-request charge | $0 |
+| API Gateway requests | 275k | $1.00 per million (first 300M/mo) | ~$0.28 |
 | DynamoDB writes | ~180k WRU | $0.625 per million WRU | ~$0.11 |
 | DynamoDB reads | ~138k RRU | $0.125 per million RRU | ~$0.02 |
 | DynamoDB storage | megabytes | 25GB always-free tier | $0 |
-| **Total** | | | **~$0.13/mo** |
+| **Total** | | | **~$0.41/mo** |
 
-Three things worth knowing about that table:
+Four things worth knowing about that table:
 
 The Lambda free tiers used here are the *always-free* ones, which do not expire
 after twelve months. The whole workload fits inside them at this scale, which
-is why the bill is entirely DynamoDB.
+is why Lambda itself contributes nothing.
+
+API Gateway is the largest single line and the only one with no free tier at
+all — it is what you pay for not needing AWS credentials on your devices. A
+Lambda Function URL would make this row $0, and an earlier version of this
+design used one; the reasons it does not any more are in the template header,
+and they come down to the fact that a Function URL cannot carry the JWT
+authorizer this backend is heading toward.
 
 The write volume already includes the idempotency record written alongside each
 mutation. It does not separately account for the fact that a transactional
@@ -301,10 +312,13 @@ write consumes two write units rather than one, and most mutations on this
 backend go through a transaction — so treat the DynamoDB line as the right
 order of magnitude rather than a precise forecast.
 
-Poll cadence is not the cost driver people expect. Polling every two seconds
-around the clock instead of every ten seconds during a working day — the
-aggressive case — lands near $0.33/mo, still dominated by DynamoDB rather than
-by Lambda.
+Poll cadence now matters more than it used to. Polling every two seconds around
+the clock instead of every ten seconds during a working day — the aggressive
+case — is about 2.6M requests a month rather than 275k, which lands near
+$2.90/mo. Roughly $2.60 of that is API Gateway. Under the old Function URL the
+same aggressive case cost about $0.33, because polls were reads against
+DynamoDB and nothing charged per request; now every poll is a billable request
+whether or not it finds mail. If you raise the cadence, raise it deliberately.
 
 Set an AWS Budgets alert anyway. The reserved concurrency cap of 10 bounds what
 a runaway poller or a stranger who finds your URL can cost you, but a budget
@@ -452,11 +466,34 @@ increase (Service Quotas → Lambda → "Concurrent executions"; the usual grant
 Until you do, nothing bounds what a runaway poller or a stranger who found your
 URL can spend — so set an AWS Budgets alert, which you should have anyway.
 
-**Every request returns 403, and the function's logs are empty.** The function
-was never invoked. This is the Function URL's resource policy, not your token —
-the `AWS::Lambda::Permission` resource granting `lambda:InvokeFunctionUrl` to
-`*` is what `AuthType: NONE` requires. If you have hand-edited the template,
-check it is still there.
+**Every request returns 500, and the function's logs are empty.** The function
+was never invoked, so the failure is between API Gateway and Lambda rather than
+in your token or your code. The usual cause is the missing invoke permission:
+`MusterApiPermission` is what lets `apigateway.amazonaws.com` call the
+function, and without it the integration fails before the handler runs. If you
+have hand-edited the template, check that resource is still there and that its
+`SourceArn` names this API. The API access log group (the stack's
+`ApiAccessLogGroupName` output) records an `integrationErrorMessage` for these,
+which is the fastest confirmation.
+
+**Every request returns 429.** Route throttling. The default is 20 requests per
+second across all devices, which a normal fleet does not approach — so either
+something is polling far harder than you think, or someone is hammering the
+endpoint. Look at the access log before raising `ThrottleRateLimit`; the limit
+is doing its job in the second case.
+
+**Every request returns 403 with a message about Function URL authorization.**
+This is a stale endpoint, not a broken deployment. Earlier versions of this
+backend used a Lambda Function URL with `AuthType: NONE`, and some AWS
+Organizations deny anonymous Function URL invocation by service control policy
+— which surfaces exactly this way: 403 at the edge, nothing in the function's
+logs, and no indication anywhere that a guardrail is the cause. Confirm the
+function itself is healthy with a direct `aws lambda invoke`; if that returns
+`{"ok":true,...}` while the URL does not, you are hitting the guardrail. The
+current template does not create a Function URL at all, so the fix is to
+redeploy and take `MUSTER_REMOTE_URL` from the `MusterUrl` output. If an old
+Function URL is still attached to the function from a previous deploy, delete
+it — it is an unauthenticated endpoint nobody is watching.
 
 **Every request returns 401.** The token the device sent did not match. Check
 that `remote-token` on the device holds exactly the token you deployed —
@@ -492,9 +529,13 @@ them.
 This is deliberate: a token file that others can read is not meaningfully safer
 than the environment variable it exists to avoid.
 
-**Diagnostics.** The function writes everything to stderr, which lands in the
-CloudWatch log group named in the stack's `LogGroupName` output.
-`aws logs tail /aws/lambda/muster-bus --follow` is usually the fastest way in.
+**Diagnostics.** There are two log groups and the distinction matters. The
+function writes everything to stderr, which lands in the group named by the
+stack's `LogGroupName` output — `aws logs tail /aws/lambda/muster-bus --follow`
+is usually the fastest way in. The API writes an access-log line per request to
+the group named by `ApiAccessLogGroupName`, and that one is the only place a
+request rejected *before* the function ran shows up at all. When the Lambda log
+group is empty but requests are failing, the access log is where to look.
 
 ## Going back to local
 

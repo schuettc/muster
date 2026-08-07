@@ -2,6 +2,10 @@
 
 **Date:** 2026-08-03
 **Status:** proposed
+**Amended:** 2026-08-06 — the HTTPS front door is an API Gateway HTTP API, not
+a Lambda Function URL. See "Amendment: the front door" at the end; the rest of
+this document still says "Function URL" throughout and that reads as the
+original decision, which is what it was.
 **Depends on:** label-first identity (v0.7.5), durable alias identity (v0.8.0),
 become / claim-your-name (v0.9.0), roster exposure (v0.9.1)
 
@@ -71,6 +75,9 @@ would be no server-side place to add a push channel later.
 **API Gateway in front of the Lambda.** Rejected on cost. At $1.00 per million
 requests it would exceed every other line item combined on poll traffic alone.
 Function URLs carry no per-request charge and support IAM auth natively.
+*(Reversed on 2026-08-06 — this is what the implemented stack uses. The
+arithmetic here is right and the conclusion drawn from it is not; see
+"Amendment: the front door".)*
 
 **Reserved concurrency of 1 to preserve single-writer semantics.** Considered at
 length and rejected. See "Concurrency" below — it does not actually solve the
@@ -443,3 +450,54 @@ Additional coverage needed:
   tokens and OIDC are planned successors, not v1 scope — see "This is a first
   step, not the destination". The v1 requirement on them is only that the
   `Authenticator` seam exists so they are a one-file change later.
+
+## Amendment: the front door (2026-08-06)
+
+The design above puts a Lambda Function URL in front of the function and lists
+API Gateway under "Alternatives considered and rejected", on cost. The
+implemented stack uses an API Gateway HTTP API instead. This section records
+why, because the original reasoning was not wrong so much as incomplete.
+
+**What happened.** The first deployment returned 403 on every request,
+including with a correct token, and CloudWatch showed no log streams at all —
+the function was never invoked. The Function URL's `AuthType` was `NONE`, the
+resource policy granted `lambda:InvokeFunctionUrl` to `*` with the matching
+condition, and a direct `aws lambda invoke` returned `{"ok":true,"data":[]}`.
+The stack was correct. The account belongs to an AWS Organization, and the
+evidence pointed to an organization policy denying anonymous Function URL
+invocation. Nothing in the failure said so: a guardrail at the edge is
+indistinguishable from a broken deployment when the logs are empty.
+
+**Why the cost rejection does not survive contact.** "$1.00 per million would
+exceed every other line item combined" is arithmetically true and it is the
+wrong frame. Combined, those line items are about thirteen cents a month. The
+API adds roughly twenty-eight cents at the modelled volume. Tripling a number
+that small is not a cost decision, and treating a ratio as though it were an
+amount is the error worth remembering.
+
+**Why an HTTP API rather than the other ways around the guardrail.** CloudFront
+with Origin Access Control in front of an `AWS_IAM` Function URL would have
+cost nothing, since the volume sits inside CloudFront's free tier. `AWS_IAM`
+directly would have cost nothing either, but it puts AWS credentials on every
+device and so reverses the requirement this whole design is built on. The
+deciding factor was the documented successor: this spec commits to OIDC as the
+destination for authentication, and an HTTP API accepts a JWT authorizer as
+configuration while a Function URL cannot take one at any price. Validating
+JWTs in front of CloudFront means Lambda@Edge — hand-rolling what the API
+offers as a template property. Paying twenty-eight cents a month for the path
+the design was already headed down is the cheaper of the two.
+
+**What it changes.** `internal/lambdamode` names
+`events.APIGatewayV2HTTPRequest` rather than `events.LambdaFunctionURLRequest`.
+The JSON wire format is identical — a Function URL delivers payload format 2.0
+— so this is not a compatibility fix; it is naming the type whose request
+context has the `Authorizer.JWT` field the OIDC step will read. Two properties
+arrive as side effects: route throttling, which is the rate limit the "Accepted
+risk" section notes the handler does not have, and access logs, which are the
+only place a request rejected before the integration runs is visible — exactly
+the blind spot that made the original 403 take as long as it did to diagnose.
+
+**What it does not change.** Devices still speak plain HTTPS with a bearer
+token, still need no AWS credentials, profile, region, or SDK, and
+`internal/remote` is untouched. The no-AWS-credentials requirement, which is
+what ruled out device-to-DynamoDB in the first place, is intact.

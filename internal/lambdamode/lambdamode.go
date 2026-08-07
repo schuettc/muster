@@ -1,8 +1,20 @@
-// Package lambdamode is muster's AWS Lambda Function URL adapter: it turns an
-// HTTP request body into a proto.Request, hands it to daemon.Dispatch, and
-// writes the proto.Response back. It is a TRANSPORT, not a second
-// implementation of the bus — every op runs the same daemon code the unix
-// socket serves, over the DynamoDB backend instead of SQLite.
+// Package lambdamode is muster's AWS API Gateway adapter: it turns an HTTP
+// request body into a proto.Request, hands it to daemon.Dispatch, and writes
+// the proto.Response back. It is a TRANSPORT, not a second implementation of
+// the bus — every op runs the same daemon code the unix socket serves, over
+// the DynamoDB backend instead of SQLite.
+//
+// The event type is APIGatewayV2HTTPRequest — an HTTP API's $default route
+// with a payload-format-2.0 proxy integration. A Lambda Function URL delivers
+// that SAME wire format, so the two are interchangeable at the JSON layer and
+// the choice between them is not a transport detail: it is where the auth
+// upgrade path lives. A Function URL authenticates with AuthType NONE or
+// SigV4 and nothing else, while an HTTP API takes a JWT authorizer as
+// configuration — and a JWT authorizer's validated claims arrive in
+// RequestContext.Authorizer.JWT, a field the Function URL request context
+// does not have. Naming the v2 type is what makes the move from a shared
+// bearer token to OIDC a change to Authenticator rather than to this
+// signature.
 //
 // It is the sole path that links the AWS SDK, and cmd/muster reaches it only
 // through a build-tag indirection (cmd/muster/lambda_on.go, built with
@@ -62,11 +74,11 @@ type Authenticator interface {
 // MUSTER_TOKEN and, during a rotation, MUSTER_TOKEN_PREVIOUS. Exported so
 // tests (and later wiring) can construct it.
 //
-// Valid returns false when MUSTER_TOKEN is unset. The Function URL is created
-// with AuthType NONE — it is publicly reachable and the token is the only
-// thing in front of the bus — so a misconfigured deployment must fail closed.
-// An empty-token fallback would silently serve the whole bus to anyone who
-// found the URL.
+// Valid returns false when MUSTER_TOKEN is unset. The HTTP API's $default
+// route carries no authorizer — the endpoint is publicly reachable and this
+// token is the only thing in front of the bus — so a misconfigured deployment
+// must fail closed. An empty-token fallback would silently serve the whole bus
+// to anyone who found the URL.
 type EnvAuth struct{}
 
 // Valid implements Authenticator.
@@ -84,10 +96,10 @@ func (EnvAuth) Valid(_ context.Context, token string) bool {
 	return ok
 }
 
-// bearerToken extracts the token from a Function URL header map. Function URL
-// headers arrive LOWERCASED (they are not canonicalized the way net/http
-// canonicalizes them), so the lookup is case-insensitive rather than assuming
-// either casing.
+// bearerToken extracts the token from the request's header map. Payload
+// format 2.0 delivers header names LOWERCASED (they are not canonicalized the
+// way net/http canonicalizes them), so the lookup is case-insensitive rather
+// than assuming either casing.
 func bearerToken(headers map[string]string) string {
 	const prefix = "Bearer "
 	for k, v := range headers {
@@ -102,7 +114,7 @@ func bearerToken(headers map[string]string) string {
 	return ""
 }
 
-// Handler adapts a Function URL request to one daemon.Dispatch call. The
+// Handler adapts one HTTP request to one daemon.Dispatch call. The
 // checks run cheapest-first, and none of them reaches DynamoDB:
 //
 //  1. Authenticate — 401. Runs first so an anonymous caller costs nothing and
@@ -118,8 +130,8 @@ func bearerToken(headers map[string]string) string {
 // transport failure it would retry. The one exception is the in-flight
 // idempotency collision — the single same-key-retryable outcome — which is
 // 409 so the transport's retry policy can tell it apart.
-func Handler(d *daemon.Daemon, auth Authenticator) func(context.Context, events.LambdaFunctionURLRequest) (events.LambdaFunctionURLResponse, error) {
-	return func(ctx context.Context, req events.LambdaFunctionURLRequest) (events.LambdaFunctionURLResponse, error) {
+func Handler(d *daemon.Daemon, auth Authenticator) func(context.Context, events.APIGatewayV2HTTPRequest) (events.APIGatewayV2HTTPResponse, error) {
+	return func(ctx context.Context, req events.APIGatewayV2HTTPRequest) (events.APIGatewayV2HTTPResponse, error) {
 		if !auth.Valid(ctx, bearerToken(req.Headers)) {
 			return errorResponse(http.StatusUnauthorized, "unauthorized"), nil
 		}
@@ -158,7 +170,7 @@ func Handler(d *daemon.Daemon, auth Authenticator) func(context.Context, events.
 // errorResponse builds a transport-level rejection that still speaks the
 // protocol: the client parses a proto.Response either way, and only the status
 // code tells it what happened at the transport.
-func errorResponse(status int, msg string) events.LambdaFunctionURLResponse {
+func errorResponse(status int, msg string) events.APIGatewayV2HTTPResponse {
 	return jsonResponse(status, proto.Response{Error: msg})
 }
 
@@ -166,13 +178,13 @@ func errorResponse(status int, msg string) events.LambdaFunctionURLResponse {
 // daemon-produced proto.Response, but a store backend could in principle put
 // an unmarshalable value in Data, so the fallback keeps the client parsing a
 // proto.Response rather than raw text.
-func jsonResponse(status int, resp proto.Response) events.LambdaFunctionURLResponse {
+func jsonResponse(status int, resp proto.Response) events.APIGatewayV2HTTPResponse {
 	body, err := json.Marshal(resp)
 	if err != nil {
 		body = []byte(`{"ok":false,"error":"encode response failed"}`)
 		status = http.StatusInternalServerError
 	}
-	return events.LambdaFunctionURLResponse{
+	return events.APIGatewayV2HTTPResponse{
 		StatusCode: status,
 		Headers:    map[string]string{"Content-Type": "application/json"},
 		Body:       string(body),

@@ -307,8 +307,8 @@ protocol channel — all diagnostics go to stderr.`,
 		{
 			Name:     "lambda",
 			Synopsis: "lambda",
-			Summary:  "Serve the hosted bus from an AWS Lambda Function URL.",
-			Help: `Runs the AWS Lambda runtime, adapting Function URL requests to the same
+			Summary:  "Serve the hosted bus from an AWS Lambda behind an HTTP API.",
+			Help: `Runs the AWS Lambda runtime, adapting API Gateway requests to the same
 daemon operations the unix socket serves, over a DynamoDB table
 ($MUSTER_DDB_TABLE) instead of SQLite. Requests carry a bearer token in the
 Authorization header, matched against $MUSTER_TOKEN (and, during a rotation,

@@ -101,7 +101,7 @@ harness-session capture (tmuxenv's counterpart) · `internal/paths` socket+db pa
 
 Hosted backend (all optional; a device links only `remote` and `device`):
 `internal/dynamostore` the **second `store.API` implementation**, on DynamoDB —
-lambda-only · `internal/lambdamode` Function URL → `daemon.Dispatch` adapter —
+lambda-only · `internal/lambdamode` API Gateway → `daemon.Dispatch` adapter —
 lambda-only · `internal/remote` the device's HTTPS+bearer-token transport to the
 hosted bus · `internal/device` this machine's stable device identity ·
 `internal/storetest` the conformance suite both `store.API` implementations must

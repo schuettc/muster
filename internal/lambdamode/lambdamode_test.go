@@ -37,14 +37,14 @@ func newLambdaTestStore(t *testing.T) *store.Store {
 
 // newHandler builds the handler under test over a fresh store, wired to the
 // v1 environment authenticator (the tests set MUSTER_TOKEN with t.Setenv).
-func newHandler(t *testing.T) func(context.Context, events.LambdaFunctionURLRequest) (events.LambdaFunctionURLResponse, error) {
+func newHandler(t *testing.T) func(context.Context, events.APIGatewayV2HTTPRequest) (events.APIGatewayV2HTTPResponse, error) {
 	t.Helper()
 	return lambdamode.Handler(daemon.New(newLambdaTestStore(t), nil), lambdamode.EnvAuth{})
 }
 
 // authed is the header set every handler test needs; the handler rejects
-// anything else with 401 before it reaches Dispatch. Function URL headers
-// arrive lowercased, which is what these tests send.
+// anything else with 401 before it reaches Dispatch. Payload format 2.0
+// delivers header names lowercased, which is what these tests send.
 func authed() map[string]string {
 	return map[string]string{"authorization": "Bearer good-token"}
 }
@@ -57,7 +57,7 @@ func TestHandlerDispatchesRequestBody(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp, err := h(context.Background(), events.LambdaFunctionURLRequest{
+	resp, err := h(context.Background(), events.APIGatewayV2HTTPRequest{
 		Body: string(body), Headers: authed(),
 	})
 	if err != nil {
@@ -81,7 +81,7 @@ func TestHandlerDispatchesRequestBody(t *testing.T) {
 func TestHandlerRejectsMalformedBody(t *testing.T) {
 	t.Setenv("MUSTER_TOKEN", "good-token")
 	h := newHandler(t)
-	resp, err := h(context.Background(), events.LambdaFunctionURLRequest{
+	resp, err := h(context.Background(), events.APIGatewayV2HTTPRequest{
 		Body: "{not json", Headers: authed(),
 	})
 	if err != nil {
@@ -120,7 +120,7 @@ func TestHandlerRejectsMissingOrWrongToken(t *testing.T) {
 		{"prefix-of-token", map[string]string{"authorization": "Bearer good"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			resp, err := h(context.Background(), events.LambdaFunctionURLRequest{
+			resp, err := h(context.Background(), events.APIGatewayV2HTTPRequest{
 				Body: string(body), Headers: tc.hdr,
 			})
 			if err != nil {
@@ -134,7 +134,7 @@ func TestHandlerRejectsMissingOrWrongToken(t *testing.T) {
 }
 
 // TestHandlerFailsClosedWithoutToken is the deployment-misconfiguration case:
-// the Function URL is AuthType NONE, so an unset MUSTER_TOKEN with an
+// the $default route carries no authorizer, so an unset MUSTER_TOKEN with an
 // empty-token fallback would expose the whole bus to anyone who found the URL.
 func TestHandlerFailsClosedWithoutToken(t *testing.T) {
 	t.Setenv("MUSTER_TOKEN", "")
@@ -151,7 +151,7 @@ func TestHandlerFailsClosedWithoutToken(t *testing.T) {
 		{"authorization": "Bearer good-token"},
 		{"authorization": "Bearer"},
 	} {
-		resp, err := h(context.Background(), events.LambdaFunctionURLRequest{
+		resp, err := h(context.Background(), events.APIGatewayV2HTTPRequest{
 			Body: string(body), Headers: hdr,
 		})
 		if err != nil {
@@ -176,7 +176,7 @@ func TestHandlerAcceptsPreviousToken(t *testing.T) {
 	}
 
 	for _, tok := range []string{"new-token", "old-token"} {
-		resp, err := h(context.Background(), events.LambdaFunctionURLRequest{
+		resp, err := h(context.Background(), events.APIGatewayV2HTTPRequest{
 			Body:    string(body),
 			Headers: map[string]string{"authorization": "Bearer " + tok},
 		})
@@ -192,7 +192,7 @@ func TestHandlerAcceptsPreviousToken(t *testing.T) {
 func TestHandlerRejectsOversizedBody(t *testing.T) {
 	t.Setenv("MUSTER_TOKEN", "good-token")
 	h := newHandler(t)
-	resp, err := h(context.Background(), events.LambdaFunctionURLRequest{
+	resp, err := h(context.Background(), events.APIGatewayV2HTTPRequest{
 		Body:    strings.Repeat("x", 8*1024*1024),
 		Headers: authed(),
 	})
@@ -210,7 +210,7 @@ func TestHandlerRejectsOversizedBody(t *testing.T) {
 func TestHandlerChecksAuthBeforeBodySize(t *testing.T) {
 	t.Setenv("MUSTER_TOKEN", "good-token")
 	h := newHandler(t)
-	resp, err := h(context.Background(), events.LambdaFunctionURLRequest{
+	resp, err := h(context.Background(), events.APIGatewayV2HTTPRequest{
 		Body:    strings.Repeat("x", 8*1024*1024),
 		Headers: map[string]string{"authorization": "Bearer nope"},
 	})
@@ -229,7 +229,7 @@ func TestHandlerDecodesBase64Body(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp, err := h(context.Background(), events.LambdaFunctionURLRequest{
+	resp, err := h(context.Background(), events.APIGatewayV2HTTPRequest{
 		Body:            base64.StdEncoding.EncodeToString(body),
 		IsBase64Encoded: true,
 		Headers:         authed(),
@@ -248,7 +248,7 @@ func TestHandlerDecodesBase64Body(t *testing.T) {
 func TestHandlerRejectsUndecodableBase64(t *testing.T) {
 	t.Setenv("MUSTER_TOKEN", "good-token")
 	h := newHandler(t)
-	resp, err := h(context.Background(), events.LambdaFunctionURLRequest{
+	resp, err := h(context.Background(), events.APIGatewayV2HTTPRequest{
 		Body:            "!!!not base64!!!",
 		IsBase64Encoded: true,
 		Headers:         authed(),
@@ -272,7 +272,7 @@ func TestHandlerKeepsProtocolErrorsAt200(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp, err := h(context.Background(), events.LambdaFunctionURLRequest{
+	resp, err := h(context.Background(), events.APIGatewayV2HTTPRequest{
 		Body: string(body), Headers: authed(),
 	})
 	if err != nil {
@@ -313,7 +313,7 @@ func TestHandlerSurfacesIdempotencyCollisionAs409(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp, err := h(context.Background(), events.LambdaFunctionURLRequest{
+	resp, err := h(context.Background(), events.APIGatewayV2HTTPRequest{
 		Body: string(body), Headers: authed(),
 	})
 	if err != nil {

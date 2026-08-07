@@ -1,29 +1,42 @@
 AWSTemplateFormatVersion: "2010-09-09"
 
-# muster hosted backend — one DynamoDB table, one Lambda, one Function URL.
+# muster hosted backend — one DynamoDB table, one Lambda, one HTTP API.
 #
-# READ THIS FIRST: the Function URL is created with AuthType NONE. That means
+# READ THIS FIRST: the API's $default route carries NO authorizer. That means
 # it is PUBLICLY REACHABLE by anyone on the internet who knows the hostname,
 # and the bearer token in MusterToken is the ONLY thing standing between them
 # and the whole bus — every message, and the ability to send as any agent.
 # This is deliberate (devices must work with no AWS credentials; DynamoDB has
 # no bearer-token auth, which is why the function tier exists at all), but it
-# puts the entire security burden on token entropy:
+# puts the security burden on token entropy:
 #
-#   * The handler has NO rate limiting and NO lockout. An online brute force is
-#     bounded only by how much entropy your token carries.
-#   * Generate it with `openssl rand -base64 32` — never by hand, never a
-#     passphrase. MinLength below is a floor, not a substitute.
-#   * Treat the Function URL itself as a second secret. Function URL hostnames
-#     are random 32-character subdomains and are not enumerable in practice,
-#     so keeping the URL private is real defence in depth.
+#   * The handler has NO lockout and no per-caller memory. Route throttling
+#     (ThrottleRateLimit below) is what bounds an online brute force in
+#     requests per second; entropy is what makes that bound sufficient.
+#   * Generate the token with `openssl rand -base64 32` — never by hand, never
+#     a passphrase. MinLength below is a floor, not a substitute.
+#   * Do NOT rely on the hostname being secret. An HTTP API endpoint is a
+#     10-character api-id, far less than a Function URL's 32-character
+#     subdomain; treat the URL as low-value obscurity rather than a second
+#     credential, and let the token carry the weight.
+#
+# WHY AN HTTP API AND NOT A LAMBDA FUNCTION URL. A Function URL is cheaper (no
+# per-request charge at all) and was the original design, but it authenticates
+# with AuthType NONE or SigV4 and nothing else. Two things follow. Some
+# AWS Organizations deny anonymous Function URL invocation by policy, which
+# fails as a 403 from the URL with NOTHING in the function's logs and no
+# indication the cause is a guardrail. More importantly, the documented next
+# step for this backend is OIDC, and an HTTP API takes a JWT authorizer as
+# configuration while a Function URL cannot take one at all. The API costs
+# about $1.00 per million requests — cents a month at one operator's poll
+# volume — and buys route throttling and access logs along the way.
 #
 # See docs/hosted-backend.md for the deploy procedure, the device setup, token
 # rotation, and the known limitations of this backend.
 
 Description: >-
   muster hosted backend: DynamoDB table, Lambda function (provided.al2023,
-  arm64), a token-authenticated Function URL, and a least-privilege execution
+  arm64), a token-authenticated HTTP API, and a least-privilege execution
   role. Self-hosted by one operator; not a multi-tenant service.
 
 Metadata:
@@ -34,7 +47,9 @@ Metadata:
       - Label: { default: "Function code" }
         Parameters: [CodeS3Bucket, CodeS3Key, CodeS3ObjectVersion]
       - Label: { default: "Tuning" }
-        Parameters: [ReservedConcurrency, MemorySize, EventRetention, LogRetentionDays]
+        Parameters:
+          [ReservedConcurrency, MemorySize, EventRetention, LogRetentionDays,
+           ThrottleRateLimit, ThrottleBurstLimit]
 
 Parameters:
   MusterToken:
@@ -132,7 +147,30 @@ Parameters:
     Type: Number
     Default: 14
     AllowedValues: [1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365, 400, 545, 731, 1096, 1827, 2192, 2557, 2922, 3288, 3653]
-    Description: CloudWatch Logs retention. Lambda's default is never-expire, which quietly accrues cost.
+    Description: >-
+      CloudWatch Logs retention, applied to both the function's log group and
+      the API's access log group. Lambda's default is never-expire, which
+      quietly accrues cost.
+
+  ThrottleRateLimit:
+    Type: Number
+    Default: 20
+    MinValue: 1
+    Description: >-
+      Sustained requests per second the API accepts, across all devices. This
+      is the only rate limit anywhere in the stack — the handler has none — so
+      it is what bounds an online guess at MusterToken. A device polls every
+      few seconds, so a handful of devices sit far below 20; raise it only if
+      you see 429s in the access log.
+
+  ThrottleBurstLimit:
+    Type: Number
+    Default: 40
+    MinValue: 1
+    Description: >-
+      Bucket depth for the limit above — how many requests may arrive at once
+      before throttling starts. Devices reconnecting together (a laptop waking,
+      a stack update) burst briefly, which is what this absorbs.
 
 Conditions:
   HasCodeVersion: !Not [!Equals [!Ref CodeS3ObjectVersion, ""]]
@@ -317,32 +355,104 @@ Resources:
           # indistinguishable anyway.
           MUSTER_TOKEN_PREVIOUS: !If [HasPreviousToken, !Ref MusterTokenPrevious, !Ref "AWS::NoValue"]
 
-  # AuthType NONE — see the header. The function authenticates the bearer token
-  # itself, before it touches DynamoDB.
-  MusterFunctionUrl:
-    Type: AWS::Lambda::Url
+  # The HTTP API. No authorizer — the function authenticates the bearer token
+  # itself, before it touches DynamoDB (see the header). This is the resource
+  # a JWT authorizer attaches to when this backend moves to OIDC.
+  MusterApi:
+    Type: AWS::ApiGatewayV2::Api
     Properties:
-      TargetFunctionArn: !GetAtt MusterFunction.Arn
-      AuthType: NONE
-      InvokeMode: BUFFERED
+      Name: !Sub "${AWS::StackName}-bus"
+      Description: muster coordination bus — token-authenticated HTTP front door
+      ProtocolType: HTTP
+      # No CorsConfiguration on purpose. Every client is a Go process, so no
+      # browser ever preflights this; adding permissive CORS would only make
+      # the endpoint reachable from any web page the operator visits.
 
-  # Required for AuthType NONE. Without it every request returns 403 from the
-  # URL with nothing in the function's logs, because the function is never
-  # invoked — a failure that looks like a broken token but is not.
-  MusterFunctionUrlPermission:
+  # AWS_PROXY hands the raw request to the function. PayloadFormatVersion 2.0
+  # is what makes the event an APIGatewayV2HTTPRequest — internal/lambdamode
+  # is written against exactly that shape, and 1.0 would deliver a different
+  # one (multiValueHeaders, no rawPath) that the handler does not parse.
+  #
+  # TimeoutInMillis exceeds the function's 30s timeout so the function is
+  # always the thing that times out. Inverted, the API would return 504 while
+  # the invocation kept running — the client retries a write it cannot see the
+  # result of, which is precisely the case idempotency keys exist to survive,
+  # but there is no reason to manufacture it.
+  MusterIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref MusterApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt MusterFunction.Arn
+      PayloadFormatVersion: "2.0"
+      TimeoutInMillis: 30000
+
+  # $default catches every method and path. The protocol lives entirely in the
+  # POST body — proto.Request carries the op — so routing by path would add a
+  # second, redundant description of the same thing.
+  MusterRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref MusterApi
+      RouteKey: $default
+      Target: !Sub "integrations/${MusterIntegration}"
+
+  # Access logs. These exist because of a specific failure mode: when a request
+  # is rejected BEFORE the integration runs — throttled, or blocked by an
+  # Organization policy — the function's own log group stays empty and there is
+  # nothing anywhere to explain the 4xx. This group is the only place that
+  # failure is visible.
+  MusterApiLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub "/aws/apigateway/${AWS::StackName}-bus"
+      RetentionInDays: !Ref LogRetentionDays
+
+  # StageName $default is what removes the stage prefix from the URL, so the
+  # endpoint devices use is the bare ApiEndpoint with no path to remember.
+  # AutoDeploy publishes route changes without a separate Deployment resource.
+  MusterStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref MusterApi
+      StageName: $default
+      AutoDeploy: true
+      AccessLogSettings:
+        DestinationArn: !GetAtt MusterApiLogGroup.Arn
+        # Deliberately NOT logging $context.identity.sourceIp alone as the
+        # whole story: integrationErrorMessage and integrationStatus are what
+        # separate "the function returned 401" from "the request never got
+        # there". The Authorization header is never logged, and must not be.
+        Format: >-
+          {"requestId":"$context.requestId","ip":"$context.identity.sourceIp","requestTime":"$context.requestTime","routeKey":"$context.routeKey","status":"$context.status","integrationStatus":"$context.integrationStatus","integrationErrorMessage":"$context.integrationErrorMessage","responseLatency":"$context.responseLatency"}
+      DefaultRouteSettings:
+        ThrottlingRateLimit: !Ref ThrottleRateLimit
+        ThrottlingBurstLimit: !Ref ThrottleBurstLimit
+        # DetailedMetricsEnabled left off: per-route CloudWatch metrics are a
+        # paid dimension, and the access log above answers the same questions
+        # for a bus this size.
+
+  # Without this the API returns 500 on every request and the function is never
+  # invoked, so its log group stays empty — a failure that reads like broken
+  # code but is a missing permission. SourceArn pins the grant to this API:
+  # a bare Principal with no source lets ANY API Gateway in the account invoke
+  # the function.
+  MusterApiPermission:
     Type: AWS::Lambda::Permission
     Properties:
       FunctionName: !GetAtt MusterFunction.Arn
-      Action: lambda:InvokeFunctionUrl
-      Principal: "*"
-      FunctionUrlAuthType: NONE
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${MusterApi}/*/*"
 
 Outputs:
-  FunctionUrl:
+  MusterUrl:
     Description: >-
-      Set this as MUSTER_REMOTE_URL on every device. Treat it as a secret —
-      with AuthType NONE it is a publicly reachable endpoint.
-    Value: !GetAtt MusterFunctionUrl.FunctionUrl
+      Set this as MUSTER_REMOTE_URL on every device. The endpoint is publicly
+      reachable and the bearer token is what protects it.
+    Value: !GetAtt MusterApi.ApiEndpoint
   TableName:
     Description: DynamoDB table backing the bus.
     Value: !Ref MusterTable
@@ -352,3 +462,8 @@ Outputs:
   LogGroupName:
     Description: CloudWatch log group — where cold-start and dispatch diagnostics land.
     Value: !Ref MusterLogGroup
+  ApiAccessLogGroupName:
+    Description: >-
+      CloudWatch log group for API access logs — the only place a request
+      rejected before the function runs (throttled, blocked by policy) appears.
+    Value: !Ref MusterApiLogGroup
