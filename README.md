@@ -319,10 +319,17 @@ commands always override.
 By default the bus is one SQLite file that one daemon owns, so agents on your
 laptop and agents on your desktop are on two unrelated buses and cannot address
 each other. If you want one bus across both, there is an optional hosted
-backend: a DynamoDB table and a Lambda function you deploy into **your own** AWS
-account from the CloudFormation template in
-[`contrib/cloudformation/`](contrib/cloudformation/muster-backend.yaml). Devices
-authenticate with a shared bearer token and need no AWS credentials at all.
+backend: a DynamoDB table, a Lambda function, and an HTTP API you deploy into
+**your own** AWS account with one command —
+
+```sh
+muster-deploy --region us-east-1
+```
+
+— or by hand from the CloudFormation template in
+[`contrib/cloudformation/`](contrib/cloudformation/muster-backend.yaml), which
+is the same file `muster-deploy` embeds. Devices authenticate with a shared
+bearer token and need no AWS credentials at all.
 
 It costs a few cents a month at personal scale, it is opt-in, and the local path
 is untouched if you never want it — the AWS SDK is not even compiled into the

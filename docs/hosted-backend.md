@@ -86,12 +86,95 @@ keep the S3 bucket in the same region as the stack.
 Devices need **muster v0.10.0 or newer** — see the device setup below for why
 that is not a soft requirement.
 
-You also need the release assets:
+## Deploying the stack
+
+### The short way
+
+Download `muster-deploy` for your platform from
+<https://github.com/schuettc/muster/releases> and run it:
+
+```sh
+muster-deploy --region us-east-1
+```
+
+That is the whole deployment. It resolves your account from the ambient AWS
+credentials (`AWS_PROFILE` and `AWS_REGION` work as they do for any AWS
+command), creates an artifact bucket if you have none, downloads the Lambda
+zip matching its own version, uploads it, creates the stack, waits, and prints
+the endpoint.
+
+On a **first** deploy it also generates a bearer token and writes it to
+`<MUSTER_HOME>/remote-token` with mode 0600 — it does not print it. That is
+deliberate: the token is the only thing protecting the bus, and a printed
+secret ends up in scrollback, in tmux history, and plausibly in the context of
+a coding agent sharing your terminal. On an **update** it keeps the token
+already in the stack, so re-running it never rotates your fleet's credential
+by accident.
+
+`muster-deploy` is a separate download from `muster` on purpose. It links the
+AWS SDK because talking to CloudFormation and S3 is its entire job, and
+bundling it into the device tarball would put AWS code in the archive every
+machine unpacks. Devices need no AWS anything.
+
+Useful flags: `-stack` to name the stack something other than `muster`,
+`-bucket` to use an artifact bucket you already have, `-tag` to deploy a
+release other than the tool's own version, and `-zip` to deploy a locally
+built artifact instead of a downloaded one.
+
+### A custom domain, and why you probably want one
+
+By default the endpoint is `https://<api-id>.execute-api.<region>.amazonaws.com`,
+where `api-id` is generated when the API is created. That is fine until the day
+you delete and recreate the stack — at which point you get a **different** URL
+and every device on the bus stops working until you reconfigure it. A custom
+domain is the only thing that makes `MUSTER_REMOTE_URL` outlive the stack.
+
+If your domain's DNS is in Route53 in the same account, one flag pair does
+everything — certificate, validation, domain, mapping, and the DNS record:
+
+```sh
+muster-deploy --region us-east-1 \
+  --domain muster.example.com \
+  --hosted-zone Z0123456789ABCDEFGHIJ
+```
+
+If your DNS lives elsewhere, validate an ACM certificate yourself **in the same
+region as the stack** and pass it instead, then point your own DNS at the
+`CustomDomainTarget` output:
+
+```sh
+muster-deploy --region us-east-1 \
+  --domain muster.example.com \
+  --cert arn:aws:acm:us-east-1:123456789012:certificate/…
+```
+
+The regional detail matters and catches people: an HTTP API's custom domain is
+a *regional* endpoint, so the certificate must live in the API's region. The
+"certificates must be in us-east-1" rule you may be remembering is a CloudFront
+rule and does not apply here.
+
+`muster-deploy` refuses `--domain` without either `--hosted-zone` or `--cert`
+before it makes a single AWS call. That combination is the worst failure this
+stack can produce: ACM would wait for a DNS validation record nothing is going
+to publish, so CloudFormation sits in `CREATE_IN_PROGRESS` for hours and then
+times out, with nothing in the stack events explaining why.
+
+The generated `execute-api` endpoint keeps working alongside the custom domain,
+and that is useful rather than untidy — if the custom domain stops answering,
+trying the generated one separates a DNS or certificate problem from a muster
+one.
+
+Skip to [Setting up a device](#setting-up-a-device) — the rest of this section
+is the manual equivalent.
+
+### The manual way
+
+Use this if you would rather see every step, or if you need to change something
+`muster-deploy` does not expose. You need the release assets:
 `muster-lambda-arm64-<tag>.zip` from
 <https://github.com/schuettc/muster/releases>, and
-`contrib/cloudformation/muster-backend.yaml` from this repository.
-
-## Deploying the stack
+`contrib/cloudformation/muster-backend.yaml` from this repository — the same
+file `muster-deploy` embeds, so both paths deploy identical bytes.
 
 **1. Generate the token and keep it somewhere you can paste from.** You will
 need it once now and once per device.
@@ -150,6 +233,44 @@ That URL is what goes in `MUSTER_REMOTE_URL` on every device.
 ## Setting up a device
 
 Do this on each machine that should join the bus.
+
+### Getting the URL and token onto the other machine
+
+Run this on the machine you deployed from:
+
+```sh
+muster-deploy -join
+```
+
+It prints the endpoint, the exact commands to run on the machine you are
+adding, the token, and a fingerprint for checking the copy landed. The
+commands and the token are printed **separately** on purpose: the paste-able
+block uses `read -rs`, so the secret goes in at a blank prompt and never
+enters the new machine's shell history.
+
+**The token has to be moved by a human, and that is not an oversight.** It
+cannot be fetched from AWS — it is a `NoEcho` stack parameter, so
+CloudFormation will not return it, and more fundamentally the premise of this
+backend is that a device needs no AWS credentials. A device with no
+credentials cannot fetch its own credential. Something has to carry it across,
+and that something is you.
+
+Any channel you already trust works: a password manager is the best of them,
+AirDrop is fine between two Macs in a room, `scp` if the machines can reach
+each other, and typing it is entirely reasonable — it is 44 characters of
+base64. What matters is not the channel but that you verify afterwards:
+
+```sh
+tr -d '\n' < ~/.local/share/muster/remote-token | shasum -a 256 | cut -c1-16
+```
+
+Compare that to the fingerprint `-join` printed. It is a hash, not the secret,
+so it is safe to read aloud or paste anywhere — and `tr -d '\n'` means a
+trailing newline from `echo` does not produce a false mismatch.
+
+One thing to avoid: do not `cat` the token in a terminal a coding agent is
+sharing. muster runs alongside agents that read their own terminals, and a
+printed secret can land in a transcript that outlives the session.
 
 **0. Check the binary is new enough.** Remote mode arrived in **v0.10.0**.
 

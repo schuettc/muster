@@ -73,11 +73,18 @@ those rows from reaping — attribution and tombstoning are distinct decisions.
 
 - **stdout is sacred in `mcp` mode** — it is the MCP channel. All diagnostics go to
   **stderr**. A stray `fmt.Println` on an mcp-mode path corrupts the protocol.
-- **The AWS SDK never reaches a device binary.** Only `internal/dynamostore` and
-  `internal/lambdamode` may import `github.com/aws/aws-sdk-go-v2/...` or
-  `aws-lambda-go`, and the ONLY edge into them is `cmd/muster/lambda_on.go`,
-  which carries `//go:build lambda`. Drop an AWS import into any untagged
-  package — `internal/remote`, `internal/daemon`, `internal/store` — and it
+- **The AWS SDK never reaches a device binary.** Four packages may import
+  `github.com/aws/aws-sdk-go-v2/...` or `aws-lambda-go`, and they divide into
+  two islands neither of which `cmd/muster` can reach. `internal/dynamostore`
+  and `internal/lambdamode` are the hosted BUS, entered only through
+  `cmd/muster/lambda_on.go` behind `//go:build lambda`. `internal/deploy` and
+  `cmd/muster-deploy` are the hosted backend's INSTALLER — a separate binary,
+  because deploying to an AWS account is inherently done by someone who
+  already has credentials for it, while devices must not need any.
+  `just aws-free` (run by `cross`, so by `verify`) asserts
+  `go list -deps ./cmd/muster` contains no AWS package and fails the gate if
+  it ever does. Drop an AWS import into any untagged package on the device
+  path — `internal/remote`, `internal/daemon`, `internal/store` — and it
   links into the binary every device installs. Devices reach the hosted bus over
   plain HTTPS with a bearer token (`internal/remote`) and need no AWS
   credentials, profile, region, or SDK; that is the entire reason the Lambda

@@ -172,6 +172,38 @@ Parameters:
       before throttling starts. Devices reconnecting together (a laptop waking,
       a stack update) burst briefly, which is what this absorbs.
 
+  DomainName:
+    Type: String
+    Default: ""
+    Description: >-
+      OPTIONAL custom hostname for the bus, e.g. muster.example.com. Empty
+      (the default) uses the generated execute-api endpoint and creates no
+      certificate, domain, or DNS.
+      The reason to set this is not cosmetic: the generated endpoint contains
+      a random 10-character api-id, so DELETING AND RECREATING the stack hands
+      you a different URL and every device has to be reconfigured. A custom
+      domain is the only thing that makes MUSTER_REMOTE_URL survive that.
+
+  HostedZoneId:
+    Type: String
+    Default: ""
+    Description: >-
+      Route53 hosted zone containing DomainName. Required to have this stack
+      create the certificate, because ACM's DNS validation needs to publish a
+      record into the zone — WITHOUT it, CloudFormation sits in
+      CREATE_IN_PROGRESS until it times out hours later, which is the single
+      worst failure mode in this template. If your DNS lives elsewhere, leave
+      this empty, validate a certificate yourself, and pass CertificateArn.
+
+  CertificateArn:
+    Type: String
+    Default: ""
+    Description: >-
+      Existing ACM certificate for DomainName, when you do not want this stack
+      to create one. It must be in THIS stack's region — an HTTP API's custom
+      domain is a regional endpoint, so a us-east-1 certificate does not serve
+      a eu-west-1 API the way it would for CloudFront.
+
 Conditions:
   HasCodeVersion: !Not [!Equals [!Ref CodeS3ObjectVersion, ""]]
   HasPreviousToken: !Not [!Equals [!Ref MusterTokenPrevious, ""]]
@@ -180,6 +212,18 @@ Conditions:
   # the opposite of the escape hatch this is — so the property has to
   # disappear, which only a Condition can do.
   HasReservedConcurrency: !Not [!Equals [!Ref ReservedConcurrency, 0]]
+  HasDomain: !Not [!Equals [!Ref DomainName, ""]]
+  HasHostedZone: !Not [!Equals [!Ref HostedZoneId, ""]]
+  # Create a certificate only when a zone is available to validate it through.
+  # Gating on the zone rather than on DomainName alone is what keeps the
+  # no-zone case a fast, legible failure ("CertificateArn required") instead
+  # of a stack wedged in CREATE_IN_PROGRESS waiting for a DNS record nothing
+  # is going to publish.
+  CreateCertificate: !And
+    - !Condition HasDomain
+    - !Condition HasHostedZone
+    - !Equals [!Ref CertificateArn, ""]
+  CreateDNSRecord: !And [!Condition HasDomain, !Condition HasHostedZone]
 
 Resources:
   # Single-table design — threads, entries, agents, tasks, KV, events, id
@@ -434,6 +478,65 @@ Resources:
         # paid dimension, and the access log above answers the same questions
         # for a bus this size.
 
+  # --- Optional custom domain -------------------------------------------
+  # All four resources vanish when DomainName is empty, which is the default.
+  # Their only purpose is to give MUSTER_REMOTE_URL a value that outlives this
+  # stack: the generated execute-api hostname is derived from the API's id, so
+  # it changes if the stack is ever recreated and every device breaks at once.
+
+  # DNS-validated, because an email-validated certificate needs a human to
+  # click a link in a mailbox tied to the domain — which cannot be automated
+  # and would stall the deploy indefinitely.
+  MusterCertificate:
+    Condition: CreateCertificate
+    Type: AWS::CertificateManager::Certificate
+    Properties:
+      DomainName: !Ref DomainName
+      ValidationMethod: DNS
+      # Naming the zone is what lets CloudFormation publish the validation
+      # record itself. Omit it and the stack waits for a record no one is
+      # going to create.
+      DomainValidationOptions:
+        - DomainName: !Ref DomainName
+          HostedZoneId: !Ref HostedZoneId
+
+  MusterDomainName:
+    Condition: HasDomain
+    Type: AWS::ApiGatewayV2::DomainName
+    Properties:
+      DomainName: !Ref DomainName
+      DomainNameConfigurations:
+        - CertificateArn: !If [CreateCertificate, !Ref MusterCertificate, !Ref CertificateArn]
+          EndpointType: REGIONAL
+          # TLS 1.0 is still API Gateway's default for custom domains. Every
+          # client here is a Go process on a current runtime, so there is no
+          # legacy client to accommodate and no reason to accept it.
+          SecurityPolicy: TLS_1_2
+
+  # Maps the domain's root path to this API's stage. Without it the domain
+  # resolves and serves TLS but answers 404 to everything — a failure that
+  # reads like a routing bug in muster rather than a missing mapping.
+  MusterApiMapping:
+    Condition: HasDomain
+    Type: AWS::ApiGatewayV2::ApiMapping
+    Properties:
+      ApiId: !Ref MusterApi
+      DomainName: !Ref MusterDomainName
+      Stage: !Ref MusterStage
+
+  # An ALIAS record, not CNAME: alias targets resolve at the zone apex (where
+  # CNAME is illegal) and cost nothing to query.
+  MusterDNSRecord:
+    Condition: CreateDNSRecord
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Ref DomainName
+      Type: A
+      AliasTarget:
+        DNSName: !GetAtt MusterDomainName.RegionalDomainName
+        HostedZoneId: !GetAtt MusterDomainName.RegionalHostedZoneId
+
   # Without this the API returns 500 on every request and the function is never
   # invoked, so its log group stays empty — a failure that reads like broken
   # code but is a missing permission. SourceArn pins the grant to this API:
@@ -451,8 +554,23 @@ Outputs:
   MusterUrl:
     Description: >-
       Set this as MUSTER_REMOTE_URL on every device. The endpoint is publicly
-      reachable and the bearer token is what protects it.
+      reachable and the bearer token is what protects it. This is the custom
+      domain when one is configured — devices should point at that rather than
+      the generated hostname, since only the custom domain survives the stack
+      being recreated.
+    Value: !If [HasDomain, !Sub "https://${DomainName}", !GetAtt MusterApi.ApiEndpoint]
+  GeneratedApiEndpoint:
+    Description: >-
+      The execute-api hostname, which keeps working alongside a custom domain.
+      Useful for telling a DNS or certificate problem apart from a muster one:
+      if this answers and the custom domain does not, the bus is fine.
     Value: !GetAtt MusterApi.ApiEndpoint
+  CustomDomainTarget:
+    Condition: HasDomain
+    Description: >-
+      The regional hostname the custom domain must point at. Only needed when
+      HostedZoneId was left empty and you are creating the DNS record yourself.
+    Value: !GetAtt MusterDomainName.RegionalDomainName
   TableName:
     Description: DynamoDB table backing the bus.
     Value: !Ref MusterTable

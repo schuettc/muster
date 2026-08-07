@@ -37,9 +37,27 @@ cross:
     for goos in darwin linux; do \
       for goarch in arm64 amd64; do \
         CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" go build -ldflags "{{ ldflags }}" -o /dev/null ./cmd/muster; \
+        CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" go build -ldflags "{{ ldflags }}" -o /dev/null ./cmd/muster-deploy; \
       done; \
     done
     CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -tags lambda -ldflags "{{ ldflags }}" -o /dev/null ./cmd/muster
+    just aws-free
+
+# Assert the device binary links no AWS code. This is the enforcement half of
+# CLAUDE.md's hard rule: cmd/muster-deploy and the -tags lambda build may
+# import the AWS SDK, and cmd/muster may NEVER reach either. A stray import in
+# internal/daemon or internal/remote would otherwise ship the SDK to every
+# device, and nothing else in the build would notice.
+aws-free:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    n=$(go list -deps ./cmd/muster | grep -c aws || true)
+    if [ "$n" -ne 0 ]; then
+      echo "FAIL: cmd/muster links $n AWS package(s) — the device binary must be AWS-free:" >&2
+      go list -deps ./cmd/muster | grep aws >&2
+      exit 1
+    fi
+    echo "ok: cmd/muster links no AWS packages"
 
 # Full gate — what pre-push and CI run.
 verify: fmt-check lint test build cross

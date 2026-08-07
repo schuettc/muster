@@ -99,6 +99,18 @@ jobs:
               go build -trimpath -ldflags "$ldflags" -o "dist/${out}/muster" ./cmd/muster
             tar -C "dist/${out}" -czf "dist/${out}.tar.gz" muster
           done
+          # muster-deploy, the hosted backend's installer. Shipped SEPARATELY
+          # from the device tarballs above, not inside them: it links the AWS
+          # SDK (that is its job — it talks to CloudFormation and S3), and
+          # bundling it would put AWS code in the download every device
+          # unpacks. Anyone who never self-hosts never fetches this.
+          for target in darwin/arm64 darwin/amd64 linux/amd64 linux/arm64; do
+            goos="${target%/*}"; goarch="${target#*/}"
+            out="muster-deploy_${goos}_${goarch}"
+            CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
+              go build -trimpath -ldflags "$ldflags" -o "dist/${out}/muster-deploy" ./cmd/muster-deploy
+            tar -C "dist/${out}" -czf "dist/${out}.tar.gz" muster-deploy
+          done
           # The Lambda artifact for the optional hosted backend
           # (contrib/cloudformation/muster-backend.yaml). Three things about
           # this build differ from the device binaries above and all three are
