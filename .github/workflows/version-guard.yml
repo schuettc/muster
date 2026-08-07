@@ -5,12 +5,13 @@ name: version-guard
 # This guard makes the knob impossible to forget: PRs targeting main must
 # change VERSION, or carry the `no-release` label (docs/CI-only changes).
 # labeled/unlabeled triggers re-run the check when the label is toggled,
-# no new push needed. dev-targeting PRs are exempt: VERSION is bumped at
-# promotion time.
+# no new push needed. edited catches a PR retargeted from dev to main,
+# which otherwise wouldn't re-run this until the next push. dev-targeting
+# PRs are exempt: VERSION is bumped at promotion time.
 on:
   pull_request:
     branches: [main]
-    types: [opened, synchronize, reopened, labeled, unlabeled]
+    types: [opened, synchronize, reopened, labeled, unlabeled, edited]
 
 permissions:
   contents: read
@@ -33,8 +34,14 @@ jobs:
               echo "no-release label present — skipping VERSION check."
               exit 0 ;;
           esac
-          if git diff --quiet "$BASE" HEAD -- VERSION; then
+          rc=0
+          git diff --quiet "$BASE" HEAD -- VERSION || rc=$?
+          if [ "$rc" -eq 0 ]; then
             echo "::error file=VERSION::VERSION is unchanged. Bump it (this PR releases on merge) or add the 'no-release' label."
             exit 1
+          elif [ "$rc" -ne 1 ]; then
+            echo "::error::git diff failed (rc=$rc) — cannot determine whether VERSION changed."
+            exit 1
           fi
-          echo "VERSION bumped: $(git show "$BASE":VERSION | tr -d ' \n') -> $(tr -d ' \n' < VERSION)"
+          old="$(git show "$BASE":VERSION)" || { echo "::error::cannot read VERSION at base $BASE"; exit 1; }
+          echo "VERSION bumped: $(printf %s "$old" | tr -d ' \n') -> $(tr -d ' \n' < VERSION)"
