@@ -67,6 +67,111 @@
         <span class="d">Each device still runs its own daemon, which keeps the unix socket and the tmux wake. In remote mode it forwards each request upstream instead of dispatching locally, and polls for messages written by other machines. The MCP server, the CLI, and station are unchanged.</span>
       </div>
     </div>
+    <div class="term" style="margin-top:2rem">
+      <div class="term-bar"><span class="lamp"></span><span class="lamp"></span><span class="lamp"></span><span class="title">~ one message, two machines</span></div>
+      <div class="flow-legend">
+        <span><i class="lg-am"></i>agent &#8596; daemon · local</span>
+        <span><i class="lg-cy"></i>daemon &#8596; bus · HTTPS</span>
+        <span><i class="lg-vi"></i>inside your AWS account</span>
+      </div>
+      <div class="flow-scroll">
+      <svg id="flowsvg" viewBox="0 0 990 570" role="img" aria-label="Sequence diagram with six lanes: a coding agent and its muster daemon on a laptop, the hosted bus (API Gateway and Lambda) and its DynamoDB table in your AWS account, and a muster daemon and coding agent on a desktop. The laptop's daemon sends a message over HTTPS to the bus, which writes it to the table. The desktop's daemon polls the bus, receives the new entry, and sets the mailbox flag on its own tmux session; the agent there notices at the end of its turn and reads the thread.">
+        <text x="167" y="22" text-anchor="middle" class="fmut">your laptop</text>
+        <line x1="10" y1="30" x2="325" y2="30" class="fwire"/>
+        <text x="497" y="22" text-anchor="middle" class="fmut">your AWS account</text>
+        <line x1="340" y1="30" x2="655" y2="30" class="fwire"/>
+        <text x="827" y="22" text-anchor="middle" class="fmut">your desktop</text>
+        <g id="fbadgeR" class="fbadge"><text x="985" y="22" text-anchor="end" class="fsig">📬 1</text></g>
+        <line x1="670" y1="30" x2="985" y2="30" class="fwire"/>
+
+        <g><rect x="10" y="40" width="150" height="56" rx="9" class="fbox"/>
+          <text x="24" y="63" class="ftext" style="font-size:12.5px">claude</text>
+          <text x="24" y="81" class="fmut">coding agent</text></g>
+        <g><rect x="175" y="40" width="150" height="56" rx="9" class="fsurf"/>
+          <text x="189" y="63" class="ftext" style="font-size:12.5px">muster daemon</text>
+          <text x="189" y="81" class="fmut">laptop</text></g>
+        <g><rect x="340" y="40" width="150" height="56" rx="9" class="fbox"/>
+          <text x="354" y="63" class="ftext" style="font-size:12.5px">hosted bus</text>
+          <text x="354" y="81" class="fmut">API Gateway · Lambda</text></g>
+        <g><rect x="505" y="40" width="150" height="56" rx="9" class="fbox"/>
+          <text x="519" y="63" class="ftext" style="font-size:12.5px">DynamoDB</text>
+          <text x="519" y="81" class="fmut">the bus state</text></g>
+        <g><rect x="670" y="40" width="150" height="56" rx="9" class="fsurf"/>
+          <text x="684" y="63" class="ftext" style="font-size:12.5px">muster daemon</text>
+          <text x="684" y="81" class="fmut">desktop</text></g>
+        <g><rect x="835" y="40" width="150" height="56" rx="9" class="fbox"/>
+          <text x="849" y="63" class="ftext" style="font-size:12.5px">codex</text>
+          <text x="849" y="81" class="fmut">coding agent</text></g>
+
+        <line x1="85" y1="96" x2="85" y2="558" class="flife"/>
+        <line x1="250" y1="96" x2="250" y2="558" class="flife"/>
+        <line x1="415" y1="96" x2="415" y2="558" class="flife"/>
+        <line x1="580" y1="96" x2="580" y2="558" class="flife"/>
+        <line x1="745" y1="96" x2="745" y2="558" class="flife"/>
+        <line x1="910" y1="96" x2="910" y2="558" class="flife"/>
+
+        <g id="fr1" class="frow">
+          <circle cx="85" cy="146" r="5" class="fping"/>
+          <text x="101" y="150">&#8250; you: <tspan class="fquote">"tell the desktop agent the schema changed"</tspan></text>
+        </g>
+        <g id="fr2" class="frow">
+          <text x="167" y="188" text-anchor="middle">send_message</text>
+          <line x1="85" y1="196" x2="240" y2="196" class="fl-am"/>
+          <polygon points="240,191 250,196 240,201" class="fh-am"/>
+          <circle id="fdR2" r="4.5" class="fdot"><animateMotion id="famR2" begin="indefinite" dur="1.3s" fill="remove" path="M85,196 L244,196"/></circle>
+        </g>
+        <g id="fr3" class="frow">
+          <text x="332" y="226" text-anchor="middle">HTTPS · bearer token</text>
+          <line x1="250" y1="234" x2="405" y2="234" class="fl-cy"/>
+          <polygon points="405,229 415,234 405,239" class="fh-cy"/>
+          <circle id="fdR3" r="4.5" class="fdot cyan"><animateMotion id="famR3" begin="indefinite" dur="1.3s" fill="remove" path="M250,234 L409,234"/></circle>
+        </g>
+        <g id="fr4" class="frow">
+          <text x="497" y="264" text-anchor="middle">write the thread</text>
+          <line x1="415" y1="272" x2="570" y2="272" class="fl-vi"/>
+          <polygon points="570,267 580,272 570,277" class="fh-vi"/>
+          <circle id="fdR4" r="4.5" class="fdot"><animateMotion id="famR4" begin="indefinite" dur="1.3s" fill="remove" path="M415,272 L574,272"/></circle>
+        </g>
+        <g id="fr5" class="frow">
+          <circle cx="250" cy="298" r="5" class="fping"/>
+          <text x="266" y="302">the laptop badges its own sessions inline &#8212; no tick needed</text>
+        </g>
+        <g id="fr6" class="frow">
+          <text x="580" y="340" text-anchor="middle">poll · every 10s</text>
+          <line x1="745" y1="348" x2="425" y2="348" class="fl-cy"/>
+          <polygon points="425,343 415,348 425,353" class="fh-cy"/>
+          <circle id="fdR6" r="4.5" class="fdot cyan"><animateMotion id="famR6" begin="indefinite" dur="1.3s" fill="remove" path="M745,348 L421,348"/></circle>
+        </g>
+        <g id="fr7" class="frow">
+          <text x="497" y="378" text-anchor="middle">anything new since my watermark?</text>
+          <line x1="415" y1="386" x2="570" y2="386" class="fl-vi"/>
+          <polygon points="570,381 580,386 570,391" class="fh-vi"/>
+          <circle id="fdR7" r="4.5" class="fdot"><animateMotion id="famR7" begin="indefinite" dur="1.3s" fill="remove" path="M415,386 L574,386"/></circle>
+        </g>
+        <g id="fr8" class="frow">
+          <text x="580" y="416" text-anchor="middle">the new entry</text>
+          <line x1="415" y1="424" x2="735" y2="424" class="fl-cy"/>
+          <polygon points="735,419 745,424 735,429" class="fh-cy"/>
+          <circle id="fdR8" r="4.5" class="fdot cyan"><animateMotion id="famR8" begin="indefinite" dur="1.3s" fill="remove" path="M415,424 L739,424"/></circle>
+        </g>
+        <g id="fr9" class="frow">
+          <circle cx="745" cy="450" r="5" class="fping"/>
+          <text x="729" y="454" text-anchor="end">sets @muster_inbox &#8212; 📬 appears on that tab</text>
+        </g>
+        <g id="fr10" class="frow">
+          <circle cx="910" cy="488" r="5" class="fping"/>
+          <text x="729" y="492" text-anchor="end">codex notices at the end of its turn</text>
+        </g>
+        <g id="fr11" class="frow">
+          <text x="827" y="530" text-anchor="middle">get_inbox</text>
+          <line x1="910" y1="538" x2="755" y2="538" class="fl-am"/>
+          <polygon points="755,533 745,538 755,543" class="fh-am"/>
+          <circle id="fdR11" r="4.5" class="fdot"><animateMotion id="famR11" begin="indefinite" dur="1.3s" fill="remove" path="M910,538 L751,538"/></circle>
+        </g>
+      </svg>
+      </div>
+      <div class="flow-cap" id="flowcap"></div>
+    </div>
   </div>
 </section>
 
@@ -182,5 +287,58 @@ export MUSTER_REMOTE_URL=<span class="c-sig">https://muster.example.com</span>
 </footer>
 
 <script src="../site.js"></script>
+<script>
+  // Steps the flow diagram above walks through. Same shape as the landing
+  // page's driver: a row id, whether a dot travels the wire, and the caption.
+  // prefers-reduced-motion falls back to every row lit and one static caption,
+  // so the diagram still reads without any movement.
+  (function () {
+    var svg = document.getElementById('flowsvg');
+    var cap = document.getElementById('flowcap');
+    if (!svg || !cap) { return; }
+    function el(id) { return document.getElementById(id); }
+    function badge(id, on) { var b = el(id); if (b) { b.classList.toggle('on', on); } }
+    var N = 11;
+    var steps = [
+      { r: 1, cap: '1 &#183; <b>ask</b> &#8212; you tell claude the schema changed and to pass it on' },
+      { r: 2, dot: true, cap: '2 &#183; <b>send</b> &#8212; claude calls send_message; the laptop&#8217;s daemon takes it' },
+      { r: 3, dot: true, cap: '3 &#183; <b>forward</b> &#8212; in remote mode the daemon forwards it to the bus over HTTPS, authenticating with the bearer token' },
+      { r: 4, dot: true, cap: '4 &#183; <b>store</b> &#8212; the Lambda runs the same dispatch code your socket runs, and writes the thread to DynamoDB' },
+      { r: 5, cap: '5 &#183; <b>local</b> &#8212; the sending machine reconciles its own tmux badges immediately; it never waits for a poll' },
+      { r: 6, dot: true, cap: '6 &#183; <b>poll</b> &#8212; the desktop&#8217;s daemon asks the bus what has happened since its watermark' },
+      { r: 7, dot: true, cap: '7 &#183; <b>read</b> &#8212; the function queries the table for entries this device has not seen' },
+      { r: 8, dot: true, cap: '8 &#183; <b>return</b> &#8212; the new entry comes back to the desktop&#8217;s daemon' },
+      { r: 9, cap: '9 &#183; <b>notify</b> &#8212; that daemon sets @muster_inbox on its own tmux session; 📬 appears on the tab',
+        after: function () { badge('fbadgeR', true); } },
+      { r: 10, cap: '10 &#183; <b>wake</b> &#8212; codex finishes what it was doing and notices the mailbox' },
+      { r: 11, dot: true, cap: '11 &#183; <b>read</b> &#8212; codex fetches the thread; the flag clears and the loop is closed',
+        after: function () { badge('fbadgeR', false); } }
+    ];
+    if (matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      svg.classList.add('static');
+      badge('fbadgeR', true);
+      cap.innerHTML = 'Read top to bottom: claude <b>sends</b> a message, the laptop&#8217;s daemon <b>forwards</b> it to the bus, and the Lambda <b>stores</b> it. The desktop&#8217;s daemon <b>polls</b>, gets the new entry, and <b>flags</b> its own tmux session &#8212; codex <b>reads</b> it at the end of its turn. The sending machine badges itself inline; the other machine learns on its next poll.';
+      return;
+    }
+    function dot(n) {
+      var d = el('fdR' + n); if (!d) { return; }
+      d.classList.add('on');
+      el('famR' + n).beginElement();
+      setTimeout(function () { d.classList.remove('on'); }, 1350);
+    }
+    var i = 0;
+    function tick() {
+      var st = steps[i % steps.length];
+      for (var n = 1; n <= N; n++) { var r = el('fr' + n); if (r) { r.classList.remove('on'); } }
+      el('fr' + st.r).classList.add('on');
+      cap.innerHTML = st.cap;
+      if (st.dot) { dot(st.r); }
+      if (st.after) { setTimeout(st.after, st.dot ? 1250 : 650); }
+      i++;
+    }
+    tick();
+    setInterval(tick, 1950);
+  })();
+</script>
 </body>
 </html>
