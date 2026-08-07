@@ -3,21 +3,30 @@ name: release
 # Merge to main = release. The VERSION file is the knob: when a merge lands on
 # main and no tag v<VERSION> exists yet, this workflow tags it, creates the
 # GitHub release (auto-generated notes), and attaches cross-compiled binaries
-# (cgo-free: darwin/linux × arm64/amd64) with sha256 checksums. Every binary
+# (cgo-free: darwin/linux × arm64/amd64) plus the hosted backend's Lambda zip,
+# all with sha256 checksums. Every binary
 # is stamped with this release's version/commit via -ldflags -X into
 # internal/version. A merge that doesn't bump VERSION releases nothing.
 # macOS binaries are re-signed and notarized locally afterwards via
 # contrib/release-sign.sh <tag>.
 #
-# workflow_dispatch rebuilds assets for an existing release (backfill/repair).
+# workflow_dispatch does two things, chosen by whether `tag` is given:
+#   - tag set    -> rebuild assets for that EXISTING release (backfill/repair).
+#   - tag empty  -> cut a PRE-RELEASE from the branch you dispatch on, tagged
+#                   v<VERSION>-rc.<run>. This is the dev channel: a real,
+#                   pinnable tag with the same assets as a release, marked
+#                   pre-release so it never becomes "Latest" and never collides
+#                   with the v<VERSION> that main will publish later. Use it to
+#                   put a build on a second machine before promoting.
 on:
   push:
     branches: [main]
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing release tag to (re)build assets for"
-        required: true
+        description: "Existing release tag to rebuild assets for. Leave EMPTY to cut a pre-release from this branch."
+        required: false
+        default: ""
 
 permissions:
   contents: write
@@ -34,13 +43,32 @@ jobs:
         run: |
           set -euo pipefail
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
-            echo "create=false" >> "$GITHUB_OUTPUT"
-            echo "skip=false" >> "$GITHUB_OUTPUT"
+            if [ -n "${{ inputs.tag }}" ]; then
+              # Rebuild an existing release's assets. Nothing is created.
+              {
+                echo "tag=${{ inputs.tag }}"
+                echo "create=false"
+                echo "prerelease=false"
+                echo "skip=false"
+              } >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            # Pre-release from whatever branch this was dispatched on. The
+            # -rc.<run> suffix is what keeps this off main's namespace: the run
+            # number is monotonic per workflow, so repeated dispatches at the
+            # same VERSION never collide with each other OR with the eventual
+            # v<VERSION>.
+            {
+              echo "tag=v$(tr -d ' \n' < VERSION)-rc.${{ github.run_number }}"
+              echo "create=true"
+              echo "prerelease=true"
+              echo "skip=false"
+            } >> "$GITHUB_OUTPUT"
             exit 0
           fi
           tag="v$(tr -d ' \n' < VERSION)"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "prerelease=false" >> "$GITHUB_OUTPUT"
           if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "VERSION $tag already released — nothing to do."
             echo "skip=true" >> "$GITHUB_OUTPUT"
@@ -53,7 +81,7 @@ jobs:
         if: steps.rel.outputs.skip == 'false'
         with:
           go-version-file: go.mod
-      - name: Checkout the tag (dispatch mode)
+      - name: Checkout the tag (asset-rebuild mode only)
         if: steps.rel.outputs.skip == 'false' && steps.rel.outputs.create == 'false'
         run: git fetch --tags && git checkout "${{ steps.rel.outputs.tag }}"
       - name: Build and package all targets
@@ -71,7 +99,41 @@ jobs:
               go build -trimpath -ldflags "$ldflags" -o "dist/${out}/muster" ./cmd/muster
             tar -C "dist/${out}" -czf "dist/${out}.tar.gz" muster
           done
-          (cd dist && shasum -a 256 *.tar.gz > checksums.txt)
+          # muster-deploy, the hosted backend's installer. Shipped SEPARATELY
+          # from the device tarballs above, not inside them: it links the AWS
+          # SDK (that is its job — it talks to CloudFormation and S3), and
+          # bundling it would put AWS code in the download every device
+          # unpacks. Anyone who never self-hosts never fetches this.
+          for target in darwin/arm64 darwin/amd64 linux/amd64 linux/arm64; do
+            goos="${target%/*}"; goarch="${target#*/}"
+            out="muster-deploy_${goos}_${goarch}"
+            CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
+              go build -trimpath -ldflags "$ldflags" -o "dist/${out}/muster-deploy" ./cmd/muster-deploy
+            tar -C "dist/${out}" -czf "dist/${out}.tar.gz" muster-deploy
+          done
+          # The Lambda artifact for the optional hosted backend
+          # (contrib/cloudformation/muster-backend.yaml). Three things about
+          # this build differ from the device binaries above and all three are
+          # load-bearing:
+          #
+          #   -tags lambda   is NOT optional. Without it the zip carries a
+          #                  binary whose runLambda is the stub, and the
+          #                  function dies at every cold start with "built
+          #                  without lambda mode". The device binaries are
+          #                  built WITHOUT the tag on purpose — that is what
+          #                  keeps the AWS SDK out of what people install.
+          #   bootstrap      is the filename provided.al2023 execs. Any other
+          #                  name and the runtime cannot start the function.
+          #   linux/arm64    matches Architectures: [arm64] in the template.
+          zipname="muster-lambda-arm64-${tag}.zip"
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 \
+            go build -tags lambda -trimpath -ldflags "$ldflags" -o dist/bootstrap ./cmd/muster
+          (cd dist && zip -qj "$zipname" bootstrap && rm bootstrap)
+          # Version-stamped, because CloudFormation only redeploys Lambda code
+          # when S3Key or S3ObjectVersion changes — a same-key overwrite leaves
+          # the old binary running with no error anywhere. A tagged filename
+          # makes the upgrade path correct by default.
+          (cd dist && shasum -a 256 *.tar.gz *.zip > checksums.txt)
       - name: Create the release
         if: steps.rel.outputs.create == 'true'
         env:
@@ -79,9 +141,10 @@ jobs:
         run: |
           gh release create "${{ steps.rel.outputs.tag }}" \
             --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
-            --title "muster ${{ steps.rel.outputs.tag }}" --generate-notes
+            --title "muster ${{ steps.rel.outputs.tag }}" --generate-notes \
+            ${{ steps.rel.outputs.prerelease == 'true' && '--prerelease' || '' }}
       - name: Upload assets
         if: steps.rel.outputs.skip == 'false'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "${{ steps.rel.outputs.tag }}" dist/*.tar.gz dist/checksums.txt --clobber --repo "$GITHUB_REPOSITORY"
+        run: gh release upload "${{ steps.rel.outputs.tag }}" dist/*.tar.gz dist/*.zip dist/checksums.txt --clobber --repo "$GITHUB_REPOSITORY"

@@ -8,12 +8,20 @@ A local multi-agent coordination bus: independent coding-agent sessions (Claude
 Code + OpenAI Codex, each in its own tmux tab) hand tasks/messages to each other —
 no copy/paste, subscription-only (the bus never calls a model; it routes between
 agents already running on their own plans). One static Go binary, multi-mode
-(`serve` daemon · `mcp` stdio server · human CLI).
+(`serve` daemon · `mcp` stdio server · human CLI · `lambda` handler for the
+optional hosted backend).
 
 ## Build / test / run
 
-- **`just verify`** — the gate: `gofmt`, `golangci-lint`, `go test -race`, build.
-  Run it before every commit; CI runs the same recipe, so local and CI can't drift.
+- **`just verify`** — the gate: `gofmt`, `golangci-lint`, `go test -race`, build,
+  `cross` (all four release targets plus the `-tags lambda` build). Run it before
+  every commit; CI runs the same recipe, so local and CI can't drift.
+- **`just verify-dynamo`** — the second gate, deliberately NOT part of `verify`
+  because it needs Docker. Runs `internal/dynamostore` and the DynamoDB half of
+  the cross-backend conformance suite against DynamoDB Local. Without an endpoint
+  those tests *skip*, so `verify` compiles and vets them but proves nothing about
+  DynamoDB semantics — run this after touching `internal/dynamostore`. The
+  `dynamo` job in CI runs the same two packages against a service container.
 - **cgo-free** — the binary builds under `CGO_ENABLED=0` (pure-Go SQLite via
   `modernc.org/sqlite`). Don't add cgo dependencies.
 - **macOS tests** use `internal/mustertest.ShortHome()` for unix-socket paths (the
@@ -65,6 +73,25 @@ those rows from reaping — attribution and tombstoning are distinct decisions.
 
 - **stdout is sacred in `mcp` mode** — it is the MCP channel. All diagnostics go to
   **stderr**. A stray `fmt.Println` on an mcp-mode path corrupts the protocol.
+- **The AWS SDK never reaches a device binary.** Four packages may import
+  `github.com/aws/aws-sdk-go-v2/...` or `aws-lambda-go`, and they divide into
+  two islands neither of which `cmd/muster` can reach. `internal/dynamostore`
+  and `internal/lambdamode` are the hosted BUS, entered only through
+  `cmd/muster/lambda_on.go` behind `//go:build lambda`. `internal/deploy` and
+  `cmd/muster-deploy` are the hosted backend's INSTALLER — a separate binary,
+  because deploying to an AWS account is inherently done by someone who
+  already has credentials for it, while devices must not need any.
+  `just aws-free` (run by `cross`, so by `verify`) asserts
+  `go list -deps ./cmd/muster` contains no AWS package and fails the gate if
+  it ever does. Drop an AWS import into any untagged package on the device
+  path — `internal/remote`, `internal/daemon`, `internal/store` — and it
+  links into the binary every device installs. Devices reach the hosted bus over
+  plain HTTPS with a bearer token (`internal/remote`) and need no AWS
+  credentials, profile, region, or SDK; that is the entire reason the Lambda
+  tier exists rather than devices talking to DynamoDB directly. `just cross`
+  (in `verify`) builds both configurations, and `.github/workflows/release.yml`
+  builds the device binaries without the tag and the Lambda zip with it — so
+  check the build tag before adding an AWS import, and never widen that edge.
 - **One canonical module per concern** — identity capture lives in `internal/tmuxenv`,
   not copied around. Extend the owner; don't fork it.
 - **Knobs, not constants** — operator-tunable defaults over hardcoded numbers.
@@ -72,17 +99,38 @@ those rows from reaping — attribution and tombstoning are distinct decisions.
 ## Package map
 
 `cmd/muster` entrypoint · `internal/proto` wire protocol · `internal/client` daemon
-client · `internal/daemon` the daemon · `internal/store` SQLite persistence ·
-`internal/mcpserver` MCP tools · `internal/humancli` operator CLI · `internal/wake`
-notify · `internal/nudge` send-keys · `internal/tmuxenv` tmux capture/liveness/label
-· `internal/paths` socket+db paths · `internal/clock` injectable time ·
-`internal/mustertest` shared test helpers.
+client · `internal/daemon` the daemon · `internal/store` the `store.API` interface
++ its SQLite implementation · `internal/mcpserver` MCP tools · `internal/humancli`
+operator CLI · `internal/wake` notify · `internal/nudge` send-keys ·
+`internal/tmuxenv` tmux capture/liveness/label · `internal/harnessenv` paneless
+harness-session capture (tmuxenv's counterpart) · `internal/paths` socket+db paths ·
+`internal/clock` injectable time · `internal/mustertest` shared test helpers.
+
+Hosted backend (all optional; a device links only `remote` and `device`):
+`internal/dynamostore` the **second `store.API` implementation**, on DynamoDB —
+lambda-only · `internal/lambdamode` API Gateway → `daemon.Dispatch` adapter —
+lambda-only · `internal/remote` the device's HTTPS+bearer-token transport to the
+hosted bus · `internal/device` this machine's stable device identity ·
+`internal/storetest` the conformance suite both `store.API` implementations must
+pass, so the two backends cannot drift.
+
+`store.API` having two implementations is the thing to hold onto: behaviour SQLite
+gets for free from one pinned connection (ordering, serialization) costs conditional
+writes and transactions on DynamoDB, and the divergences that survived are documented
+in the package comments of `internal/dynamostore/store.go` and `events.go`. Add an
+op to `store.API` and you owe both backends plus a conformance test.
 
 ## Using the bus itself
 
 If you're an agent working here and want to coordinate with sessions in other
 terminals, the `.claude/skills/muster-coordination` skill is the etiquette
 (register, inbox, send/reply, addressing, the wake model).
+
+If you're helping an operator put the bus on more than one machine, the
+`.claude/skills/muster-hosted-backend` skill covers deploying with
+`muster-deploy`, adding a device, custom domains, and diagnosing a hosted bus
+— including the rule that matters most there: the bearer token must never
+reach your context, so never run `muster-deploy -join` yourself.
 
 ## Worktrees
 

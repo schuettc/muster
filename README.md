@@ -314,6 +314,53 @@ won't register, drain mail, or deregister. To move the identity deliberately,
 run `muster register` from the pane that should own it — the explicit
 commands always override.
 
+### Spanning two machines (optional)
+
+By default the bus is one SQLite file that one daemon owns, so agents on your
+laptop and agents on your desktop are on two unrelated buses and cannot address
+each other. If you want one bus across both, there is an optional hosted
+backend: a DynamoDB table, a Lambda function, and an HTTP API you deploy into
+**your own** AWS account with one command —
+
+```sh
+muster-deploy --region us-east-1
+```
+
+— or by hand from the CloudFormation template in
+[`contrib/cloudformation/`](contrib/cloudformation/muster-backend.yaml), which
+is the same file `muster-deploy` embeds. Devices authenticate with a shared
+bearer token and need no AWS credentials at all.
+
+It is opt-in, and the local path is untouched if you never want it — the AWS
+SDK is not compiled into the binary you install. Setup, the security model, and
+the known limitations are in
+[`docs/hosted-backend.md`](docs/hosted-backend.md); read the security
+section before deploying, because the endpoint is publicly reachable and the
+token is the only thing protecting it.
+
+`muster-deploy` is not installed by default — it is needed on one machine,
+once, and it links the AWS SDK, which is exactly why it is not bundled into the
+binary your devices run:
+
+```sh
+curl -fsSL https://muster.tools/install.sh | sh -s -- --with-deploy
+```
+
+Then on each device — name it first, which both makes the roster legible
+("message the ci-cd session on my **work laptop**") and stops two machines with
+the same repos checked out from silently claiming the same alias:
+
+```sh
+muster device work-laptop
+export MUSTER_BACKEND=remote
+export MUSTER_REMOTE_URL=https://xxxxxxxxxx.execute-api.us-east-1.amazonaws.com
+# plus the token at ~/.local/share/muster/remote-token, mode 0600
+```
+
+To add a second device, run `muster-deploy -join` on the machine you deployed
+from; it prints those exports, the token, and a fingerprint for checking the
+copy arrived intact.
+
 ## License
 
 [MIT](LICENSE) © Court Schuett

@@ -69,3 +69,16 @@ The same behavior as a standalone POSIX shell script, for anyone who wants to
 customize the hook (change the drain instruction, add logging, gate it per
 project). Functionally identical to `muster hook`; point your hook config at
 the script instead if you use it.
+
+## 3. The hosted backend (`cloudformation/muster-backend.yaml`)
+
+An optional CloudFormation stack that puts the bus in your own AWS account so
+several machines share one roster: a DynamoDB table, a Lambda function running
+the same dispatch code the unix socket serves, a token-authenticated Function
+URL, and a least-privilege execution role. Devices need no AWS credentials.
+
+Do not deploy it from this file alone. The endpoint is publicly reachable and a
+shared bearer token is the only thing protecting it, so read
+[`docs/hosted-backend.md`](../docs/hosted-backend.md) first — it covers the
+security model, the deploy and device setup, token rotation, cost, and the
+limitations that only exist on this backend.
