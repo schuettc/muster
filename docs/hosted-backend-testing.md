@@ -271,6 +271,27 @@ session_id)` collision that motivated all of the device-scoping work. Two
 laptops would also collide (`/private/tmp/tmux-501/default` is the default on
 every macOS box), but here you get it guaranteed rather than by luck.
 
+**Give each device its own tmux session, and run each device's commands from
+inside its own session.** This is the one place the rig is *worse* than two
+machines, and getting it wrong invalidates every badge assertion below. On two
+laptops the `(socket_path, session_id)` strings collide in the roster while the
+tmux servers are genuinely separate, so each device's daemon badges its own
+machine and they never interfere. On one machine both daemons write to the same
+real tmux server — so if both agents register from the *same* session, they
+write the same `@muster_inbox` option, and whichever daemon polled last wins.
+A daemon that computes zero unread for its own sessions actively *clears* the
+option, so the other device's badge gets wiped within a poll interval and the
+wake test fails for a reason that has nothing to do with wake:
+
+```bash
+tmux new-session -d -s dev-a-session
+tmux new-session -d -s dev-b-session
+```
+
+The roster-level collision the rig exists to exercise is unaffected — both
+sessions still live on one socket path, and device scoping is still what keeps
+their rows apart.
+
 **Device A**, in one terminal:
 
 ```bash
@@ -305,16 +326,40 @@ export MUSTER_POLL_INTERVAL=2s
 
 ### 4a — cross-device delivery and wake
 
+**Check the badge BEFORE you read the inbox.** `muster inbox` marks the thread
+read, which clears the badge — so an inbox-then-badge ordering destroys the
+evidence and reports a wake failure that did not happen. Assert the badge
+first, then read to confirm delivery:
+
 ```bash
 # on device A
 muster-rc send agent-b "cross-device hello" --from agent-a
 
-# on device B, within a poll interval
-muster-rc inbox agent-b    # the message is there
+# on device B — badge FIRST
+tmux show-options -t dev-b-session -v @muster_inbox   # must become non-empty
+muster-rc inbox agent-b                               # then confirm the message
 ```
 
 **The badge on B must light.** That is the assertion — not that the message
 arrived, which only proves the store works, but that B was *told*.
+
+**Give it time, and poll for it rather than checking once.** Two effects make a
+single immediate check misleading. Reconcile is asynchronous even on the
+originating device, so a badge takes roughly a second to appear after the write
+returns — "reconciles inline and never waits for a tick" means it does not wait
+for the *poller*, not that the option is set before the command exits. And the
+poller widens its interval while the bus is quiet, so a cross-device badge can
+take noticeably longer than `MUSTER_POLL_INTERVAL` suggests; 10-15 seconds
+against a 2s interval is normal, not a failure. Loop for up to ~30s before
+concluding anything:
+
+```bash
+for i in $(seq 1 30); do
+  v=$(tmux show-options -t dev-b-session -v @muster_inbox 2>/dev/null)
+  [ -n "$v" ] && { echo "badge lit at ${i}s: $v"; break; }
+  sleep 1
+done
+```
 
 Then the reverse direction, which exercises a different path (B's poller rather
 than A's inline reconcile).
