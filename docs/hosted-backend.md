@@ -254,6 +254,38 @@ That URL is what goes in `MUSTER_REMOTE_URL` on every device.
 
 Do this on each machine that should join the bus.
 
+### Name the machine first
+
+```sh
+muster device work-laptop
+```
+
+Do this before registering anything, because it changes two things and neither
+is retroactive.
+
+It puts a human-meaningful name on every agent this machine registers, which is
+what lets you say *"message the ci-cd session on my work laptop"* and have an
+agent resolve it — the roster's `device_name` is the field it matches, and a
+UUID could never serve. Without a name set, the machine falls back to its
+hostname reduced to lowercase and dashes; `courts-macbook-pro-2` is matchable
+but not what anyone says out loud.
+
+It also **seeds derived aliases**. An alias you do not choose comes from the
+tmux session name or the working directory, and both are identical on two
+machines with the same repos checked out. Registering is an upsert and the
+roster row *is* the identity, so without seeding the second machine to register
+takes the first one's alias, inbox and read-state — and since session hooks
+re-register on every start, the two machines trade it back and forth with mail
+following whoever went last, silently. With a device name set, that machine's
+derived aliases become `work-laptop-<name>` and cannot collide. Aliases you
+type explicitly are never rewritten.
+
+The name lives in `<MUSTER_HOME>/device-name`, not an environment variable, so
+it survives reboots without touching a shell profile and every process agrees
+on it however it was launched. `$MUSTER_DEVICE_NAME` overrides it for one
+shell. Existing roster rows keep whatever they registered with — re-register to
+update them.
+
 ### Getting the URL and token onto the other machine
 
 Run this on the machine you deployed from:

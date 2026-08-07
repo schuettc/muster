@@ -346,9 +346,12 @@ binary your devices run:
 curl -fsSL https://muster.tools/install.sh | sh -s -- --with-deploy
 ```
 
-Then on each device:
+Then on each device — name it first, which both makes the roster legible
+("message the ci-cd session on my **work laptop**") and stops two machines with
+the same repos checked out from silently claiming the same alias:
 
 ```sh
+muster device work-laptop
 export MUSTER_BACKEND=remote
 export MUSTER_REMOTE_URL=https://xxxxxxxxxx.execute-api.us-east-1.amazonaws.com
 # plus the token at ~/.local/share/muster/remote-token, mode 0600

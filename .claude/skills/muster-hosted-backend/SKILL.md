@@ -65,6 +65,27 @@ credential by accident.
 It costs roughly $0.41/month at personal scale. Deleting the stack deletes the
 table and every message on the bus, with no backup.
 
+## Name each machine, before it registers anything
+
+```sh
+muster device work-laptop
+```
+
+Suggest this on every machine joining the bus, and do it before registering,
+because nothing about it is retroactive.
+
+It is what makes "the ci-cd session on my work laptop" resolvable — the name
+lands in each row's `device_name`, which is the field you match when the
+operator refers to a machine. It also seeds derived aliases
+(`work-laptop-<name>`), which is what stops two machines with the same repos
+checked out from silently claiming one alias and stealing each other's mail.
+Aliases the operator types are never rewritten.
+
+Unset, a machine falls back to its hostname reduced to lowercase and dashes —
+matchable, but not what anyone says out loud. The name is stored in
+`<MUSTER_HOME>/device-name`, so it survives reboots with no shell
+configuration.
+
 ## Adding a second device
 
 Ask the operator to run `muster-deploy -join` **themselves** and follow what it
