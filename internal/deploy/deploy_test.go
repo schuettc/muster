@@ -10,6 +10,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	cfntypes "github.com/aws/aws-sdk-go-v2/service/cloudformation/types"
+
 	cfn "github.com/schuettc/muster/contrib/cloudformation"
 )
 
@@ -141,6 +144,50 @@ func TestValidateDomainRejectsTheWedgedStackCombination(t *testing.T) {
 				t.Fatalf("validateDomain() error = %v, wantErr %v", err, tc.wantErr)
 			}
 		})
+	}
+}
+
+// TestDomainParamsPreserveUnlessAskedToRemove is a destroy-guard. A routine
+// redeploy to ship new function code passes no domain flags; if that sent
+// DomainName="" the stack would delete the custom domain, its certificate and
+// its DNS record, and every device pointed at that hostname would stop
+// resolving. Absent flags must mean "leave it alone" — the same rule the
+// bearer token already follows, for the same reason.
+func TestDomainParamsPreserveUnlessAskedToRemove(t *testing.T) {
+	find := func(ps []cfntypes.Parameter, key string) cfntypes.Parameter {
+		t.Helper()
+		for _, p := range ps {
+			if aws.ToString(p.ParameterKey) == key {
+				return p
+			}
+		}
+		t.Fatalf("parameter %q not sent at all", key)
+		return cfntypes.Parameter{}
+	}
+
+	// Redeploy of an EXISTING stack with no domain flags: keep what is there.
+	p := find(domainParams(Options{}, true), "DomainName")
+	if !aws.ToBool(p.UsePreviousValue) {
+		t.Fatalf("redeploy without -domain sent %q instead of UsePreviousValue — this deletes a live domain",
+			aws.ToString(p.ParameterValue))
+	}
+
+	// Explicitly removing: clear it.
+	p = find(domainParams(Options{RemoveDomain: true}, true), "DomainName")
+	if aws.ToBool(p.UsePreviousValue) || aws.ToString(p.ParameterValue) != "" {
+		t.Fatal("-remove-domain did not clear DomainName")
+	}
+
+	// Setting one: send it.
+	p = find(domainParams(Options{Domain: "m.example.com", HostedZoneID: "Z1"}, true), "DomainName")
+	if got := aws.ToString(p.ParameterValue); got != "m.example.com" {
+		t.Fatalf("DomainName = %q, want m.example.com", got)
+	}
+
+	// A CREATE has no previous value to preserve, so it must send a literal.
+	p = find(domainParams(Options{}, false), "DomainName")
+	if aws.ToBool(p.UsePreviousValue) {
+		t.Fatal("CREATE sent UsePreviousValue, which CloudFormation rejects on a new stack")
 	}
 }
 

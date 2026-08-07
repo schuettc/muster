@@ -58,6 +58,9 @@ type Options struct {
 	Domain       string
 	HostedZoneID string
 	CertARN      string
+	// RemoveDomain tears the custom domain down. Explicit because the absence
+	// of -domain means "leave it alone", not "delete it".
+	RemoveDomain bool
 }
 
 // validateDomain rejects the one combination that fails badly rather than
@@ -67,6 +70,9 @@ type Options struct {
 // — with nothing in the events explaining why, so catching it here before a
 // single API call is worth more than any error message the stack could give.
 func (o Options) validateDomain() error {
+	if o.RemoveDomain && (o.Domain != "" || o.HostedZoneID != "" || o.CertARN != "") {
+		return errors.New("-remove-domain cannot be combined with -domain, -hosted-zone or -cert")
+	}
 	if o.Domain == "" {
 		if o.HostedZoneID != "" || o.CertARN != "" {
 			return errors.New("-hosted-zone and -cert do nothing without -domain")
@@ -274,22 +280,40 @@ func uploadArtifact(ctx context.Context, api *s3.Client, o Options) (string, err
 	return key, nil
 }
 
+// domainParams builds the three custom-domain parameters.
+//
+// Absent flags mean "leave it alone", never "delete it". Sending them empty on
+// every deploy would make a routine redeploy — new function code, no other
+// flags — destroy the custom domain, its certificate and its DNS record, and
+// every device pointed at that hostname would stop resolving. The bearer token
+// already follows this rule for the same reason; getting it backwards here
+// would have been far more destructive.
+func domainParams(o Options, exists bool) []cfntypes.Parameter {
+	out := make([]cfntypes.Parameter, 0, 3)
+	for _, kv := range []struct{ k, v string }{
+		{"DomainName", o.Domain}, {"HostedZoneId", o.HostedZoneID}, {"CertificateArn", o.CertARN},
+	} {
+		switch {
+		case !o.RemoveDomain && kv.v != "":
+			out = append(out, cfntypes.Parameter{ParameterKey: aws.String(kv.k), ParameterValue: aws.String(kv.v)})
+		case !o.RemoveDomain && exists:
+			// Nothing said about it on an update: keep the stored value.
+			out = append(out, cfntypes.Parameter{ParameterKey: aws.String(kv.k), UsePreviousValue: aws.Bool(true)})
+		default:
+			// An explicit removal, or a CREATE, which has no previous value.
+			out = append(out, cfntypes.Parameter{ParameterKey: aws.String(kv.k), ParameterValue: aws.String("")})
+		}
+	}
+	return out
+}
+
 // applyStack creates or updates the stack and waits for it to settle.
 func applyStack(ctx context.Context, api *cloudformation.Client, o Options, key string, exists bool) error {
 	params := []cfntypes.Parameter{
 		{ParameterKey: aws.String("CodeS3Bucket"), ParameterValue: aws.String(o.Bucket)},
 		{ParameterKey: aws.String("CodeS3Key"), ParameterValue: aws.String(key)},
 	}
-	for k, v := range map[string]string{
-		"DomainName": o.Domain, "HostedZoneId": o.HostedZoneID, "CertificateArn": o.CertARN,
-	} {
-		// Sent even when empty: on an UPDATE that drops -domain, omitting the
-		// parameter would carry the previous value forward and silently keep
-		// a domain the operator just asked to remove.
-		params = append(params, cfntypes.Parameter{
-			ParameterKey: aws.String(k), ParameterValue: aws.String(v),
-		})
-	}
+	params = append(params, domainParams(o, exists)...)
 	if o.Token != "" {
 		params = append(params, cfntypes.Parameter{
 			ParameterKey: aws.String("MusterToken"), ParameterValue: aws.String(o.Token),

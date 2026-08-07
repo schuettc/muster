@@ -44,6 +44,7 @@ func run() int {
 		domain = fs.String("domain", "", "custom hostname for the bus, e.g. muster.example.com (keeps the URL stable across stack recreation)")
 		zone   = fs.String("hosted-zone", "", "Route53 hosted zone id for -domain; lets the stack create and validate the certificate")
 		cert   = fs.String("cert", "", "existing ACM certificate ARN for -domain, in this region, instead of creating one")
+		rmDom  = fs.Bool("remove-domain", false, "tear down the custom domain, its certificate and its DNS record (omitting -domain alone leaves them alone)")
 		join   = fs.Bool("join", false, "deploy nothing; print setup instructions (including the token) for adding another device")
 		showV  = fs.Bool("version", false, "print version and exit")
 	)
@@ -100,7 +101,7 @@ func run() int {
 	res, err := deploy.Run(ctx, deploy.Options{
 		Stack: *stack, Region: *region, Bucket: *bucket, Tag: *tag, Repo: *repo,
 		ZipPath: *zip, Token: *token, TokenFile: *tokFil, Wait: *wait, Out: os.Stdout,
-		Domain: *domain, HostedZoneID: *zone, CertARN: *cert,
+		Domain: *domain, HostedZoneID: *zone, CertARN: *cert, RemoveDomain: *rmDom,
 	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "muster-deploy:", err)
