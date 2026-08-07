@@ -266,6 +266,52 @@ func TestGCPurgeAgentsHardDeletes(t *testing.T) {
 	}
 }
 
+// TestGCSparesOtherDevicesAgents is a data-loss guard, and the reason it
+// exists is worth stating: on a hosted bus list_agents returns EVERY device's
+// rows, while every liveness check in gc is a probe of THIS machine's tmux.
+// A remote agent's socket path either matches nothing here — reading as dead
+// — or matches an unrelated local session with the same per-machine path.
+// Without device scoping, gc on the laptop tombstones (and with
+// --purge-agents HARD DELETES) agents running perfectly well on the desktop.
+func TestGCSparesOtherDevicesAgents(t *testing.T) {
+	sock := startCLITestDaemon(t)
+	t.Setenv("MUSTER_DEVICE_ID", "this-device")
+
+	// A dead row belonging to THIS device: gc's rightful target.
+	if _, err := callData("register_agent", map[string]any{
+		"alias": "mine-dead", "socket_path": "/s", "session_id": "$DEAD",
+		"session_created": 1784000000, "device_id": "this-device",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// A row on ANOTHER device. Its session is not in this machine's tmux, so
+	// every probe here says "dead" — and it must survive anyway.
+	if _, err := callData("register_agent", map[string]any{
+		"alias": "theirs", "socket_path": "/s", "session_id": "$THEIRS",
+		"session_created": 1784000001, "device_id": "other-device",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	prev := tmuxenv.Run
+	tmuxenv.Run = func(...string) (string, error) { return "", fmt.Errorf("dead") }
+	t.Cleanup(func() { tmuxenv.Run = prev })
+
+	var buf bytes.Buffer
+	if err := cmdGC([]string{"--purge-agents"}, &buf); err != nil {
+		t.Fatal(err)
+	}
+	agents := listAgentsForTest(t, sock)
+	var survived []string
+	for _, a := range agents {
+		survived = append(survived, a.Alias)
+	}
+	if len(survived) != 1 || survived[0] != "theirs" {
+		t.Fatalf("after gc --purge-agents, surviving agents = %v; want only [theirs] "+
+			"(this device's dead row purged, the other device's row untouched)", survived)
+	}
+}
+
 // TestGCPrunesEventsPastRetention drives `gc --events-keep 1h` against the
 // test daemon: one event stamped 2h in the past (older than the 1h cutoff,
 // must be pruned) and one stamped now (must survive). The clock is faked so
