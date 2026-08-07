@@ -338,11 +338,21 @@ are in [`docs/hosted-backend.md`](docs/hosted-backend.md); read the security
 section before deploying, because the endpoint is publicly reachable and the
 token is the only thing protecting it.
 
+`muster-deploy` is a separate download from the
+[releases page](https://github.com/schuettc/muster/releases) — it links the AWS
+SDK, which is exactly why it is not bundled into the binary your devices run.
+
+Then on each device:
+
 ```sh
 export MUSTER_BACKEND=remote
-export MUSTER_REMOTE_URL=https://xxxxxxxx.lambda-url.us-east-1.on.aws/
+export MUSTER_REMOTE_URL=https://xxxxxxxxxx.execute-api.us-east-1.amazonaws.com
 # plus the token at ~/.local/share/muster/remote-token, mode 0600
 ```
+
+To add a second device, run `muster-deploy -join` on the machine you deployed
+from; it prints those exports, the token, and a fingerprint for checking the
+copy arrived intact.
 
 ## License
 

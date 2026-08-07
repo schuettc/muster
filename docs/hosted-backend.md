@@ -315,7 +315,7 @@ you happen to be sitting in:
 
 ```sh
 export MUSTER_BACKEND=remote
-export MUSTER_REMOTE_URL=https://xxxxxxxx.lambda-url.us-east-1.on.aws/
+export MUSTER_REMOTE_URL=https://xxxxxxxxxx.execute-api.us-east-1.amazonaws.com
 ```
 
 This matters more than it looks. Any muster command will start the daemon for
