@@ -81,14 +81,20 @@ after that. Neither is in this version.
 
 ## Before you start
 
-You need an AWS account, the `aws` CLI configured, and a region picked. The
-credentials you deploy with need more than IAM: CloudFormation to run the
-stack, IAM to create the execution role, Lambda for the function, its URL and
-the invoke permission, DynamoDB to create the table and set its TTL, CloudWatch
-Logs for the log group, and S3 to stage the code. An administrator identity
-covers all of it; a scoped-down one that only grants IAM will fail partway
-through the stack. Everything below assumes `us-east-1`; substitute freely, but
-keep the S3 bucket in the same region as the stack.
+You need an AWS account, credentials on the machine you deploy from, and a
+region picked. Those credentials need rather more than IAM: CloudFormation to
+run the stack, IAM to create the execution role, Lambda for the function and
+its invoke permission, API Gateway for the HTTP API and its stage, DynamoDB to
+create the table and set its TTL, CloudWatch Logs for both log groups, and S3
+to stage the code. Adding a custom domain also needs ACM and, if you let the
+stack manage DNS, Route53. An administrator identity covers all of it; a
+scoped-down one that only grants IAM will fail partway through the stack.
+
+Everything below assumes `us-east-1`; substitute freely, but keep the S3 bucket
+and any ACM certificate in the same region as the stack.
+
+Note that this is about the machine you *deploy* from. Devices that merely join
+the bus need none of it — no credentials, no profile, no region, no SDK.
 
 Devices need **muster v0.10.0 or newer** — see the device setup below for why
 that is not a soft requirement.
