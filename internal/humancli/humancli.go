@@ -13,6 +13,7 @@ import (
 	"text/tabwriter"
 
 	"github.com/schuettc/muster/internal/client"
+	"github.com/schuettc/muster/internal/device"
 	"github.com/schuettc/muster/internal/nudge"
 	"github.com/schuettc/muster/internal/paths"
 	"github.com/schuettc/muster/internal/proto"
@@ -71,10 +72,18 @@ type agentRow struct {
 	// which see no tmux, find their own rows.
 	HarnessSessionID string `json:"harness_session_id"`
 	SessionName      string `json:"session_name"`
-	Project          string `json:"project"`
-	Label            string `json:"label"`
-	LabelManual      bool   `json:"label_manual"`
-	LastSeen         int64  `json:"last_seen"`
+	// DeviceID names the MACHINE this row was registered from (see
+	// store.Agent.DeviceID). It is location, never identity: nothing
+	// addressable is scoped by it, and internal/resolve takes no device
+	// argument — an alias means the same agent from every device on the bus.
+	// cmdAgents renders it purely so an operator can answer "which box is
+	// that on", a question a bus spanning machines makes askable and
+	// nothing else in the CLI could answer.
+	DeviceID    string `json:"device_id"`
+	Project     string `json:"project"`
+	Label       string `json:"label"`
+	LabelManual bool   `json:"label_manual"`
+	LastSeen    int64  `json:"last_seen"`
 	// Departed is true once the agent has been deregistered (tombstoned, not
 	// deleted — see store.Store.DepartAgent): gc's default reap and
 	// --purge-agents both key off this to decide whether a row still needs
@@ -165,8 +174,26 @@ func cmdAgents(out io.Writer) error {
 		}
 		return agents[i].Alias < agents[j].Alias
 	})
+	// The device column appears only when the roster actually SPANS devices.
+	// On a local bus every row carries this machine's id, so a column reading
+	// "this" all the way down is pure noise — and local is the default and the
+	// overwhelmingly common case. Rendering it conditionally means the column
+	// shows up exactly when it answers a question the operator can now ask.
+	localDevice := device.Existing()
+	devices := make(map[string]struct{}, 2)
+	for _, a := range agents {
+		if a.DeviceID != "" {
+			devices[a.DeviceID] = struct{}{}
+		}
+	}
+	showDevice := len(devices) > 1
+
 	tw := tabwriter.NewWriter(out, 0, 2, 2, ' ', 0)
-	if _, err := fmt.Fprintln(tw, "PROJECT\tALIAS\tLABEL\tMODEL\tLIVE"); err != nil {
+	header := "PROJECT\tALIAS\tLABEL\tMODEL\tLIVE"
+	if showDevice {
+		header = "PROJECT\tALIAS\tLABEL\tMODEL\tDEVICE\tLIVE"
+	}
+	if _, err := fmt.Fprintln(tw, header); err != nil {
 		return err
 	}
 	for _, a := range agents {
@@ -183,6 +210,16 @@ func cmdAgents(out io.Writer) error {
 		}
 		live := "✗"
 		switch {
+		case !a.Departed && localDevice != "" && a.DeviceID != "" && a.DeviceID != localDevice:
+			// ANOTHER machine's agent. This case must precede a.Live, because
+			// a.Live is a LOCAL tmux probe and running it against a remote
+			// row is not merely uninformative but unsound: socket paths are
+			// per-machine strings that collide freely across machines
+			// (/private/tmp/tmux-501/proj-foo exists on every box that has
+			// that project), so probing one here can match an unrelated local
+			// session and report ITS liveness as the remote agent's. There is
+			// no way to answer the question from this device, so say so.
+			live = "◌"
 		case a.Live:
 			live = "●"
 		case a.SocketPath == "" && !a.Departed:
@@ -191,11 +228,42 @@ func cmdAgents(out io.Writer) error {
 			// would read as "dead" for what is usually a live session.
 			live = "◌"
 		}
-		if _, err := fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", proj, a.Alias, label, a.ModelType, live); err != nil {
+		var err error
+		if showDevice {
+			_, err = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
+				proj, a.Alias, label, a.ModelType, deviceCell(a.DeviceID, localDevice), live)
+		} else {
+			_, err = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", proj, a.Alias, label, a.ModelType, live)
+		}
+		if err != nil {
 			return err
 		}
 	}
 	return tw.Flush()
+}
+
+// deviceShortLen is how much of a device id identifies it in the roster.
+// Device ids are UUIDs, so the first 8 hex characters distinguish any
+// plausible number of machines while staying narrow enough to sit in a table.
+const deviceShortLen = 8
+
+// deviceCell renders one agent's device for the roster: "this" for the
+// machine the command is running on, a short id for any other, and "—" for a
+// row that predates device ids or was written by a backend that does not set
+// them. Naming the local device rather than showing its id is the point —
+// "is that agent here or somewhere else" is the question being asked, and an
+// operator cannot answer it by comparing two hex strings at a glance.
+func deviceCell(id, local string) string {
+	switch {
+	case id == "":
+		return "—"
+	case local != "" && id == local:
+		return "this"
+	case len(id) > deviceShortLen:
+		return id[:deviceShortLen]
+	default:
+		return id
+	}
 }
 
 // validIntents is the client-side copy of the intent vocabulary store.CreateThread

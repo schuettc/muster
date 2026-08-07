@@ -139,8 +139,15 @@ when a session has no muster MCP connection.`,
 			Name:     "agents",
 			Synopsis: "agents",
 			Summary:  "List registered agents, grouped by project, with live status.",
-			Help:     `Shows every registered agent's project, alias, label, model, and whether its tmux session is still alive.`,
-			Group:    GroupWatch,
+			Help: `Shows every registered agent's project, alias, label, model, and whether
+its tmux session is still alive.
+
+A DEVICE column appears only when the roster spans more than one machine —
+that is, on a hosted bus with devices in it. Your own machine reads "this";
+others show the first characters of their device id. Device is LOCATION, not
+identity: nothing is addressed by it, and an alias means the same agent from
+every device on the bus.`,
+			Group: GroupWatch,
 			Run: func(args []string, out io.Writer) error {
 				if helpRequested(args) {
 					return HelpFor("agents", out)

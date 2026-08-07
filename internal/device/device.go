@@ -14,6 +14,25 @@ import (
 // FileName is the device id's filename within paths.Home().
 const FileName = "device-id"
 
+// Existing returns this device's identifier if one is ALREADY established —
+// $MUSTER_DEVICE_ID, else a persisted device-id file — and "" otherwise. It
+// never generates and never writes, which is the whole point: read-only
+// commands (muster agents renders a device column) must not mint this
+// machine's identity as a side effect of displaying something. ID is for
+// callers that are registering and genuinely need an identity to exist;
+// everything else wants this. Every error reads as "" — a display column
+// cannot fail a command.
+func Existing() string {
+	if v := strings.TrimSpace(os.Getenv("MUSTER_DEVICE_ID")); v != "" {
+		return v
+	}
+	b, err := os.ReadFile(filepath.Join(paths.Home(), FileName))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
+}
+
 // ID returns this device's stable identifier: $MUSTER_DEVICE_ID if set,
 // otherwise a UUID generated once and persisted at <MUSTER_HOME>/device-id.
 //

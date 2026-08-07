@@ -59,6 +59,72 @@ func TestAgentsCommandListsRegistered(t *testing.T) {
 	}
 }
 
+// TestAgentsHidesDeviceColumnOnOneDevice pins the default: a local bus has
+// exactly one device, so a column reading "this" on every row is noise and
+// must not appear. This is the overwhelmingly common case and the one a
+// regression here would degrade silently.
+func TestAgentsHidesDeviceColumnOnOneDevice(t *testing.T) {
+	startTestDaemon(t)
+	t.Setenv("MUSTER_DEVICE_ID", "device-one")
+	for _, alias := range []string{"backend", "consumer"} {
+		if _, err := callData("register_agent", map[string]any{
+			"alias": alias, "model_type": "claude", "device_id": "device-one",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var buf bytes.Buffer
+	if err := Dispatch([]string{"agents"}, &buf); err != nil {
+		t.Fatalf("agents: %v", err)
+	}
+	if strings.Contains(buf.String(), "DEVICE") {
+		t.Fatalf("DEVICE column shown for a single-device roster:\n%s", buf.String())
+	}
+}
+
+// TestAgentsShowsDeviceColumnAcrossDevices is the hosted-bus case the column
+// exists for: two machines in one roster, this one named rather than
+// rendered as an id the operator would have to compare by eye.
+func TestAgentsShowsDeviceColumnAcrossDevices(t *testing.T) {
+	startTestDaemon(t)
+	t.Setenv("MUSTER_DEVICE_ID", "device-here")
+	if _, err := callData("register_agent", map[string]any{
+		"alias": "local-agent", "model_type": "claude", "device_id": "device-here",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := callData("register_agent", map[string]any{
+		"alias": "far-agent", "model_type": "claude", "device_id": "abcdef0123456789",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	if err := Dispatch([]string{"agents"}, &buf); err != nil {
+		t.Fatalf("agents: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "DEVICE") {
+		t.Fatalf("DEVICE column missing from a multi-device roster:\n%s", out)
+	}
+	if !strings.Contains(out, "this") {
+		t.Fatalf("local device not rendered as \"this\":\n%s", out)
+	}
+	// Truncated, not full: the column has to stay narrow enough to sit in the
+	// table beside everything else.
+	if !strings.Contains(out, "abcdef01") || strings.Contains(out, "abcdef0123456789") {
+		t.Fatalf("remote device id not shortened to %d chars:\n%s", deviceShortLen, out)
+	}
+	// Another machine's agent must read "unknowable", never "dead". Liveness
+	// is a LOCAL tmux probe, and socket paths collide across machines, so the
+	// probe can match an unrelated local session — ✗ here would be a claim
+	// this device is not entitled to make.
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "far-agent") && !strings.Contains(line, "◌") {
+			t.Fatalf("remote agent's liveness not rendered as unknowable:\n%s", line)
+		}
+	}
+}
+
 func TestDispatchUnknownCommand(t *testing.T) {
 	if err := Dispatch([]string{"bogus"}, nil); err == nil {
 		t.Fatalf("expected error for unknown subcommand")
