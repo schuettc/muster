@@ -103,8 +103,15 @@ that is not a soft requirement.
 
 ### The short way
 
-Download `muster-deploy` for your platform from
-<https://github.com/schuettc/muster/releases> and run it:
+Install `muster-deploy` — it does not come with `muster`, because it is needed
+on one machine, once:
+
+```sh
+curl -fsSL https://muster.tools/install.sh | sh -s -- --with-deploy
+```
+
+(or grab the `muster-deploy_<os>_<arch>.tar.gz` asset from
+<https://github.com/schuettc/muster/releases> by hand). Then:
 
 ```sh
 muster-deploy --region us-east-1

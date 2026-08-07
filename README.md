@@ -338,9 +338,13 @@ are in [`docs/hosted-backend.md`](docs/hosted-backend.md); read the security
 section before deploying, because the endpoint is publicly reachable and the
 token is the only thing protecting it.
 
-`muster-deploy` is a separate download from the
-[releases page](https://github.com/schuettc/muster/releases) — it links the AWS
-SDK, which is exactly why it is not bundled into the binary your devices run.
+`muster-deploy` is not installed by default — it is needed on one machine,
+once, and it links the AWS SDK, which is exactly why it is not bundled into the
+binary your devices run:
+
+```sh
+curl -fsSL https://muster.tools/install.sh | sh -s -- --with-deploy
+```
 
 Then on each device:
 

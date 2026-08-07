@@ -39,11 +39,17 @@ to run without downtime.
 
 ## Deploying
 
-`muster-deploy` is a separate download from `muster` — it links the AWS SDK,
-which the device binary deliberately does not. The operator needs AWS
-credentials with rights to CloudFormation, IAM, Lambda, DynamoDB, API Gateway,
-CloudWatch Logs, ACM, and S3. An administrator identity covers it; an
-IAM-only one fails partway through the stack.
+`muster-deploy` is not installed with `muster` — it links the AWS SDK, which
+the device binary deliberately does not, and it is needed on one machine once:
+
+```sh
+curl -fsSL https://muster.tools/install.sh | sh -s -- --with-deploy
+```
+
+The operator needs AWS credentials with rights to CloudFormation, IAM, Lambda,
+DynamoDB, API Gateway, CloudWatch Logs, and S3, plus ACM and Route53 for a
+custom domain. An administrator identity covers it; an IAM-only one fails
+partway through the stack. Only the deploying machine needs any of this.
 
 ```sh
 muster-deploy --region us-east-1

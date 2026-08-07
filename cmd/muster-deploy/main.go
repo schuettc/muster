@@ -47,6 +47,17 @@ func run() int {
 		join   = fs.Bool("join", false, "deploy nothing; print setup instructions (including the token) for adding another device")
 		showV  = fs.Bool("version", false, "print version and exit")
 	)
+	// A bare invocation prints usage instead of deploying. Every other flag has
+	// a defensible default — region and account resolve from the ambient AWS
+	// config — so `muster-deploy` with no arguments would quietly create real
+	// infrastructure in whatever account happened to be configured. That is
+	// too easy to do by accident for something installable in one line, and it
+	// is what the installer's smoke test would otherwise trigger. Exit 2 is
+	// muster's own convention for "usage, not failure".
+	if len(os.Args) == 1 {
+		fs.Usage()
+		return 2
+	}
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		return 2
 	}
