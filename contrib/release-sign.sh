@@ -1,6 +1,8 @@
 #!/bin/sh
 # Sign and notarize the macOS binaries of an existing muster release, then
 # replace the release's darwin assets (and checksums) with the signed ones.
+# Covers BOTH shipped binaries: muster, and muster-deploy for the optional
+# hosted backend.
 # CI attaches unsigned binaries; run this once per release from a Mac with a
 # Developer ID certificate in the keychain and a stored notarytool profile:
 #
@@ -28,16 +30,21 @@ git clone --quiet --depth 1 --branch "$tag" "https://github.com/$repo" "$src"
 version="${tag#v}"
 commit="$(cd "$src" && git rev-parse --short HEAD)"
 ldflags="-s -w -X github.com/schuettc/muster/internal/version.version=${version} -X github.com/schuettc/muster/internal/version.commit=${commit}"
+# Every darwin binary the release ships has to be signed. An unsigned one is
+# quarantined by Gatekeeper on download and refuses to run, which looks like a
+# broken build rather than a missing signature.
 for arch in arm64 amd64; do
-  dir="$work/muster_darwin_${arch}"
-  mkdir -p "$dir"
-  (cd "$src" && CGO_ENABLED=0 GOOS=darwin GOARCH="$arch" \
-    go build -trimpath -ldflags "$ldflags" -o "$dir/muster" ./cmd/muster)
-  codesign --sign "$identity" --options runtime --timestamp --force "$dir/muster"
-  ditto -c -k --keepParent "$dir/muster" "$work/notarize_${arch}.zip"
-  xcrun notarytool submit "$work/notarize_${arch}.zip" \
-    --keychain-profile "$profile" --wait | grep -E "status:" | tail -1
-  tar -C "$dir" -czf "$work/muster_darwin_${arch}.tar.gz" muster
+  for bin in muster muster-deploy; do
+    dir="$work/${bin}_darwin_${arch}"
+    mkdir -p "$dir"
+    (cd "$src" && CGO_ENABLED=0 GOOS=darwin GOARCH="$arch" \
+      go build -trimpath -ldflags "$ldflags" -o "$dir/$bin" "./cmd/$bin")
+    codesign --sign "$identity" --options runtime --timestamp --force "$dir/$bin"
+    ditto -c -k --keepParent "$dir/$bin" "$work/notarize_${bin}_${arch}.zip"
+    xcrun notarytool submit "$work/notarize_${bin}_${arch}.zip" \
+      --keychain-profile "$profile" --wait | grep -E "status:" | tail -1
+    tar -C "$dir" -czf "$work/${bin}_darwin_${arch}.tar.gz" "$bin"
+  done
 done
 
 # Recompute checksums across the FULL asset set — signed darwin, CI's linux,
@@ -46,9 +53,15 @@ done
 # out silently vanishes from checksums.txt and looks like an unverifiable
 # download to whoever fetches it. The zip is a linux/arm64 binary and is not
 # signed or notarized — nothing on macOS ever executes it.
+#
+# Note the globs: muster_* does NOT match muster-deploy_* (underscore versus
+# hyphen), so the deploy tarballs need naming separately. Miss them and
+# install.sh --with-deploy fails outright with "no checksum found".
 (cd "$work" && \
   gh release download "$tag" --repo "$repo" \
-    --pattern "muster_linux_*.tar.gz" --pattern "muster-lambda-*.zip" && \
-  shasum -a 256 muster_*.tar.gz muster-lambda-*.zip > checksums.txt && \
-  gh release upload "$tag" muster_darwin_*.tar.gz checksums.txt --clobber --repo "$repo")
+    --pattern "muster_linux_*.tar.gz" --pattern "muster-deploy_linux_*.tar.gz" \
+    --pattern "muster-lambda-*.zip" && \
+  shasum -a 256 muster_*.tar.gz muster-deploy_*.tar.gz muster-lambda-*.zip > checksums.txt && \
+  gh release upload "$tag" muster_darwin_*.tar.gz muster-deploy_darwin_*.tar.gz \
+    checksums.txt --clobber --repo "$repo")
 echo "done: darwin assets for $tag are signed + notarized"
