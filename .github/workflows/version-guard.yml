@@ -1,0 +1,40 @@
+name: version-guard
+
+# Merging to main with an unbumped VERSION silently releases nothing —
+# that's how scratch shipped a rewrite on main that @latest never saw.
+# This guard makes the knob impossible to forget: PRs targeting main must
+# change VERSION, or carry the `no-release` label (docs/CI-only changes).
+# labeled/unlabeled triggers re-run the check when the label is toggled,
+# no new push needed. dev-targeting PRs are exempt: VERSION is bumped at
+# promotion time.
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+permissions:
+  contents: read
+
+jobs:
+  version-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # need the base branch for the diff
+      - name: VERSION bumped or no-release label
+        env:
+          LABELS: ${{ join(github.event.pull_request.labels.*.name, ' ') }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          case " $LABELS " in
+            *" no-release "*)
+              echo "no-release label present — skipping VERSION check."
+              exit 0 ;;
+          esac
+          if git diff --quiet "$BASE" HEAD -- VERSION; then
+            echo "::error file=VERSION::VERSION is unchanged. Bump it (this PR releases on merge) or add the 'no-release' label."
+            exit 1
+          fi
+          echo "VERSION bumped: $(git show "$BASE":VERSION | tr -d ' \n') -> $(tr -d ' \n' < VERSION)"
