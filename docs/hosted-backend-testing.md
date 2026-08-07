@@ -1,9 +1,9 @@
 # Testing the hosted backend
 
-A staged plan for validating the optional hosted backend, ordered cheapest and
-highest-value first. Stages 1 and 2 need no AWS account and protect what you
-already depend on. Stage 4 is the one that exercises what the feature was built
-for.
+A staged plan for validating the optional hosted backend, ordered by effort and
+by what each stage proves — the quickest and most valuable first. Stages 1 and
+2 need no AWS account and protect what you already depend on. Stage 4 is the
+one that exercises what the feature was built for.
 
 Each stage says what it proves, what it does **not** prove, and what a failure
 looks like — because most failures here are silent. The characteristic symptom
@@ -53,7 +53,7 @@ you see `ok`, not `no test files` or a skip count.
 Every stage below invokes **`muster-rc`**, not `muster`. That is deliberate: the
 release candidate installs alongside your working muster rather than replacing
 it, so your live bus keeps running the released build throughout and a bad rc
-costs you nothing but two deletions.
+undoes with two deletions.
 
 On **each** machine:
 
@@ -112,7 +112,7 @@ rm -rf ~/.muster-rc
 
 ## Stage 1 — local-mode regression
 
-**Cost:** no AWS, ~10 minutes. **Run this before anything else.**
+**Needs:** no AWS account, ~10 minutes. **Run this before anything else.**
 
 This is the highest-value test in the document, because local mode is what you
 already use and this branch threaded a new `deviceID` parameter through four
@@ -164,7 +164,7 @@ comparatively good news; a dark badge is the one to watch for.
 
 ## Stage 2 — the live-rig identity test
 
-**Cost:** no AWS, ~15 minutes. **Nothing below substitutes for this.**
+**Needs:** no AWS account, ~15 minutes. **Nothing below substitutes for this.**
 
 Upstream's v0.8.0–v0.9.1 identity work (durable alias resume, `become`) was
 validated by hand against a real harness. This branch merged that with
@@ -204,7 +204,7 @@ once.
 
 ## Stage 3 — deploy and single-device remote
 
-**Cost:** real AWS, effectively $0 at this volume.
+**Needs:** an AWS account and credentials, ~20 minutes.
 
 Follow `docs/hosted-backend.md` end to end — that document is the deploy
 instruction set and this stage is partly a test *of it*. If you have to work
@@ -259,7 +259,7 @@ you are talking to actually has the exports.
 
 ## Stage 4 — two devices
 
-**Cost:** real AWS, ~30 minutes. **This is the test the feature exists for.**
+**Needs:** an AWS account and credentials, ~30 minutes. **This is the test the feature exists for.**
 
 You do not need a second laptop. Run two daemons on one machine with separate
 `MUSTER_HOME` directories and distinct device ids, both pointed at the same
@@ -431,7 +431,7 @@ replication lag. No test in this repo can reach them, and each is documented in
 | A badge that lights one message late, catching up on the next | Poll/reconcile skew: the wake is delayed, not dropped | No |
 | `muster events --follow` missing a line the backlog query shows | The events cursor can skip an id that had not committed | No — the row exists |
 
-None loses data; all three cost a notification. If you see one, it is a known
+None loses data; all three produce a spurious notification. If you see one, it is a known
 window rather than a new bug — but note the circumstances, because the
 frequency is unmeasured and a common occurrence would change the calculus.
 
@@ -441,13 +441,10 @@ not on the known list.
 
 ---
 
-## Cost
+## Tearing down
 
-Stages 3–5 run against real AWS. At the volume this testing produces the bill
-is effectively zero — DynamoDB on-demand and Lambda's always-free tier cover
-it.
-
-Tear the stack down when finished if you are not keeping it:
+Stages 3–5 create real AWS resources in your account. Tear the stack down when
+finished if you are not keeping it:
 
 ```bash
 aws cloudformation delete-stack --stack-name <your-stack>
