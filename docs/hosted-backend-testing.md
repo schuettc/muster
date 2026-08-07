@@ -77,9 +77,31 @@ mkdir -p "$MUSTER_HOME"
 `muster-rc` with `MUSTER_HOME` set is the test bus. They share nothing — not the
 database, not the socket, not the roster.
 
-**Keep `MUSTER_HOME` exported in every shell you test from.** A `muster-rc`
-invocation without it talks to your *live* bus, which is both confusing and the
-one way this test can disturb something you care about.
+**`MUSTER_HOME` and the binary name must agree — in BOTH directions.** They are
+two independent switches and either one alone points you at the wrong bus:
+
+| you type | `MUSTER_HOME` | you get |
+|---|---|---|
+| `muster-rc` | set | the test bus — correct |
+| `muster` | unset | your live bus — correct |
+| `muster-rc` | **unset** | the rc binary against your **live** database |
+| `muster` | **set** | your **released** binary against the rc database |
+
+The last row is the dangerous one and it is easy to hit during teardown: kill the
+rc daemon, then run a plain `muster` command in a shell that still has
+`MUSTER_HOME` exported, and it will autospawn your *released* `muster serve`
+against the rc home — an older binary opening a newer schema. It also hangs
+while it tries.
+
+The habit that avoids both: set `MUSTER_HOME` inline rather than exporting it,
+so it cannot leak into the next command.
+
+```bash
+MUSTER_HOME=~/.muster-rc muster-rc agents     # test bus, no leak
+muster agents                                  # live bus, unambiguous
+```
+
+If you do export it, `env -u MUSTER_HOME muster …` is the escape hatch.
 
 To undo everything afterwards:
 
