@@ -19,6 +19,7 @@
       <a class="sb-brand" href="/"><span class="dot">●</span> <b>muster</b></a>
       <nav class="sb-nav" aria-label="Site">
         <a href="/docs/" class="active" aria-current="page">docs</a>
+        <a href="/hosted/">hosted</a>
         <a href="https://github.com/schuettc/muster">github</a>
       </nav>
     </div>
@@ -94,6 +95,10 @@
       <div class="row2">
         <span class="k">muster register [alias] / muster deregister [alias]</span>
         <span class="d">Join or leave the bus by hand — the alias defaults to the current tmux session's name if you don't pass one. <code>register</code> also takes <code>--role &lt;role&gt;</code> and <code>--model &lt;claude|codex&gt;</code>. Session hooks call both of these for you; see below.</span>
+      </div>
+      <div class="row2">
+        <span class="k">muster device [&lt;name&gt;]</span>
+        <span class="d">Shows this machine's device name, or sets it. The name appears in the roster's DEVICE column on a bus spanning machines, so an agent can resolve "the ci-cd session on my work laptop" to an alias — and it seeds derived aliases, so two machines with the same repos checked out cannot claim the same one. Only relevant with the <a href="/hosted/">hosted backend</a>.</span>
       </div>
       <div class="row2">
         <span class="k">muster gc [--purge-agents] [--events-keep &lt;dur&gt;]</span>

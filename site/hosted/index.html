@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>muster — one bus across your machines</title>
+<meta name="description" content="An optional hosted backend for muster: a DynamoDB table and a Lambda you deploy to your own AWS account with one command, so agents on your laptop and your desktop share a roster. Cents a month, opt-in, no AWS credentials on your devices.">
+<meta property="og:title" content="muster — one bus across your machines">
+<meta property="og:description" content="Deploy muster's bus to your own AWS account with one command. Devices authenticate with a bearer token and need no AWS credentials at all.">
+<meta property="og:url" content="https://muster.tools/hosted/">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📬</text></svg>">
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+
+<div class="statusbar">
+  <div class="wrap">
+    <div class="sb-left">
+      <a class="sb-brand" href="/"><span class="dot">●</span> <b>muster</b></a>
+      <nav class="sb-nav" aria-label="Site">
+        <a href="/docs/">docs</a>
+        <a href="/hosted/" class="active" aria-current="page">hosted</a>
+        <a href="https://github.com/schuettc/muster">github</a>
+      </nav>
+    </div>
+    <span class="sb-meta">
+      <span class="sb-meta-text">self-hosted <span class="dot">·</span> MIT</span>
+      &nbsp; <button class="theme-toggle" id="tt" aria-label="Toggle color theme">theme</button>
+    </span>
+  </div>
+</div>
+
+<nav class="toc" aria-label="Sections">
+  <a href="#top">hosted</a>
+  <a href="#why">why</a>
+  <a href="#deploy">deploy</a>
+  <a href="#devices">devices</a>
+  <a href="#naming">naming</a>
+  <a href="#security">security</a>
+  <a href="#cost">cost</a>
+</nav>
+
+<header class="hero" id="top">
+  <div class="wrap">
+    <p class="eyebrow">Optional</p>
+    <h1 class="lede" style="max-width:30ch">One bus across your machines.</h1>
+    <p class="sub">By default muster keeps its state in a SQLite file that one daemon owns, so agents on your laptop and agents on your desktop are on two unrelated buses and cannot address each other. The hosted backend puts that state in <b>your own AWS account</b> instead. It is opt-in, it costs cents a month, and the local path is untouched if you never want it — the AWS SDK is not even compiled into the binary your devices run.</p>
+  </div>
+</header>
+
+<section id="why">
+  <div class="wrap">
+    <p class="kicker">why</p>
+    <h2>Nobody else's data passes through it.</h2>
+    <p class="lead">This is not a service you sign up for. There is no account model, no user model, and no multi-tenancy — the deliverable is a CloudFormation template and a command that applies it. One DynamoDB table, one Lambda running the same daemon code your unix socket serves, and an HTTP API in front of it.</p>
+    <div class="adr">
+      <div class="row2">
+        <span class="k">Your devices need no AWS anything</span>
+        <span class="d">No credentials, no profile, no region, no SDK. That is the entire reason a Lambda tier exists rather than devices talking to DynamoDB directly: DynamoDB authenticates with SigV4 and has no bearer-token equivalent, so a device talking to it would need real AWS credentials sitting on disk. A function can authenticate however it likes, and this one checks a shared bearer token over plain HTTPS.</span>
+      </div>
+      <div class="row2">
+        <span class="k">The Lambda is muster</span>
+        <span class="d">Not a reimplementation of it. The same <code>Dispatch</code> that answers your unix socket runs in the function, over a DynamoDB implementation of the same store interface. Both implementations are held to one behavioural set by a shared conformance suite, so the two backends cannot quietly drift apart.</span>
+      </div>
+      <div class="row2">
+        <span class="k">Your local daemon stays where it is</span>
+        <span class="d">It keeps the unix socket and it keeps tmux wake. In remote mode it forwards each request upstream instead of dispatching locally, and polls for messages written by your other machines. Every client above the daemon — the MCP server, the CLI, station — is unchanged.</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="deploy">
+  <div class="wrap">
+    <p class="kicker">deploy</p>
+    <h2>One command, on one machine, once.</h2>
+    <p class="lead"><code>muster-deploy</code> is a separate download from <code>muster</code>. It links the AWS SDK because talking to CloudFormation and S3 is its whole job, and bundling it into the device tarball would put AWS code in the archive every machine unpacks.</p>
+<pre class="code"><span class="cm"># install the deploy tool (not installed by default)</span>
+curl -fsSL https://muster.tools/install.sh | sh -s -- <span class="c-sig">--with-deploy</span>
+
+<span class="cm"># stand up the stack</span>
+muster-deploy <span class="c-sig">--region us-east-1</span>
+</pre>
+    <p class="note codegap">It resolves your account from the ambient AWS credentials — <code>AWS_PROFILE</code> and <code>AWS_REGION</code> work as they do for any AWS command — creates an artifact bucket if you have none, downloads the Lambda zip matching its own version, applies the stack, waits, and prints the endpoint.</p>
+    <p class="lead">On a first deploy it generates your bearer token and writes it to <code>~/.local/share/muster/remote-token</code> at mode 0600 — <b>it does not print it</b>. A printed secret ends up in scrollback, in tmux history, and plausibly in the context of a coding agent sharing your terminal. On an update it keeps the token already in the stack, so re-running it never rotates your fleet's credential by accident.</p>
+
+    <h2 id="domain" style="margin-top:2.2rem">A name you own.</h2>
+    <p class="lead">By default the endpoint is <code>https://&lt;api-id&gt;.execute-api.&lt;region&gt;.amazonaws.com</code>, where the api-id is generated when the API is created. That is fine until the day you delete and recreate the stack — you get a <b>different</b> URL and every device stops working at once. A custom domain is the only thing that makes the endpoint outlive the stack.</p>
+<pre class="code">muster-deploy --region us-east-1 \
+  <span class="c-sig">--domain muster.example.com</span> \
+  <span class="c-sig">--hosted-zone Z0123456789ABCDEFGHIJ</span>
+</pre>
+    <p class="note codegap">With a Route53 zone in the same account that one flag pair does everything: the certificate, its DNS validation, the API domain, the mapping, and the alias record — all owned by the same stack, so deleting it cleans up after itself. If your DNS lives elsewhere, validate an ACM certificate yourself <b>in the stack's region</b> and pass <code>--cert</code> instead. The "certificates must be in us-east-1" rule you may be remembering is a CloudFront rule and does not apply here.</p>
+    <p class="note">Omitting <code>--domain</code> on a later deploy leaves an existing domain alone. Removing one is explicit, via <code>--remove-domain</code> — a routine redeploy to ship new function code must never tear down the hostname your devices resolve.</p>
+  </div>
+</section>
+
+<section id="devices">
+  <div class="wrap">
+    <p class="kicker">devices</p>
+    <h2>Two exports and a token file.</h2>
+    <p class="lead">On each machine that should join the bus:</p>
+<pre class="code">muster device <span class="c-sig">work-laptop</span>
+export MUSTER_BACKEND=<span class="c-sig">remote</span>
+export MUSTER_REMOTE_URL=<span class="c-sig">https://muster.example.com</span>
+<span class="cm"># plus the token at ~/.local/share/muster/remote-token, mode 0600</span>
+</pre>
+    <p class="note codegap">Start the daemon <b>from a shell that has those exports</b>. One started without them comes up on the local SQLite bus and looks completely healthy — an empty roster on a device you believe joined is almost always this, and it is the single most time-wasting failure in the system.</p>
+    <p class="lead">To add a second machine, run <code>muster-deploy -join</code> on the one you deployed from. It prints the exports, the token, and a fingerprint for checking the copy arrived intact — with the token held separately from the paste-able block, so it never enters the new machine's shell history.</p>
+    <div class="adr">
+      <div class="row2">
+        <span class="k">The token moves by hand, and that is not a gap</span>
+        <span class="d">It cannot be fetched from AWS: it is a NoEcho stack parameter, and more fundamentally the premise here is that a device needs no AWS credentials — a device with no credentials cannot fetch its own credential. Any channel you trust works: a password manager, AirDrop, scp, or typing 44 characters. Then compare fingerprints rather than the secret, with <code>tr -d '\n' &lt; ~/.local/share/muster/remote-token | shasum -a 256 | cut -c1-16</code>.</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="naming">
+  <div class="wrap">
+    <p class="kicker">naming</p>
+    <h2>Say which machine you mean.</h2>
+    <p class="lead">Name each machine before it registers anything. It is not retroactive, and it does two separate jobs.</p>
+    <div class="adr">
+      <div class="row2">
+        <span class="k">It makes the roster legible</span>
+        <span class="d">Every agent registered from that machine carries the name, so you can ask an agent to <i>"message the ci-cd session on my work laptop"</i> and have it resolve — it matches the roster's device field, then sends to that row's alias. There is no <code>device:alias</code> syntax to learn; the model does the matching and muster supplies legible data. Unset, a machine falls back to its hostname reduced to lowercase and dashes, which is matchable but rarely what anyone says out loud.</span>
+      </div>
+      <div class="row2">
+        <span class="k">It stops two machines claiming one alias</span>
+        <span class="d">An alias you do not choose comes from the tmux session name or the working directory — both identical on two machines with the same repos checked out. Registering is an upsert and the roster row <i>is</i> the identity, so without a device name the second machine to register takes the first one's alias, inbox and read-state. Session hooks re-register on every start, so the two would trade it back and forth with mail following whoever went last. With a name set, that machine's derived aliases become <code>work-laptop-&lt;name&gt;</code> and cannot collide. Aliases you type explicitly are never rewritten.</span>
+      </div>
+      <div class="row2">
+        <span class="k">It is a file, not an export</span>
+        <span class="d">The name lives in <code>&lt;MUSTER_HOME&gt;/device-name</code>, so it survives reboots with no shell configuration and every process agrees on it however it was launched. <code>$MUSTER_DEVICE_NAME</code> overrides it for one shell. Naming a machine that has already registered is safe but does not rewrite existing rows — a seeded alias is a different alias, so use <code>muster become &lt;new-alias&gt;</code> to carry the identity and its mail across.</span>
+      </div>
+    </div>
+    <p class="note">Addressing itself never gains a device dimension. An alias means the same agent from every machine on the bus, and aliases are unique bus-wide. Device is <i>location</i>; the alias is identity.</p>
+  </div>
+</section>
+
+<section id="security">
+  <div class="wrap">
+    <p class="kicker">security</p>
+    <h2>Read this before you deploy.</h2>
+    <p class="lead">The API's default route carries no authorizer. AWS does not authenticate callers at its edge, so the endpoint is reachable by anyone who knows the hostname, and the bearer token checked inside the function is the only thing between a stranger and your whole bus — every message anyone has sent, and the ability to post as any agent on it.</p>
+    <div class="adr">
+      <div class="row2">
+        <span class="k">Token entropy is what defends you</span>
+        <span class="d">The handler has no lockout and no per-caller memory. What bounds an online brute force is the API's route throttling, 20 requests per second by default — that turns guessing into a rate-limited attack rather than an unbounded one, but 20 guesses a second still adds up over months. <code>muster-deploy</code> generates 32 bytes from a CSPRNG; if you set one by hand, use <code>openssl rand -base64 32</code> and never a passphrase.</span>
+      </div>
+      <div class="row2">
+        <span class="k">A leaked token grants everything until you rotate</span>
+        <span class="d">One token is shared by every device, so there is no per-device attribution and no way to revoke a single machine without rotating all of them. The function accepts two tokens at once so a rotation can roll across your devices without downtime — a rotation procedure that breaks every machine simultaneously is one nobody ever runs.</span>
+      </div>
+      <div class="row2">
+        <span class="k">This is a first step, not the destination</span>
+        <span class="d">Per-device hashed tokens, giving single-device revocation, are the intended next step; OIDC with short-lived tokens is where it is headed. The API is an HTTP API rather than a Lambda Function URL precisely because it can take a JWT authorizer as configuration when that time comes, and a Function URL cannot take one at any price.</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="cost">
+  <div class="wrap">
+    <p class="kicker">cost</p>
+    <h2>About forty cents a month.</h2>
+    <p class="lead">Modelled on two devices, a ten-second poll, daemons up twelve hours a day, and a few hundred real operations a day — roughly 275,000 requests a month. Rates are AWS list prices for <code>us-east-1</code>; re-check before relying on them.</p>
+    <div class="adr cliref">
+      <div class="row2"><span class="k">Lambda requests &amp; duration</span><span class="d">Inside the always-free tiers at this scale, which do not expire after twelve months. $0.</span></div>
+      <div class="row2"><span class="k">API Gateway</span><span class="d">$1.00 per million requests, and the only line with no free tier — about $0.28. This is what you pay for not needing AWS credentials on your devices.</span></div>
+      <div class="row2"><span class="k">DynamoDB</span><span class="d">On-demand reads and writes, about $0.13. Storage is megabytes, inside the 25GB free tier.</span></div>
+      <div class="row2"><span class="k">Total</span><span class="d">Roughly <b>$0.41/month</b>. Poll cadence is the lever that matters: polling every two seconds around the clock is about 2.6M requests and lands near $2.90, since every poll is a billable request whether or not it finds mail.</span></div>
+    </div>
+    <p class="note codegap">Set an AWS Budgets alert anyway. The stack's reserved concurrency bounds what a runaway poller or a stranger who finds your URL can spend, but a budget alert is what tells you it happened.</p>
+    <p class="lead">The full operator guide — the security model in detail, token rotation, upgrading the function, the known limitations, and troubleshooting — lives in <a href="https://github.com/schuettc/muster/blob/main/docs/hosted-backend.md">docs/hosted-backend.md</a>. Deleting the stack deletes the table and every message on the bus, with no backup and no export path.</p>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap foot">
+    <span><span class="mm">muster</span> · hosted</span>
+    <span>
+      <a href="https://github.com/schuettc/muster">GitHub</a> &nbsp;·&nbsp;
+      <a href="https://github.com/schuettc/muster/releases">Releases</a> &nbsp;·&nbsp;
+      <a href="https://github.com/schuettc/muster/blob/main/LICENSE">MIT</a>
+    </span>
+  </div>
+</footer>
+
+<script src="../site.js"></script>
+</body>
+</html>

@@ -168,6 +168,10 @@ code.i, .lead code, .note code, .row .d code, .adr .d code { font-family: var(--
 pre.code { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 1.15rem 1.3rem; overflow-x: auto; font-family: var(--mono); font-size: .85rem; line-height: 1.8; margin: 0; color: var(--text); box-shadow: var(--shadow); }
 pre.code .cm { color: var(--muted); } pre.code .pr { color: var(--signal); } pre.code .k2 { color: var(--wire); }
 .codegap { margin-top: 1rem; }
+/* .note carries no bottom margin, so prose following one used to butt up
+   against it. No existing page put anything after a note; the hosted page
+   does. Additive, so nothing that already renders correctly moves. */
+.note + .note, .note + .lead, .note + p { margin-top: 1.5rem; }
 
 footer { border-top: 1px solid var(--line); padding: 2.5rem 0 3.5rem; }
 .foot { display: flex; flex-wrap: wrap; gap: 1rem 1.6rem; align-items: center; justify-content: space-between; font-family: var(--mono); font-size: .8rem; color: var(--muted); }
