@@ -118,11 +118,11 @@ func TestHookSessionStartPanelessSuffixesPastLiveTmuxOwner(t *testing.T) {
 	if err := cmdHook([]string{"SessionStart"}, strings.NewReader(`{"session_id":"hs-thief","cwd":"`+"/x/owner-dir"+`"}`), &buf); err != nil {
 		t.Fatalf("SessionStart: %v", err)
 	}
-	ag, found := hookGetAgent("owner-dir")
+	ag, found, _ := hookGetAgent("owner-dir")
 	if !found || ag.SessionID != "$1" || ag.SocketPath != "/tmp/sockOwn" {
 		t.Fatalf("a live tmux owner must keep the alias, got %+v found=%v", ag, found)
 	}
-	suf, found := hookGetAgent("owner-dir-2")
+	suf, found, _ := hookGetAgent("owner-dir-2")
 	if !found || suf.SessionID != "hs-thief" || suf.SocketPath != "" {
 		t.Fatalf("the paneless session must allocate the next suffix, got %+v found=%v", suf, found)
 	}
@@ -145,12 +145,12 @@ func TestHookSessionStartPanelessAllocatesUniqueAliases(t *testing.T) {
 
 	want := map[string]string{"shared-dir": "hs-one", "shared-dir-2": "hs-two", "shared-dir-3": "hs-three"}
 	for alias, uuid := range want {
-		ag, found := hookGetAgent(alias)
+		ag, found, _ := hookGetAgent(alias)
 		if !found || ag.SessionID != uuid || ag.SocketPath != "" || ag.Departed {
 			t.Fatalf("%s: want live paneless row for %s, got %+v found=%v", alias, uuid, ag, found)
 		}
 	}
-	if _, found := hookGetAgent("shared-dir-4"); found {
+	if _, found, _ := hookGetAgent("shared-dir-4"); found {
 		t.Fatal("a resumed session must reuse its alias, not allocate shared-dir-4")
 	}
 }
@@ -166,17 +166,17 @@ func TestHookSessionStartPanelessRevivesOwnTombstoneOnResume(t *testing.T) {
 	if err := cmdHook([]string{"SessionEnd"}, strings.NewReader(payload), &buf); err != nil {
 		t.Fatal(err)
 	}
-	if ag, _ := hookGetAgent("revive-dir"); !ag.Departed {
+	if ag, _, _ := hookGetAgent("revive-dir"); !ag.Departed {
 		t.Fatalf("setup: expected tombstone after SessionEnd, got %+v", ag)
 	}
 	if err := cmdHook([]string{"SessionStart"}, strings.NewReader(payload), &buf); err != nil {
 		t.Fatal(err)
 	}
-	ag, found := hookGetAgent("revive-dir")
+	ag, found, _ := hookGetAgent("revive-dir")
 	if !found || ag.Departed || ag.SessionID != "hs-rev" {
 		t.Fatalf("resume must revive the session's own tombstone, got %+v found=%v", ag, found)
 	}
-	if _, found := hookGetAgent("revive-dir-2"); found {
+	if _, found, _ := hookGetAgent("revive-dir-2"); found {
 		t.Fatal("revival must not allocate a suffix")
 	}
 }
@@ -382,7 +382,7 @@ func TestLaunchHandshakeLifecycle(t *testing.T) {
 	if err := cmdRegister([]string{"--harness-session", "hs-shake"}, &buf); err != nil {
 		t.Fatalf("handshake register: %v", err)
 	}
-	ag, found := hookGetAgent("bh-workspace-4")
+	ag, found, _ := hookGetAgent("bh-workspace-4")
 	if !found {
 		t.Fatal("handshake row missing")
 	}
@@ -393,7 +393,7 @@ func TestLaunchHandshakeLifecycle(t *testing.T) {
 	if err := cmdHook([]string{"SessionStart"}, strings.NewReader(payload), &buf); err != nil {
 		t.Fatal(err)
 	}
-	if _, found := hookGetAgent("some-worktree-dir"); found {
+	if _, found, _ := hookGetAgent("some-worktree-dir"); found {
 		t.Fatal("SessionStart must not allocate a cwd alias when the handshake row exists")
 	}
 
@@ -431,7 +431,7 @@ func TestLaunchHandshakeLifecycle(t *testing.T) {
 	if err := cmdHook([]string{"SessionEnd"}, strings.NewReader(payload), &buf); err != nil {
 		t.Fatal(err)
 	}
-	ag, found = hookGetAgent("bh-workspace-4")
+	ag, found, _ = hookGetAgent("bh-workspace-4")
 	if !found || !ag.Departed {
 		t.Fatalf("SessionEnd must tombstone the handshake row, got %+v found=%v", ag, found)
 	}
@@ -464,11 +464,11 @@ func TestHookSessionStartPanelessRevivesSuccessorNotSupersededSeed(t *testing.T)
 
 	// Setup sanity: both rows departed, and the supersession link points the
 	// direction the fix must respect.
-	old, ok := hookGetAgent("aaa-old")
+	old, ok, _ := hookGetAgent("aaa-old")
 	if !ok || !old.Departed || old.SupersededBy != "zzz-new" {
 		t.Fatalf("setup: aaa-old = %+v (ok=%v)", old, ok)
 	}
-	successor, ok := hookGetAgent("zzz-new")
+	successor, ok, _ := hookGetAgent("zzz-new")
 	if !ok || !successor.Departed || successor.SupersededBy != "" {
 		t.Fatalf("setup: zzz-new = %+v (ok=%v)", successor, ok)
 	}
@@ -479,11 +479,11 @@ func TestHookSessionStartPanelessRevivesSuccessorNotSupersededSeed(t *testing.T)
 		t.Fatal(err)
 	}
 
-	revived, ok := hookGetAgent("zzz-new")
+	revived, ok, _ := hookGetAgent("zzz-new")
 	if !ok || revived.Departed || revived.SessionID != "hs-f1" {
 		t.Fatalf("revive must pick the successor zzz-new, got %+v (ok=%v)", revived, ok)
 	}
-	stillOld, ok := hookGetAgent("aaa-old")
+	stillOld, ok, _ := hookGetAgent("aaa-old")
 	if !ok || !stillOld.Departed {
 		t.Fatalf("the superseded seed must never be resurrected, got %+v (ok=%v)", stillOld, ok)
 	}

@@ -33,6 +33,91 @@ var AncestorPIDs = func() []int {
 	return pids
 }
 
+// ProcessArgv returns pid's command line as `ps` renders it ("claude
+// --agent-id a1 --team-name session-b41c"), or "" when it can't be read.
+// Injectable for tests — the sibling seam to AncestorPIDs, shelling out the
+// same way for the same reason: portable across macOS/Linux without cgo.
+//
+// -ww is load-bearing, not decoration: several procps builds truncate the
+// command column to the terminal width (or 80 columns when there is no tty,
+// which is every hook), and the flags this reads sit ~130 characters into a
+// teammate's command line. A truncated read is indistinguishable from an
+// absent flag, so without -ww teammate detection would silently degrade back
+// to the transcript-only hole on exactly those Linux hosts. BSD ps (macOS)
+// accepts -ww and ignores the widening, so one spelling serves both.
+var ProcessArgv = func(pid int) string {
+	out, err := exec.Command("ps", "-ww", "-o", "command=", "-p", strconv.Itoa(pid)).Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// AncestorArgvContainsAll reports whether SOME ONE process in this process's
+// parent chain was launched with EVERY token in its argv — the same walk, the
+// same bounds, and the same fail-safe posture as CaptureFromAncestry, reading
+// each hop's command line instead of matching it against pane PIDs.
+//
+// The hook layer uses it to recognize a fleet TEAMMATE: teammate Claude
+// processes launch as `claude --agent-id … --team-name … --parent-session-id …`
+// while primaries and team leads carry none of those, and a hook is a
+// DESCENDANT of the process that spawned it — so the launch shape is reachable
+// from here and, unlike the transcript, exists from process birth (a
+// teammate's transcript file is not written until after its SessionStart hooks
+// have already run).
+//
+// Why a set rather than one flag: a single token can appear in a NON-teammate's
+// argv by coincidence — a primary prompted with `claude -p "…--team-name…"`, a
+// wrapper's `sh -c`, a grep. Requiring the pair on one process's argv means
+// only an actual launch shape matches; nothing but a teammate is launched with
+// both. The tokens must share an ancestor: two flags on two different
+// processes are not one launch.
+//
+// Matching is per argv token — a bare token, or the `token=value` spelling of
+// the same flag — never a substring, so `--team-names-file` is not a match.
+// Every failure (walk failed, ps unreadable, no tokens, an empty token)
+// returns false: a hook must never block a session on an ancestry it couldn't
+// read.
+func AncestorArgvContainsAll(tokens ...string) bool {
+	if len(tokens) == 0 {
+		return false
+	}
+	for _, tok := range tokens {
+		if tok == "" {
+			return false
+		}
+	}
+	for _, pid := range AncestorPIDs() {
+		fields := strings.Fields(ProcessArgv(pid))
+		if len(fields) == 0 {
+			continue
+		}
+		all := true
+		for _, tok := range tokens {
+			if !argvHasToken(fields, tok) {
+				all = false
+				break
+			}
+		}
+		if all {
+			return true
+		}
+	}
+	return false
+}
+
+// argvHasToken reports whether fields carries tok as a discrete argv token —
+// bare, or as the `tok=value` spelling of the same flag. Never a substring
+// match: `--team-names-file` does not carry `--team-name`.
+func argvHasToken(fields []string, tok string) bool {
+	for _, field := range fields {
+		if field == tok || strings.HasPrefix(field, tok+"=") {
+			return true
+		}
+	}
+	return false
+}
+
 // SocketDir returns the directory holding this user's tmux server sockets:
 // $TMUX_TMPDIR if set (tmux's own knob — our operator-tunable too), else
 // /tmp/tmux-<uid>, tmux's default. Injectable for tests.
