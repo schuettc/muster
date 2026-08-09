@@ -73,11 +73,11 @@ func TestResumeReclaimsClaimedName(t *testing.T) {
 	if !strings.Contains(buf.String(), "reconnected as 'alias-routing'") {
 		t.Fatalf("resume summary:\n%s", buf.String())
 	}
-	ag, ok := hookGetAgent("alias-routing")
+	ag, ok, _ := hookGetAgent("alias-routing")
 	if !ok || ag.Departed || ag.SessionID != "$NEW" {
 		t.Fatalf("claimed row after resume = %+v (ok=%v)", ag, ok)
 	}
-	if seedRow, _ := hookGetAgent("muster-2"); !seedRow.Departed {
+	if seedRow, _, _ := hookGetAgent("muster-2"); !seedRow.Departed {
 		t.Fatalf("seed must stay retired after resume, got %+v", seedRow)
 	}
 }
@@ -127,11 +127,11 @@ func TestResumeAfterGracefulExitReclaimsOnlyClaimedName(t *testing.T) {
 	if strings.Contains(out, "'muster-2'") {
 		t.Fatalf("resume summary must not resurrect the retired seed:\n%s", out)
 	}
-	ag, ok := hookGetAgent("alias-routing")
+	ag, ok, _ := hookGetAgent("alias-routing")
 	if !ok || ag.Departed || ag.SessionID != "$NEW" {
 		t.Fatalf("claimed row after resume = %+v (ok=%v)", ag, ok)
 	}
-	if seedRow, _ := hookGetAgent("muster-2"); !seedRow.Departed || seedRow.SessionID == "$NEW" {
+	if seedRow, _, _ := hookGetAgent("muster-2"); !seedRow.Departed || seedRow.SessionID == "$NEW" {
 		t.Fatalf("seed must stay retired, never touching the new tuple: %+v", seedRow)
 	}
 }
@@ -176,14 +176,14 @@ func TestResumeChainedBecomeReclaimsOnlyFinalName(t *testing.T) {
 	if strings.Contains(out, "'muster-2'") || strings.Contains(out, "'alias-routing'") {
 		t.Fatalf("resume summary must not resurrect either superseded link:\n%s", out)
 	}
-	final, ok := hookGetAgent("final-name")
+	final, ok, _ := hookGetAgent("final-name")
 	if !ok || final.Departed || final.SessionID != "$NEW" {
 		t.Fatalf("final row after resume = %+v (ok=%v)", final, ok)
 	}
-	if seedRow, _ := hookGetAgent("muster-2"); !seedRow.Departed || seedRow.SessionID == "$NEW" {
+	if seedRow, _, _ := hookGetAgent("muster-2"); !seedRow.Departed || seedRow.SessionID == "$NEW" {
 		t.Fatalf("seed must stay retired: %+v", seedRow)
 	}
-	if midRow, _ := hookGetAgent("alias-routing"); !midRow.Departed || midRow.SessionID == "$NEW" {
+	if midRow, _, _ := hookGetAgent("alias-routing"); !midRow.Departed || midRow.SessionID == "$NEW" {
 		t.Fatalf("middle link must stay retired: %+v", midRow)
 	}
 }

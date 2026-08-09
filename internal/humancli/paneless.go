@@ -45,9 +45,14 @@ func allocPanelessAlias(base, sessionID string, register func(alias string, ifAb
 		if i > 1 {
 			cand = fmt.Sprintf("%s-%d", base, i)
 		}
-		ag, found := hookGetAgent(cand)
+		// A lookup that ERRORED falls in with "free" deliberately, exactly as
+		// before: the claim below goes out with if_absent=true, so the
+		// daemon's CAS — not this lookup — is what decides whether the name
+		// was actually free. Nothing can be overwritten on a blind guess; the
+		// worst case is losing the race and moving to the next suffix.
+		ag, found, err := hookGetAgent(cand)
 		switch {
-		case !found:
+		case err != nil || !found:
 			if err := register(cand, true); err != nil {
 				continue // lost the CAS race (or transient failure): next suffix
 			}
