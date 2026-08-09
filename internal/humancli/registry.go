@@ -238,12 +238,17 @@ from tmux (internal/tmuxenv) so other commands can address it.`,
 		},
 		{
 			Name:     "become",
-			Synopsis: "become <name> [--from <alias>]",
+			Synopsis: "become <name> [--from <alias>] [--no-inject]",
 			Summary:  "Claim a durable name for this session.",
 			Help: `Claim this session's real name: a new alias inherits this session's
 identity and inbox watermark, and the tmux-seeded alias retires — route
 traffic by a name the work deserves. --from selects which of this session's
-live aliases to claim from; required when the session has more than one.`,
+live aliases to claim from; required when the session has more than one.
+When a live Claude Code or Cursor agent is registered in this session, also
+types /rename <name> into its pane so the harness session name follows the
+claim. --no-inject skips that typing — for callers whose name ALREADY came
+from the harness side (e.g. the statusline promoting a name that originated
+from a /rename), where re-typing it would loop text into a live pane.`,
 			Group:    GroupIdentity,
 			NewFlags: newBecomeFlags,
 			Run:      cmdBecome,
