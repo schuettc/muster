@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/schuettc/muster/internal/clock"
+	"github.com/schuettc/muster/internal/device"
 	"github.com/schuettc/muster/internal/harnessenv"
 	"github.com/schuettc/muster/internal/tmuxenv"
 )
@@ -67,7 +68,9 @@ func cmdRegister(args []string, out io.Writer) error {
 	case os.Getenv("MUSTER_ALIAS") != "":
 		alias = os.Getenv("MUSTER_ALIAS")
 	case c.SessionName != "":
-		alias = c.SessionName
+		// Derived, so seeded with the device name when one is configured —
+		// two machines can easily share a tmux session name.
+		alias = seedAlias(c.SessionName)
 	default:
 		// Paneless cwd fallback: every session in a directory derives the
 		// same base, so the alias must be ALLOCATED unique (base, base-2, …)
@@ -256,9 +259,29 @@ func cmdGC(args []string, out io.Writer) error {
 		return err
 	}
 
+	// On a hosted bus list_agents returns EVERY device's rows, and every
+	// liveness test below is a probe of THIS machine's tmux. Judging another
+	// machine's agent with it is not a near-miss, it is destructive: socket
+	// paths are per-machine strings that collide freely
+	// (/private/tmp/tmux-501/proj-foo exists on every box with that project),
+	// so a remote row either matches nothing here and reads as dead, or
+	// matches an unrelated local session and reads as alive. The first
+	// outcome tombstones — or with --purge-agents hard-deletes — an agent
+	// that is running fine on another machine.
+	//
+	// gc therefore reaps only what this device can actually testify about.
+	// Every device runs its own gc and collectively they cover the bus.
+	localDevice := device.Existing()
+	isOtherDevice := func(a agentRow) bool {
+		return localDevice != "" && a.DeviceID != "" && a.DeviceID != localDevice
+	}
+
 	if *purgeAgents {
 		purged := 0
 		for _, a := range agents {
+			if isOtherDevice(a) {
+				continue // not this machine's to judge
+			}
 			// A paneless row (no socket) has no tmux session to be dead in, so
 			// liveness cannot condemn it — only its own departure (the
 			// SessionEnd hook, or an explicit deregister) makes it purgeable.
@@ -279,6 +302,9 @@ func cmdGC(args []string, out io.Writer) error {
 	} else {
 		tombstoned := 0
 		for _, a := range agents {
+			if isOtherDevice(a) {
+				continue // not this machine's to judge — see above
+			}
 			if a.SocketPath == "" {
 				continue // paneless: no tmux session to judge dead — lifecycle belongs to the SessionEnd hook
 			}

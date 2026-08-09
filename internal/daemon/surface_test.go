@@ -2,9 +2,11 @@ package daemon
 
 import (
 	"encoding/json"
+	"path/filepath"
 	"slices"
 	"testing"
 
+	"github.com/schuettc/muster/internal/mustertest"
 	"github.com/schuettc/muster/internal/proto"
 	"github.com/schuettc/muster/internal/store"
 )
@@ -345,4 +347,44 @@ func TestGetInboxUnreadSurvivesOwnMarkRead(t *testing.T) {
 	if second.Unread != 0 {
 		t.Fatalf("second get_inbox: unread = %d, want 0 (first call's MarkRead must have advanced the watermark)", second.Unread)
 	}
+}
+
+// newDaemonTestStore builds a bare *store.Store with no daemon listener
+// bound — this package has no shared "build me a store" helper (every
+// existing test inlines mustertest.ShortHome + store.Open), so this follows
+// that same inline pattern rather than introducing a second helper that
+// duplicates startWithNotifierAndStore's Serve-bound construction. Shared
+// across this file and wake_wiring_test.go (same package).
+func newDaemonTestStore(t *testing.T) *store.Store {
+	t.Helper()
+	dir, cleanup, err := mustertest.ShortHome()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(cleanup)
+	s, err := store.Open(filepath.Join(dir, "bus.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	return s
+}
+
+// TestNewDispatchesWithoutListener proves New builds a Daemon that can
+// Dispatch requests with no listener ever bound — the seam lambda mode
+// depends on to get a Dispatch target without a unix socket.
+func TestNewDispatchesWithoutListener(t *testing.T) {
+	s := newDaemonTestStore(t)
+	d := New(s, nil)
+	resp := d.Dispatch(proto.Request{Op: "list_agents"})
+	if !resp.OK {
+		t.Fatalf("list_agents via New+Dispatch: %s", resp.Error)
+	}
+}
+
+// TestStoreSatisfiesAPI pins *store.Store to store.API at compile time, so a
+// future addition to the daemon's store surface fails to build here first
+// instead of surfacing as a runtime interface assertion failure elsewhere.
+func TestStoreSatisfiesAPI(_ *testing.T) {
+	var _ store.API = (*store.Store)(nil)
 }

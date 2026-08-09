@@ -1,0 +1,587 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+# muster hosted backend — one DynamoDB table, one Lambda, one HTTP API.
+#
+# READ THIS FIRST: the API's $default route carries NO authorizer. That means
+# it is PUBLICLY REACHABLE by anyone on the internet who knows the hostname,
+# and the bearer token in MusterToken is the ONLY thing standing between them
+# and the whole bus — every message, and the ability to send as any agent.
+# This is deliberate (devices must work with no AWS credentials; DynamoDB has
+# no bearer-token auth, which is why the function tier exists at all), but it
+# puts the security burden on token entropy:
+#
+#   * The handler has NO lockout and no per-caller memory. Route throttling
+#     (ThrottleRateLimit below) is what bounds an online brute force in
+#     requests per second; entropy is what makes that bound sufficient.
+#   * Generate the token with `openssl rand -base64 32` — never by hand, never
+#     a passphrase. MinLength below is a floor, not a substitute.
+#   * Do NOT rely on the hostname being secret. An HTTP API endpoint is a
+#     10-character api-id, far less than a Function URL's 32-character
+#     subdomain; treat the URL as low-value obscurity rather than a second
+#     credential, and let the token carry the weight.
+#
+# WHY AN HTTP API AND NOT A LAMBDA FUNCTION URL. A Function URL is cheaper (no
+# per-request charge at all) and was the original design, but it authenticates
+# with AuthType NONE or SigV4 and nothing else. Two things follow. Some
+# AWS Organizations deny anonymous Function URL invocation by policy, which
+# fails as a 403 from the URL with NOTHING in the function's logs and no
+# indication the cause is a guardrail. More importantly, the documented next
+# step for this backend is OIDC, and an HTTP API takes a JWT authorizer as
+# configuration while a Function URL cannot take one at all. The API costs
+# about $1.00 per million requests — cents a month at one operator's poll
+# volume — and buys route throttling and access logs along the way.
+#
+# See docs/hosted-backend.md for the deploy procedure, the device setup, token
+# rotation, and the known limitations of this backend.
+
+Description: >-
+  muster hosted backend: DynamoDB table, Lambda function (provided.al2023,
+  arm64), a token-authenticated HTTP API, and a least-privilege execution
+  role. Self-hosted by one operator; not a multi-tenant service.
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label: { default: "Authentication (the only thing protecting the bus)" }
+        Parameters: [MusterToken, MusterTokenPrevious]
+      - Label: { default: "Function code" }
+        Parameters: [CodeS3Bucket, CodeS3Key, CodeS3ObjectVersion]
+      - Label: { default: "Tuning" }
+        Parameters:
+          [ReservedConcurrency, MemorySize, EventRetention, LogRetentionDays,
+           ThrottleRateLimit, ThrottleBurstLimit]
+
+Parameters:
+  MusterToken:
+    Type: String
+    NoEcho: true
+    MinLength: 32
+    MaxLength: 512
+    Description: >-
+      Shared bearer token every device presents. Generate with
+      `openssl rand -base64 32`. NoEcho keeps it out of stack events, the
+      console, and describe-stacks output. MinLength 32 rejects the obviously
+      weak values; it cannot rescue a low-entropy one that happens to be long.
+
+  MusterTokenPrevious:
+    Type: String
+    NoEcho: true
+    Default: ""
+    MaxLength: 512
+    Description: >-
+      Outgoing token, accepted alongside MusterToken during a rotation only.
+      Leave empty at all other times — every extra accepted token is another
+      live credential. See the rotation procedure in docs/hosted-backend.md.
+
+  CodeS3Bucket:
+    Type: String
+    MinLength: 3
+    Description: >-
+      S3 bucket holding muster-lambda-arm64.zip from the GitHub release. Must
+      be in the same region as this stack. CloudFormation cannot fetch code
+      over HTTPS, so the zip has to be staged in S3 first.
+
+  CodeS3Key:
+    Type: String
+    MinLength: 1
+    Description: >-
+      Object key of the zip — the release asset is named
+      muster-lambda-arm64-<tag>.zip, e.g. muster-lambda-arm64-v0.10.0.zip.
+      Required rather than defaulted, because CloudFormation only redeploys
+      code when the key or object version CHANGES: overwriting one fixed key
+      and re-running `deploy` leaves the OLD binary running with no error
+      anywhere. Keeping the version in the key makes upgrades correct by
+      default.
+
+  CodeS3ObjectVersion:
+    Type: String
+    Default: ""
+    Description: >-
+      Optional S3 object version, for a versioned bucket where you do want to
+      reuse one key. Setting this is the other way to make a same-key upgrade
+      actually take effect.
+
+  ReservedConcurrency:
+    Type: Number
+    Default: 10
+    MinValue: 0
+    MaxValue: 100
+    Description: >-
+      COST GUARD, not a correctness mechanism. It bounds the blast radius of a
+      bug that spins the poller or an attacker who finds the URL. Correctness
+      under concurrent writers comes from DynamoDB conditional writes and
+      transactions in the store, not from this number — do not lower it to 1
+      believing it serializes anything.
+      0 means "set no reservation at all" (the property is omitted), NOT "block
+      every invocation" — the escape hatch for an account whose regional
+      concurrency quota is too low to carve a reservation out of. Lambda
+      refuses any reservation that would drop the account's UNRESERVED
+      concurrency below 100, so on a fresh account with the default quota of 10
+      EVERY positive value here fails the deploy with "decreases account's
+      UnreservedConcurrentExecution below its minimum value of [100]". Deploy
+      with 0, raise the quota, then set it back — and keep an AWS Budgets alert
+      on either way, because 0 removes the cost bound entirely.
+
+  MemorySize:
+    Type: Number
+    Default: 256
+    MinValue: 128
+    MaxValue: 3008
+    Description: >-
+      Lambda memory in MB. Also scales CPU, so lowering it lengthens cold
+      starts more than it saves; duration lands inside the always-free tier at
+      this size for a personal bus.
+
+  EventRetention:
+    Type: String
+    Default: 720h
+    AllowedPattern: "^[0-9]+(\\.[0-9]+)?(ns|us|ms|s|m|h)$"
+    Description: >-
+      MUSTER_DDB_EVENT_RETENTION — a Go duration (720h = 30 days) after which
+      DynamoDB's native TTL reaps a journal event. TTL is the ONLY thing that
+      bounds the journal on this backend: `muster gc` / PruneEvents is a no-op
+      here. A value the store cannot parse fails the cold start deliberately,
+      rather than silently reverting to the default.
+
+  LogRetentionDays:
+    Type: Number
+    Default: 14
+    AllowedValues: [1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365, 400, 545, 731, 1096, 1827, 2192, 2557, 2922, 3288, 3653]
+    Description: >-
+      CloudWatch Logs retention, applied to both the function's log group and
+      the API's access log group. Lambda's default is never-expire, which
+      quietly accrues cost.
+
+  ThrottleRateLimit:
+    Type: Number
+    Default: 20
+    MinValue: 1
+    Description: >-
+      Sustained requests per second the API accepts, across all devices. This
+      is the only rate limit anywhere in the stack — the handler has none — so
+      it is what bounds an online guess at MusterToken. A device polls every
+      few seconds, so a handful of devices sit far below 20; raise it only if
+      you see 429s in the access log.
+
+  ThrottleBurstLimit:
+    Type: Number
+    Default: 40
+    MinValue: 1
+    Description: >-
+      Bucket depth for the limit above — how many requests may arrive at once
+      before throttling starts. Devices reconnecting together (a laptop waking,
+      a stack update) burst briefly, which is what this absorbs.
+
+  DomainName:
+    Type: String
+    Default: ""
+    Description: >-
+      OPTIONAL custom hostname for the bus, e.g. muster.example.com. Empty
+      (the default) uses the generated execute-api endpoint and creates no
+      certificate, domain, or DNS.
+      The reason to set this is not cosmetic: the generated endpoint contains
+      a random 10-character api-id, so DELETING AND RECREATING the stack hands
+      you a different URL and every device has to be reconfigured. A custom
+      domain is the only thing that makes MUSTER_REMOTE_URL survive that.
+
+  HostedZoneId:
+    Type: String
+    Default: ""
+    Description: >-
+      Route53 hosted zone containing DomainName. Required to have this stack
+      create the certificate, because ACM's DNS validation needs to publish a
+      record into the zone — WITHOUT it, CloudFormation sits in
+      CREATE_IN_PROGRESS until it times out hours later, which is the single
+      worst failure mode in this template. If your DNS lives elsewhere, leave
+      this empty, validate a certificate yourself, and pass CertificateArn.
+
+  CertificateArn:
+    Type: String
+    Default: ""
+    Description: >-
+      Existing ACM certificate for DomainName, when you do not want this stack
+      to create one. It must be in THIS stack's region — an HTTP API's custom
+      domain is a regional endpoint, so a us-east-1 certificate does not serve
+      a eu-west-1 API the way it would for CloudFront.
+
+Conditions:
+  HasCodeVersion: !Not [!Equals [!Ref CodeS3ObjectVersion, ""]]
+  HasPreviousToken: !Not [!Equals [!Ref MusterTokenPrevious, ""]]
+  # ReservedConcurrency 0 omits ReservedConcurrentExecutions rather than
+  # setting it to zero. A literal 0 would throttle the function to nothing —
+  # the opposite of the escape hatch this is — so the property has to
+  # disappear, which only a Condition can do.
+  HasReservedConcurrency: !Not [!Equals [!Ref ReservedConcurrency, 0]]
+  HasDomain: !Not [!Equals [!Ref DomainName, ""]]
+  HasHostedZone: !Not [!Equals [!Ref HostedZoneId, ""]]
+  # Create a certificate only when a zone is available to validate it through.
+  # Gating on the zone rather than on DomainName alone is what keeps the
+  # no-zone case a fast, legible failure ("CertificateArn required") instead
+  # of a stack wedged in CREATE_IN_PROGRESS waiting for a DNS record nothing
+  # is going to publish.
+  CreateCertificate: !And
+    - !Condition HasDomain
+    - !Condition HasHostedZone
+    - !Equals [!Ref CertificateArn, ""]
+  CreateDNSRecord: !And [!Condition HasDomain, !Condition HasHostedZone]
+
+Resources:
+  # Single-table design — threads, entries, agents, tasks, KV, events, id
+  # counters and idempotency records all live here, separated by partition-key
+  # prefix. Schema must match internal/dynamostore: pk (S) / sk (N), two
+  # all-projection GSIs on (gsi1pk, gsi1sk) and (gsi2pk, gsi2sk), TTL on `ttl`.
+  #
+  # Deleting this stack DELETES this table and every message on the bus. There
+  # is no backup and no export path.
+  MusterTable:
+    Type: AWS::DynamoDB::Table
+    # Both stated explicitly rather than left to the default, because they are
+    # different answers to different questions. Deleting the stack is something
+    # an operator does on purpose and is documented as destroying the bus, so
+    # Delete. A REPLACEMENT is something CloudFormation decides on its own when
+    # an immutable property changes, and silently discarding every message
+    # because a property was edited is not a defensible default — so Retain,
+    # leaving the old table orphaned and recoverable.
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: !Sub "${AWS::StackName}-bus"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - { AttributeName: pk, AttributeType: S }
+        - { AttributeName: sk, AttributeType: N }
+        - { AttributeName: gsi1pk, AttributeType: S }
+        - { AttributeName: gsi1sk, AttributeType: N }
+        - { AttributeName: gsi2pk, AttributeType: S }
+        - { AttributeName: gsi2sk, AttributeType: N }
+      KeySchema:
+        - { AttributeName: pk, KeyType: HASH }
+        - { AttributeName: sk, KeyType: RANGE }
+      GlobalSecondaryIndexes:
+        # gsi1 — "what is addressed to me": recipient partitions plus the
+        # agent roster. gsi2 — the global entry log device_poll reads, plus
+        # every thread's metadata item in id order.
+        - IndexName: gsi1
+          KeySchema:
+            - { AttributeName: gsi1pk, KeyType: HASH }
+            - { AttributeName: gsi1sk, KeyType: RANGE }
+          Projection: { ProjectionType: ALL }
+        - IndexName: gsi2
+          KeySchema:
+            - { AttributeName: gsi2pk, KeyType: HASH }
+            - { AttributeName: gsi2sk, KeyType: RANGE }
+          Projection: { ProjectionType: ALL }
+      # TTL is the ONLY thing that reaps journal events on this backend —
+      # PruneEvents is a no-op here — and dynamostore.EnsureTable re-checks it
+      # on EVERY cold start, not only on the one that created the table.
+      # Declaring it here means the table is correct from the moment it exists.
+      # Drop it and the function turns TTL on itself at the first cold start,
+      # which works only because the role below grants UpdateTimeToLive; that
+      # is a repair path, not the intended one.
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+
+  MusterLogGroup:
+    Type: AWS::Logs::LogGroup
+    # Logs are diagnostics, not state; nothing here is worth orphaning.
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${AWS::StackName}-bus"
+      RetentionInDays: !Ref LogRetentionDays
+
+  # Least privilege, and every action here is one internal/dynamostore
+  # actually calls.
+  MusterRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: logs
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # A log group's Arn attribute ALREADY ends in ":*", which is the
+              # wildcard covering the group's streams — so !GetAtt alone is the
+              # whole resource and nothing needs appending. (An extra ":*"
+              # would still match, since IAM wildcards cross colons; it is
+              # redundant rather than broken. Do not "fix" it back in.)
+              # CreateLogGroup is deliberately absent: the stack owns the
+              # group, so the function never needs to create one.
+              - Effect: Allow
+                Action: [logs:CreateLogStream, logs:PutLogEvents]
+                Resource: !GetAtt MusterLogGroup.Arn
+        - PolicyName: bus-table
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # Data plane. Note there is NO dynamodb:TransactWriteItems IAM
+              # action — a transaction is authorized through the underlying
+              # PutItem/UpdateItem/DeleteItem permissions, which is why they
+              # cover the store's transactional writes too. If a ConditionCheck
+              # is ever added to one of those transactions, this list needs
+              # dynamodb:ConditionCheckItem as well; nothing in the store uses
+              # one today.
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:BatchGetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:DeleteItem
+                  - dynamodb:Query
+                Resource:
+                  - !GetAtt MusterTable.Arn
+                  - !Sub "${MusterTable.Arn}/index/*"
+              # Control plane, and the part that is easy to get wrong.
+              #
+              # DescribeTimeToLive is a DISTINCT IAM action from DescribeTable
+              # — granting the latter does NOT imply the former. EnsureTable
+              # calls both on every Open, so a role missing DescribeTimeToLive
+              # fails EVERY LAMBDA COLD START, with an error phrased as a TTL
+              # problem rather than a policy one. Whoever debugs that will lose
+              # an afternoon to the wrong subsystem.
+              #
+              # UpdateTimeToLive is not exercised by a stack-created table
+              # (TTL is already on, so ensureTTL describes and returns), but it
+              # is what lets the function heal a table whose TTL got turned off
+              # out of band instead of crash-looping. Neither action is
+              # scopable below the table.
+              - Effect: Allow
+                Action:
+                  - dynamodb:DescribeTable
+                  - dynamodb:DescribeTimeToLive
+                  - dynamodb:UpdateTimeToLive
+                Resource: !GetAtt MusterTable.Arn
+              # Deliberately absent: CreateTable, DeleteTable, Scan. The stack
+              # owns the table's lifecycle, so EnsureTable's create branch must
+              # never run here, and the store queries — it never scans.
+
+  MusterFunction:
+    Type: AWS::Lambda::Function
+    # The role's inline policies must exist before the function can use them,
+    # and the log group before the function writes to it. CloudFormation infers
+    # the role edge from !GetAtt but not the log group.
+    DependsOn: MusterLogGroup
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-bus"
+      Description: muster coordination bus — daemon.Dispatch over DynamoDB
+      # provided.al2023 execs the binary named `bootstrap` inside the zip with
+      # NO arguments, which is why cmd/muster routes to lambda mode when
+      # AWS_LAMBDA_FUNCTION_NAME is set and no subcommand was given.
+      Runtime: provided.al2023
+      Handler: bootstrap
+      Architectures: [arm64]
+      Role: !GetAtt MusterRole.Arn
+      MemorySize: !Ref MemorySize
+      Timeout: 30
+      # Omitted entirely when the parameter is 0 — see HasReservedConcurrency.
+      # Set unconditionally this would make a first deploy unescapable on an
+      # account whose regional concurrency quota is below 100+the reservation.
+      ReservedConcurrentExecutions: !If [HasReservedConcurrency, !Ref ReservedConcurrency, !Ref "AWS::NoValue"]
+      Code:
+        S3Bucket: !Ref CodeS3Bucket
+        S3Key: !Ref CodeS3Key
+        S3ObjectVersion: !If [HasCodeVersion, !Ref CodeS3ObjectVersion, !Ref "AWS::NoValue"]
+      Environment:
+        Variables:
+          MUSTER_DDB_TABLE: !Ref MusterTable
+          MUSTER_DDB_EVENT_RETENTION: !Ref EventRetention
+          MUSTER_TOKEN: !Ref MusterToken
+          # Omitted entirely when empty: the handler treats an unset previous
+          # token as "no rotation in progress", and an empty string would be
+          # indistinguishable anyway.
+          MUSTER_TOKEN_PREVIOUS: !If [HasPreviousToken, !Ref MusterTokenPrevious, !Ref "AWS::NoValue"]
+
+  # The HTTP API. No authorizer — the function authenticates the bearer token
+  # itself, before it touches DynamoDB (see the header). This is the resource
+  # a JWT authorizer attaches to when this backend moves to OIDC.
+  MusterApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: !Sub "${AWS::StackName}-bus"
+      Description: muster coordination bus — token-authenticated HTTP front door
+      ProtocolType: HTTP
+      # No CorsConfiguration on purpose. Every client is a Go process, so no
+      # browser ever preflights this; adding permissive CORS would only make
+      # the endpoint reachable from any web page the operator visits.
+
+  # AWS_PROXY hands the raw request to the function. PayloadFormatVersion 2.0
+  # is what makes the event an APIGatewayV2HTTPRequest — internal/lambdamode
+  # is written against exactly that shape, and 1.0 would deliver a different
+  # one (multiValueHeaders, no rawPath) that the handler does not parse.
+  #
+  # TimeoutInMillis exceeds the function's 30s timeout so the function is
+  # always the thing that times out. Inverted, the API would return 504 while
+  # the invocation kept running — the client retries a write it cannot see the
+  # result of, which is precisely the case idempotency keys exist to survive,
+  # but there is no reason to manufacture it.
+  MusterIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref MusterApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt MusterFunction.Arn
+      PayloadFormatVersion: "2.0"
+      TimeoutInMillis: 30000
+
+  # $default catches every method and path. The protocol lives entirely in the
+  # POST body — proto.Request carries the op — so routing by path would add a
+  # second, redundant description of the same thing.
+  MusterRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref MusterApi
+      RouteKey: $default
+      Target: !Sub "integrations/${MusterIntegration}"
+
+  # Access logs. These exist because of a specific failure mode: when a request
+  # is rejected BEFORE the integration runs — throttled, or blocked by an
+  # Organization policy — the function's own log group stays empty and there is
+  # nothing anywhere to explain the 4xx. This group is the only place that
+  # failure is visible.
+  MusterApiLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub "/aws/apigateway/${AWS::StackName}-bus"
+      RetentionInDays: !Ref LogRetentionDays
+
+  # StageName $default is what removes the stage prefix from the URL, so the
+  # endpoint devices use is the bare ApiEndpoint with no path to remember.
+  # AutoDeploy publishes route changes without a separate Deployment resource.
+  MusterStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref MusterApi
+      StageName: $default
+      AutoDeploy: true
+      AccessLogSettings:
+        DestinationArn: !GetAtt MusterApiLogGroup.Arn
+        # Deliberately NOT logging $context.identity.sourceIp alone as the
+        # whole story: integrationErrorMessage and integrationStatus are what
+        # separate "the function returned 401" from "the request never got
+        # there". The Authorization header is never logged, and must not be.
+        Format: >-
+          {"requestId":"$context.requestId","ip":"$context.identity.sourceIp","requestTime":"$context.requestTime","routeKey":"$context.routeKey","status":"$context.status","integrationStatus":"$context.integrationStatus","integrationErrorMessage":"$context.integrationErrorMessage","responseLatency":"$context.responseLatency"}
+      DefaultRouteSettings:
+        ThrottlingRateLimit: !Ref ThrottleRateLimit
+        ThrottlingBurstLimit: !Ref ThrottleBurstLimit
+        # DetailedMetricsEnabled left off: per-route CloudWatch metrics are a
+        # paid dimension, and the access log above answers the same questions
+        # for a bus this size.
+
+  # --- Optional custom domain -------------------------------------------
+  # All four resources vanish when DomainName is empty, which is the default.
+  # Their only purpose is to give MUSTER_REMOTE_URL a value that outlives this
+  # stack: the generated execute-api hostname is derived from the API's id, so
+  # it changes if the stack is ever recreated and every device breaks at once.
+
+  # DNS-validated, because an email-validated certificate needs a human to
+  # click a link in a mailbox tied to the domain — which cannot be automated
+  # and would stall the deploy indefinitely.
+  MusterCertificate:
+    Condition: CreateCertificate
+    Type: AWS::CertificateManager::Certificate
+    Properties:
+      DomainName: !Ref DomainName
+      ValidationMethod: DNS
+      # Naming the zone is what lets CloudFormation publish the validation
+      # record itself. Omit it and the stack waits for a record no one is
+      # going to create.
+      DomainValidationOptions:
+        - DomainName: !Ref DomainName
+          HostedZoneId: !Ref HostedZoneId
+
+  MusterDomainName:
+    Condition: HasDomain
+    Type: AWS::ApiGatewayV2::DomainName
+    Properties:
+      DomainName: !Ref DomainName
+      DomainNameConfigurations:
+        - CertificateArn: !If [CreateCertificate, !Ref MusterCertificate, !Ref CertificateArn]
+          EndpointType: REGIONAL
+          # TLS 1.0 is still API Gateway's default for custom domains. Every
+          # client here is a Go process on a current runtime, so there is no
+          # legacy client to accommodate and no reason to accept it.
+          SecurityPolicy: TLS_1_2
+
+  # Maps the domain's root path to this API's stage. Without it the domain
+  # resolves and serves TLS but answers 404 to everything — a failure that
+  # reads like a routing bug in muster rather than a missing mapping.
+  MusterApiMapping:
+    Condition: HasDomain
+    Type: AWS::ApiGatewayV2::ApiMapping
+    Properties:
+      ApiId: !Ref MusterApi
+      DomainName: !Ref MusterDomainName
+      Stage: !Ref MusterStage
+
+  # An ALIAS record, not CNAME: alias targets resolve at the zone apex (where
+  # CNAME is illegal) and cost nothing to query.
+  MusterDNSRecord:
+    Condition: CreateDNSRecord
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Ref DomainName
+      Type: A
+      AliasTarget:
+        DNSName: !GetAtt MusterDomainName.RegionalDomainName
+        HostedZoneId: !GetAtt MusterDomainName.RegionalHostedZoneId
+
+  # Without this the API returns 500 on every request and the function is never
+  # invoked, so its log group stays empty — a failure that reads like broken
+  # code but is a missing permission. SourceArn pins the grant to this API:
+  # a bare Principal with no source lets ANY API Gateway in the account invoke
+  # the function.
+  MusterApiPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt MusterFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${MusterApi}/*/*"
+
+Outputs:
+  MusterUrl:
+    Description: >-
+      Set this as MUSTER_REMOTE_URL on every device. The endpoint is publicly
+      reachable and the bearer token is what protects it. This is the custom
+      domain when one is configured — devices should point at that rather than
+      the generated hostname, since only the custom domain survives the stack
+      being recreated.
+    Value: !If [HasDomain, !Sub "https://${DomainName}", !GetAtt MusterApi.ApiEndpoint]
+  GeneratedApiEndpoint:
+    Description: >-
+      The execute-api hostname, which keeps working alongside a custom domain.
+      Useful for telling a DNS or certificate problem apart from a muster one:
+      if this answers and the custom domain does not, the bus is fine.
+    Value: !GetAtt MusterApi.ApiEndpoint
+  CustomDomainTarget:
+    Condition: HasDomain
+    Description: >-
+      The regional hostname the custom domain must point at. Only needed when
+      HostedZoneId was left empty and you are creating the DNS record yourself.
+    Value: !GetAtt MusterDomainName.RegionalDomainName
+  TableName:
+    Description: DynamoDB table backing the bus.
+    Value: !Ref MusterTable
+  FunctionName:
+    Description: Lambda function name, for `aws lambda update-function-code` and log tailing.
+    Value: !Ref MusterFunction
+  LogGroupName:
+    Description: CloudWatch log group — where cold-start and dispatch diagnostics land.
+    Value: !Ref MusterLogGroup
+  ApiAccessLogGroupName:
+    Description: >-
+      CloudWatch log group for API access logs — the only place a request
+      rejected before the function runs (throttled, blocked by policy) appears.
+    Value: !Ref MusterApiLogGroup
