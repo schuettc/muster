@@ -12,17 +12,18 @@ import (
 // newBecomeFlagsWithVals declares become's flags and returns typed access to
 // their values — shared by cmdBecome (real parsing) and newBecomeFlags
 // (registry help/man rendering).
-func newBecomeFlagsWithVals() (fs *flag.FlagSet, from *string) {
+func newBecomeFlagsWithVals() (fs *flag.FlagSet, from *string, noInject *bool) {
 	fs = flag.NewFlagSet("become", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	from = fs.String("from", "", "the alias to claim from, required when this session has more than one live alias")
-	return fs, from
+	noInject = fs.Bool("no-inject", false, "skip typing /rename into the live agent pane (for callers whose name ALREADY came from the harness side, e.g. the statusline promoting a /rename)")
+	return fs, from, noInject
 }
 
 // newBecomeFlags builds become's flag.FlagSet for registry-driven help/man
 // rendering.
 func newBecomeFlags() *flag.FlagSet {
-	fs, _ := newBecomeFlagsWithVals()
+	fs, _, _ := newBecomeFlagsWithVals()
 	return fs
 }
 
@@ -33,8 +34,8 @@ func newBecomeFlags() *flag.FlagSet {
 // alias; a split identity (more than one) requires --from so the claim never
 // guesses which one is being renamed.
 func cmdBecome(args []string, out io.Writer) error {
-	fs, from := newBecomeFlagsWithVals()
-	flagArgs, rest := splitFlagsAndPositional(args, map[string]bool{})
+	fs, from, noInject := newBecomeFlagsWithVals()
+	flagArgs, rest := splitFlagsAndPositional(args, map[string]bool{"no-inject": true})
 	if err := fs.Parse(flagArgs); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return HelpFor("become", out)
@@ -80,6 +81,16 @@ func cmdBecome(args []string, out io.Writer) error {
 	}
 	if err := json.Unmarshal(raw, &res); err != nil {
 		return err
+	}
+	// The claim landed, and the cloned row keeps the seed's pane and model —
+	// so the harness session name follows in the SAME gesture (syncAgentName,
+	// shared with label): prefix-T delegates its whole rename here, and the
+	// injected name is the full claimed alias (e.g. <project>/<work>).
+	// --no-inject is for names that already came from the harness side (the
+	// statusline promoting a /rename the agent itself typed) — re-injecting
+	// would loop the same text back into the pane.
+	if !*noInject {
+		syncAgentName(out, to, c.SocketPath, c.SessionID)
 	}
 	_, err = fmt.Fprintf(out, "you are now '%s' (was '%s') — %d unread thread(s)\n", to, fromAlias, res.Unread)
 	return err
