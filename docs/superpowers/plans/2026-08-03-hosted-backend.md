@@ -32,6 +32,29 @@ use net/http and a bearer token, with no AWS dependency whatsoever.
   recipe that requires the container.
 - **Local mode must be byte-for-byte unchanged.** No AWS package may be imported
   on a code path reachable from `MUSTER_BACKEND=local`. Default is `local`.
+- **The AWS SDK ships only in the Lambda artifact.** `internal/lambdamode` and
+  `internal/dynamostore` are reachable **only** under the `lambda` build tag.
+  The default binary — the one every device runs, in local *and* remote mode —
+  must contain no AWS code at all.
+
+  **The real invariant is `go list -deps ./cmd/muster | grep aws` printing
+  nothing**, not a byte count. An earlier version of this constraint demanded
+  the untagged binary stay within a few hundred KB of the 17,075,090-byte
+  baseline; that was wrong and was corrected at Task 13. `internal/remote` puts
+  `net/http` and `crypto/tls` in the default graph — about +2.8MB, landing near
+  19.9MB — and that is unavoidable: one binary serves both local and remote mode
+  selected by an environment variable, so every device carries an HTTPS client
+  whether or not it uses one. Build-tagging `internal/remote` would shrink it,
+  at the cost of making remote mode a different binary, which defeats the
+  single-artifact design.
+
+  A jump toward 28MB, on the other hand, still means an AWS import leaked in —
+  the SDK is roughly 8MB on top of TLS. Check the dependency graph rather than
+  the size when this trips.
+
+  This works because remote mode authenticates with a bearer token over plain
+  HTTP (see Task 12), so a device using the hosted backend needs no AWS SDK
+  either. The only artifact that carries it is the Lambda zip.
 - **One canonical module per concern.** Identity capture stays in
   `internal/tmuxenv`. Do not fork it.
 - **Knobs, not constants.** Operator-tunable defaults over hardcoded numbers.
@@ -70,8 +93,14 @@ use net/http and a bearer token, with no AWS dependency whatsoever.
 - `internal/proto/proto.go` — `Request.IdemKey`.
 - `internal/store/` — `Agent.DeviceID`, schema + migration, `idem` table,
   `DevicePoll`.
-- `cmd/muster/main.go` — backend selection, `lambda` mode.
-- `justfile` — `verify-dynamo`.
+- `cmd/muster/main.go` — backend selection, and a `runLambda()` call whose two
+  implementations are selected by build tag.
+- `cmd/muster/lambda_on.go` (`//go:build lambda`) — imports `internal/lambdamode`
+  and calls `lambdamode.Run()`. This is the *only* file in `cmd/muster` that may
+  reference an AWS-dependent package.
+- `cmd/muster/lambda_off.go` (`//go:build !lambda`) — a stub returning a clear
+  error. Imports nothing AWS.
+- `justfile` — `verify-dynamo`, and a tagged variant in `cross`.
 - `.github/workflows/` — the dynamo CI job and the Lambda release artifact.
 
 ---
@@ -589,10 +618,21 @@ go get github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue@latest
 go mod tidy
 ```
 
-- [ ] **Step 2: Confirm cgo-free still holds**
+- [ ] **Step 2: Confirm cgo-free still holds, and that the SDK stays out of the binary**
 
-Run: `just cross`
-Expected: PASS. If any AWS package pulls in cgo, stop and report — that is a
+```bash
+CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build ./...   # compiles dynamostore itself
+just cross                                              # the shipped binary
+go list -deps ./cmd/muster | grep aws                   # must print NOTHING
+```
+
+`just cross` alone is not sufficient here: nothing imports `dynamostore` yet, so
+the compiler would skip it entirely and the cgo question would go unasked.
+`go build ./...` is what actually compiles it.
+
+The `go list` check is the constraint from Global Constraints — the default
+binary carries no AWS code. It must print nothing at every task from here on,
+not just this one. If any AWS package pulls in cgo, stop and report: that is a
 blocking constraint violation, not something to work around.
 
 - [ ] **Step 3: Write the failing test**
@@ -1023,7 +1063,16 @@ Read the thread metadata to get its recipient before writing.
 `GetThread` is one query on `pkThread(id)`, splitting SK `0` (metadata) from the
 rest (entries, already in id order).
 
-`Inbox` queries GSI1 for the three address forms that can reach the alias —
+**CORRECTION (found during Task 6 implementation): this said "three address
+forms" and was WRONG.** `threadConcerns` in `internal/store/threads.go` has
+**four** arms — addressed to the alias, to its role, broadcast, **or originated
+by the alias** (`threads.from_agent = ?`). Its doc comment records why: "the
+surfaces diverging is exactly how replies to originated threads once went
+invisible." Implementing three arms would have re-introduced originator
+blindness on the hosted backend only. Any surface answering "does this thread
+concern alias X" needs all four.
+
+`Inbox` queries GSI1 for the address forms that can reach the alias —
 `RCPT#agent#<alias>`, `RCPT#role#<role>` for the agent's role, and
 `RCPT#broadcast` — collects distinct thread ids, and loads their metadata.
 
@@ -1401,7 +1450,44 @@ func TestDynamoConformance(t *testing.T) {
 }
 ```
 
-- [ ] **Step 3: Run both**
+- [ ] **Step 3: Add the DynamoDB CI job — MOVED HERE FROM TASK 15**
+
+**Why this moved:** Task 8's review found that `ci.yml` runs only `just verify`,
+which excludes `verify-dynamo`, so **no DynamoDB test has ever run in CI**. By
+Task 8 that was already 18 endpoint-backed tests with zero automated coverage,
+including the exactly-one concurrency proof for the idempotency contract Task 10
+builds on. Leaving this until Task 15 means five more tasks land hand-verified
+only. It belongs with the conformance suite regardless.
+
+Add to `.github/workflows/ci.yml`, as a job **separate** from the `just verify`
+gate:
+
+```yaml
+  dynamo:
+    runs-on: ubuntu-latest
+    services:
+      dynamodb:
+        image: amazon/dynamodb-local
+        ports: ['8000:8000']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version-file: go.mod }
+      - run: MUSTER_DDB_ENDPOINT=http://localhost:8000 go test -race ./internal/dynamostore/... ./internal/storetest/...
+```
+
+`just verify` stays the required gate and stays container-free. This job is
+additional coverage, not a replacement.
+
+Also restore `./internal/storetest/...` to the `verify-dynamo` recipe in the
+`justfile` — Task 4 scoped it to `dynamostore` only because `storetest` did not
+exist yet, and this task creates it.
+
+And fix the stale claim in `internal/dynamostore/store_test.go`: its doc comment
+says CI runs these against a DynamoDB Local service container, which was untrue
+from Task 4 until this step. Make it true, or make it say what is.
+
+- [ ] **Step 4: Run both**
 
 Run: `just verify` — SQLite conformance passes, Dynamo skips.
 Run: `just verify-dynamo` — both pass.
@@ -1409,10 +1495,10 @@ Run: `just verify-dynamo` — both pass.
 Any divergence is a **DynamoDB bug**, not a reason to weaken the test. The
 SQLite implementation is the specification.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
-git add internal/storetest/ internal/dynamostore/ internal/store/
+git add internal/storetest/ internal/dynamostore/ internal/store/ .github/ justfile
 git commit -m "test: backend conformance suite over store.API
 
 One behavioral suite run against both backends so they cannot drift. The
@@ -1819,9 +1905,10 @@ retry policy can distinguish it.
 Run: `go test ./internal/lambdamode/ -race -v`
 Expected: PASS.
 
-- [ ] **Step 6: Wire the mode into `cmd/muster/main.go`**
+- [ ] **Step 6: Wire the mode into `cmd/muster` behind the build tag**
 
-Add to the `switch os.Args[1]` block, alongside `serve`/`mcp`/`debug`:
+`main.go` gets the routing case and calls an indirection — it must **not**
+import `lambdamode`, or the AWS SDK lands in every binary:
 
 ```go
 	case "lambda":
@@ -1829,7 +1916,44 @@ Add to the `switch os.Args[1]` block, alongside `serve`/`mcp`/`debug`:
 			_ = humancli.HelpFor("lambda", os.Stdout)
 			return
 		}
-		os.Exit(lambdamode.Run())
+		os.Exit(runLambda())
+```
+
+`cmd/muster/lambda_on.go`:
+
+```go
+//go:build lambda
+
+package main
+
+import "github.com/schuettc/muster/internal/lambdamode"
+
+// runLambda serves the AWS Lambda runtime. Built only under the `lambda` tag:
+// it is the sole path that pulls the AWS SDK in, and the default binary that
+// every device runs must not carry it.
+func runLambda() int { return lambdamode.Run() }
+```
+
+`cmd/muster/lambda_off.go`:
+
+```go
+//go:build !lambda
+
+package main
+
+import (
+	"fmt"
+	"os"
+)
+
+// runLambda reports that this binary was built without lambda mode. The AWS
+// SDK ships only in the Lambda release artifact (built with `-tags lambda`),
+// so the default binary omits it entirely — see the plan's Global Constraints.
+func runLambda() int {
+	fmt.Fprintln(os.Stderr, "muster: this binary was built without lambda mode "+
+		"(rebuild with -tags lambda; the released muster-lambda-*.zip already has it)")
+	return 2
+}
 ```
 
 Add the corresponding `humancli` help entry so `muster lambda --help` works and
@@ -1837,15 +1961,35 @@ usage stays canonical — the file comment in `main.go` warns that a second
 subcommand list once shipped a release whose usage advertised a command `main()`
 refused to route.
 
-- [ ] **Step 7: Run the full gate**
+- [ ] **Step 7: Add the tagged build to `just cross`**
 
-Run: `just verify`
-Expected: PASS, including `cross`.
+The tagged configuration must compile in CI or it will rot silently. Append to
+the `cross` recipe, after the existing loop:
 
-- [ ] **Step 8: Commit**
+```make
+    CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -tags lambda -ldflags "{{ ldflags }}" -o /dev/null ./cmd/muster
+```
+
+- [ ] **Step 8: Verify the default binary stayed small**
 
 ```bash
-git add internal/lambdamode/ cmd/muster/ internal/humancli/ go.mod go.sum
+just build && stat -f %z bin/muster    # macOS; use `stat -c %s` on Linux
+```
+
+Expected: within a few hundred KB of the 17,075,090-byte baseline in Global
+Constraints. A jump toward 25MB means an AWS import leaked into the untagged
+build — find it with `go list -deps ./cmd/muster | grep aws` (which must print
+nothing) rather than accepting the size.
+
+- [ ] **Step 9: Run the full gate**
+
+Run: `just verify`
+Expected: PASS, including both `cross` configurations.
+
+- [ ] **Step 10: Commit**
+
+```bash
+git add internal/lambdamode/ cmd/muster/ internal/humancli/ justfile go.mod go.sum
 git commit -m "feat(lambda): Function URL adapter over daemon.Dispatch
 
 The Lambda is a transport adapter, not a second implementation: body in,
@@ -2390,15 +2534,49 @@ Register both in the `cases` slice from Task 9.
 Run: `just verify-dynamo`
 Expected: FAIL — `DevicePoll` undefined.
 
+- [ ] **Step 2b: REQUIRED — give `SessionUnread` a device dimension**
+
+**Added at Task 13, whose review found this. It is a blocker for the two-device
+milestone, which is the entire point of this feature.**
+
+`(socket_path, session_id)` is **not** device-unique in a shared store. Two macOS
+laptops both use `/private/tmp/tmux-501/default` (501 is the default first-user
+uid) and both can have a session `$1`. `session_unread` has no device dimension
+in either backend (`internal/store/agents.go:237-249`,
+`internal/dynamostore/threads.go:853-878`), so its self-exclusion —
+`e.from_agent NOT IN (SELECT alias FROM sess)` — treats a **remote** device's
+alias as a sibling of the local session and drops the entry.
+
+Failure: device A runs `backend`, device B runs `frontend`, both on the colliding
+tuple. `frontend` messages `backend`. A's unread query excludes the entry as
+"one of my own session's writes", so **A's badge never lights**. A missed wake,
+in exactly the two-device scenario the hosted backend exists to serve.
+
+Add the device dimension to `SessionUnread` across `store.API`, both backends,
+and the conformance suite. Task 13 already fixed the alias half of this
+(`liveAliasesFor` now filters by `DeviceID`); this is the unread half.
+
+Note the root cause was a wrong belief, not a typo: a comment asserted the tuple
+was "device-scoped by construction", which is true of the local mutex and false
+of session identity upstream. Check any other code resting on that assumption.
+
 - [ ] **Step 3: Implement `DevicePoll` on both backends**
 
 The server holds both the roster and the entries, so it does the filtering: find
-entries with id greater than `sinceEntryID`, resolve which of them address an
+entries with id greater than `sinceEntryID`, resolve which of them concern an
 agent whose `DeviceID` matches, and return the distinct
 `(SocketPath, SessionID)` pairs plus the new max entry id. On DynamoDB this
 reads GSI2 partition `ENTRIES` with a sort-key lower bound. On SQLite it is a
 join. Entries authored by an agent on the polling device still count — the
 reconcile is idempotent and special-casing them adds a bug surface for nothing.
+
+**"Concern" here means the full four-arm `threadConcerns` predicate, not just
+the recipient.** An entry on a thread the local agent *originated* must wake
+that agent, exactly as it lands in their inbox. Reusing the same predicate
+Task 6 implemented for `Inbox`/`UnreadCount` is mandatory, not a convenience:
+if the poller and the inbox disagree, a peer's reply appears in `muster inbox`
+but never lights the pane — silently, and only on the hosted backend. Do not
+re-derive the predicate here; call into whatever Task 6 made canonical.
 
 - [ ] **Step 4: Add the dispatch case**
 
@@ -2573,8 +2751,25 @@ Lambda function (runtime `provided.al2023`, architecture `arm64`, handler
 the Function URL with `AuthType: NONE`; and the execution role granting only the
 table actions the store uses.
 
+**The role MUST grant `dynamodb:DescribeTimeToLive` and
+`dynamodb:UpdateTimeToLive`, not only the data-plane actions.** Task 8's fix
+made `EnsureTable` verify TTL on every `Open`, including for a table that
+already exists, because `PruneEvents` is a no-op on this backend and its
+correctness depends on TTL actually being enabled. Without these two actions the
+hosted bus fails at **every Lambda cold start**, with an error that reads like a
+TTL problem rather than a policy one. `DescribeTimeToLive` is a distinct IAM
+action from the `DescribeTable` the code already needed — granting the latter
+does not imply the former.
+
 The bearer token is a stack **`Parameter` with `NoEcho: true`**, so it does not
 appear in stack events, the console, or `describe-stacks` output.
+
+**Token entropy is load-bearing and there is no second line of defence.** Task
+11's review confirmed the handler has no rate limiting or lockout — correct for
+v1, but it means an online brute force is bounded *only* by how much entropy the
+operator's token carries. The docs must instruct `openssl rand -base64 32` (or
+equivalent), and the template should reject obviously-weak values via a
+`MinLength` constraint rather than trusting the instruction to be followed.
 `MUSTER_TOKEN_PREVIOUS` is a second parameter defaulting to empty, used only
 during rotation.
 
@@ -2604,10 +2799,15 @@ the Lambda bundle from the linux/arm64 binary:
 ```yaml
       - name: Build Lambda bundle
         run: |
-          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build \
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -tags lambda \
             -ldflags "$LDFLAGS" -o bootstrap ./cmd/muster
           zip -j muster-lambda-arm64.zip bootstrap
 ```
+
+The `-tags lambda` is not optional: without it the zip contains a binary whose
+`runLambda` is the stub, and the function would fail at runtime with "built
+without lambda mode". The released device binaries are built **without** the
+tag, which is what keeps the AWS SDK out of them.
 
 Attach `muster-lambda-arm64.zip` to the release alongside the existing binaries
 and checksums, and include it in the checksum file.

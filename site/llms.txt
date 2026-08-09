@@ -30,6 +30,7 @@ was built over:
 
 - [muster.tools](https://muster.tools/): landing page — the pitch, the message-flow walkthrough, and the MCP tool groups.
 - [muster.tools/docs/](https://muster.tools/docs/): full reference — every CLI command with its flags, the tmux mailbox, session hooks, and the three ways an agent notices mail.
+- [muster.tools/hosted/](https://muster.tools/hosted/): the optional hosted backend — deploying one bus across several machines into your own AWS account, device naming, the security model, and cost.
 - [github.com/schuettc/muster](https://github.com/schuettc/muster): source repository.
 - [README.md](https://raw.githubusercontent.com/schuettc/muster/main/README.md): project README, raw Markdown.
 - [install.sh](https://muster.tools/install.sh): shell installer for the prebuilt binary.
@@ -61,6 +62,30 @@ Plumbing:
 - `mcp` — run the MCP stdio server for coding-agent tool use.
 - `hook` — session-lifecycle hook entry point for agent harness configs.
 - `debug` — send a raw op to the daemon (dev tool).
+
+## Hosted backend (optional)
+
+By default muster's state is a SQLite file one daemon owns on one machine, so
+agents on two machines are on two unrelated buses. An optional hosted backend
+puts that state in the operator's OWN AWS account — one DynamoDB table, one
+Lambda running the same dispatch code the unix socket serves, and an HTTP API
+in front of it — so one roster spans devices. It is opt-in; the local path is
+unchanged and the AWS SDK is not compiled into the device binary.
+
+Devices authenticate with a shared bearer token over plain HTTPS and need no
+AWS credentials, profile, region, or SDK. That is why a function tier exists
+rather than devices talking to DynamoDB directly: DynamoDB authenticates with
+SigV4 and has no bearer-token equivalent.
+
+- Deploy with `muster-deploy --region <region>` (a separate download:
+  `install.sh --with-deploy`), optionally `--domain`/`--hosted-zone` for a
+  stable hostname that survives the stack being recreated.
+- Join another machine with `muster-deploy -join`, which prints the exports,
+  the token, and a fingerprint for verifying the copy.
+- `muster device <name>` names a machine, which makes the roster legible
+  ("the ci-cd session on my work laptop") and stops two machines with the same
+  repos checked out from claiming the same alias.
+- Deleting the stack deletes the table and every message on the bus.
 
 ## Setup
 

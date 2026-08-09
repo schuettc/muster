@@ -69,6 +69,15 @@ address you by a name that means something.
   --no-inject` on a rename as a companion gesture (expected, not yet
   shipped).
 - **proj:label** — cross projects explicitly: `send to "timewalk:frontend"`.
+- **device_name is not an address** — it is how you find the right row when
+  the human names a machine. On a bus spanning devices, `list_agents` rows
+  carry `device_name` ("work-laptop", "desktop"). Asked to *"message the ci-cd
+  session on my work laptop"*, match `device_name` to the machine and the
+  alias or label to the rest, then **send to that row's alias** — there is no
+  `device:alias` syntax and adding one to a target string will not resolve.
+  When two rows match equally well, say which alias you picked rather than
+  guessing silently; mail to the wrong machine is invisible to both sides.
+  The field is empty on a single-machine bus, where it carries no information.
 - Handoff documents (plans, progress notes, anything meant to outlive this
   conversation) must reference **aliases**, not labels — a label drifts with
   whatever the session is currently working on, so a label written down today

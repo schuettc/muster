@@ -128,8 +128,12 @@ func TestVersionExitsZero(t *testing.T) {
 	}
 }
 
-func TestServeMcpDebugHelpExitZero(t *testing.T) {
-	for _, name := range []string{"serve", "mcp", "debug"} {
+// TestMainOwnedCommandHelpExitsZero covers the commands main() routes itself
+// rather than through humancli.Dispatch. They are also the ones whose help
+// text can silently go missing, since Dispatch never sees them — a Registry
+// row is the only thing that gives them a banner.
+func TestMainOwnedCommandHelpExitsZero(t *testing.T) {
+	for _, name := range []string{"serve", "mcp", "lambda", "debug"} {
 		for _, flag := range []string{"-h", "--help"} {
 			out, _, code := run(t, name, flag)
 			if code != 0 {
@@ -139,6 +143,125 @@ func TestServeMcpDebugHelpExitZero(t *testing.T) {
 				t.Errorf("%s %s: stdout missing command help banner:\n%s", name, flag, out)
 			}
 		}
+	}
+}
+
+// TestLambdaWithoutBuildTagExplainsItself pins the untagged half of the build
+// -tag indirection (lambda_off.go). `muster lambda` is advertised in usage on
+// every build, so on the binary devices actually run it has to say why it
+// can't serve — not fall through to "unknown command", and not link the AWS
+// SDK to answer. This test binary is built untagged, so it exercises exactly
+// that path.
+func TestLambdaWithoutBuildTagExplainsItself(t *testing.T) {
+	_, errOut, code := run(t, "lambda")
+	if code != 2 {
+		t.Errorf("exit code = %d, want 2", code)
+	}
+	if !strings.Contains(errOut, "-tags lambda") {
+		t.Errorf("stderr = %q, want it to name the -tags lambda rebuild", errOut)
+	}
+}
+
+// runEnv is run with extra environment variables, for the backend-selection
+// tests below. Each entry is "KEY=value".
+func runEnv(t *testing.T, env []string, args ...string) (stdout, stderr string, code int) {
+	t.Helper()
+	cmd := exec.Command(builtBinary(t), args...)
+	cmd.Env = append(os.Environ(), env...)
+	var outBuf, errBuf bytes.Buffer
+	cmd.Stdout = &outBuf
+	cmd.Stderr = &errBuf
+	err := cmd.Run()
+	if err != nil {
+		exitErr, ok := err.(*exec.ExitError)
+		if !ok {
+			t.Fatalf("running %v: %v", args, err)
+		}
+		code = exitErr.ExitCode()
+	}
+	return outBuf.String(), errBuf.String(), code
+}
+
+// TestUnknownBackendIsAnErrorNotAFallback: a typo in MUSTER_BACKEND must stop
+// the daemon. Falling back to local would strand the device on a private bus
+// while every other device talked to the hosted one, and nothing would say so.
+func TestUnknownBackendIsAnErrorNotAFallback(t *testing.T) {
+	_, errOut, code := runEnv(t, []string{"MUSTER_HOME=" + t.TempDir(), "MUSTER_BACKEND=hosted"}, "serve")
+	if code == 0 {
+		t.Fatal("an unknown backend must not start the daemon")
+	}
+	if !strings.Contains(errOut, "unknown MUSTER_BACKEND") {
+		t.Errorf("stderr = %q, want it to name the unknown backend", errOut)
+	}
+}
+
+// TestRemoteBackendRequiresItsURL: remote mode with no endpoint has nowhere to
+// forward to, and must say which variable is missing rather than start and
+// fail on the first op.
+func TestRemoteBackendRequiresItsURL(t *testing.T) {
+	_, errOut, code := runEnv(t, []string{"MUSTER_HOME=" + t.TempDir(), "MUSTER_BACKEND=remote"}, "serve")
+	if code == 0 {
+		t.Fatal("remote mode without a URL must not start the daemon")
+	}
+	if !strings.Contains(errOut, "MUSTER_REMOTE_URL") {
+		t.Errorf("stderr = %q, want it to name MUSTER_REMOTE_URL", errOut)
+	}
+}
+
+// TestRemoteBackendRequiresItsToken: the URL alone is not enough, and the
+// missing-token message has to name the file the operator must write.
+func TestRemoteBackendRequiresItsToken(t *testing.T) {
+	_, errOut, code := runEnv(t, []string{
+		"MUSTER_HOME=" + t.TempDir(),
+		"MUSTER_BACKEND=remote",
+		"MUSTER_REMOTE_URL=https://example.invalid/",
+	}, "serve")
+	if code == 0 {
+		t.Fatal("remote mode without a token must not start the daemon")
+	}
+	if !strings.Contains(errOut, "remote-token") {
+		t.Errorf("stderr = %q, want it to name the token file", errOut)
+	}
+}
+
+// TestBareInvocationUnderLambdaRuntimeRoutesToLambda pins the dispatch
+// decision the provided.al2023 runtime depends on. It execs the zip's
+// `bootstrap` with no arguments, so a bare invocation inside Lambda is not a
+// usage error — it is the function starting. Without the AWS_LAMBDA_FUNCTION_NAME
+// branch every cold start prints usage and exits 2.
+//
+// This test binary is built UNTAGGED, so the branch lands in lambda_off.go's
+// stub. That is exactly the observable that distinguishes the two paths: the
+// stub's exit code is also 2, so the assertion has to be on stderr naming the
+// rebuild, not on the code.
+func TestBareInvocationUnderLambdaRuntimeRoutesToLambda(t *testing.T) {
+	out, errOut, code := runEnv(t, []string{"AWS_LAMBDA_FUNCTION_NAME=muster-bus"})
+	if code != 2 {
+		t.Errorf("exit code = %d, want 2", code)
+	}
+	if !strings.Contains(errOut, "-tags lambda") {
+		t.Errorf("stderr = %q, want the lambda-mode stub message — a bare invocation "+
+			"under the Lambda runtime must route to lambda mode", errOut)
+	}
+	if strings.Contains(out, "muster — local multi-agent coordination bus") {
+		t.Errorf("stdout printed the usage banner; the Lambda runtime would log it "+
+			"and exit on every cold start:\n%s", out)
+	}
+}
+
+// TestBareInvocationOutsideLambdaStillPrintsUsage is the other half: the
+// AWS_LAMBDA_FUNCTION_NAME branch must not change what `muster` with no
+// arguments does anywhere else. TestBareInvocationExitsTwoOnStdout covers the
+// inherited environment; this pins that an EMPTY value is also not the Lambda
+// runtime, since that is how the variable would most plausibly get set by
+// accident.
+func TestBareInvocationOutsideLambdaStillPrintsUsage(t *testing.T) {
+	out, _, code := runEnv(t, []string{"AWS_LAMBDA_FUNCTION_NAME="})
+	if code != 2 {
+		t.Errorf("exit code = %d, want 2", code)
+	}
+	if !strings.Contains(out, "muster — local multi-agent coordination bus") {
+		t.Errorf("stdout missing the usage banner:\n%s", out)
 	}
 }
 

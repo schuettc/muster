@@ -101,6 +101,23 @@ func (f *fakeNotifier) snapAgentSets() []agentSet {
 	return out
 }
 
+// testHome is the ONE setup every socket-bound daemon test uses: a short
+// MUSTER_HOME (the unix-socket sun_path limit) with the client's autospawn
+// disabled. Without MUSTER_NO_AUTOSPAWN a failed dial spawns the compiled TEST
+// binary with `serve`, which re-runs this whole suite recursively — so it
+// belongs in shared setup rather than in each test that remembers it.
+func testHome(t *testing.T) string {
+	t.Helper()
+	dir, cleanup, err := mustertest.ShortHome()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(cleanup)
+	t.Setenv("MUSTER_HOME", dir)
+	t.Setenv("MUSTER_NO_AUTOSPAWN", "1")
+	return dir
+}
+
 func startWithNotifier(t *testing.T, n *fakeNotifier) string {
 	t.Helper()
 	sock, _ := startWithNotifierAndStore(t, n)
@@ -109,12 +126,7 @@ func startWithNotifier(t *testing.T, n *fakeNotifier) string {
 
 func startWithNotifierAndStore(t *testing.T, n *fakeNotifier) (string, *store.Store) {
 	t.Helper()
-	dir, cleanup, err := mustertest.ShortHome()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(cleanup)
-	t.Setenv("MUSTER_HOME", dir)
+	dir := testHome(t)
 	s, err := store.Open(filepath.Join(dir, "bus.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -174,12 +186,7 @@ func TestNotifySkipsAgentsWithoutSession(t *testing.T) {
 }
 
 func TestNilNotifierIsSafe(t *testing.T) {
-	dir, cleanup, err := mustertest.ShortHome()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(cleanup)
-	t.Setenv("MUSTER_HOME", dir)
+	dir := testHome(t)
 	s, err := store.Open(filepath.Join(dir, "bus.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -193,6 +200,31 @@ func TestNilNotifierIsSafe(t *testing.T) {
 	call(t, paths.SocketPath(), "register_agent", map[string]any{"alias": "a", "role": "r", "model_type": "claude", "socket_path": "/s", "session_id": "$1", "session_created": 100})
 	if resp := call(t, paths.SocketPath(), "send_message", map[string]any{"from": "a", "to_kind": "broadcast", "subject": "s", "body": "b"}); !resp.OK {
 		t.Fatalf("op should succeed with nil notifier: %+v", resp)
+	}
+}
+
+// TestNilNotifierWritePathIsSafe is the assumption lambda mode rests on: a
+// Daemon built by New (no listener, and here no notifier) must survive the
+// write ops that touch the notifier — register_agent's reconcileBadge and
+// send_message's notifyForThread — without panicking. Both already guard on
+// d.n == nil before dereferencing it; this pins that behavior so a future
+// change to either can't regress it silently.
+func TestNilNotifierWritePathIsSafe(t *testing.T) {
+	s := newDaemonTestStore(t)
+	d := New(s, nil)
+
+	reg := d.Dispatch(proto.Request{Op: "register_agent", Args: map[string]any{
+		"alias": "a1", "role": "worker",
+	}})
+	if !reg.OK {
+		t.Fatalf("register: %s", reg.Error)
+	}
+	// send_message reaches notifyForThread, which reaches the notifier.
+	send := d.Dispatch(proto.Request{Op: "send_message", Args: map[string]any{
+		"from": "a1", "to_kind": "agent", "to_target": "a1", "body": "hello",
+	}})
+	if !send.OK {
+		t.Fatalf("send with nil notifier: %s", send.Error)
 	}
 }
 
@@ -423,7 +455,7 @@ func TestLit2Regression(t *testing.T) {
 	call(t, sock, "send_message", map[string]any{"from": "peer", "to_kind": "agent", "to_target": "aliasA", "subject": "a", "body": "x"})
 	call(t, sock, "send_message", map[string]any{"from": "peer", "to_kind": "agent", "to_target": "aliasB", "subject": "b", "body": "y"})
 
-	total, _, err := s.SessionUnread("/s", "$9", 100)
+	total, _, err := s.SessionUnread("", "/s", "$9", 100)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -434,7 +466,7 @@ func TestLit2Regression(t *testing.T) {
 	// Drain ONLY aliasA.
 	call(t, sock, "get_inbox", map[string]any{"alias": "aliasA"})
 
-	remainder, _, err := s.SessionUnread("/s", "$9", 100)
+	remainder, _, err := s.SessionUnread("", "/s", "$9", 100)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -468,12 +500,7 @@ func (m *markReadFailingStore) MarkRead(alias string) error {
 }
 
 func TestGetInboxFailsWhenMarkReadFails(t *testing.T) {
-	dir, cleanup, err := mustertest.ShortHome()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(cleanup)
-	t.Setenv("MUSTER_HOME", dir)
+	dir := testHome(t)
 	realStore, err := store.Open(filepath.Join(dir, "bus.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -545,12 +572,7 @@ func (b *blockingNotifier) Notify(socketPath, sessionID string, count int) error
 // so sees the drain already applied — must be the one that lands last, i.e.
 // the true post-drain state must win, not the stale count.
 func TestNotifyDrainInterleaving(t *testing.T) {
-	dir, cleanup, err := mustertest.ShortHome()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(cleanup)
-	t.Setenv("MUSTER_HOME", dir)
+	dir := testHome(t)
 	s, err := store.Open(filepath.Join(dir, "bus.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -595,7 +617,7 @@ func TestNotifyDrainInterleaving(t *testing.T) {
 	<-replyDone
 	<-getInboxDone
 
-	remainder, _, err := s.SessionUnread("/s", "$9", 100)
+	remainder, _, err := s.SessionUnread("", "/s", "$9", 100)
 	if err != nil {
 		t.Fatal(err)
 	}

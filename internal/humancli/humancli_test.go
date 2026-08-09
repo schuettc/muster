@@ -59,6 +59,96 @@ func TestAgentsCommandListsRegistered(t *testing.T) {
 	}
 }
 
+// TestAgentsHidesDeviceColumnOnOneDevice pins the default: a local bus has
+// exactly one device, so a column reading "this" on every row is noise and
+// must not appear. This is the overwhelmingly common case and the one a
+// regression here would degrade silently.
+func TestAgentsHidesDeviceColumnOnOneDevice(t *testing.T) {
+	startTestDaemon(t)
+	t.Setenv("MUSTER_DEVICE_ID", "device-one")
+	for _, alias := range []string{"backend", "consumer"} {
+		if _, err := callData("register_agent", map[string]any{
+			"alias": alias, "model_type": "claude", "device_id": "device-one",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var buf bytes.Buffer
+	if err := Dispatch([]string{"agents"}, &buf); err != nil {
+		t.Fatalf("agents: %v", err)
+	}
+	if strings.Contains(buf.String(), "DEVICE") {
+		t.Fatalf("DEVICE column shown for a single-device roster:\n%s", buf.String())
+	}
+}
+
+// TestAgentsShowsDeviceColumnAcrossDevices is the hosted-bus case the column
+// exists for: two machines in one roster, this one named rather than
+// rendered as an id the operator would have to compare by eye.
+func TestAgentsShowsDeviceColumnAcrossDevices(t *testing.T) {
+	startTestDaemon(t)
+	t.Setenv("MUSTER_DEVICE_ID", "device-here")
+	if _, err := callData("register_agent", map[string]any{
+		"alias": "local-agent", "model_type": "claude", "device_id": "device-here",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := callData("register_agent", map[string]any{
+		"alias": "far-agent", "model_type": "claude", "device_id": "abcdef0123456789",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	if err := Dispatch([]string{"agents"}, &buf); err != nil {
+		t.Fatalf("agents: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "DEVICE") {
+		t.Fatalf("DEVICE column missing from a multi-device roster:\n%s", out)
+	}
+	if !strings.Contains(out, "this") {
+		t.Fatalf("local device not rendered as \"this\":\n%s", out)
+	}
+	// Truncated, not full: the column has to stay narrow enough to sit in the
+	// table beside everything else.
+	if !strings.Contains(out, "abcdef01") || strings.Contains(out, "abcdef0123456789") {
+		t.Fatalf("remote device id not shortened to %d chars:\n%s", deviceShortLen, out)
+	}
+	// Another machine's agent must read "unknowable", never "dead". Liveness
+	// is a LOCAL tmux probe, and socket paths collide across machines, so the
+	// probe can match an unrelated local session — ✗ here would be a claim
+	// this device is not entitled to make.
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "far-agent") && !strings.Contains(line, "◌") {
+			t.Fatalf("remote agent's liveness not rendered as unknowable:\n%s", line)
+		}
+	}
+}
+
+// TestDeviceCellPrecedence pins the order the roster's DEVICE column resolves
+// in. "this" outranking the machine's own name is the deliberate part: the
+// question the column answers is "here or elsewhere", and an operator should
+// not have to recall what they named the machine they are sitting at.
+func TestDeviceCellPrecedence(t *testing.T) {
+	const local = "device-here"
+	for _, tc := range []struct {
+		name, id, devName, want string
+	}{
+		{"local machine wins over its own name", local, "work-laptop", "this"},
+		{"another machine shows its name", "other", "desktop", "desktop"},
+		{"unnamed machine falls back to a short id", "abcdef0123456789", "", "abcdef01"},
+		{"short id is not truncated further", "dev-b", "", "dev-b"},
+		{"nothing known at all", "", "", "—"},
+		{"named but id-less row still reads", "", "desktop", "desktop"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := deviceCell(tc.id, tc.devName, local); got != tc.want {
+				t.Fatalf("deviceCell(%q, %q, %q) = %q, want %q", tc.id, tc.devName, local, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestDispatchUnknownCommand(t *testing.T) {
 	if err := Dispatch([]string{"bogus"}, nil); err == nil {
 		t.Fatalf("expected error for unknown subcommand")
@@ -327,6 +417,46 @@ func TestNudgeCommandResolvesAndNudges(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "rev") || len(recorded) == 0 {
 		t.Fatalf("expected resolved-target output + a send-keys call; out=%q calls=%v", buf.String(), recorded)
+	}
+}
+
+// TestNudgeDeadPaneRefusesWithRemedy proves nudge refuses to send-keys into
+// a stored pane that's gone when its session is still alive (a reaped
+// teammate's pane, or any stale pane row) — auto-retargeting to a guessed
+// pane would be worse than failing (spec §3), so cmdNudge must error with
+// the remedy instead of attempting a doomed send-keys.
+func TestNudgeDeadPaneRefusesWithRemedy(t *testing.T) {
+	startTestDaemon(t)
+	if _, err := callData("register_agent", map[string]any{
+		"alias": "rev", "role": "reviewer", "model_type": "codex",
+		"socket_path": "/s", "pane_id": "%99", "session_id": "$1",
+		"session_created": 200,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var recorded [][]string
+	origNudge := nudgeRun
+	nudgeRun = func(args ...string) error { recorded = append(recorded, args); return nil }
+	t.Cleanup(func() { nudgeRun = origNudge })
+
+	origRun := tmuxenv.Run
+	// session_created probe answers 200 (matches registration → session
+	// alive); the pane_id probe for %99 answers "" (not in the map →
+	// hookRun's default) → pane gone.
+	tmuxenv.Run = hookRun(map[string]string{"#{session_created}": "200"})
+	t.Cleanup(func() { tmuxenv.Run = origRun })
+
+	var buf bytes.Buffer
+	err := Dispatch([]string{"nudge", "rev"}, &buf)
+	if err == nil {
+		t.Fatalf("expected an error nudging a dead stored pane, got nil (out=%q)", buf.String())
+	}
+	if !strings.Contains(err.Error(), "stored pane %99 is gone") || !strings.Contains(err.Error(), "heals at the session's next start") {
+		t.Fatalf("expected error to name the dead pane and the remedy, got %q", err.Error())
+	}
+	if len(recorded) != 0 {
+		t.Fatalf("expected NO send-keys call for a dead stored pane, got %v", recorded)
 	}
 }
 

@@ -14,3 +14,6 @@ bus.db-wal
 # git worktrees (see CLAUDE.md)
 .worktrees/
 .claude/worktrees/
+
+# Local build output (release artifacts are built by CI)
+dist/

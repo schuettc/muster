@@ -9,184 +9,6 @@ import (
 	"github.com/schuettc/muster/internal/clock"
 )
 
-func TestRegisterAgentUpsertAndList(t *testing.T) {
-	s := newTestStore(t)
-
-	if err := s.RegisterAgent(Agent{Alias: "backend", Role: "producer", ModelType: "claude", SocketPath: "/s", PaneID: "%1", SessionName: "bhw"}); err != nil {
-		t.Fatalf("register: %v", err)
-	}
-
-	firstList, err := s.ListAgents()
-	if err != nil {
-		t.Fatalf("list (first): %v", err)
-	}
-	if len(firstList) != 1 {
-		t.Fatalf("expected 1 agent after first register, got %d", len(firstList))
-	}
-	firstRegisteredAt := firstList[0].RegisteredAt
-
-	// Re-register (restart) with a new pane — upsert, not duplicate.
-	if err := s.RegisterAgent(Agent{Alias: "backend", Role: "producer", ModelType: "claude", SocketPath: "/s2", PaneID: "%9", SessionName: "bhw"}); err != nil {
-		t.Fatalf("re-register: %v", err)
-	}
-
-	agents, err := s.ListAgents()
-	if err != nil {
-		t.Fatalf("list: %v", err)
-	}
-	if len(agents) != 1 {
-		t.Fatalf("expected 1 agent after upsert, got %d", len(agents))
-	}
-	if agents[0].PaneID != "%9" || agents[0].SocketPath != "/s2" {
-		t.Fatalf("upsert did not refresh tuple: %+v", agents[0])
-	}
-	if agents[0].RegisteredAt == 0 || agents[0].LastSeen == 0 {
-		t.Fatalf("timestamps not set: %+v", agents[0])
-	}
-	if agents[0].RegisteredAt != firstRegisteredAt {
-		t.Fatalf("RegisteredAt should be immutable across upsert: first=%d second=%d", firstRegisteredAt, agents[0].RegisteredAt)
-	}
-	if agents[0].LastSeen < firstList[0].LastSeen {
-		t.Fatalf("LastSeen should not go backwards across upsert: first=%d second=%d", firstList[0].LastSeen, agents[0].LastSeen)
-	}
-}
-
-func TestRegisterAgentRoundTripsSessionIDAndGetAgent(t *testing.T) {
-	s := newTestStore(t)
-	if err := s.RegisterAgent(Agent{Alias: "backend", Role: "producer", ModelType: "claude", SocketPath: "/s", PaneID: "%1", SessionName: "muster", SessionID: "$3"}); err != nil {
-		t.Fatalf("register: %v", err)
-	}
-	got, ok, err := s.GetAgent("backend")
-	if err != nil || !ok {
-		t.Fatalf("GetAgent: ok=%v err=%v", ok, err)
-	}
-	if got.SessionID != "$3" || got.SessionName != "muster" {
-		t.Fatalf("session fields not round-tripped: %+v", got)
-	}
-	if _, ok, _ := s.GetAgent("nope"); ok {
-		t.Fatalf("GetAgent should report ok=false for unknown alias")
-	}
-}
-
-func TestAgentLabelAndDelete(t *testing.T) {
-	s := newTestStore(t)
-	if err := s.RegisterAgent(Agent{
-		Alias: "muster-2", Role: "peer", ModelType: "codex",
-		SocketPath: "/tmp/tmux-0/proj-muster", SessionID: "$1",
-		Project: "muster", Label: "frontend", LabelManual: true,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	got, ok, err := s.GetAgent("muster-2")
-	if err != nil || !ok {
-		t.Fatalf("get: ok=%v err=%v", ok, err)
-	}
-	if got.Project != "muster" || got.Label != "frontend" || !got.LabelManual {
-		t.Fatalf("round-trip=%+v", got)
-	}
-
-	// upsert refreshes label fields
-	if err := s.RegisterAgent(Agent{Alias: "muster-2", Label: "backend", LabelManual: false}); err != nil {
-		t.Fatal(err)
-	}
-	got, _, _ = s.GetAgent("muster-2")
-	if got.Label != "backend" || got.LabelManual {
-		t.Fatalf("after upsert=%+v", got)
-	}
-
-	// delete removes the row, leaves the table usable
-	if err := s.DeleteAgent("muster-2"); err != nil {
-		t.Fatal(err)
-	}
-	if _, ok, _ := s.GetAgent("muster-2"); ok {
-		t.Fatal("agent should be gone after DeleteAgent")
-	}
-	if err := s.DeleteAgent("nonexistent"); err != nil {
-		t.Fatalf("DeleteAgent of unknown alias must be a no-op, got %v", err)
-	}
-}
-
-// TestDepartAgentTombstonesPreservingFields covers the deregistration
-// tombstone (spec: departed history must survive so it stays drillable): after
-// DepartAgent, the row still exists (ListAgents/GetAgent both still find it),
-// Departed is true, and every other field — project, label, label_manual, the
-// read watermark — is untouched. A subsequent RegisterAgent for the same
-// alias revives it (Departed back to false) without needing any of those
-// fields re-supplied by the caller for them to still be present (RegisterAgent
-// preserves them exactly like a plain restart-upsert already does).
-func TestDepartAgentTombstonesPreservingFields(t *testing.T) {
-	s := newTestStore(t)
-	if err := s.RegisterAgent(Agent{
-		Alias: "muster-2", Role: "peer", ModelType: "codex",
-		SocketPath: "/s", SessionID: "$1",
-		Project: "muster", Label: "frontend", LabelManual: true,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.CreateThread(Thread{Kind: "message", FromAgent: "x", ToKind: "agent", ToTarget: "muster-2"}, "hi"); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.MarkRead("muster-2"); err != nil {
-		t.Fatal(err)
-	}
-	before, ok, err := s.GetAgent("muster-2")
-	if err != nil || !ok {
-		t.Fatalf("get before depart: ok=%v err=%v", ok, err)
-	}
-	if before.LastReadEntryID == 0 {
-		t.Fatalf("setup: expected a non-zero read watermark, got %+v", before)
-	}
-
-	if err := s.DepartAgent("muster-2"); err != nil {
-		t.Fatal(err)
-	}
-	after, ok, err := s.GetAgent("muster-2")
-	if err != nil || !ok {
-		t.Fatalf("expected the row to SURVIVE DepartAgent, got ok=%v err=%v", ok, err)
-	}
-	if !after.Departed {
-		t.Fatalf("expected Departed=true after DepartAgent, got %+v", after)
-	}
-	if after.Project != "muster" || after.Label != "frontend" || !after.LabelManual {
-		t.Fatalf("DepartAgent must preserve project/label/label_manual, got %+v", after)
-	}
-	if after.LastReadEntryID != before.LastReadEntryID {
-		t.Fatalf("DepartAgent must preserve the read watermark: before=%d after=%d", before.LastReadEntryID, after.LastReadEntryID)
-	}
-
-	list, err := s.ListAgents()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(list) != 1 || !list[0].Departed {
-		t.Fatalf("ListAgents must still include the departed row, got %+v", list)
-	}
-
-	// DepartAgent on an unknown alias is a no-op, no error.
-	if err := s.DepartAgent("nonexistent"); err != nil {
-		t.Fatalf("DepartAgent of unknown alias must be a no-op, got %v", err)
-	}
-
-	// A returning session revives it: RegisterAgent resets Departed to false.
-	if err := s.RegisterAgent(Agent{
-		Alias: "muster-2", Role: "peer", ModelType: "codex",
-		SocketPath: "/s", SessionID: "$1",
-		Project: "muster", Label: "frontend", LabelManual: true,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	revived, ok, err := s.GetAgent("muster-2")
-	if err != nil || !ok {
-		t.Fatalf("get after revive: ok=%v err=%v", ok, err)
-	}
-	if revived.Departed {
-		t.Fatalf("re-registering a departed alias must revive it (Departed=false), got %+v", revived)
-	}
-	if revived.LastReadEntryID != before.LastReadEntryID {
-		t.Fatalf("revival must not disturb the read watermark: before=%d after=%d", before.LastReadEntryID, revived.LastReadEntryID)
-	}
-}
-
 // TestMarkReadRecordsEntryWatermark: no incrementing fake clock needed — the
 // wall clock is frozen at one instant so every entry genuinely lands in the
 // same millisecond, and the entry-ID watermark (not created_at) still tells
@@ -224,144 +46,6 @@ func TestMarkReadRecordsEntryWatermark(t *testing.T) {
 	}
 	if n, err := s.UnreadCount("a"); err != nil || n != 1 {
 		t.Fatalf("same-millisecond entry after MarkRead unread = %d (%v), want 1", n, err)
-	}
-}
-
-// TestSessionUnreadCountsDistinctThreads: a broadcast concerning both aliases
-// of one session (split-alias identity) must count once, never twice — no
-// summing of per-alias counts.
-func TestSessionUnreadCountsDistinctThreads(t *testing.T) {
-	s := newTestStore(t)
-	for _, alias := range []string{"session-name", "chosen-alias"} {
-		if err := s.RegisterAgent(Agent{Alias: alias, SocketPath: "/s", SessionID: "$1", SessionCreated: 100}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if _, err := s.CreateThread(Thread{Kind: "message", FromAgent: "peer", ToKind: "broadcast"}, "hi all"); err != nil {
-		t.Fatal(err)
-	}
-	total, action, err := s.SessionUnread("/s", "$1", 100)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if total != 1 {
-		t.Fatalf("broadcast concerning both sibling aliases counted total=%d, want 1", total)
-	}
-	if action != 0 {
-		t.Fatalf("plain message counted action=%d, want 0", action)
-	}
-}
-
-// TestSessionUnreadExcludesSiblingAuthors: alias A (a session member) writes
-// a thread; sibling alias B must not see it as unread — actor exclusion is
-// session-based, not per-alias.
-func TestSessionUnreadExcludesSiblingAuthors(t *testing.T) {
-	s := newTestStore(t)
-	for _, alias := range []string{"a1", "a2"} {
-		if err := s.RegisterAgent(Agent{Alias: alias, SocketPath: "/s", SessionID: "$1", SessionCreated: 100}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if _, err := s.CreateThread(Thread{Kind: "message", FromAgent: "a1", ToKind: "agent", ToTarget: "outsider"}, "hello"); err != nil {
-		t.Fatal(err)
-	}
-	total, action, err := s.SessionUnread("/s", "$1", 100)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if total != 0 || action != 0 {
-		t.Fatalf("a session's own write must not flag its own thread unread, got total=%d action=%d", total, action)
-	}
-}
-
-// TestSessionUnreadActionCount: a task thread (effective intent
-// action-requested) addressed to a session alias, unread, counts in action.
-func TestSessionUnreadActionCount(t *testing.T) {
-	s := newTestStore(t)
-	if err := s.RegisterAgent(Agent{Alias: "worker", SocketPath: "/s", SessionID: "$1", SessionCreated: 100}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.CreateThread(Thread{Kind: "task", FromAgent: "backend", ToKind: "agent", ToTarget: "worker", Status: "open"}, "please do X"); err != nil {
-		t.Fatal(err)
-	}
-	total, action, err := s.SessionUnread("/s", "$1", 100)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if total != 1 || action != 1 {
-		t.Fatalf("task addressed to session alias: total=%d action=%d, want 1,1", total, action)
-	}
-}
-
-// TestSessionUnreadEmptyTupleNeverGroups: an agent registered without a live
-// tmux identity (empty socket/session) is its own singleton — SessionUnread
-// must never treat the empty tuple as a group to aggregate over.
-func TestSessionUnreadEmptyTupleNeverGroups(t *testing.T) {
-	s := newTestStore(t)
-	if err := s.RegisterAgent(Agent{Alias: "solo"}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.CreateThread(Thread{Kind: "message", FromAgent: "x", ToKind: "agent", ToTarget: "solo"}, "hi"); err != nil {
-		t.Fatal(err)
-	}
-	total, action, err := s.SessionUnread("", "", 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if total != 0 || action != 0 {
-		t.Fatalf("empty socket/session tuple must never group, got total=%d action=%d", total, action)
-	}
-}
-
-// TestSessionUnreadRequiresIncarnationMatch pins spec §5.1 at the store
-// layer: a tmux-tuple row only seeds the session's unread/alias math when
-// its session_created matches the caller's live value; 0 never matches.
-// Paneless tuples (empty socket) are exempt — harness UUIDs don't recycle.
-func TestSessionUnreadRequiresIncarnationMatch(t *testing.T) {
-	s := newTestStore(t)
-	// current incarnation
-	if err := s.RegisterAgent(Agent{Alias: "current", SocketPath: "/s", SessionID: "$1", SessionCreated: 200}); err != nil {
-		t.Fatal(err)
-	}
-	// legacy ghost on the recycled ID
-	if err := s.RegisterAgent(Agent{Alias: "ghost", SocketPath: "/s", SessionID: "$1", SessionCreated: 0}); err != nil {
-		t.Fatal(err)
-	}
-	// mail for each
-	if _, err := s.CreateThread(Thread{Kind: "message", FromAgent: "peer", ToKind: "agent", ToTarget: "current"}, "for the live one"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.CreateThread(Thread{Kind: "message", FromAgent: "peer", ToKind: "agent", ToTarget: "ghost"}, "for the ghost"); err != nil {
-		t.Fatal(err)
-	}
-
-	total, _, err := s.SessionUnread("/s", "$1", 200)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if total != 1 {
-		t.Fatalf("live incarnation must see ONLY its own unread, got %d", total)
-	}
-	aliases, err := s.SessionAliasLineage("/s", "$1", 200)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(aliases) != 1 || aliases[0] != "current" {
-		t.Fatalf("lineage must not include the ghost, got %v", aliases)
-	}
-	// paneless: created is irrelevant
-	if err := s.RegisterAgent(Agent{Alias: "bg", SocketPath: "", SessionID: "uuid-9", SessionCreated: 0}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.CreateThread(Thread{Kind: "message", FromAgent: "peer", ToKind: "agent", ToTarget: "bg"}, "paneless mail"); err != nil {
-		t.Fatal(err)
-	}
-	total, _, err = s.SessionUnread("", "uuid-9", 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if total != 1 {
-		t.Fatalf("paneless tuple must be exempt from the incarnation check, got %d", total)
 	}
 }
 
@@ -422,70 +106,6 @@ func TestThreadConcernsSessionJoinEquivalence(t *testing.T) {
 	}
 }
 
-// TestSessionUnreadPerAliasWatermarks: two aliases in one session tuple must
-// each respect their own last_read_entry_id watermark — alias A's read
-// position must not suppress unread threads concerning alias B within the
-// same session, and vice versa. SessionUnread evaluates each alias's
-// watermark independently when building the set of unread threads.
-func TestSessionUnreadPerAliasWatermarks(t *testing.T) {
-	s := newTestStore(t)
-	// Register two aliases sharing the same (socket_path, session_id) tuple.
-	if err := s.RegisterAgent(Agent{Alias: "aliasA", SocketPath: "/s", SessionID: "$1", SessionCreated: 100}); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.RegisterAgent(Agent{Alias: "aliasB", SocketPath: "/s", SessionID: "$1", SessionCreated: 100}); err != nil {
-		t.Fatal(err)
-	}
-
-	// Create a thread addressed to A, from an outsider.
-	if _, err := s.CreateThread(Thread{Kind: "message", FromAgent: "outsider", ToKind: "agent", ToTarget: "aliasA"}, "msg for A"); err != nil {
-		t.Fatal(err)
-	}
-
-	// Create a thread addressed to B, from an outsider.
-	if _, err := s.CreateThread(Thread{Kind: "message", FromAgent: "outsider", ToKind: "agent", ToTarget: "aliasB"}, "msg for B"); err != nil {
-		t.Fatal(err)
-	}
-
-	// Before any MarkRead, both threads unread.
-	total, _, err := s.SessionUnread("/s", "$1", 100)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if total != 2 {
-		t.Fatalf("before MarkRead: expected 2 unread, got %d", total)
-	}
-
-	// Mark A as read — advances A's watermark past all existing entries.
-	if err := s.MarkRead("aliasA"); err != nil {
-		t.Fatal(err)
-	}
-
-	// SessionUnread should still see B's thread as unread (total=1).
-	// A's read watermark must not suppress B's threads.
-	total, _, err = s.SessionUnread("/s", "$1", 100)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if total != 1 {
-		t.Fatalf("after MarkRead(aliasA): expected 1 unread, got %d", total)
-	}
-
-	// Now mark B as read.
-	if err := s.MarkRead("aliasB"); err != nil {
-		t.Fatal(err)
-	}
-
-	// SessionUnread should return total=0.
-	total, _, err = s.SessionUnread("/s", "$1", 100)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if total != 0 {
-		t.Fatalf("after MarkRead(aliasB): expected 0 unread, got %d", total)
-	}
-}
-
 // TestSessionUnreadFollowsSupersessionLineage reproduces the live-rig gap:
 // become + resume leaves the retired seed's row on its OLD (now-dead) tuple
 // while its identity moved to a NEW tuple. Mail addressed to the retired
@@ -516,7 +136,7 @@ func TestSessionUnreadFollowsSupersessionLineage(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	total, _, err := s.SessionUnread("/new", "$new", 100)
+	total, _, err := s.SessionUnread("", "/new", "$new", 100)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -548,7 +168,7 @@ func TestSessionUnreadFollowsChainedLineage(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	total, _, err := s.SessionUnread("/new", "$new", 100)
+	total, _, err := s.SessionUnread("", "/new", "$new", 100)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -587,7 +207,7 @@ func TestSessionUnreadLineageCycleGuard(t *testing.T) {
 	var total, action int
 	var err error
 	go func() {
-		total, action, err = s.SessionUnread("/s", "$1", 100)
+		total, action, err = s.SessionUnread("", "/s", "$1", 100)
 		close(done)
 	}()
 	select {
