@@ -104,7 +104,10 @@ func becomeLiveAliases(socketPath, sessionID string, sessionCreated int64) ([]st
 	}
 	live := make([]string, 0, len(res.Aliases))
 	for _, a := range res.Aliases {
-		if ag, ok := hookGetAgent(a); ok && !ag.Departed {
+		// A row this lookup couldn't read is left OUT of the live list: the
+		// caller offers these as names the operator may become, and a name
+		// nobody could confirm is live is not one to offer.
+		if ag, ok, err := hookGetAgent(a); err == nil && ok && !ag.Departed {
 			live = append(live, a)
 		}
 	}
