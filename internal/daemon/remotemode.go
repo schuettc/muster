@@ -9,7 +9,9 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"time"
 
+	"github.com/schuettc/muster/internal/device"
 	"github.com/schuettc/muster/internal/proto"
 	"github.com/schuettc/muster/internal/store"
 	"github.com/schuettc/muster/internal/wake"
@@ -100,6 +102,7 @@ func (d *Daemon) forward(req proto.Request) proto.Response {
 	if needsDevice(req.Op) {
 		req = d.stampDevice(req)
 	}
+	req = d.expandAgentTarget(req)
 
 	resp, err := d.up.Call(context.Background(), req)
 	if err != nil {
@@ -114,6 +117,116 @@ func (d *Daemon) forward(req proto.Request) proto.Response {
 		return d.unknownOutcome(req.Op, resp)
 	}
 	return resp
+}
+
+// expandableTargetOps are send_message and task_create — the two ops whose
+// to_target names an agent alias when to_kind=="agent" (every other to_kind,
+// e.g. broadcast's project name, is not an alias and must not be touched).
+// This is the same pair resolveAgentTarget (resolve.go) expands for local
+// mode; forward is the ONLY path a remote-mode daemon's requests take, so it
+// is the one place left that must apply the same rule.
+var expandableTargetOps = map[string]bool{
+	"send_message": true, "task_create": true,
+}
+
+// expandAgentTarget is remote mode's counterpart to resolveAgentTarget: a
+// forwarded send_message/task_create request never reaches Dispatch (serve
+// checks d.up first, see forward's doc), so resolveAgentTarget's daemon-side
+// alias expansion is never called for it. Without this, a model-supplied
+// short alias (an MCP caller passes to_target straight through with no
+// client-side resolution) reaches the hosted bus literally — and in a
+// multi-device roster, a bare or another device's alias of the same short
+// name is a stranger's agent, not this device's.
+//
+// The rule matches resolve.go exactly: local-first. Try device.Seed against
+// THIS device's name, and use the seeded form only if it already exists in
+// the roster — an unexpandable name is forwarded untouched so the upstream's
+// error names what was actually sent. "" disables expansion (Lambda mode,
+// which serves many devices and must never guess one; ServeRemote's deviceName
+// is never "" in practice, but the check is kept here too since forward has
+// no other guard for it).
+//
+// Unlike resolveAgentTarget, this cannot do a full resolve.Target pass
+// (label/project scoping): that needs the roster narrowed to the sender's
+// project, which costs nothing extra when the roster is already a local
+// store read, but here it's an upstream network fetch this function must NOT
+// pay per request (see aliasesForExpansion). Exact short-alias expansion is
+// the whole of what black-hole risk remote mode's single missing backstop
+// covers; the fuller label/project resolution remote mode never had.
+func (d *Daemon) expandAgentTarget(req proto.Request) proto.Request {
+	if d.deviceName == "" || !expandableTargetOps[req.Op] {
+		return req
+	}
+	if str(req.Args, "to_kind") != "agent" {
+		return req
+	}
+	given, _ := req.Args["to_target"].(string)
+	if given == "" {
+		return req
+	}
+	seeded := device.Seed(d.deviceName, given)
+	if seeded == given {
+		return req
+	}
+	aliases, ok := d.aliasesForExpansion()
+	if !ok || !aliases[seeded] {
+		return req
+	}
+
+	// Copied before mutation, same reason as stampDevice: the caller's map
+	// came off the wire here, and forward has no license to write into it.
+	args := make(map[string]any, len(req.Args))
+	for k, v := range req.Args {
+		args[k] = v
+	}
+	args["to_target"] = seeded
+	req.Args = args
+	return req
+}
+
+// aliasCacheTTL bounds how long expandAgentTarget trusts its cached roster
+// before paying a fresh upstream list_agents round trip. Short enough that a
+// peer who just registered becomes expandable within one human-perceptible
+// pause; long enough that a burst of sends — the case this cache exists for —
+// pays that round trip once rather than once per message.
+const aliasCacheTTL = 15 * time.Second
+
+// aliasesForExpansion returns the alias set expandAgentTarget checks a seeded
+// guess against, refreshing it from upstream when the cache is empty or
+// older than aliasCacheTTL.
+//
+// STALENESS POLICY: ok is false whenever there is nothing trustworthy to
+// check against — no cache has ever been populated, or the refresh attempt
+// just failed — and expandAgentTarget's contract for that is to forward the
+// input UNEXPANDED, never to fall back to whatever the previous cache
+// contents were. This is the deliberately safe direction: an unexpanded
+// short alias fails loudly at the upstream resolver as an unknown target,
+// while a wrongly-expanded one is delivered silently to the wrong agent's
+// inbox. A stale-but-present cache (younger than the TTL) is still trusted —
+// that staleness is bounded and accepted on purpose, the same trade every
+// TTL cache makes — but a cache old enough to need refreshing is not reused
+// merely because refreshing it failed.
+func (d *Daemon) aliasesForExpansion() (map[string]bool, bool) {
+	d.aliasMu.Lock()
+	fresh := d.aliasSet != nil && time.Since(d.aliasAt) < aliasCacheTTL
+	set := d.aliasSet
+	d.aliasMu.Unlock()
+	if fresh {
+		return set, true
+	}
+
+	agents, err := d.upstreamAgents()
+	if err != nil {
+		return nil, false
+	}
+	next := make(map[string]bool, len(agents))
+	for _, ag := range agents {
+		next[ag.Alias] = true
+	}
+	d.aliasMu.Lock()
+	d.aliasSet, d.aliasAt = next, time.Now()
+	d.aliasMu.Unlock()
+	return next, true
 }
 
 // unknownOutcome translates the two "reissue under a new key" idempotency

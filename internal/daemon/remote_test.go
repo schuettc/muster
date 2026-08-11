@@ -57,6 +57,16 @@ func (f *fakeUpstream) opsSeen() []string {
 
 func startRemote(t *testing.T, up Upstream, n *fakeNotifier) string {
 	t.Helper()
+	return startRemoteNamed(t, up, n, "")
+}
+
+// startRemoteNamed is startRemote with an explicit device name. The shared
+// startRemote pins "" (expansion disabled) because most of this file forwards
+// and reconciles without caring about expansion, and a stray real name there
+// would silently change what those tests prove; the alias-expansion tests
+// below need a real one.
+func startRemoteNamed(t *testing.T, up Upstream, n *fakeNotifier, deviceName string) string {
+	t.Helper()
 	home := testHome(t)
 	sock := filepath.Join(home, "sock")
 	// A typed nil *fakeNotifier would be a NON-nil wake.Notifier, which is
@@ -65,12 +75,28 @@ func startRemote(t *testing.T, up Upstream, n *fakeNotifier) string {
 	if n != nil {
 		notifier = n
 	}
-	d, err := ServeRemote(sock, up, notifier, "dev-1", "")
+	d, err := ServeRemote(sock, up, notifier, "dev-1", deviceName)
 	if err != nil {
 		t.Fatalf("ServeRemote: %v", err)
 	}
 	t.Cleanup(func() { _ = d.Close() })
 	return sock
+}
+
+// forwardedArg returns args[key] from the first request of op the upstream
+// saw, as a string. It is the assertion surface for the expansion tests
+// below, which care what actually reached the upstream, not what the local
+// socket answered back.
+func forwardedArg(t *testing.T, up *fakeUpstream, op, key string) string {
+	t.Helper()
+	for _, req := range up.snap() {
+		if req.Op == op {
+			v, _ := req.Args[key].(string)
+			return v
+		}
+	}
+	t.Fatalf("upstream never saw op %q", op)
+	return ""
 }
 
 // TestRemoteModeForwardsRequestsUpstream: a read arrives at the upstream
@@ -206,6 +232,171 @@ func TestRegisterAgentRecordsDeviceID(t *testing.T) {
 	}
 	if ag.DeviceID != "dev-9" {
 		t.Fatalf("DeviceID = %q, want dev-9", ag.DeviceID)
+	}
+}
+
+// TestForwardExpandsShortAliasAgainstLocalDeviceFirst is remote mode's
+// counterpart to resolve.go's local-first precedence: a bare short name that
+// collides between "seeded against THIS device" and "a foreign device's own
+// bare row of that same name" must resolve to this device's row. Task 7's
+// review found isolated single-row tests hiding two bugs on this branch
+// already, because a single row cannot distinguish "prefers the seeded form"
+// from "matched the one row that happened to be there" — so this roster
+// deliberately holds both.
+func TestForwardExpandsShortAliasAgainstLocalDeviceFirst(t *testing.T) {
+	up := &fakeUpstream{byOp: map[string]proto.Response{
+		"list_agents": {OK: true, Data: []store.Agent{
+			{Alias: "personal-dotfiles/main", DeviceID: "dev-1"},
+			{Alias: "dotfiles/main", DeviceID: "dev-9"},
+		}},
+		"send_message": {OK: true},
+	}}
+	sock := startRemoteNamed(t, up, nil, "personal")
+
+	if _, err := client.Call(sock, proto.Request{Op: "send_message", Args: map[string]any{
+		"from": "a1", "to_kind": "agent", "to_target": "dotfiles/main", "body": "x",
+	}}); err != nil {
+		t.Fatalf("client.Call: %v", err)
+	}
+
+	if got := forwardedArg(t, up, "send_message", "to_target"); got != "personal-dotfiles/main" {
+		t.Fatalf("upstream to_target = %q, want %q (local-first)", got, "personal-dotfiles/main")
+	}
+}
+
+// TestForwardLeavesUnexpandableTargetUnchanged: a target with no local
+// counterpart in the roster forwards exactly as given, so the upstream's
+// unknown-target error names what the caller actually typed rather than a
+// guess this daemon made up.
+func TestForwardLeavesUnexpandableTargetUnchanged(t *testing.T) {
+	up := &fakeUpstream{byOp: map[string]proto.Response{
+		"list_agents": {OK: true, Data: []store.Agent{
+			{Alias: "personal-dotfiles/main", DeviceID: "dev-1"},
+		}},
+		"send_message": {OK: true},
+	}}
+	sock := startRemoteNamed(t, up, nil, "personal")
+
+	if _, err := client.Call(sock, proto.Request{Op: "send_message", Args: map[string]any{
+		"from": "a1", "to_kind": "agent", "to_target": "elsewhere/main", "body": "x",
+	}}); err != nil {
+		t.Fatalf("client.Call: %v", err)
+	}
+
+	if got := forwardedArg(t, up, "send_message", "to_target"); got != "elsewhere/main" {
+		t.Fatalf("upstream to_target = %q, want unchanged %q", got, "elsewhere/main")
+	}
+}
+
+// TestForwardDoesNotExpandNonAgentTargets: a broadcast's to_target names a
+// project, not an alias. Even when a same-named alias would seed and exist in
+// the roster, to_kind!="agent" must leave it untouched.
+func TestForwardDoesNotExpandNonAgentTargets(t *testing.T) {
+	up := &fakeUpstream{byOp: map[string]proto.Response{
+		"list_agents": {OK: true, Data: []store.Agent{
+			{Alias: "personal-proj", DeviceID: "dev-1"},
+		}},
+		"send_message": {OK: true},
+	}}
+	sock := startRemoteNamed(t, up, nil, "personal")
+
+	if _, err := client.Call(sock, proto.Request{Op: "send_message", Args: map[string]any{
+		"from": "a1", "to_kind": "broadcast", "to_target": "proj", "body": "x",
+	}}); err != nil {
+		t.Fatalf("client.Call: %v", err)
+	}
+
+	if got := forwardedArg(t, up, "send_message", "to_target"); got != "proj" {
+		t.Fatalf("broadcast to_target = %q, want unchanged %q", got, "proj")
+	}
+	for _, op := range up.opsSeen() {
+		if op == "list_agents" {
+			t.Fatalf("upstream saw a list_agents call for a non-agent target; expansion must not run at all")
+		}
+	}
+}
+
+// TestForwardCachesTheRosterAcrossSends is the "not paid per send" guarantee:
+// three sends inside one aliasCacheTTL window must cost exactly one upstream
+// list_agents, not three. A per-send roster fetch would put a full network
+// round trip in front of every message.
+func TestForwardCachesTheRosterAcrossSends(t *testing.T) {
+	up := &fakeUpstream{byOp: map[string]proto.Response{
+		"list_agents": {OK: true, Data: []store.Agent{
+			{Alias: "personal-dotfiles/main", DeviceID: "dev-1"},
+		}},
+		"send_message": {OK: true},
+	}}
+	sock := startRemoteNamed(t, up, nil, "personal")
+
+	for i := 0; i < 3; i++ {
+		if _, err := client.Call(sock, proto.Request{Op: "send_message", Args: map[string]any{
+			"from": "a1", "to_kind": "agent", "to_target": "dotfiles/main", "body": "x",
+		}}); err != nil {
+			t.Fatalf("client.Call %d: %v", i, err)
+		}
+	}
+
+	n := 0
+	for _, op := range up.opsSeen() {
+		if op == "list_agents" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("upstream saw %d list_agents call(s) for 3 sends inside the cache TTL, want 1", n)
+	}
+}
+
+// TestForwardLeavesTargetUnexpandedWhenRosterFetchFails pins the staleness
+// policy's safe direction: when the cache is empty and the refresh attempt
+// itself fails, forward the input UNEXPANDED rather than guessing. An
+// unexpanded short alias fails loudly at the upstream resolver as an unknown
+// target; a wrongly-expanded one would be delivered silently to a stranger.
+func TestForwardLeavesTargetUnexpandedWhenRosterFetchFails(t *testing.T) {
+	up := &fakeUpstream{
+		byOp:   map[string]proto.Response{"send_message": {OK: true}},
+		err:    errors.New("upstream unavailable"),
+		errFor: "list_agents",
+	}
+	sock := startRemoteNamed(t, up, nil, "personal")
+
+	if _, err := client.Call(sock, proto.Request{Op: "send_message", Args: map[string]any{
+		"from": "a1", "to_kind": "agent", "to_target": "dotfiles/main", "body": "x",
+	}}); err != nil {
+		t.Fatalf("client.Call: %v", err)
+	}
+
+	if got := forwardedArg(t, up, "send_message", "to_target"); got != "dotfiles/main" {
+		t.Fatalf("upstream to_target = %q, want unchanged %q (loud-failure direction)", got, "dotfiles/main")
+	}
+}
+
+// TestForwardSkipsExpansionWithNoDeviceName: deviceName=="" is Lambda mode's
+// choice and, per ServeRemote's doc, disables expansion outright — the same
+// "" that already means "no single device to expand against" in resolve.go.
+func TestForwardSkipsExpansionWithNoDeviceName(t *testing.T) {
+	up := &fakeUpstream{byOp: map[string]proto.Response{
+		"list_agents": {OK: true, Data: []store.Agent{
+			{Alias: "dotfiles/main", DeviceID: "dev-9"},
+		}},
+		"send_message": {OK: true},
+	}}
+	sock := startRemoteNamed(t, up, nil, "")
+
+	if _, err := client.Call(sock, proto.Request{Op: "send_message", Args: map[string]any{
+		"from": "a1", "to_kind": "agent", "to_target": "dotfiles/main", "body": "x",
+	}}); err != nil {
+		t.Fatalf("client.Call: %v", err)
+	}
+
+	if got := forwardedArg(t, up, "send_message", "to_target"); got != "dotfiles/main" {
+		t.Fatalf("upstream to_target = %q, want unchanged %q", got, "dotfiles/main")
+	}
+	for _, op := range up.opsSeen() {
+		if op == "list_agents" {
+			t.Fatalf("upstream saw a list_agents call with deviceName==\"\"; expansion must not run at all")
+		}
 	}
 }
 

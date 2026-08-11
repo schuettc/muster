@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/schuettc/muster/internal/device"
 	"github.com/schuettc/muster/internal/display"
@@ -75,6 +76,17 @@ type Daemon struct {
 	localMu     sync.Mutex
 	localAgents map[string]store.SessionRef
 	localSeeded bool
+
+	// aliasSet/aliasAt are forward's cache of "which aliases exist in the
+	// hosted roster", consulted by expandAgentTarget before it trusts a
+	// device.Seed guess enough to rewrite a caller's to_target. See
+	// aliasesForExpansion (remotemode.go) for the staleness policy: this is
+	// a short-TTL cache, not a per-request roster read, so a burst of sends
+	// pays at most one upstream list_agents per aliasCacheTTL window rather
+	// than one per send.
+	aliasMu  sync.Mutex
+	aliasSet map[string]bool
+	aliasAt  time.Time
 
 	// sessLocks serializes {SessionUnread recompute, tmux option write,
 	// journal} per (socket_path, session_id) tuple (spec §3): a concurrent
