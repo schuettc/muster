@@ -215,8 +215,17 @@ Every human-facing view — `muster agents`, `inbox`, `tasks`, `thread`,
 this machine's own, so day to day you just see `dotfiles/main`, and typing
 the short form (`muster nudge dotfiles`) resolves it back to the stored
 alias before lookup, tried ahead of the literal string. Two rows that would
-strip to the same display string both render in full instead, so nothing
-is ever hidden by the collision it was meant to prevent.
+strip to the same display string both render in full instead, so no two
+agents ever appear under one name.
+
+Trying the short form *first* is what makes a short name on this machine mean
+*this machine's* agent, rather than whichever machine happens to hold the bare
+string. The cost falls on a row minted before this feature, whose alias has no
+prefix at all: once the same session has re-registered under its seeded name,
+the old row is still listed but no longer reachable, because its only address
+is the bare name that now means the new row. If you are upgrading an existing
+install rather than starting fresh, read the note under [Name the
+machine](docs/hosted-backend.md#name-the-machine-recommended-not-required).
 
 MCP tools and the text muster injects into hook context never strip the
 prefix: an agent reads and reports its OWN alias in full

@@ -302,7 +302,7 @@ muster become work-laptop-ci-cd
 That tombstones the old row, marks it superseded, and moves the identity and
 its mail to the new alias.
 
-Two more things worth knowing if you're renaming or upgrading an existing
+Three more things worth knowing if you're renaming or upgrading an existing
 install rather than starting fresh:
 
 - **A running daemon doesn't pick up a rename until it restarts.** `muster
@@ -316,9 +316,22 @@ install rather than starting fresh:
 - **A bare `muster deregister` (no argument) can no longer find a row that
   predates this feature.** With no argument it reconstructs the alias
   `register` would mint for the current session — which is now always the
-  seeded form — so it won't match an old, unprefixed row. Pass the alias
-  explicitly (`muster deregister dotfiles`) for a row minted before you
-  upgraded, until it's carried forward with `muster become`.
+  seeded form — so it won't match an old, unprefixed row.
+- **An old unprefixed row is visible but no longer addressable once the same
+  session has re-registered under its seeded name.** You will see both in
+  `muster agents` and in station, each shown in full so they don't read as
+  one agent. But the old row's *only* address is its bare name, and a bare
+  name on this machine now means the seeded one — so `muster inbox dotfiles`,
+  `nudge`, `send`, `deregister`, a claim or an inbox read from an MCP tool,
+  and even `muster become --from dotfiles` all reach the new row instead.
+  (`become` is the one to watch: it retires the *new* row and its
+  confirmation, printed short, reads as though it retired the old one.) What
+  still works is anything that isn't an alias lookup: the row renders, `muster
+  thread <id>` reads its threads by ID, and mail already addressed to it still
+  lights its badge. Nothing carries the old row's leftover mail forward —
+  read what you need by thread ID, then let `muster gc --purge-agents` reap
+  the row once it's departed. There is deliberately no flag to address it
+  directly: that would be a permanent escape hatch for a migration artifact.
 
 ### Getting the URL and token onto the other machine
 
