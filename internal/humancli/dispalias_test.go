@@ -56,3 +56,43 @@ func TestDispAliasStripsWithoutAView(t *testing.T) {
 		t.Fatalf("dispAlias of a foreign alias = %q, want %q", got, want)
 	}
 }
+
+// TestExpandAliasPrefersTheLocalRow is the invariant the design exists for: on
+// this machine, a short name is mine. Exact-first would have made that
+// conditional on what some other machine happens to have registered — and when
+// one does, you would silently get theirs.
+func TestExpandAliasPrefersTheLocalRow(t *testing.T) {
+	t.Setenv("MUSTER_HOME", t.TempDir())
+	t.Setenv("MUSTER_DEVICE_NAME", "personal")
+	roster := map[string]bool{"personal-dotfiles/main": true, "dotfiles/main": true}
+	exists := func(a string) bool { return roster[a] }
+	if got, want := expandAlias("dotfiles/main", exists), "personal-dotfiles/main"; got != want {
+		t.Fatalf("expandAlias = %q, want %q", got, want)
+	}
+}
+
+// TestExpandAliasFallsBackToTheLiteral: a full foreign alias, and a bare alias
+// with no local counterpart, both still resolve exactly.
+func TestExpandAliasFallsBackToTheLiteral(t *testing.T) {
+	t.Setenv("MUSTER_HOME", t.TempDir())
+	t.Setenv("MUSTER_DEVICE_NAME", "personal")
+	roster := map[string]bool{"work-dotfiles/main": true, "legacy": true}
+	exists := func(a string) bool { return roster[a] }
+	if got, want := expandAlias("work-dotfiles/main", exists), "work-dotfiles/main"; got != want {
+		t.Fatalf("expandAlias = %q, want %q", got, want)
+	}
+	if got, want := expandAlias("legacy", exists), "legacy"; got != want {
+		t.Fatalf("expandAlias = %q, want %q", got, want)
+	}
+}
+
+// TestExpandAliasLeavesUnknownNamesAlone so the caller's own error message
+// names what the operator actually typed.
+func TestExpandAliasLeavesUnknownNamesAlone(t *testing.T) {
+	t.Setenv("MUSTER_HOME", t.TempDir())
+	t.Setenv("MUSTER_DEVICE_NAME", "personal")
+	exists := func(string) bool { return false }
+	if got, want := expandAlias("typo", exists), "typo"; got != want {
+		t.Fatalf("expandAlias = %q, want %q", got, want)
+	}
+}

@@ -87,7 +87,10 @@ func cmdEvents(args []string, out io.Writer) error {
 		return fmt.Errorf("usage: muster events [--agent <alias>] [--kind <kind>] [--thread <id>] [--limit <n>] [--aliases] [--full-time] [--width <cols>]")
 	}
 	agent, kind, thread, limit, aliases, fullTime, width := v.agent, v.kind, v.thread, v.limit, v.aliases, v.fullTime, v.width
-	page, err := fetchEvents(*agent, *kind, *thread, -1, *limit)
+	// A short local alias must expand before it reaches the daemon's exact
+	// list_events filter, exactly like every other input site.
+	agentArg := expandAlias(*agent, rosterAliasExists())
+	page, err := fetchEvents(agentArg, *kind, *thread, -1, *limit)
 	if err != nil {
 		return err
 	}

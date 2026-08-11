@@ -159,7 +159,8 @@ func cmdReply(args []string, out io.Writer) error {
 		return fmt.Errorf("thread id must be a number, got %q", rest[0])
 	}
 	body := strings.Join(rest[1:], " ")
-	raw, err := callData("reply", map[string]any{"thread_id": id, "from": *from, "body": body, "fyi": *fyi})
+	fromAlias := expandAlias(*from, rosterAliasExists())
+	raw, err := callData("reply", map[string]any{"thread_id": id, "from": fromAlias, "body": body, "fyi": *fyi})
 	if err != nil {
 		return err
 	}

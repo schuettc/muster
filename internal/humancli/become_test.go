@@ -253,6 +253,55 @@ func TestBecomeToExistsErrorHasNoPrefixStutter(t *testing.T) {
 	}
 }
 
+// TestBecomeFromExpandsLocalFirst covers become.go's --from bypass site:
+// this session owns a live seeded alias, and a foreign live alias of the
+// SAME short name also happens to exist on the bus (registered directly,
+// unseeded, standing in for another device's bare row). Typing the short
+// name into --from must claim from THIS session's own live alias, never the
+// foreign one — becomeLiveAliases already restricts candidates to this
+// session's tuple, so this proves the short name expands to the row become
+// is actually allowed to touch, not a same-named row elsewhere on the bus.
+func TestBecomeFromExpandsLocalFirst(t *testing.T) {
+	startTestDaemon(t)
+	t.Setenv("MUSTER_DEVICE_NAME", "personal")
+	t.Setenv("TMUX", "/tmp/sock,1,0")
+	t.Setenv("TMUX_PANE", "%1")
+	prev := tmuxenv.Run
+	tmuxenv.Run = hookRun(map[string]string{"#{session_id}": "$1", "#{session_created}": "100"})
+	t.Cleanup(func() { tmuxenv.Run = prev })
+	if _, err := callData("register_agent", map[string]any{
+		"alias": "personal-cost-audit", "socket_path": "/tmp/sock", "session_id": "$1", "session_created": 100,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// A foreign row with the bare short name, on a DIFFERENT session tuple —
+	// not live on this session, so becomeLiveAliases would never offer it,
+	// but it must also not be what --from "cost-audit" silently expands to.
+	if _, err := callData("register_agent", map[string]any{
+		"alias": "cost-audit", "socket_path": "/tmp/othersock", "session_id": "$9", "session_created": 100,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	if err := Dispatch([]string{"become", "alias-routing", "--from", "cost-audit"}, &buf); err != nil {
+		t.Fatalf("become --from cost-audit: %v", err)
+	}
+	if !strings.Contains(buf.String(), "was 'cost-audit'") {
+		t.Fatalf("output = %q", buf.String())
+	}
+	// The LOCAL row (personal-cost-audit) must be the one retired by become
+	// (superseded); the foreign row must be untouched.
+	local, ok, _ := hookGetAgent("personal-cost-audit")
+	if !ok || local.SupersededBy == "" {
+		t.Fatalf("local row must be retired by the claim, got %+v (ok=%v)", local, ok)
+	}
+	foreign, ok, _ := hookGetAgent("cost-audit")
+	if !ok || foreign.SupersededBy != "" || foreign.Departed {
+		t.Fatalf("foreign row must be untouched, got %+v (ok=%v)", foreign, ok)
+	}
+}
+
 // TestBecomeSeedsTheClaimNotTheInjectedName pins the split inside become: the
 // stored alias carries the device prefix, while the name typed into the pane
 // and reported to the operator stays short. Injecting the seeded name would

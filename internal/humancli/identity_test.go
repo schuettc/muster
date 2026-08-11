@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -142,6 +143,118 @@ func TestDeregisterUsesAliasPrecedence(t *testing.T) {
 	agents := listAgentsForTest(t, sock)
 	if len(agents) != 1 || agents[0].Alias != "gone" || !agents[0].Departed {
 		t.Fatalf("expected 'gone' to survive deregister, tombstoned, got %+v", agents)
+	}
+}
+
+// TestDeregisterExpandsExplicitArgLocalFirst is the self-review case: the
+// roster holds BOTH a local seeded row and a foreign bare row sharing the
+// same short name. `muster deregister work` must depart the LOCAL one — on
+// this machine a short name is mine — never the foreign row a stranger
+// happens to have registered under the bare string.
+func TestDeregisterExpandsExplicitArgLocalFirst(t *testing.T) {
+	sock := startCLITestDaemon(t)
+	t.Setenv("MUSTER_DEVICE_NAME", "personal")
+	registerViaDaemon(t, sock, "personal-work", "/s", "$1")
+	registerViaDaemon(t, sock, "work", "/s2", "$2")
+
+	var buf bytes.Buffer
+	if err := cmdDeregister([]string{"work"}, &buf); err != nil {
+		t.Fatal(err)
+	}
+	agents := listAgentsForTest(t, sock)
+	var local, foreign agentRow
+	for _, a := range agents {
+		switch a.Alias {
+		case "personal-work":
+			local = a
+		case "work":
+			foreign = a
+		}
+	}
+	if !local.Departed {
+		t.Fatalf("local row 'personal-work' must be departed, got %+v", local)
+	}
+	if foreign.Departed {
+		t.Fatalf("foreign row 'work' must survive untouched, got %+v", foreign)
+	}
+}
+
+// TestDeregisterMusterAliasEnvBranchSeeds covers the no-arg $MUSTER_ALIAS
+// branch. This is RECONSTRUCTING the exact alias cmdRegister would have
+// minted for the same env var (register's own MUSTER_ALIAS branch seeds —
+// see cmdRegister), not looking up an operator-typed short name — so the
+// derivation must seed, not expand.
+func TestDeregisterMusterAliasEnvBranchSeeds(t *testing.T) {
+	sock := startCLITestDaemon(t)
+	t.Setenv("MUSTER_DEVICE_NAME", "personal")
+	t.Setenv("MUSTER_ALIAS", "worker")
+	registerViaDaemon(t, sock, "personal-worker", "/s", "$1")
+
+	var buf bytes.Buffer
+	if err := cmdDeregister(nil, &buf); err != nil {
+		t.Fatal(err)
+	}
+	agents := listAgentsForTest(t, sock)
+	if len(agents) != 1 || agents[0].Alias != "personal-worker" || !agents[0].Departed {
+		t.Fatalf("expected 'personal-worker' (the seeded MUSTER_ALIAS derivation) departed, got %+v", agents)
+	}
+}
+
+// TestDeregisterSessionNameBranchSeeds covers the no-arg tmux-session-name
+// branch, mirroring cmdRegister's own derivation of the same value
+// (TestRegisterUsesAliasPrecedenceAndCaptures) — bare `muster deregister`
+// inside the tmux session that registered must find the row it minted, not
+// an unseeded near-miss.
+func TestDeregisterSessionNameBranchSeeds(t *testing.T) {
+	sock := startCLITestDaemon(t)
+	t.Setenv("MUSTER_DEVICE_NAME", "personal")
+	t.Setenv("MUSTER_ALIAS", "")
+	t.Setenv("TMUX", "/tmp/tmux-0/proj-muster,1,0")
+	t.Setenv("TMUX_PANE", "%0")
+	prev := tmuxenv.Run
+	tmuxenv.Run = hookRun(map[string]string{"#{session_id}": "$1", "#{session_name}": "muster-2"})
+	t.Cleanup(func() { tmuxenv.Run = prev })
+	registerViaDaemon(t, sock, "personal-muster-2", "/tmp/tmux-0/proj-muster", "$1")
+
+	var buf bytes.Buffer
+	if err := cmdDeregister(nil, &buf); err != nil {
+		t.Fatal(err)
+	}
+	agents := listAgentsForTest(t, sock)
+	if len(agents) != 1 || agents[0].Alias != "personal-muster-2" || !agents[0].Departed {
+		t.Fatalf("expected 'personal-muster-2' (the seeded session-name derivation) departed, got %+v", agents)
+	}
+}
+
+// TestDeregisterPanelessFallbackBranchSeeds covers the last-resort paneless
+// branch (no tmux, no MUSTER_ALIAS, no harness-owned rows): the cwd
+// basename fallback, mirroring cmdRegister's `seedAlias(h.Alias())` (see
+// cmdRegister's paneless default case).
+func TestDeregisterPanelessFallbackBranchSeeds(t *testing.T) {
+	sock := startCLITestDaemon(t)
+	t.Setenv("MUSTER_DEVICE_NAME", "personal")
+	t.Setenv("MUSTER_ALIAS", "")
+	t.Setenv("CLAUDE_CODE_SESSION_ID", "")
+	// This test process is itself running inside a real tmux pane — without
+	// clearing these, tmuxenv.CaptureEnv would pick up THAT session instead
+	// of exercising the paneless fallback this test targets.
+	t.Setenv("TMUX", "")
+	t.Setenv("TMUX_PANE", "")
+	dir := t.TempDir()
+	work := dir + "/some-project"
+	if err := os.MkdirAll(work, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(work)
+	registerViaDaemon(t, sock, "personal-some-project", "", "")
+
+	var buf bytes.Buffer
+	if err := cmdDeregister(nil, &buf); err != nil {
+		t.Fatal(err)
+	}
+	agents := listAgentsForTest(t, sock)
+	if len(agents) != 1 || agents[0].Alias != "personal-some-project" || !agents[0].Departed {
+		t.Fatalf("expected 'personal-some-project' (the seeded cwd-basename fallback) departed, got %+v", agents)
 	}
 }
 

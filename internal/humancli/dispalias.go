@@ -1,6 +1,10 @@
 package humancli
 
-import "github.com/schuettc/muster/internal/device"
+import (
+	"encoding/json"
+
+	"github.com/schuettc/muster/internal/device"
+)
 
 // dispAlias renders one alias for a human: this machine's prefix comes off,
 // anything else is left alone. For a single-alias message ("registered X")
@@ -46,4 +50,49 @@ func aliasDisplay(aliases []string) map[string]string {
 		}
 	}
 	return short
+}
+
+// expandAlias turns a name typed on this machine into the alias actually
+// stored, trying <device>-<given> before the literal given.
+//
+// Local-first is the invariant, not an optimisation: on this machine a short
+// name is mine. Exact-first would be strictly additive and never change what
+// resolves today, but it would make that promise conditional on what another
+// machine happens to have registered — and in the case where one holds the
+// bare string, the operator silently reaches a stranger's agent instead of
+// their own. That is the action-at-a-distance this design removes.
+//
+// An unknown name is returned unchanged so the caller's error names what was
+// actually typed, not a prefixed string the operator never wrote.
+func expandAlias(given string, exists func(string) bool) string {
+	if given == "" || exists == nil {
+		return given
+	}
+	if seeded := device.Seed(device.Name(), given); seeded != given && exists(seeded) {
+		return seeded
+	}
+	return given
+}
+
+// rosterAliasExists fetches the live roster and returns an `exists`
+// predicate over it for expandAlias, for the input sites that do not
+// already have a roster fetch of their own in hand (resolveVia builds its
+// own from the rows it already fetched). A roster fetch failure degrades to
+// "nothing exists" rather than blocking the caller — expandAlias then
+// returns the operator's literal input unchanged, exactly like an unknown
+// name.
+func rosterAliasExists() func(string) bool {
+	raw, err := callData("list_agents", nil)
+	if err != nil {
+		return func(string) bool { return false }
+	}
+	var rows []agentRow
+	if json.Unmarshal(raw, &rows) != nil {
+		return func(string) bool { return false }
+	}
+	set := make(map[string]bool, len(rows))
+	for _, r := range rows {
+		set[r.Alias] = true
+	}
+	return func(a string) bool { return set[a] }
 }

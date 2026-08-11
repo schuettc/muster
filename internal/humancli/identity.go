@@ -181,6 +181,15 @@ func cmdRegister(args []string, out io.Writer) error {
 // cmdDeregister removes an agent's registration. Alias precedence mirrors
 // register: explicit arg → $MUSTER_ALIAS → tmux session name → working
 // directory basename (paneless fallback).
+//
+// The explicit arg is a name an operator TYPED, possibly short — it goes
+// through expandAlias, local-first, exactly like resolveVia. The other three
+// branches instead RECONSTRUCT the exact alias cmdRegister would have minted
+// for this same session (they mirror register's own precedence, seeding
+// each derived value just as register does — see seedAlias and hookAlias,
+// which apply the identical rule for the hook-driven SessionEnd path). That
+// is seeding, not lookup: the goal is not "find something matching this
+// short name" but "reproduce the one alias this session is known to own".
 func cmdDeregister(args []string, out io.Writer) error {
 	if helpRequested(args) {
 		return HelpFor("deregister", out)
@@ -188,11 +197,11 @@ func cmdDeregister(args []string, out io.Writer) error {
 	alias := ""
 	switch {
 	case len(args) > 0:
-		alias = args[0]
+		alias = expandAlias(args[0], rosterAliasExists())
 	case os.Getenv("MUSTER_ALIAS") != "":
-		alias = os.Getenv("MUSTER_ALIAS")
+		alias = seedAlias(os.Getenv("MUSTER_ALIAS"))
 	default:
-		alias = tmuxenv.CaptureEnv().SessionName
+		alias = seedAlias(tmuxenv.CaptureEnv().SessionName)
 		if alias == "" {
 			// No tmux: this session's alias may be handshake- or
 			// suffix-allocated, so resolve through the roster by harness
@@ -201,7 +210,7 @@ func cmdDeregister(args []string, out io.Writer) error {
 			if owned := harnessOwnedRows(h.SessionID); len(owned) > 0 {
 				alias = owned[0].Alias
 			} else {
-				alias = h.Alias()
+				alias = seedAlias(h.Alias())
 			}
 		}
 	}

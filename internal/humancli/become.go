@@ -70,6 +70,15 @@ func cmdBecome(args []string, out io.Writer) error {
 		default:
 			return fmt.Errorf("this session has aliases %s; pass --from <alias>", strings.Join(live, ", "))
 		}
+	} else {
+		// A typed --from may be short; expand it local-first against this
+		// session's own live aliases, exactly the same operation resolveVia
+		// applies to every other input site.
+		liveSet := make(map[string]bool, len(live))
+		for _, a := range live {
+			liveSet[a] = true
+		}
+		fromAlias = expandAlias(fromAlias, func(a string) bool { return liveSet[a] })
 	}
 
 	// The CLAIM is seeded; the injected harness name and the confirmation are
