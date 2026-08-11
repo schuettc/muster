@@ -317,3 +317,61 @@ func TestBecomeSeedsTheClaimNotTheInjectedName(t *testing.T) {
 		t.Fatalf("re-seeded claim = %q, want %q", got, want)
 	}
 }
+
+// TestBecomeInjectsTheStrippedNameForAFullAlias is the round trip
+// device.Seed's idempotence guard exists to support: an operator reads a full
+// alias off ANOTHER machine (where it renders unstripped) and pastes it back
+// here. The claim underneath is identical either way — that is what
+// idempotence buys — but the name typed into the pane is a human surface, and
+// injecting the pasted prefix puts the device name straight back into the
+// title bar this design clears. `become galley/design` and
+// `become testdev-galley/design` must therefore type the SAME thing.
+func TestBecomeInjectsTheStrippedNameForAFullAlias(t *testing.T) {
+	startTestDaemon(t)
+	t.Setenv("MUSTER_DEVICE_NAME", "testdev")
+	t.Setenv("TMUX", "/tmp/sock,1,0")
+	t.Setenv("TMUX_PANE", "%5")
+	if _, err := callData("register_agent", map[string]any{
+		"alias": "muster-2", "socket_path": "/tmp/sock", "session_id": "$1",
+		"pane_id": "%5", "model_type": "claude", "session_created": 1700000000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var sent [][]string
+	prev := tmuxenv.Run
+	tmuxenv.Run = func(args ...string) (string, error) {
+		last := args[len(args)-1]
+		switch last {
+		case "#{session_id}":
+			return "$1", nil
+		case "#{pane_id}":
+			return "%5", nil
+		case "#{session_created}":
+			return "1700000000", nil
+		}
+		if len(args) > 2 && args[2] == "send-keys" {
+			sent = append(sent, append([]string(nil), args...))
+		}
+		return "", nil
+	}
+	t.Cleanup(func() { tmuxenv.Run = prev })
+
+	var buf bytes.Buffer
+	if err := Dispatch([]string{"become", "testdev-galley/design"}, &buf); err != nil {
+		t.Fatalf("become: %v", err)
+	}
+	if len(sent) != 2 {
+		t.Fatalf("expected /rename type + Enter submit, got %v", sent)
+	}
+	if got := sent[0][len(sent[0])-1]; got != "/rename galley/design" {
+		t.Fatalf("typed %q, want %q — the device prefix must not be re-injected", got, "/rename galley/design")
+	}
+	// The claim itself is the seeded form, unchanged by the paste.
+	if ag, ok, _ := hookGetAgent("testdev-galley/design"); !ok || ag.Departed {
+		t.Fatalf("claimed row = %+v (ok=%v)", ag, ok)
+	}
+	if !strings.Contains(buf.String(), "you are now 'galley/design'") {
+		t.Fatalf("expected the stripped claim summary, got %q", buf.String())
+	}
+}

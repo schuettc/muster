@@ -85,7 +85,15 @@ func cmdBecome(args []string, out io.Writer) error {
 	// not. syncAgentName sets the tmux/harness session name, which is a human
 	// surface and the identity `proj` reads — it must stay short, or the
 	// prefix reappears in exactly the title bar this design clears.
+	//
+	// Both derive from `claim`, not from the raw `to`: a full alias read off
+	// ANOTHER machine and pasted back here is a supported input (it is the
+	// round trip Seed's idempotence guard exists for), and it already carries
+	// the prefix, so `to` is not reliably short. dispAlias(claim) is "the
+	// stored alias as a human sees it", which is exactly what both surfaces
+	// want and is identical for a short and a full input.
 	claim := seedAlias(to)
+	shown := dispAlias(claim)
 	raw, err := callData("become", map[string]any{"from": fromAlias, "to": claim})
 	if err != nil {
 		return err
@@ -104,9 +112,9 @@ func cmdBecome(args []string, out io.Writer) error {
 	// statusline promoting a /rename the agent itself typed) — re-injecting
 	// would loop the same text back into the pane.
 	if !*noInject {
-		syncAgentName(out, to, c.SocketPath, c.SessionID)
+		syncAgentName(out, shown, c.SocketPath, c.SessionID)
 	}
-	_, err = fmt.Fprintf(out, "you are now '%s' (was '%s') — %d unread thread(s)\n", dispAlias(to), dispAlias(fromAlias), res.Unread)
+	_, err = fmt.Fprintf(out, "you are now '%s' (was '%s') — %d unread thread(s)\n", shown, dispAlias(fromAlias), res.Unread)
 	return err
 }
 
