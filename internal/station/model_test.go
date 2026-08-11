@@ -330,3 +330,36 @@ func TestDispLabelStripsTheLocalDevicePrefix(t *testing.T) {
 		t.Fatalf("dispLabel of a foreign alias = %q, want %q", got, want)
 	}
 }
+
+// TestDispLabelFallsBackToFullOnStrippedAliasCollision: two DIFFERENT agents
+// must never render identically just because stripping this machine's prefix
+// off one of them happens to match the other's bare alias — "personal-relay"
+// (a seeded local row) and "relay" (a legacy pre-device-naming row, or a bare
+// alias from a device that never adopted a name) both strip/pass-through to
+// "relay", and a roster showing one live agent's name twice is worse than one
+// showing a prefix (spec §5-LOCK item 7's "who → who" guarantee, same rule
+// aliasDisplay enforces in internal/humancli/dispalias.go). Both colliding
+// sides fall back to their full, unstripped alias. A third, non-colliding
+// alias ("personal-other") is included to prove the fallback is collision-
+// scoped, not a roster-wide kill switch on stripping.
+func TestDispLabelFallsBackToFullOnStrippedAliasCollision(t *testing.T) {
+	t.Setenv("MUSTER_HOME", t.TempDir())
+	t.Setenv("MUSTER_DEVICE_NAME", "personal")
+	m := NewModel(fakeCaller{}, Options{Aliases: true})
+	next, _ := m.Update(agentsMsg{rows: []agentEnriched{
+		{Alias: "personal-relay"},
+		{Alias: "relay"},
+		{Alias: "personal-other"},
+	}})
+	m = mustModel(t, next)
+
+	if got, want := m.dispLabel("personal-relay"), "personal-relay"; got != want {
+		t.Fatalf("dispLabel(personal-relay) = %q, want %q (full form on collision)", got, want)
+	}
+	if got, want := m.dispLabel("relay"), "relay"; got != want {
+		t.Fatalf("dispLabel(relay) = %q, want %q (full form on collision)", got, want)
+	}
+	if got, want := m.dispLabel("personal-other"), "other"; got != want {
+		t.Fatalf("dispLabel(personal-other) = %q, want %q (unaffected, non-colliding alias still strips)", got, want)
+	}
+}
