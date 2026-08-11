@@ -8,6 +8,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/schuettc/muster/internal/device"
 	"github.com/schuettc/muster/internal/display"
 	"github.com/schuettc/muster/internal/render"
 )
@@ -338,7 +339,10 @@ func (m Model) renderQuitAgentLine(cursorMark string, a agentEnriched, innerW in
 	if avail < 1 {
 		avail = 1
 	}
-	label := display.Sanitize(a.Alias, avail) // REAL NAME: the alias, never a stale label
+	// REAL NAME: the alias, never a stale label — but still display text on a
+	// human surface, so this machine's device prefix comes off exactly as it
+	// does everywhere dispLabel renders an alias directly.
+	label := display.Sanitize(device.Strip(device.Name(), a.Alias), avail)
 	padded := render.PadDisplay(prefix+label+suffix, innerW)
 	return quitAgentLineStyle.Render(padded)
 }

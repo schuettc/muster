@@ -314,3 +314,19 @@ func TestDispToTargetScopedBroadcast(t *testing.T) {
 		t.Fatalf("got %q, want broadcast", got)
 	}
 }
+
+// TestDispLabelStripsTheLocalDevicePrefix: station is a human surface, so this
+// machine's rows read short there exactly as they do in the CLI. Station never
+// decodes device_id, and does not need to — only this machine mints this
+// prefix, so the prefix alone identifies a local row.
+func TestDispLabelStripsTheLocalDevicePrefix(t *testing.T) {
+	t.Setenv("MUSTER_HOME", t.TempDir())
+	t.Setenv("MUSTER_DEVICE_NAME", "personal")
+	m := Model{opts: Options{Aliases: true}}
+	if got, want := m.dispLabel("personal-dotfiles/main"), "dotfiles/main"; got != want {
+		t.Fatalf("dispLabel = %q, want %q", got, want)
+	}
+	if got, want := m.dispLabel("work-dotfiles/main"), "work-dotfiles/main"; got != want {
+		t.Fatalf("dispLabel of a foreign alias = %q, want %q", got, want)
+	}
+}

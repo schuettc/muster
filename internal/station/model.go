@@ -20,6 +20,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/schuettc/muster/internal/device"
 	"github.com/schuettc/muster/internal/nudge"
 	"github.com/schuettc/muster/internal/render"
 )
@@ -1500,6 +1501,12 @@ func (m Model) applyInboxAck(msg inboxAckMsg) Model {
 // ambiguous (spec §5-LOCK item 7) — the ONE shared helper every label-
 // rendering call site in the package goes through, so "who → who" can never
 // read as nonsense regardless of where it renders.
+//
+// alias is always the full, stored form (m.labels and m.labelCollide are
+// keyed by it) — station is a human surface, so this machine's device
+// prefix comes off wherever a raw alias would otherwise render: the
+// no-label/Aliases-mode fallback, and the alias inside the "label (alias)"
+// collision fallback. A label itself is never stripped; it isn't an alias.
 func (m Model) dispLabel(alias string) string {
 	base := alias
 	if !m.opts.Aliases {
@@ -1508,7 +1515,10 @@ func (m Model) dispLabel(alias string) string {
 		}
 	}
 	if base != alias && m.labelCollide[alias] {
-		return base + " (" + alias + ")"
+		return base + " (" + device.Strip(device.Name(), alias) + ")"
+	}
+	if base == alias {
+		return device.Strip(device.Name(), alias)
 	}
 	return base
 }
