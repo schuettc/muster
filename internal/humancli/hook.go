@@ -304,7 +304,7 @@ func hookSessionStartPaneless(h harnessenv.Capture, model string) {
 		return err
 	}
 	if alias := os.Getenv("MUSTER_ALIAS"); alias != "" {
-		_ = regFn(alias, false)
+		_ = regFn(seedAlias(alias), false)
 		return
 	}
 	if h.SessionID == "" && h.Alias() == "" {
@@ -330,15 +330,26 @@ func hookSessionStartPaneless(h harnessenv.Capture, model string) {
 			return
 		}
 	}
-	_, _ = allocPanelessAlias(h.Alias(), h.SessionID, regFn)
+	// Same rule as cmdRegister's paneless fallback: the base is a raw cwd
+	// basename, identical on any two machines with the same directory
+	// checked out, so it is seeded before allocation like every other mint
+	// site — this is the SessionStart hook's own paneless registration path,
+	// the way daemon-hosted (no tmux pane) sessions actually register in
+	// production.
+	_, _ = allocPanelessAlias(seedAlias(h.Alias()), h.SessionID, regFn)
 }
 
 // hookAlias resolves the identity a hook event acts on, mirroring
 // cmdRegister/cmdDeregister's no-arg precedence: $MUSTER_ALIAS, else the
 // captured tmux session name.
+//
+// Both branches seed. Every alias this machine mints is seeded — there is no
+// carve-out for an explicit choice, because once the prefix is hidden locally
+// an operator cannot tell a device-scoped name from an unqualified one, and a
+// silent exception here would be invisible at the moment it mattered.
 func hookAlias(c tmuxenv.Capture) string {
 	if v := os.Getenv("MUSTER_ALIAS"); v != "" {
-		return v // explicit operator choice: never rewritten
+		return seedAlias(v)
 	}
 	return seedAlias(c.SessionName)
 }

@@ -43,6 +43,24 @@ func TestHookStopCursorLoopGuard(t *testing.T) {
 	}
 }
 
+// TestHookAliasSeedsExplicitOverrideToo pins the fix for a carve-out that
+// used to survive in hookAlias alone: the derived branch (tmux session name)
+// already seeded, but the $MUSTER_ALIAS branch returned the operator's value
+// raw, on the reasoning that an explicit choice should never be rewritten.
+// That reasoning is exactly what this feature retires — once the prefix is
+// hidden locally, an unseeded $MUSTER_ALIAS would be indistinguishable on
+// screen from a device-scoped one, so hookRegisterPane (the SessionStart
+// hook's own registration path, the way sessions register in production)
+// must seed it like every other mint site.
+func TestHookAliasSeedsExplicitOverrideToo(t *testing.T) {
+	t.Setenv("MUSTER_HOME", t.TempDir())
+	t.Setenv("MUSTER_DEVICE_NAME", "testdev")
+	t.Setenv("MUSTER_ALIAS", "worker")
+	if got, want := hookAlias(tmuxenv.Capture{SessionName: "ignored-when-alias-set"}), "testdev-worker"; got != want {
+		t.Fatalf("hookAlias with $MUSTER_ALIAS set = %q, want %q", got, want)
+	}
+}
+
 func TestHookStopNoTmux(t *testing.T) {
 	t.Setenv("TMUX", "")
 	// Pin the harness identity away: on a dev machine `go test` itself runs

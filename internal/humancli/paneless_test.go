@@ -88,6 +88,7 @@ func TestRegisterPanelessWithoutAnyIdentityStillErrors(t *testing.T) {
 
 func TestHookSessionStartPanelessRegistersFromPayload(t *testing.T) {
 	startTestDaemon(t)
+	t.Setenv("MUSTER_DEVICE_NAME", "testdev")
 	panelessEnv(t, "", "env-dir") // env UUID empty: the payload must carry identity
 
 	payload := `{"session_id":"hs-hook-1","cwd":"/tmp/somewhere/payload-dir"}`
@@ -100,15 +101,20 @@ func TestHookSessionStartPanelessRegistersFromPayload(t *testing.T) {
 		t.Fatalf("expected one paneless registration, got %+v", agents)
 	}
 	a := agents[0]
-	if a.Alias != "payload-dir" || a.SessionID != "hs-hook-1" || a.SocketPath != "" || a.ModelType != "codex" {
+	// The hook's own paneless allocation seeds the cwd-basename base, like
+	// every other mint site.
+	if a.Alias != "testdev-payload-dir" || a.SessionID != "hs-hook-1" || a.SocketPath != "" || a.ModelType != "codex" {
 		t.Fatalf("paneless hook registration shape wrong: %+v", a)
 	}
 }
 
 func TestHookSessionStartPanelessSuffixesPastLiveTmuxOwner(t *testing.T) {
 	startTestDaemon(t)
+	t.Setenv("MUSTER_DEVICE_NAME", "testdev")
+	// Seeded to match what the paneless hook will seed the cwd basename
+	// "owner-dir" to below, so the collision is genuine.
 	if _, err := callData("register_agent", map[string]any{
-		"alias": "owner-dir", "socket_path": "/tmp/sockOwn", "session_id": "$1", "pane_id": "%1",
+		"alias": "testdev-owner-dir", "socket_path": "/tmp/sockOwn", "session_id": "$1", "pane_id": "%1",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -121,11 +127,11 @@ func TestHookSessionStartPanelessSuffixesPastLiveTmuxOwner(t *testing.T) {
 	if err := cmdHook([]string{"SessionStart"}, strings.NewReader(`{"session_id":"hs-thief","cwd":"`+"/x/owner-dir"+`"}`), &buf); err != nil {
 		t.Fatalf("SessionStart: %v", err)
 	}
-	ag, found, _ := hookGetAgent("owner-dir")
+	ag, found, _ := hookGetAgent("testdev-owner-dir")
 	if !found || ag.SessionID != "$1" || ag.SocketPath != "/tmp/sockOwn" {
 		t.Fatalf("a live tmux owner must keep the alias, got %+v found=%v", ag, found)
 	}
-	suf, found, _ := hookGetAgent("owner-dir-2")
+	suf, found, _ := hookGetAgent("testdev-owner-dir-2")
 	if !found || suf.SessionID != "hs-thief" || suf.SocketPath != "" {
 		t.Fatalf("the paneless session must allocate the next suffix, got %+v found=%v", suf, found)
 	}
@@ -133,6 +139,7 @@ func TestHookSessionStartPanelessSuffixesPastLiveTmuxOwner(t *testing.T) {
 
 func TestHookSessionStartPanelessAllocatesUniqueAliases(t *testing.T) {
 	startTestDaemon(t)
+	t.Setenv("MUSTER_DEVICE_NAME", "testdev")
 	panelessEnv(t, "", "shared-dir")
 	start := func(uuid string) {
 		t.Helper()
@@ -146,20 +153,23 @@ func TestHookSessionStartPanelessAllocatesUniqueAliases(t *testing.T) {
 	start("hs-three") // third session: next suffix again
 	start("hs-two")   // resume: must refresh its own alias, not allocate a fourth
 
-	want := map[string]string{"shared-dir": "hs-one", "shared-dir-2": "hs-two", "shared-dir-3": "hs-three"}
+	// The seeded base is what the whole allocated family carries the prefix
+	// on: testdev-shared-dir, testdev-shared-dir-2, ...
+	want := map[string]string{"testdev-shared-dir": "hs-one", "testdev-shared-dir-2": "hs-two", "testdev-shared-dir-3": "hs-three"}
 	for alias, uuid := range want {
 		ag, found, _ := hookGetAgent(alias)
 		if !found || ag.SessionID != uuid || ag.SocketPath != "" || ag.Departed {
 			t.Fatalf("%s: want live paneless row for %s, got %+v found=%v", alias, uuid, ag, found)
 		}
 	}
-	if _, found, _ := hookGetAgent("shared-dir-4"); found {
-		t.Fatal("a resumed session must reuse its alias, not allocate shared-dir-4")
+	if _, found, _ := hookGetAgent("testdev-shared-dir-4"); found {
+		t.Fatal("a resumed session must reuse its alias, not allocate testdev-shared-dir-4")
 	}
 }
 
 func TestHookSessionStartPanelessRevivesOwnTombstoneOnResume(t *testing.T) {
 	startTestDaemon(t)
+	t.Setenv("MUSTER_DEVICE_NAME", "testdev")
 	panelessEnv(t, "", "revive-dir")
 	payload := `{"session_id":"hs-rev","cwd":"/x/revive-dir"}`
 	var buf bytes.Buffer
@@ -169,17 +179,17 @@ func TestHookSessionStartPanelessRevivesOwnTombstoneOnResume(t *testing.T) {
 	if err := cmdHook([]string{"SessionEnd"}, strings.NewReader(payload), &buf); err != nil {
 		t.Fatal(err)
 	}
-	if ag, _, _ := hookGetAgent("revive-dir"); !ag.Departed {
+	if ag, _, _ := hookGetAgent("testdev-revive-dir"); !ag.Departed {
 		t.Fatalf("setup: expected tombstone after SessionEnd, got %+v", ag)
 	}
 	if err := cmdHook([]string{"SessionStart"}, strings.NewReader(payload), &buf); err != nil {
 		t.Fatal(err)
 	}
-	ag, found, _ := hookGetAgent("revive-dir")
+	ag, found, _ := hookGetAgent("testdev-revive-dir")
 	if !found || ag.Departed || ag.SessionID != "hs-rev" {
 		t.Fatalf("resume must revive the session's own tombstone, got %+v found=%v", ag, found)
 	}
-	if _, found, _ := hookGetAgent("revive-dir-2"); found {
+	if _, found, _ := hookGetAgent("testdev-revive-dir-2"); found {
 		t.Fatal("revival must not allocate a suffix")
 	}
 }
