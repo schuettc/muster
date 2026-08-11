@@ -473,6 +473,12 @@ func (d *Daemon) noteRosterChange(req proto.Request) {
 	if alias == "" {
 		return
 	}
+	// Every alias this op can mint or remove is exactly the set
+	// expandAgentTarget's cache exists to check against, so any successful
+	// roster op invalidates it here — before the op-specific branches below,
+	// which additionally require a tmux tuple and so would miss a
+	// tuple-less registration (still a real, expandable alias upstream).
+	d.invalidateAliasCache()
 	switch req.Op {
 	case "register_agent":
 		socketPath, sessionID := str(req.Args, "socket_path"), str(req.Args, "session_id")
@@ -490,6 +496,25 @@ func (d *Daemon) noteRosterChange(req proto.Request) {
 		defer d.localMu.Unlock()
 		delete(d.localAgents, alias)
 	}
+}
+
+// invalidateAliasCache drops expandAgentTarget's cached roster so the next
+// expansion re-fetches from upstream rather than trusting a snapshot that
+// predates a registration change this daemon just forwarded. Called from
+// noteRosterChange, which forward invokes synchronously and without holding
+// aliasMu (expandAgentTarget, the cache's only other user, always releases
+// aliasMu before forward's upstream call happens) — so this cannot deadlock
+// against the refresh path in aliasesForExpansion, and the two never nest.
+//
+// It clears the field rather than deleting keys from the existing map,
+// matching aliasesForExpansion's contract: a published map is never mutated
+// in place (a concurrent reader could be mid-range over it), only replaced
+// or, here, cleared to nil so the next read is forced through a real
+// refresh.
+func (d *Daemon) invalidateAliasCache() {
+	d.aliasMu.Lock()
+	d.aliasSet, d.aliasAt = nil, time.Time{}
+	d.aliasMu.Unlock()
 }
 
 // hasLocalAgents reports whether this device has an agent whose pane could be
