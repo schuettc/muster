@@ -29,6 +29,13 @@ func aliasDisplay(aliases []string) map[string]string {
 	short := make(map[string]string, len(aliases))
 	count := make(map[string]int, len(aliases))
 	for _, a := range aliases {
+		// Count DISTINCT aliases, not occurrences: the same alias legitimately
+		// appears more than once in one view (a thread's FROM and LAST-FROM
+		// often match), and counting every occurrence would make that alias
+		// collide with itself, sending it back to full form for no reason.
+		if _, seen := short[a]; seen {
+			continue
+		}
 		s := device.Strip(name, a)
 		short[a] = s
 		count[s]++

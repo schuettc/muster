@@ -31,6 +31,19 @@ func TestAliasDisplayKeepsCollidingRowsInFull(t *testing.T) {
 	}
 }
 
+// TestAliasDisplayDuplicateAliasStillStrips guards against counting
+// OCCURRENCES instead of DISTINCT aliases: the same alias legitimately
+// appears twice in one view (a thread's FROM and LAST-FROM commonly match),
+// and that must not be treated as a collision with itself.
+func TestAliasDisplayDuplicateAliasStillStrips(t *testing.T) {
+	t.Setenv("MUSTER_HOME", t.TempDir())
+	t.Setenv("MUSTER_DEVICE_NAME", "personal")
+	d := aliasDisplay([]string{"personal-dotfiles/main", "personal-dotfiles/main"})
+	if got, want := d["personal-dotfiles/main"], "dotfiles/main"; got != want {
+		t.Fatalf("duplicate (non-colliding) alias rendered %q, want %q", got, want)
+	}
+}
+
 // TestDispAliasStripsWithoutAView covers the single-alias confirmations
 // ("registered X"), where no other row is on screen to collide with.
 func TestDispAliasStripsWithoutAView(t *testing.T) {

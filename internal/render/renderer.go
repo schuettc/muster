@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/schuettc/muster/internal/device"
 	"github.com/schuettc/muster/internal/display"
 )
 
@@ -107,20 +108,27 @@ func (r *Renderer) fit(e EventRow) {
 }
 
 // disp resolves an alias for display: the agent's current label when one is
-// known (pinned or auto topic), the alias otherwise. Labels resolve at
+// known (pinned or auto topic), the alias otherwise — with this machine's
+// device-name prefix stripped, exactly like the rest of the CLI's human
+// surfaces (internal/humancli's dispAlias/aliasDisplay). Labels resolve at
 // render time, so old events show whoever the agent is *today* — use
-// --aliases for the stable raw view.
+// --aliases for the stable raw view (still stripped: --aliases only turns
+// off label resolution, it does not re-expose the wire-format alias).
 func (r *Renderer) disp(alias string) string {
 	if !r.aliases {
 		if l := r.labels[alias]; l != "" {
 			return l
 		}
 	}
-	return alias
+	return device.Strip(device.Name(), alias)
 }
 
 // dispTarget renders a journal target ('agent:x' / 'role:r' / 'broadcast' /
-// 'broadcast:<project>' / bare alias) for display.
+// 'broadcast:<project>' / bare alias) for display. Only the 'agent:' and
+// bare-alias forms carry an alias — role names and broadcast/project scopes
+// are never run through disp/device.Strip, since they are not aliases and a
+// role or project name that happened to share this device's prefix must not
+// be mangled.
 func (r *Renderer) dispTarget(target string) string {
 	if a, ok := strings.CutPrefix(target, "agent:"); ok {
 		return r.disp(a)
