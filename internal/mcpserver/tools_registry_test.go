@@ -10,9 +10,15 @@ import (
 	"github.com/schuettc/muster/internal/tmuxenv"
 )
 
-// TestMCPRegistrationSeedsTheModelSuppliedAlias closes the hole this task
-// exists for: a model registering the same name from two machines would
-// otherwise take the other machine's row, and its inbox with it.
+// TestMCPRegistrationSeedsTheModelSuppliedAlias pins device.SeedMinted's own
+// contract in isolation — it calls SeedMinted directly and would pass even if
+// registerAgentHandler never called it. The wiring into the two MCP mint
+// sites is what actually closes the hole this task exists for (a model
+// registering the same name from two machines taking the other machine's row
+// and its inbox with it); that wiring is covered separately by
+// TestRegisterAgentFreshPaneRegisters (register_agent),
+// TestRegisterAgentBecomeClaimsThroughPaneGuard (become), and
+// TestRegisterAgentBareAliasMatchesSeededRow (the already-registered guard).
 func TestMCPRegistrationSeedsTheModelSuppliedAlias(t *testing.T) {
 	t.Setenv("MUSTER_HOME", t.TempDir())
 	t.Setenv("MUSTER_DEVICE_NAME", "personal")
@@ -59,6 +65,7 @@ func TestRegisterAgentCapturesTmuxEnv(t *testing.T) {
 func TestRegisterAgentIdempotentForRegisteredPane(t *testing.T) {
 	t.Setenv("TMUX", "/tmp/sock,1,0")
 	t.Setenv("TMUX_PANE", "%14")
+	t.Setenv("MUSTER_DEVICE_NAME", "personal") // isolate the guard's seeded comparison from this machine's real config
 	prevCall := callDaemon
 	t.Cleanup(func() { callDaemon = prevCall })
 	prevRun := tmuxenv.Run
@@ -158,7 +165,11 @@ func TestRegisterAgentSameAliasStillUpserts(t *testing.T) {
 	callDaemon = func(op string, _ map[string]any) (json.RawMessage, error) {
 		switch op {
 		case "list_agents":
-			return json.RawMessage(`[{"alias":"timewalk-2","model_type":"claude","socket_path":"/tmp/sock","pane_id":"%14","session_id":"$1","departed":false}]`), nil
+			// The stored row's alias is the SEEDED form — the only form the
+			// MCP mint path can ever write. A bare fixture here would no
+			// longer cover the production case: see
+			// TestRegisterAgentBareAliasMatchesSeededRow for that guard.
+			return json.RawMessage(`[{"alias":"personal-timewalk-2","model_type":"claude","socket_path":"/tmp/sock","pane_id":"%14","session_id":"$1","departed":false}]`), nil
 		case "register_agent":
 			registered = true
 			return json.RawMessage(`null`), nil
@@ -171,6 +182,66 @@ func TestRegisterAgentSameAliasStillUpserts(t *testing.T) {
 	}
 	if !registered {
 		t.Fatal("same-alias call must still upsert (refresh)")
+	}
+}
+
+// TestRegisterAgentBareAliasMatchesSeededRow covers the realistic already-
+// registered case the MCP mint path actually produces: the stored row's alias
+// is SEEDED ("personal-researcher"), but a model re-registering quotes the
+// same bare name it originally supplied ("researcher") — which is exactly
+// what the tool's own description invites ("Calling it from an
+// already-registered pane returns your existing identity"). The guard must
+// compare against the seeded form of in.Alias, not the bare form, or every
+// row this path creates becomes permanently unmatchable by its own pane: the
+// call falls through to the refusal branch instead of the upsert/refresh
+// path, losing the revival/unread report.
+func TestRegisterAgentBareAliasMatchesSeededRow(t *testing.T) {
+	t.Setenv("TMUX", "/tmp/sock,1,0")
+	t.Setenv("TMUX_PANE", "%6")
+	t.Setenv("MUSTER_DEVICE_NAME", "personal")
+	prev := tmuxenv.Run
+	tmuxenv.Run = func(args ...string) (string, error) {
+		if args[len(args)-1] == "#{session_id}" {
+			return "$1", nil
+		}
+		return "", nil
+	}
+	t.Cleanup(func() { tmuxenv.Run = prev })
+
+	var registered bool
+	var becomeCalled bool
+	prevDaemon := callDaemon
+	callDaemon = func(op string, _ map[string]any) (json.RawMessage, error) {
+		switch op {
+		case "list_agents":
+			return json.RawMessage(`[{"alias":"personal-researcher","socket_path":"/tmp/sock","session_id":"$1","pane_id":"%6","departed":false}]`), nil
+		case "register_agent":
+			registered = true
+			return json.RawMessage(`{"outcome":"revived","unread":2}`), nil
+		case "become":
+			becomeCalled = true
+			return json.RawMessage(`{}`), nil
+		}
+		t.Fatalf("unexpected op %s", op)
+		return nil, nil
+	}
+	t.Cleanup(func() { callDaemon = prevDaemon })
+
+	_, out, err := registerAgentHandler(context.TODO(), nil, RegisterAgentIn{Alias: "researcher", Role: "producer", ModelType: "claude"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if becomeCalled {
+		t.Fatal("bare alias matching the seeded stored row must take the upsert path, not become")
+	}
+	if !registered {
+		t.Fatal("bare alias matching the seeded stored row must upsert/refresh via register_agent, not refuse")
+	}
+	if strings.Contains(out.Detail, "already registered") {
+		t.Fatalf("Detail = %q, must not refuse a pane re-registering its own seeded alias by its bare form", out.Detail)
+	}
+	if !strings.Contains(out.Detail, "revived") || !strings.Contains(out.Detail, "2 unread") {
+		t.Fatalf("Detail = %q, want revival + unread notice reported for the existing identity", out.Detail)
 	}
 }
 
@@ -216,6 +287,15 @@ func TestRegisterAgentStampsHarnessLinkAndReportsRevival(t *testing.T) {
 	}
 	if !strings.Contains(out.Detail, "revived") || !strings.Contains(out.Detail, "3 unread") {
 		t.Fatalf("Detail = %q, want revival + unread notice", out.Detail)
+	}
+	// Both the revived-outcome and unread-suffix branches of the Detail must
+	// name the SEEDED alias, not the bare model-supplied one — a model
+	// quoting either back (e.g. into get_inbox) must land on the stored row.
+	if !strings.Contains(out.Detail, "reconnected as 'personal-backend'") {
+		t.Fatalf("Detail = %q, want the revived branch to report the seeded alias 'personal-backend'", out.Detail)
+	}
+	if !strings.Contains(out.Detail, "call get_inbox with alias 'personal-backend'") {
+		t.Fatalf("Detail = %q, want the unread branch to report the seeded alias 'personal-backend'", out.Detail)
 	}
 }
 
@@ -309,10 +389,15 @@ func TestRegisterAgentBecomeClaimsThroughPaneGuard(t *testing.T) {
 }
 
 // TestRegisterAgentRefusalAdvertisesBecome: the become:false refusal now
-// tells the agent how to claim instead of dead-ending.
+// tells the agent how to claim instead of dead-ending. The advertised alias
+// must be the SEEDED form, not the model's bare input: it is what the model
+// is told to pass as become:true's target, and the become path itself mints
+// through device.SeedMinted — advertising the bare form would send the model
+// back with an alias that mismatches what become actually claims.
 func TestRegisterAgentRefusalAdvertisesBecome(t *testing.T) {
 	t.Setenv("TMUX", "/tmp/sock,1,0")
 	t.Setenv("TMUX_PANE", "%6")
+	t.Setenv("MUSTER_DEVICE_NAME", "personal") // isolate the refusal's seeded quoting from this machine's real config
 	prev := tmuxenv.Run
 	tmuxenv.Run = func(args ...string) (string, error) {
 		if args[len(args)-1] == "#{session_id}" {
@@ -340,8 +425,8 @@ func TestRegisterAgentRefusalAdvertisesBecome(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.Detail, "pass become:true to claim 'alias-routing'") {
-		t.Fatalf("Detail = %q, want become-advertisement", out.Detail)
+	if !strings.Contains(out.Detail, "pass become:true to claim 'personal-alias-routing'") {
+		t.Fatalf("Detail = %q, want become-advertisement with the seeded alias", out.Detail)
 	}
 }
 

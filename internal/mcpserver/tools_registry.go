@@ -38,9 +38,16 @@ type ListAgentsOut struct {
 
 func registerAgentHandler(_ context.Context, _ *mcp.CallToolRequest, in RegisterAgentIn) (*mcp.CallToolResult, OKOut, error) {
 	c := tmuxenv.CaptureEnv()
-	if row, ok := paneRegistration(c.SocketPath, c.SessionID, c.PaneID, c.SessionCreated); ok && row.Alias != in.Alias {
+	// Minted once, up front: paneRegistration's row.Alias is always the
+	// stored, SEEDED form (both mint sites below seed before writing), while
+	// in.Alias is whatever bare or full string the model supplied. Comparing
+	// row.Alias against bare in.Alias can never match for a row this handler
+	// created, so the guard — and the refusal text it can produce — must both
+	// work off the seeded form.
+	seededAlias := device.SeedMinted(in.Alias)
+	if row, ok := paneRegistration(c.SocketPath, c.SessionID, c.PaneID, c.SessionCreated); ok && row.Alias != seededAlias {
 		if in.Become {
-			to := device.SeedMinted(in.Alias)
+			to := seededAlias
 			raw, err := callDaemon("become", map[string]any{"from": row.Alias, "to": to})
 			if err != nil {
 				return nil, OKOut{}, err
@@ -58,7 +65,7 @@ func registerAgentHandler(_ context.Context, _ *mcp.CallToolRequest, in Register
 		if row.Label != "" {
 			detail = fmt.Sprintf("already registered as '%s' (label '%s')", row.Alias, row.Label)
 		}
-		detail += " — use that alias; not adding a second, or pass become:true to claim '" + in.Alias + "' as this session's name"
+		detail += " — use that alias; not adding a second, or pass become:true to claim '" + seededAlias + "' as this session's name"
 		return nil, OKOut{OK: true, Detail: detail}, nil
 	}
 
@@ -80,7 +87,7 @@ func registerAgentHandler(_ context.Context, _ *mcp.CallToolRequest, in Register
 		socketPath, paneID = "", ""
 		sessionID, project = h.SessionID, h.Project()
 	}
-	alias := device.SeedMinted(in.Alias)
+	alias := seededAlias
 	raw, err := callDaemon("register_agent", map[string]any{
 		"alias":              alias,
 		"role":               in.Role,
