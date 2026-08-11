@@ -1176,9 +1176,6 @@ Append to `internal/humancli/hook_test.go`:
 func TestHookOutputKeepsTheFullAlias(t *testing.T) {
 	t.Setenv("MUSTER_HOME", t.TempDir())
 	t.Setenv("MUSTER_DEVICE_NAME", "personal")
-	if got := dispAlias("personal-dotfiles/main"); got == "personal-dotfiles/main" {
-		t.Skip("dispAlias is not stripping; the display tests cover that")
-	}
 	// The reconnect line must carry the alias the model should call
 	// get_inbox with — the stored one.
 	line := reconnectLine("personal-dotfiles/main", 3)
