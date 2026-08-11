@@ -59,9 +59,11 @@ func TestRegisterPanelessFallsBackToCwdAlias(t *testing.T) {
 		t.Fatalf("paneless register must succeed on the cwd fallback, got %v", err)
 	}
 	// The paneless base is seeded before allocation, like every other mint
-	// site.
-	if !strings.Contains(buf.String(), "registered testdev-wt-alpha (paneless") {
-		t.Fatalf("output must name the seeded alias and the paneless shape, got %q", buf.String())
+	// site — but the confirmation is a human surface, so this machine's own
+	// prefix ("testdev-") is stripped from what's PRINTED. The stored row
+	// (checked below) keeps the full seeded alias.
+	if !strings.Contains(buf.String(), "registered wt-alpha (paneless") {
+		t.Fatalf("output must name the display-stripped alias and the paneless shape, got %q", buf.String())
 	}
 	agents := listAgentsForTest(t, "")
 	if len(agents) != 1 {

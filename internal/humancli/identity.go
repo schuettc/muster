@@ -108,7 +108,7 @@ func cmdRegister(args []string, out io.Writer) error {
 			if ag, ok := firstUnsuperseded(owned); ok {
 				alias = ag.Alias
 				ack := reviveRow(ag, *model)
-				if _, err := fmt.Fprintf(out, "registered %s (existing identity, project %q, model %s)\n", alias, ag.Project, *model); err != nil {
+				if _, err := fmt.Fprintf(out, "registered %s (existing identity, project %q, model %s)\n", dispAlias(alias), ag.Project, *model); err != nil {
 					return err
 				}
 				if s := ack.line(alias); s != "" {
@@ -126,7 +126,7 @@ func cmdRegister(args []string, out io.Writer) error {
 		if alias, err = allocPanelessAlias(seedAlias(h.Alias()), h.SessionID, regFn); err != nil {
 			return err
 		}
-		_, err = fmt.Fprintf(out, "registered %s (paneless, project %q, model %s)\n", alias, h.Project(), *model)
+		_, err = fmt.Fprintf(out, "registered %s (paneless, project %q, model %s)\n", dispAlias(alias), h.Project(), *model)
 		return err
 	}
 	if alias == "" {
@@ -167,7 +167,7 @@ func cmdRegister(args []string, out io.Writer) error {
 	if paneless {
 		shape = "paneless, "
 	}
-	if _, err := fmt.Fprintf(out, "registered %s (%sproject %q, model %s)\n", alias, shape, project, *model); err != nil {
+	if _, err := fmt.Fprintf(out, "registered %s (%sproject %q, model %s)\n", dispAlias(alias), shape, project, *model); err != nil {
 		return err
 	}
 	if s := decodeRegisterAck(raw).line(alias); s != "" {
@@ -211,7 +211,7 @@ func cmdDeregister(args []string, out io.Writer) error {
 	if _, err := callData("deregister_agent", map[string]any{"alias": alias}); err != nil {
 		return err
 	}
-	_, err := fmt.Fprintf(out, "deregistered %s\n", alias)
+	_, err := fmt.Fprintf(out, "deregistered %s\n", dispAlias(alias))
 	return err
 }
 
@@ -298,7 +298,7 @@ func cmdGC(args []string, out io.Writer) error {
 			if _, err := callData("purge_agent", map[string]any{"alias": a.Alias}); err != nil {
 				return err
 			}
-			if _, err := fmt.Fprintf(out, "purged %s\n", a.Alias); err != nil {
+			if _, err := fmt.Fprintf(out, "purged %s\n", dispAlias(a.Alias)); err != nil {
 				return err
 			}
 			purged++
@@ -325,7 +325,7 @@ func cmdGC(args []string, out io.Writer) error {
 			if a.SessionCreated == 0 {
 				reason = "legacy row: no session_created, unprovable incarnation"
 			}
-			if _, err := fmt.Fprintf(out, "tombstoned %s (%s)\n", a.Alias, reason); err != nil {
+			if _, err := fmt.Fprintf(out, "tombstoned %s (%s)\n", dispAlias(a.Alias), reason); err != nil {
 				return err
 			}
 			tombstoned++

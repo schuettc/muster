@@ -97,7 +97,7 @@ func cmdBecome(args []string, out io.Writer) error {
 	if !*noInject {
 		syncAgentName(out, to, c.SocketPath, c.SessionID)
 	}
-	_, err = fmt.Fprintf(out, "you are now '%s' (was '%s') — %d unread thread(s)\n", to, fromAlias, res.Unread)
+	_, err = fmt.Fprintf(out, "you are now '%s' (was '%s') — %d unread thread(s)\n", dispAlias(to), dispAlias(fromAlias), res.Unread)
 	return err
 }
 
