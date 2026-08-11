@@ -123,3 +123,76 @@ func TestIDFailsRatherThanRotatingOnAReadError(t *testing.T) {
 			strings.TrimSpace(string(b)), first)
 	}
 }
+
+// TestAdoptPinsTheHostnameOnce is the drift guard: the seed is stamped into
+// the roster at registration, so it must not follow a hostname that changes
+// after a network collision, a domain join, or a restore.
+func TestAdoptPinsTheHostnameOnce(t *testing.T) {
+	t.Setenv("MUSTER_HOME", t.TempDir())
+	t.Setenv("MUSTER_DEVICE_NAME", "")
+
+	name, adopted, err := device.Adopt()
+	if err != nil {
+		t.Fatalf("Adopt: %v", err)
+	}
+	if !adopted {
+		t.Fatal("first Adopt did not report adopting")
+	}
+	if name == "" {
+		t.Fatal("Adopt returned an empty name")
+	}
+	if got := device.NameConfigured(); got != name {
+		t.Fatalf("NameConfigured after Adopt = %q, want %q", got, name)
+	}
+
+	again, adopted, err := device.Adopt()
+	if err != nil {
+		t.Fatalf("second Adopt: %v", err)
+	}
+	if adopted {
+		t.Fatal("second Adopt reported adopting again; the name must be pinned")
+	}
+	if again != name {
+		t.Fatalf("second Adopt = %q, want the pinned %q", again, name)
+	}
+}
+
+// TestAdoptDefersToAConfiguredName: an operator's choice is never overwritten.
+func TestAdoptDefersToAConfiguredName(t *testing.T) {
+	t.Setenv("MUSTER_HOME", t.TempDir())
+	t.Setenv("MUSTER_DEVICE_NAME", "")
+	if _, err := device.SetName("personal"); err != nil {
+		t.Fatalf("SetName: %v", err)
+	}
+	name, adopted, err := device.Adopt()
+	if err != nil {
+		t.Fatalf("Adopt: %v", err)
+	}
+	if adopted {
+		t.Fatal("Adopt overwrote a configured name")
+	}
+	if name != "personal" {
+		t.Fatalf("Adopt = %q, want %q", name, "personal")
+	}
+}
+
+// TestAdoptHonoursTheEnvOverrideWithoutWriting: $MUSTER_DEVICE_NAME is a
+// single-shell override, so it must not be persisted into the file.
+func TestAdoptHonoursTheEnvOverrideWithoutWriting(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("MUSTER_HOME", home)
+	t.Setenv("MUSTER_DEVICE_NAME", "throwaway")
+	name, adopted, err := device.Adopt()
+	if err != nil {
+		t.Fatalf("Adopt: %v", err)
+	}
+	if adopted {
+		t.Fatal("Adopt persisted an env override")
+	}
+	if name != "throwaway" {
+		t.Fatalf("Adopt = %q, want %q", name, "throwaway")
+	}
+	if _, err := os.Stat(filepath.Join(home, device.NameFileName)); !os.IsNotExist(err) {
+		t.Fatal("Adopt wrote device-name while an env override was set")
+	}
+}

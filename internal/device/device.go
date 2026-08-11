@@ -125,6 +125,38 @@ func SetName(name string) (string, error) {
 	return clean, nil
 }
 
+// Adopt guarantees this machine has a configured device name, taking the
+// sanitized hostname if the operator has not chosen one. It reports the name
+// in force and whether this call is what established it, so a caller can
+// announce the adoption exactly once.
+//
+// Pinning matters more than the name itself. A hostname is not stable — macOS
+// renames a machine when another on the network already answers to that name,
+// and a domain join or a restore from backup can change it too. The device
+// name is stamped into every alias at registration, so a seed that followed a
+// live hostname would silently start registering a machine under a new prefix
+// and orphan every alias and inbox behind the old one. Writing it once makes
+// the seed immutable regardless of what the OS later does.
+//
+// An operator's own choice — the file, or $MUSTER_DEVICE_NAME — is never
+// overwritten. The env override is honoured without being persisted: it is a
+// single-shell override by contract, and writing it would make a throwaway
+// value permanent.
+func Adopt() (string, bool, error) {
+	if n := NameConfigured(); n != "" {
+		return n, false, nil
+	}
+	host, err := os.Hostname()
+	if err != nil {
+		return "", false, fmt.Errorf("device: no configured name and no hostname to adopt: %w", err)
+	}
+	name, err := SetName(host)
+	if err != nil {
+		return "", false, err
+	}
+	return name, true, nil
+}
+
 // Existing returns this device's identifier if one is ALREADY established —
 // $MUSTER_DEVICE_ID, else a persisted device-id file — and "" otherwise. It
 // never generates and never writes, which is the whole point: read-only
