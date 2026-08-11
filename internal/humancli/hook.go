@@ -761,6 +761,15 @@ func stampHarnessLinks(aliases []string, h harnessenv.Capture, socketPath, sessi
 // list holding today's session-name wording (spec §3) — the hook always has
 // something to address.
 //
+// That fallback is SEEDED, because "session name == alias" is no longer true:
+// registration mints seedAlias(<session name>), so the bare name names no
+// roster row. Both consumers need the stored form — hookReason's "call
+// get_inbox with alias '%s'" is a MODEL surface, and hookStopOwnsAnyAlias
+// looks the alias up in the roster. Minting it the same way registration does
+// is what makes the guess land on the row registration created; device.Seed's
+// empty-alias guard keeps an unreachable tmux from producing a bare
+// "<device>-".
+//
 // sessionCreated is the caller's live incarnation, forwarded so the daemon
 // scopes the lineage walk to it (spec §5.1): a legacy row stranded on a
 // recycled session ID is not this conversation's identity and must not be
@@ -776,7 +785,7 @@ func sessionAliasesForHook(socketPath, sessionID string, sessionCreated int64) [
 			return res.Aliases
 		}
 	}
-	return []string{tmuxenv.CurrentSessionName()}
+	return []string{seedAlias(tmuxenv.CurrentSessionName())}
 }
 
 // sessionUnreadForHook calls the session_unread op. ok is false on any

@@ -3,6 +3,7 @@ package humancli
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -311,17 +312,19 @@ func TestHookStopSessionUnreadFailureFallsBackToOptionCount(t *testing.T) {
 
 // TestHookStopSessionAliasesFailureFallsBackToSessionName: the same
 // unresolved-session_id scenario must also fall back session_aliases to
-// today's single session-name wording (spec §3).
+// today's single session-name wording (spec §3) — SEEDED, since the reason
+// text is a model surface and the alias it names has to be the stored one.
 func TestHookStopSessionAliasesFailureFallsBackToSessionName(t *testing.T) {
 	startTestDaemon(t)
+	t.Setenv("MUSTER_DEVICE_NAME", "testdev")
 	t.Setenv("TMUX", "/tmp/sockY,1,0")
 	prev := tmuxenv.Run
 	tmuxenv.Run = hookRun(map[string]string{"@muster_inbox": "2", "#{session_name}": "fallback-session"})
 	t.Cleanup(func() { tmuxenv.Run = prev })
 
 	res := runHook(t)
-	if !strings.Contains(res.Reason, "alias 'fallback-session'") {
-		t.Fatalf("reason must fall back to the session-name wording: %q", res.Reason)
+	if !strings.Contains(res.Reason, "alias 'testdev-fallback-session'") {
+		t.Fatalf("reason must fall back to the seeded session-name wording: %q", res.Reason)
 	}
 	if strings.Contains(res.Reason, "aliases are") {
 		t.Fatalf("fallback must use singular wording, not the multi-alias form: %q", res.Reason)
@@ -1955,5 +1958,45 @@ func TestHookOutputKeepsTheFullAlias(t *testing.T) {
 	}
 	if strings.Contains(line, "'dotfiles/main'") {
 		t.Fatalf("hook line %q used the device-stripped short alias instead of the full one", line)
+	}
+}
+
+// TestSessionAliasesForHookSeedsTheFallback: when session_aliases answers
+// with nothing, the hook still needs SOMETHING to address, and it falls back
+// to the tmux session name. That fallback flows into two places where a bare
+// string is now permanently wrong: hookReason's "call get_inbox with alias
+// '%s'" — a MODEL surface, which must carry the full stored alias — and
+// hookStopOwnsAnyAlias's roster lookups, which match on the stored alias.
+// "session name == alias" stopped being true when every minted alias started
+// carrying this machine's name, so the fallback has to mint the same way
+// registration does.
+func TestSessionAliasesForHookSeedsTheFallback(t *testing.T) {
+	startTestDaemon(t) // empty roster: session_aliases answers with nothing
+	t.Setenv("MUSTER_DEVICE_NAME", "testdev")
+	prev := tmuxenv.Run
+	tmuxenv.Run = hookRun(map[string]string{"#{session_name}": "dotfiles"})
+	t.Cleanup(func() { tmuxenv.Run = prev })
+
+	got := sessionAliasesForHook("/tmp/sock", "$1", 100)
+	want := []string{"testdev-dotfiles"}
+	if len(got) != 1 || got[0] != want[0] {
+		t.Fatalf("fallback aliases = %v, want %v", got, want)
+	}
+}
+
+// TestSessionAliasesForHookFallbackStaysEmptyWithNoSessionName: tmux
+// unreachable means there is no name to seed, and device.Seed's empty-alias
+// guard must keep the fallback from becoming a bare "testdev-" that resolves
+// to nothing and reads as a real alias in the injected hook text.
+func TestSessionAliasesForHookFallbackStaysEmptyWithNoSessionName(t *testing.T) {
+	startTestDaemon(t)
+	t.Setenv("MUSTER_DEVICE_NAME", "testdev")
+	prev := tmuxenv.Run
+	tmuxenv.Run = func(args ...string) (string, error) { return "", errors.New("no tmux") }
+	t.Cleanup(func() { tmuxenv.Run = prev })
+
+	got := sessionAliasesForHook("/tmp/sock", "$1", 100)
+	if len(got) != 1 || got[0] != "" {
+		t.Fatalf("fallback aliases = %q, want a single empty string (nothing to seed)", got)
 	}
 }
