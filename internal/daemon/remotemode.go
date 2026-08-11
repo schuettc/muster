@@ -102,7 +102,7 @@ func (d *Daemon) forward(req proto.Request) proto.Response {
 	if needsDevice(req.Op) {
 		req = d.stampDevice(req)
 	}
-	req = d.expandAgentTarget(req)
+	req = d.expandAliasArg(req)
 
 	resp, err := d.up.Call(context.Background(), req)
 	if err != nil {
@@ -119,24 +119,40 @@ func (d *Daemon) forward(req proto.Request) proto.Response {
 	return resp
 }
 
-// expandableTargetOps are send_message and task_create — the two ops whose
-// to_target names an agent alias when to_kind=="agent" (every other to_kind,
-// e.g. broadcast's project name, is not an alias and must not be touched).
-// This is the same pair resolveAgentTarget (resolve.go) expands for local
-// mode; forward is the ONLY path a remote-mode daemon's requests take, so it
-// is the one place left that must apply the same rule.
-var expandableTargetOps = map[string]bool{
-	"send_message": true, "task_create": true,
+// expandableAliasArgs maps an op to the ONE request argument of its that
+// names an agent alias a short local name may need expanding in. It is the
+// remote-mode mirror of the two local-mode expansion sites:
+//
+//   - to_target on send_message/task_create — the ADDRESSEE, expanded by
+//     resolveAgentTarget (resolve.go). Guarded additionally by to_kind: every
+//     other to_kind, e.g. broadcast's project name, is not an alias and must
+//     not be touched.
+//   - by on task_claim/task_transition and alias on get_inbox — the ACTOR,
+//     expanded by requireKnownAlias (resolve.go).
+//
+// Deliberately absent: `from`. It is gated upstream against the exact string
+// (mcpserver.requireRegisteredFrom), and `muster send --from operator` is the
+// operator's documented escape hatch for sending as an alias nobody
+// registered — expanding it would rewrite a name chosen on purpose.
+//
+// forward is the ONLY path a remote-mode daemon's requests take (serve checks
+// d.up first, see forward's doc), so it is the one place left that must apply
+// these rules.
+var expandableAliasArgs = map[string]string{
+	"send_message":    "to_target",
+	"task_create":     "to_target",
+	"task_claim":      "by",
+	"task_transition": "by",
+	"get_inbox":       "alias",
 }
 
-// expandAgentTarget is remote mode's counterpart to resolveAgentTarget: a
-// forwarded send_message/task_create request never reaches Dispatch (serve
-// checks d.up first, see forward's doc), so resolveAgentTarget's daemon-side
-// alias expansion is never called for it. Without this, a model-supplied
-// short alias (an MCP caller passes to_target straight through with no
-// client-side resolution) reaches the hosted bus literally — and in a
-// multi-device roster, a bare or another device's alias of the same short
-// name is a stranger's agent, not this device's.
+// expandAliasArg is remote mode's counterpart to resolveAgentTarget and
+// requireKnownAlias: a forwarded request never reaches Dispatch, so neither of
+// those runs for it. Without this, a model-supplied short alias (an MCP caller
+// passes these fields straight through with no client-side resolution) reaches
+// the hosted bus literally — and in a multi-device roster, a bare or another
+// device's alias of the same short name is a stranger's agent, not this
+// device's.
 //
 // The rule matches resolve.go exactly: local-first. Try device.Seed against
 // THIS device's name, and use the seeded form only if it already exists in
@@ -153,14 +169,23 @@ var expandableTargetOps = map[string]bool{
 // pay per request (see aliasesForExpansion). Exact short-alias expansion is
 // the whole of what black-hole risk remote mode's single missing backstop
 // covers; the fuller label/project resolution remote mode never had.
-func (d *Daemon) expandAgentTarget(req proto.Request) proto.Request {
-	if d.deviceName == "" || !expandableTargetOps[req.Op] {
+//
+// An already-full alias — the common case, since every model surface reports
+// the seeded form — costs nothing: device.Seed returns it unchanged and this
+// returns before touching the roster cache. Only a genuinely short name pays a
+// lookup, which is what keeps get_inbox (the hottest op here) cheap.
+func (d *Daemon) expandAliasArg(req proto.Request) proto.Request {
+	if d.deviceName == "" {
 		return req
 	}
-	if str(req.Args, "to_kind") != "agent" {
+	key, ok := expandableAliasArgs[req.Op]
+	if !ok {
 		return req
 	}
-	given, _ := req.Args["to_target"].(string)
+	if key == "to_target" && str(req.Args, "to_kind") != "agent" {
+		return req
+	}
+	given, _ := req.Args[key].(string)
 	if given == "" {
 		return req
 	}
@@ -179,25 +204,25 @@ func (d *Daemon) expandAgentTarget(req proto.Request) proto.Request {
 	for k, v := range req.Args {
 		args[k] = v
 	}
-	args["to_target"] = seeded
+	args[key] = seeded
 	req.Args = args
 	return req
 }
 
-// aliasCacheTTL bounds how long expandAgentTarget trusts its cached roster
+// aliasCacheTTL bounds how long expandAliasArg trusts its cached roster
 // before paying a fresh upstream list_agents round trip. Short enough that a
 // peer who just registered becomes expandable within one human-perceptible
 // pause; long enough that a burst of sends — the case this cache exists for —
 // pays that round trip once rather than once per message.
 const aliasCacheTTL = 15 * time.Second
 
-// aliasesForExpansion returns the alias set expandAgentTarget checks a seeded
+// aliasesForExpansion returns the alias set expandAliasArg checks a seeded
 // guess against, refreshing it from upstream when the cache is empty or
 // older than aliasCacheTTL.
 //
 // STALENESS POLICY: ok is false whenever there is nothing trustworthy to
 // check against — no cache has ever been populated, or the refresh attempt
-// just failed — and expandAgentTarget's contract for that is to forward the
+// just failed — and expandAliasArg's contract for that is to forward the
 // input UNEXPANDED, never to fall back to whatever the previous cache
 // contents were. This is the deliberately safe direction: an unexpanded
 // short alias fails loudly at the upstream resolver as an unknown target,
@@ -474,7 +499,7 @@ func (d *Daemon) noteRosterChange(req proto.Request) {
 		return
 	}
 	// Every alias this op can mint or remove is exactly the set
-	// expandAgentTarget's cache exists to check against, so any successful
+	// expandAliasArg's cache exists to check against, so any successful
 	// roster op invalidates it here — before the op-specific branches below,
 	// which additionally require a tmux tuple and so would miss a
 	// tuple-less registration (still a real, expandable alias upstream).
@@ -498,11 +523,11 @@ func (d *Daemon) noteRosterChange(req proto.Request) {
 	}
 }
 
-// invalidateAliasCache drops expandAgentTarget's cached roster so the next
+// invalidateAliasCache drops expandAliasArg's cached roster so the next
 // expansion re-fetches from upstream rather than trusting a snapshot that
 // predates a registration change this daemon just forwarded. Called from
 // noteRosterChange, which forward invokes synchronously and without holding
-// aliasMu (expandAgentTarget, the cache's only other user, always releases
+// aliasMu (expandAliasArg, the cache's only other user, always releases
 // aliasMu before forward's upstream call happens) — so this cannot deadlock
 // against the refresh path in aliasesForExpansion, and the two never nest.
 //

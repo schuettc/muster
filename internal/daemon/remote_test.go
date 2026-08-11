@@ -471,7 +471,7 @@ func (r *registeringUpstream) snap() []proto.Request {
 
 // TestNoteRosterChangeInvalidatesTheAliasCache is task-13 review item 1: a
 // local agent that just registered THROUGH THIS DAEMON must be expandable
-// immediately, not after waiting out aliasCacheTTL. Per expandAgentTarget's
+// immediately, not after waiting out aliasCacheTTL. Per expandAliasArg's
 // doc, forwarding unexpanded is only a safe fallback when the bare name is
 // genuinely unowned upstream — if a foreign device holds a bare row of that
 // same short name, an unexpanded forward is exact-matched upstream and
@@ -1075,5 +1075,106 @@ func TestPollReconcileSkipsTheBatchOnARosterError(t *testing.T) {
 		if op == "session_unread" {
 			t.Fatal("asked upstream for unread with no incarnation to name")
 		}
+	}
+}
+
+// TestForwardExpandsShortActorAliasOnTaskClaim covers the ACTOR half of
+// expandableAliasArgs. `by` names who is claiming, and the store writes it
+// verbatim into entries.from_agent, so an unexpanded short name is recorded
+// upstream as a claimer nobody holds — the same durable phantom local mode's
+// requireKnownAlias prevents. Same two-row roster as the to_target tests: a
+// single row cannot distinguish local-first from "matched the only row there".
+func TestForwardExpandsShortActorAliasOnTaskClaim(t *testing.T) {
+	up := &fakeUpstream{byOp: map[string]proto.Response{
+		"list_agents": {OK: true, Data: []store.Agent{
+			{Alias: "personal-worker", DeviceID: "dev-1"},
+			{Alias: "worker", DeviceID: "dev-9"},
+		}},
+		"task_claim": {OK: true},
+	}}
+	sock := startRemoteNamed(t, up, nil, "personal")
+
+	if _, err := client.Call(sock, proto.Request{Op: "task_claim", Args: map[string]any{
+		"thread_id": float64(1), "by": "worker",
+	}}); err != nil {
+		t.Fatalf("client.Call: %v", err)
+	}
+
+	if got := forwardedArg(t, up, "task_claim", "by"); got != "personal-worker" {
+		t.Fatalf("upstream by = %q, want %q (local-first)", got, "personal-worker")
+	}
+}
+
+// TestForwardExpandsShortActorAliasOnTaskTransition is task_claim's twin —
+// every status change writes the same verbatim from_agent.
+func TestForwardExpandsShortActorAliasOnTaskTransition(t *testing.T) {
+	up := &fakeUpstream{byOp: map[string]proto.Response{
+		"list_agents": {OK: true, Data: []store.Agent{
+			{Alias: "personal-worker", DeviceID: "dev-1"},
+			{Alias: "worker", DeviceID: "dev-9"},
+		}},
+		"task_transition": {OK: true},
+	}}
+	sock := startRemoteNamed(t, up, nil, "personal")
+
+	if _, err := client.Call(sock, proto.Request{Op: "task_transition", Args: map[string]any{
+		"thread_id": float64(1), "by": "worker", "status": "completed",
+	}}); err != nil {
+		t.Fatalf("client.Call: %v", err)
+	}
+
+	if got := forwardedArg(t, up, "task_transition", "by"); got != "personal-worker" {
+		t.Fatalf("upstream by = %q, want %q (local-first)", got, "personal-worker")
+	}
+}
+
+// TestForwardExpandsShortAliasOnGetInbox: without this, a model on a hosted
+// bus asking for its own short alias is answered by the upstream's
+// existence check with an error, where local mode simply expands and hands
+// back the mail. The two modes must agree on what a short name means.
+func TestForwardExpandsShortAliasOnGetInbox(t *testing.T) {
+	up := &fakeUpstream{byOp: map[string]proto.Response{
+		"list_agents": {OK: true, Data: []store.Agent{
+			{Alias: "personal-worker", DeviceID: "dev-1"},
+			{Alias: "worker", DeviceID: "dev-9"},
+		}},
+		"get_inbox": {OK: true},
+	}}
+	sock := startRemoteNamed(t, up, nil, "personal")
+
+	if _, err := client.Call(sock, proto.Request{Op: "get_inbox", Args: map[string]any{
+		"alias": "worker",
+	}}); err != nil {
+		t.Fatalf("client.Call: %v", err)
+	}
+
+	if got := forwardedArg(t, up, "get_inbox", "alias"); got != "personal-worker" {
+		t.Fatalf("upstream alias = %q, want %q (local-first)", got, "personal-worker")
+	}
+}
+
+// TestForwardDoesNotExpandTheSenderAlias pins the boundary of
+// expandableAliasArgs: `from` is NOT in it. send_message's from is gated
+// upstream by requireRegisteredFrom against the exact string, and a CLI
+// caller may legitimately send as an unregistered operator alias — expanding
+// it would rewrite a name the operator deliberately chose.
+func TestForwardDoesNotExpandTheSenderAlias(t *testing.T) {
+	up := &fakeUpstream{byOp: map[string]proto.Response{
+		"list_agents": {OK: true, Data: []store.Agent{
+			{Alias: "personal-operator", DeviceID: "dev-1"},
+			{Alias: "personal-worker", DeviceID: "dev-1"},
+		}},
+		"send_message": {OK: true},
+	}}
+	sock := startRemoteNamed(t, up, nil, "personal")
+
+	if _, err := client.Call(sock, proto.Request{Op: "send_message", Args: map[string]any{
+		"from": "operator", "to_kind": "agent", "to_target": "worker", "body": "x",
+	}}); err != nil {
+		t.Fatalf("client.Call: %v", err)
+	}
+
+	if got := forwardedArg(t, up, "send_message", "from"); got != "operator" {
+		t.Fatalf("upstream from = %q, want unchanged %q", got, "operator")
 	}
 }

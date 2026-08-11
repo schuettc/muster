@@ -1,9 +1,69 @@
 package daemon
 
 import (
+	"fmt"
+
 	"github.com/schuettc/muster/internal/device"
 	"github.com/schuettc/muster/internal/resolve"
 )
+
+// requireKnownAlias is resolveAgentTarget's counterpart for an ACTOR alias —
+// task_claim/task_transition's `by` and get_inbox's `alias`. Those name who is
+// acting or whose mail is being read, not who is being addressed, so no label
+// or project scoping applies to them: an actor alias is an alias, exactly.
+//
+// It does two things, and both are needed because MCP passes these fields
+// straight through with no client-side resolution (spec §3 names them as
+// expansion sites):
+//
+//   - EXPAND, local-first, exactly as resolveAgentTarget does: try
+//     <device>-<given>, and take it only when that alias already exists in the
+//     roster. Without this a model that read a short alias off a human surface
+//     addresses an alias nobody holds. "" as the device name disables
+//     expansion (Lambda mode, which serves many devices and must never guess
+//     one) without disabling the existence check below.
+//
+//   - REQUIRE the result to name a roster row. What follows a successful
+//     return is durable and unreported otherwise: ClaimTask writes `by`
+//     verbatim into entries.from_agent with no existence check of its own, so
+//     an unknown actor is permanently recorded as the claimer of a task nobody
+//     claimed, and notifyForThread then fans out to it; get_inbox answers with
+//     an empty thread list, which a model reads as "no mail" forever rather
+//     than as "that is not an agent". Both are silent wrongness, and this
+//     branch prefers loud (see resolveAgentTarget's black-hole check, the same
+//     argument for the addressee half).
+//
+// A DEPARTED row still passes: a tombstone is a roster row, its leftover mail
+// still needs draining, and the agent draining it may still close out that
+// identity's tasks. Only an alias with no row at all is refused.
+//
+// The error names what was actually sent, never the seeded guess — the caller
+// never wrote that string, and an error quoting it sends them looking for a
+// typo they did not make.
+func (d *Daemon) requireKnownAlias(field, given string) (string, error) {
+	if given == "" {
+		return "", fmt.Errorf("%s is required", field)
+	}
+	if d.deviceName != "" {
+		if seeded := device.Seed(d.deviceName, given); seeded != given {
+			_, found, err := d.s.GetAgent(seeded)
+			if err != nil {
+				return "", err
+			}
+			if found {
+				return seeded, nil
+			}
+		}
+	}
+	_, found, err := d.s.GetAgent(given)
+	if err != nil {
+		return "", err
+	}
+	if !found {
+		return "", fmt.Errorf("no agent registered as %q", given)
+	}
+	return given, nil
+}
 
 // resolveAgentTarget resolves to_target for a send_message/task_create op
 // whose to_kind=="agent" against the CURRENT roster (spec: the black-hole

@@ -48,8 +48,10 @@ type Daemon struct {
 	// it is display only — nothing routes, scopes, or compares by it there,
 	// so unlike deviceID a wrong or empty value costs legibility, never
 	// correctness. Local mode (New/Serve) also populates it, for a second,
-	// unrelated purpose: resolveAgentTarget expands a short local alias
-	// against it before resolution. "" disables that expansion, which is
+	// unrelated purpose: resolveAgentTarget (addressees) and
+	// requireKnownAlias (actors — task_claim/task_transition's `by`,
+	// get_inbox's alias) expand a short local alias against it before
+	// resolution. "" disables that expansion, which is
 	// also local mode's zero-value default and Lambda mode's deliberate
 	// choice (it serves many devices, so it must never expand).
 	deviceName string
@@ -78,8 +80,8 @@ type Daemon struct {
 	localSeeded bool
 
 	// aliasSet/aliasAt are forward's cache of "which aliases exist in the
-	// hosted roster", consulted by expandAgentTarget before it trusts a
-	// device.Seed guess enough to rewrite a caller's to_target. See
+	// hosted roster", consulted by expandAliasArg before it trusts a
+	// device.Seed guess enough to rewrite a caller's alias argument. See
 	// aliasesForExpansion (remotemode.go) for the staleness policy: this is
 	// a short-TTL cache, not a per-request roster read, so a burst of sends
 	// pays at most one upstream list_agents per aliasCacheTTL window rather
@@ -816,18 +818,29 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 		d.notifyForThread(id, from)
 		return ok(map[string]any{"thread_id": id})
 	case "task_claim":
-		if err := d.s.ClaimTask(i64(a, "thread_id"), str(a, "by")); err != nil {
+		// `by` is an actor alias and lands verbatim in entries.from_agent —
+		// expanded and existence-checked BEFORE the write, never after (see
+		// requireKnownAlias).
+		by, err := d.requireKnownAlias("by", str(a, "by"))
+		if err != nil {
 			return fail(err)
 		}
-		d.logEvent(store.Event{Kind: "claim", Agent: str(a, "by"), ThreadID: i64(a, "thread_id")})
-		d.notifyForThread(i64(a, "thread_id"), str(a, "by"))
+		if err := d.s.ClaimTask(i64(a, "thread_id"), by); err != nil {
+			return fail(err)
+		}
+		d.logEvent(store.Event{Kind: "claim", Agent: by, ThreadID: i64(a, "thread_id")})
+		d.notifyForThread(i64(a, "thread_id"), by)
 		return ok(nil)
 	case "task_transition":
-		if err := d.s.TransitionTask(i64(a, "thread_id"), str(a, "by"), str(a, "status"), str(a, "note")); err != nil {
+		by, err := d.requireKnownAlias("by", str(a, "by"))
+		if err != nil {
 			return fail(err)
 		}
-		d.logEvent(store.Event{Kind: "transition", Agent: str(a, "by"), ThreadID: i64(a, "thread_id"), Detail: str(a, "status")})
-		d.notifyForThread(i64(a, "thread_id"), str(a, "by"))
+		if err := d.s.TransitionTask(i64(a, "thread_id"), by, str(a, "status"), str(a, "note")); err != nil {
+			return fail(err)
+		}
+		d.logEvent(store.Event{Kind: "transition", Agent: by, ThreadID: i64(a, "thread_id"), Detail: str(a, "status")})
+		d.notifyForThread(i64(a, "thread_id"), by)
 		return ok(nil)
 	case "reply":
 		id, err := d.s.AppendEntry(i64(a, "thread_id"), str(a, "from"), str(a, "body"), "")
@@ -845,7 +858,13 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 		}
 		return ok(map[string]any{"entry_id": id})
 	case "get_inbox":
-		alias := str(a, "alias")
+		// Same treatment as task_claim's `by`: expand a short local alias, and
+		// refuse an alias that names no roster row rather than answering "no
+		// mail" for an agent that does not exist. A DEPARTED row still drains.
+		alias, err := d.requireKnownAlias("alias", str(a, "alias"))
+		if err != nil {
+			return fail(err)
+		}
 		threads, err := d.s.Inbox(alias)
 		if err != nil {
 			return fail(err)

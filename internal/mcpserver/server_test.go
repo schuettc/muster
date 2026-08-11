@@ -17,6 +17,12 @@ import (
 // reference to those agents (from/by) must use the seeded form too — the
 // same thing a real MCP client does by reading the alias back out of the
 // register_agent reply rather than assuming its own input still matches.
+//
+// The reviewer joins the roster through the daemon, not through a second
+// register_agent tool call: a second registration from the SAME pane is
+// refused by design (the already-registered guard), so the tool call that used
+// to be here created no row and "e2e-reviewer1" was an alias nobody held. That
+// was invisible while task_claim accepted any string for `by`; it is not now.
 func TestEndToEndOverMCP(t *testing.T) {
 	startTestDaemon(t)
 	t.Setenv("MUSTER_DEVICE_NAME", "e2e")
@@ -47,7 +53,11 @@ func TestEndToEndOverMCP(t *testing.T) {
 	}
 
 	call("register_agent", map[string]any{"alias": "backend", "role": "producer", "model_type": "claude"})
-	call("register_agent", map[string]any{"alias": "reviewer1", "role": "reviewer", "model_type": "codex"})
+	if _, err := callDaemon("register_agent", map[string]any{
+		"alias": "e2e-reviewer1", "role": "reviewer", "model_type": "codex",
+	}); err != nil {
+		t.Fatalf("register reviewer: %v", err)
+	}
 	created := call("task_create", map[string]any{
 		"from": "e2e-backend", "to_kind": "role", "to_target": "reviewer",
 		"subject": "Review feat/wagers", "ref": "repo=bhw", "body": "please review",
