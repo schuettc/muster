@@ -338,7 +338,7 @@ func (d *Daemon) ReconcileLocalSessions() {
 		// alone — correct for the local store, where every row is this device's
 		// — so handing it the whole hosted roster would advertise another
 		// machine's aliases on any tuple the two happen to share.
-		d.pushAgentBadge(s.socketPath, s.sessionID, liveAliasesFor(local, s.socketPath, s.sessionID))
+		d.pushAgentBadge(s.socketPath, s.sessionID, liveAliasesFor(local, s.socketPath, s.sessionID, d.deviceName))
 	}
 }
 

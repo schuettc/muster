@@ -527,3 +527,24 @@ func TestSessionUnreadOpRequiresCreated(t *testing.T) {
 		t.Fatalf("session_aliases = %v, want [current]", al.Aliases)
 	}
 }
+
+// TestLiveAliasesForStripsTheLocalPrefix pins the fix for the symptom that
+// started this: the dotfiles title renders @muster_agent only when it differs
+// from the tmux session name, so a seeded alias broke the dedupe and put the
+// device name in every window title.
+func TestLiveAliasesForStripsTheLocalPrefix(t *testing.T) {
+	agents := []store.Agent{
+		{Alias: "personal-dotfiles/main", SocketPath: "/s", SessionID: "$1"},
+		{Alias: "work-dotfiles/main", SocketPath: "/s", SessionID: "$1"},
+	}
+	got := liveAliasesFor(agents, "/s", "$1", "personal")
+	want := []string{"dotfiles/main", "work-dotfiles/main"}
+	if len(got) != len(want) {
+		t.Fatalf("liveAliasesFor = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("liveAliasesFor = %v, want %v", got, want)
+		}
+	}
+}

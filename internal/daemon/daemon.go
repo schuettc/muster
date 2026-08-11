@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/schuettc/muster/internal/device"
 	"github.com/schuettc/muster/internal/display"
 	"github.com/schuettc/muster/internal/proto"
 	"github.com/schuettc/muster/internal/store"
@@ -490,18 +491,22 @@ func (d *Daemon) sessionAliasesFor(socketPath, sessionID string) ([]string, erro
 	if err != nil {
 		return nil, err
 	}
-	return liveAliasesFor(agents, socketPath, sessionID), nil
+	return liveAliasesFor(agents, socketPath, sessionID, d.deviceName), nil
 }
 
 // liveAliasesFor is sessionAliasesFor's filter over a roster already in hand —
 // the one place the "live aliases of this session tuple" rule is written, so
 // the local path (which reads the roster from the store) and the remote one
 // (which reads it upstream) cannot disagree about who the badge advertises.
-func liveAliasesFor(agents []store.Agent, socketPath, sessionID string) []string {
+func liveAliasesFor(agents []store.Agent, socketPath, sessionID, deviceName string) []string {
 	aliases := []string{}
 	for _, ag := range agents {
 		if ag.SocketPath == socketPath && ag.SessionID == sessionID && !ag.Departed {
-			aliases = append(aliases, ag.Alias)
+			// The badge is a human surface — it renders into the terminal
+			// title. Strip here rather than in wake.SetAgents, which joins
+			// verbatim by contract, so the local and remote badge paths (both
+			// of which come through this one filter) cannot disagree.
+			aliases = append(aliases, device.Strip(deviceName, ag.Alias))
 		}
 	}
 	sort.Strings(aliases)
