@@ -22,7 +22,7 @@ func startTestDaemon(t *testing.T) string {
 		t.Fatalf("store.Open: %v", err)
 	}
 	t.Cleanup(func() { _ = s.Close() })
-	d, err := Serve(paths.SocketPath(), s, nil)
+	d, err := Serve(paths.SocketPath(), s, nil, "")
 	if err != nil {
 		t.Fatalf("Serve: %v", err)
 	}
@@ -39,7 +39,7 @@ func TestDaemonRegisterAndList(t *testing.T) {
 	t.Cleanup(func() { _ = s.Close() })
 
 	sock := filepath.Join(dir, "sock")
-	d, err := Serve(sock, s, nil)
+	d, err := Serve(sock, s, nil, "")
 	if err != nil {
 		t.Fatalf("serve: %v", err)
 	}
@@ -77,7 +77,7 @@ func TestTaskClaimAcceptsStringThreadID(t *testing.T) {
 	t.Cleanup(func() { _ = s.Close() })
 
 	sock := filepath.Join(dir, "sock")
-	d, err := Serve(sock, s, nil)
+	d, err := Serve(sock, s, nil, "")
 	if err != nil {
 		t.Fatalf("serve: %v", err)
 	}
@@ -525,5 +525,26 @@ func TestSessionUnreadOpRequiresCreated(t *testing.T) {
 	}), &al)
 	if len(al.Aliases) != 1 || al.Aliases[0] != "current" {
 		t.Fatalf("session_aliases = %v, want [current]", al.Aliases)
+	}
+}
+
+// TestLiveAliasesForStripsTheLocalPrefix pins the fix for the symptom that
+// started this: the dotfiles title renders @muster_agent only when it differs
+// from the tmux session name, so a seeded alias broke the dedupe and put the
+// device name in every window title.
+func TestLiveAliasesForStripsTheLocalPrefix(t *testing.T) {
+	agents := []store.Agent{
+		{Alias: "personal-dotfiles/main", SocketPath: "/s", SessionID: "$1"},
+		{Alias: "work-dotfiles/main", SocketPath: "/s", SessionID: "$1"},
+	}
+	got := liveAliasesFor(agents, "/s", "$1", "personal")
+	want := []string{"dotfiles/main", "work-dotfiles/main"}
+	if len(got) != len(want) {
+		t.Fatalf("liveAliasesFor = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("liveAliasesFor = %v, want %v", got, want)
+		}
 	}
 }

@@ -51,21 +51,26 @@ func panelessEnv(t *testing.T, uuid, dirName string) string {
 
 func TestRegisterPanelessFallsBackToCwdAlias(t *testing.T) {
 	startTestDaemon(t)
+	t.Setenv("MUSTER_DEVICE_NAME", "testdev")
 	panelessEnv(t, "hs-reg-1", "wt-alpha")
 
 	var buf bytes.Buffer
 	if err := cmdRegister(nil, &buf); err != nil {
 		t.Fatalf("paneless register must succeed on the cwd fallback, got %v", err)
 	}
+	// The paneless base is seeded before allocation, like every other mint
+	// site — but the confirmation is a human surface, so this machine's own
+	// prefix ("testdev-") is stripped from what's PRINTED. The stored row
+	// (checked below) keeps the full seeded alias.
 	if !strings.Contains(buf.String(), "registered wt-alpha (paneless") {
-		t.Fatalf("output must name the alias and the paneless shape, got %q", buf.String())
+		t.Fatalf("output must name the display-stripped alias and the paneless shape, got %q", buf.String())
 	}
 	agents := listAgentsForTest(t, "")
 	if len(agents) != 1 {
 		t.Fatalf("expected one registration, got %+v", agents)
 	}
 	a := agents[0]
-	if a.Alias != "wt-alpha" || a.SocketPath != "" || a.PaneID != "" || a.SessionID != "hs-reg-1" {
+	if a.Alias != "testdev-wt-alpha" || a.SocketPath != "" || a.PaneID != "" || a.SessionID != "hs-reg-1" {
 		t.Fatalf("paneless row shape wrong: %+v", a)
 	}
 }
@@ -85,6 +90,7 @@ func TestRegisterPanelessWithoutAnyIdentityStillErrors(t *testing.T) {
 
 func TestHookSessionStartPanelessRegistersFromPayload(t *testing.T) {
 	startTestDaemon(t)
+	t.Setenv("MUSTER_DEVICE_NAME", "testdev")
 	panelessEnv(t, "", "env-dir") // env UUID empty: the payload must carry identity
 
 	payload := `{"session_id":"hs-hook-1","cwd":"/tmp/somewhere/payload-dir"}`
@@ -97,15 +103,20 @@ func TestHookSessionStartPanelessRegistersFromPayload(t *testing.T) {
 		t.Fatalf("expected one paneless registration, got %+v", agents)
 	}
 	a := agents[0]
-	if a.Alias != "payload-dir" || a.SessionID != "hs-hook-1" || a.SocketPath != "" || a.ModelType != "codex" {
+	// The hook's own paneless allocation seeds the cwd-basename base, like
+	// every other mint site.
+	if a.Alias != "testdev-payload-dir" || a.SessionID != "hs-hook-1" || a.SocketPath != "" || a.ModelType != "codex" {
 		t.Fatalf("paneless hook registration shape wrong: %+v", a)
 	}
 }
 
 func TestHookSessionStartPanelessSuffixesPastLiveTmuxOwner(t *testing.T) {
 	startTestDaemon(t)
+	t.Setenv("MUSTER_DEVICE_NAME", "testdev")
+	// Seeded to match what the paneless hook will seed the cwd basename
+	// "owner-dir" to below, so the collision is genuine.
 	if _, err := callData("register_agent", map[string]any{
-		"alias": "owner-dir", "socket_path": "/tmp/sockOwn", "session_id": "$1", "pane_id": "%1",
+		"alias": "testdev-owner-dir", "socket_path": "/tmp/sockOwn", "session_id": "$1", "pane_id": "%1",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -118,11 +129,11 @@ func TestHookSessionStartPanelessSuffixesPastLiveTmuxOwner(t *testing.T) {
 	if err := cmdHook([]string{"SessionStart"}, strings.NewReader(`{"session_id":"hs-thief","cwd":"`+"/x/owner-dir"+`"}`), &buf); err != nil {
 		t.Fatalf("SessionStart: %v", err)
 	}
-	ag, found, _ := hookGetAgent("owner-dir")
+	ag, found, _ := hookGetAgent("testdev-owner-dir")
 	if !found || ag.SessionID != "$1" || ag.SocketPath != "/tmp/sockOwn" {
 		t.Fatalf("a live tmux owner must keep the alias, got %+v found=%v", ag, found)
 	}
-	suf, found, _ := hookGetAgent("owner-dir-2")
+	suf, found, _ := hookGetAgent("testdev-owner-dir-2")
 	if !found || suf.SessionID != "hs-thief" || suf.SocketPath != "" {
 		t.Fatalf("the paneless session must allocate the next suffix, got %+v found=%v", suf, found)
 	}
@@ -130,6 +141,7 @@ func TestHookSessionStartPanelessSuffixesPastLiveTmuxOwner(t *testing.T) {
 
 func TestHookSessionStartPanelessAllocatesUniqueAliases(t *testing.T) {
 	startTestDaemon(t)
+	t.Setenv("MUSTER_DEVICE_NAME", "testdev")
 	panelessEnv(t, "", "shared-dir")
 	start := func(uuid string) {
 		t.Helper()
@@ -143,20 +155,23 @@ func TestHookSessionStartPanelessAllocatesUniqueAliases(t *testing.T) {
 	start("hs-three") // third session: next suffix again
 	start("hs-two")   // resume: must refresh its own alias, not allocate a fourth
 
-	want := map[string]string{"shared-dir": "hs-one", "shared-dir-2": "hs-two", "shared-dir-3": "hs-three"}
+	// The seeded base is what the whole allocated family carries the prefix
+	// on: testdev-shared-dir, testdev-shared-dir-2, ...
+	want := map[string]string{"testdev-shared-dir": "hs-one", "testdev-shared-dir-2": "hs-two", "testdev-shared-dir-3": "hs-three"}
 	for alias, uuid := range want {
 		ag, found, _ := hookGetAgent(alias)
 		if !found || ag.SessionID != uuid || ag.SocketPath != "" || ag.Departed {
 			t.Fatalf("%s: want live paneless row for %s, got %+v found=%v", alias, uuid, ag, found)
 		}
 	}
-	if _, found, _ := hookGetAgent("shared-dir-4"); found {
-		t.Fatal("a resumed session must reuse its alias, not allocate shared-dir-4")
+	if _, found, _ := hookGetAgent("testdev-shared-dir-4"); found {
+		t.Fatal("a resumed session must reuse its alias, not allocate testdev-shared-dir-4")
 	}
 }
 
 func TestHookSessionStartPanelessRevivesOwnTombstoneOnResume(t *testing.T) {
 	startTestDaemon(t)
+	t.Setenv("MUSTER_DEVICE_NAME", "testdev")
 	panelessEnv(t, "", "revive-dir")
 	payload := `{"session_id":"hs-rev","cwd":"/x/revive-dir"}`
 	var buf bytes.Buffer
@@ -166,17 +181,17 @@ func TestHookSessionStartPanelessRevivesOwnTombstoneOnResume(t *testing.T) {
 	if err := cmdHook([]string{"SessionEnd"}, strings.NewReader(payload), &buf); err != nil {
 		t.Fatal(err)
 	}
-	if ag, _, _ := hookGetAgent("revive-dir"); !ag.Departed {
+	if ag, _, _ := hookGetAgent("testdev-revive-dir"); !ag.Departed {
 		t.Fatalf("setup: expected tombstone after SessionEnd, got %+v", ag)
 	}
 	if err := cmdHook([]string{"SessionStart"}, strings.NewReader(payload), &buf); err != nil {
 		t.Fatal(err)
 	}
-	ag, found, _ := hookGetAgent("revive-dir")
+	ag, found, _ := hookGetAgent("testdev-revive-dir")
 	if !found || ag.Departed || ag.SessionID != "hs-rev" {
 		t.Fatalf("resume must revive the session's own tombstone, got %+v found=%v", ag, found)
 	}
-	if _, found, _ := hookGetAgent("revive-dir-2"); found {
+	if _, found, _ := hookGetAgent("testdev-revive-dir-2"); found {
 		t.Fatal("revival must not allocate a suffix")
 	}
 }
@@ -367,6 +382,7 @@ func TestGCSparesLivePanelessRows(t *testing.T) {
 // tuple with the label leading the reason, SessionEnd tombstones it.
 func TestLaunchHandshakeLifecycle(t *testing.T) {
 	startTestDaemon(t)
+	t.Setenv("MUSTER_DEVICE_NAME", "testdev")
 
 	// Pane side: tmux env present, handshake registration.
 	t.Setenv("TMUX", "/tmp/sockHS,1,0")
@@ -382,7 +398,8 @@ func TestLaunchHandshakeLifecycle(t *testing.T) {
 	if err := cmdRegister([]string{"--harness-session", "hs-shake"}, &buf); err != nil {
 		t.Fatalf("handshake register: %v", err)
 	}
-	ag, found, _ := hookGetAgent("bh-workspace-4")
+	// The derived session name is seeded, like every other mint site.
+	ag, found, _ := hookGetAgent("testdev-bh-workspace-4")
 	if !found {
 		t.Fatal("handshake row missing")
 	}
@@ -393,7 +410,10 @@ func TestLaunchHandshakeLifecycle(t *testing.T) {
 	if err := cmdHook([]string{"SessionStart"}, strings.NewReader(payload), &buf); err != nil {
 		t.Fatal(err)
 	}
-	if _, found, _ := hookGetAgent("some-worktree-dir"); found {
+	// The would-be cwd alias is also seeded — check the form the hook would
+	// actually mint if the handshake early-return ever broke, not the
+	// unseeded bare name (which would never appear either way).
+	if _, found, _ := hookGetAgent("testdev-some-worktree-dir"); found {
 		t.Fatal("SessionStart must not allocate a cwd alias when the handshake row exists")
 	}
 
@@ -403,7 +423,7 @@ func TestLaunchHandshakeLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := callData("send_message", map[string]any{
-		"from": "sender", "to_kind": "agent", "to_target": "bh-workspace-4", "subject": "s", "body": "b",
+		"from": "sender", "to_kind": "agent", "to_target": "testdev-bh-workspace-4", "subject": "s", "body": "b",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -417,7 +437,7 @@ func TestLaunchHandshakeLifecycle(t *testing.T) {
 	if err := cmdHook([]string{"Stop"}, strings.NewReader(`{"session_id":"hs-shake"}`), &stop); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(stop.String(), "alias 'bh-workspace-4'") || !strings.Contains(stop.String(), "You are 'debug alarms'") {
+	if !strings.Contains(stop.String(), "alias 'testdev-bh-workspace-4'") || !strings.Contains(stop.String(), "You are 'debug alarms'") {
 		t.Fatalf("Stop must address the handshake alias and lead with its label, got %q", stop.String())
 	}
 
@@ -431,7 +451,7 @@ func TestLaunchHandshakeLifecycle(t *testing.T) {
 	if err := cmdHook([]string{"SessionEnd"}, strings.NewReader(payload), &buf); err != nil {
 		t.Fatal(err)
 	}
-	ag, found, _ = hookGetAgent("bh-workspace-4")
+	ag, found, _ = hookGetAgent("testdev-bh-workspace-4")
 	if !found || !ag.Departed {
 		t.Fatalf("SessionEnd must tombstone the handshake row, got %+v found=%v", ag, found)
 	}

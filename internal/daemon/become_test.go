@@ -62,7 +62,7 @@ func TestBecomeOpClaimsAndReports(t *testing.T) {
 // that is the whole bug. The resolution must be scoped to the CLAIMER's
 // device.
 //
-// The lambda is built with daemon.New(s, nil), so d.up == nil on the server
+// The lambda is built with daemon.New(s, nil, ""), so d.up == nil on the server
 // and sessionIncarnation's remote-mode guard does NOT fire there: the local
 // path with a shared store is exactly the hosted configuration. This test
 // reproduces it over the wire against SQLite by registering two devices onto
@@ -164,7 +164,7 @@ func TestBecomeOpDegradesOnPostCommitGetAgentFailure(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = s.Close() })
 	wrapped := &getAgentFailStore{Store: s, failAlias: "alias-routing"}
-	d, err := Serve(paths.SocketPath(), wrapped, &fakeNotifier{})
+	d, err := Serve(paths.SocketPath(), wrapped, &fakeNotifier{}, "")
 	if err != nil {
 		t.Fatal(err)
 	}

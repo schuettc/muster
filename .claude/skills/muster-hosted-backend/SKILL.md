@@ -65,26 +65,29 @@ credential by accident.
 Deleting the stack deletes the table and every message on the bus, with no
 backup.
 
-## Name each machine, before it registers anything
+## Naming each machine (a legibility upgrade, not a prerequisite)
 
 ```sh
 muster device work-laptop
 ```
 
-Suggest this on every machine joining the bus, and do it before registering,
-because nothing about it is retroactive.
+This is no longer something to insist on before registering. The first time a
+machine registers any agent, muster adopts a device name automatically from
+its hostname reduced to lowercase letters, digits and dashes, and pins it to
+`<MUSTER_HOME>/device-name`. That adopted name already seeds every alias the
+machine mints — derived, typed, or allocated — so two machines with the same
+repos checked out can never silently claim one alias and steal each other's
+mail. Nothing about that protection depends on the operator running this
+command.
 
-It is what makes "the ci-cd session on my work laptop" resolvable — the name
-lands in each row's `device_name`, which is the field you match when the
-operator refers to a machine. It also seeds derived aliases
-(`work-laptop-<name>`), which is what stops two machines with the same repos
-checked out from silently claiming one alias and stealing each other's mail.
-Aliases the operator types are never rewritten.
-
-Unset, a machine falls back to its hostname reduced to lowercase and dashes —
-matchable, but not what anyone says out loud. The name is stored in
-`<MUSTER_HOME>/device-name`, so it survives reboots with no shell
-configuration.
+What running it buys instead is legibility: it swaps the adopted hostname for
+something a human would actually say, so "the ci-cd session on my work
+laptop" resolves against the roster's `device_name` column. Suggest it for
+that reason, not as a prerequisite — and note it is not retroactive in the
+sense that matters: renaming (auto-adopted or explicit) doesn't update
+already-registered rows, so plain re-registration after a rename creates a
+second identity and leaves mail on the first. `muster become <new-alias>`
+carries identity and inbox across.
 
 ## Adding a second device
 

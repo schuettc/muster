@@ -63,11 +63,28 @@ func cmdThread(args []string, out io.Writer) error {
 	if th.ID == 0 && len(d.Entries) == 0 {
 		return fmt.Errorf("no thread %d", id)
 	}
+	// Only FROM/author fields and a to_kind=agent target are aliases — a
+	// to_kind=role/broadcast target is a role or project name, never an
+	// alias, and must not be run through the alias display map.
+	aliases := make([]string, 0, len(d.Entries)+2)
+	aliases = append(aliases, th.FromAgent)
+	if th.ToKind == "agent" {
+		aliases = append(aliases, th.ToTarget)
+	}
+	for _, e := range d.Entries {
+		aliases = append(aliases, e.FromAgent)
+	}
+	disp := aliasDisplay(aliases)
+
 	to := th.ToKind
 	if th.ToTarget != "" {
-		to = th.ToKind + ":" + th.ToTarget
+		target := th.ToTarget
+		if th.ToKind == "agent" {
+			target = disp[th.ToTarget]
+		}
+		to = th.ToKind + ":" + target
 	}
-	header := fmt.Sprintf("thread %d · %s · %s → %s", th.ID, th.Kind, th.FromAgent, to)
+	header := fmt.Sprintf("thread %d · %s · %s → %s", th.ID, th.Kind, disp[th.FromAgent], to)
 	if th.Status != "" {
 		header += " · status " + th.Status
 	}
@@ -84,7 +101,7 @@ func cmdThread(args []string, out io.Writer) error {
 	}
 	for _, e := range d.Entries {
 		stamp := time.UnixMilli(e.CreatedAt).Format("2006-01-02 15:04")
-		line := fmt.Sprintf("\n[%s] %s", stamp, e.FromAgent)
+		line := fmt.Sprintf("\n[%s] %s", stamp, disp[e.FromAgent])
 		if e.StatusChange != "" {
 			line += " · → " + e.StatusChange
 		}
@@ -142,7 +159,8 @@ func cmdReply(args []string, out io.Writer) error {
 		return fmt.Errorf("thread id must be a number, got %q", rest[0])
 	}
 	body := strings.Join(rest[1:], " ")
-	raw, err := callData("reply", map[string]any{"thread_id": id, "from": *from, "body": body, "fyi": *fyi})
+	fromAlias := expandAlias(*from, rosterAliasExists())
+	raw, err := callData("reply", map[string]any{"thread_id": id, "from": fromAlias, "body": body, "fyi": *fyi})
 	if err != nil {
 		return err
 	}

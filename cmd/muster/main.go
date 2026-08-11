@@ -151,7 +151,7 @@ func runServe() int {
 			return 1
 		}
 		defer func() { _ = s.Close() }()
-		d, err = daemon.Serve(paths.SocketPath(), s, notifier)
+		d, err = daemon.Serve(paths.SocketPath(), s, notifier, device.Name())
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "muster: serve:", err)
 			return 1

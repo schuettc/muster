@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -82,6 +83,7 @@ func registerModelViaDaemon(t *testing.T, alias, socketPath, sessionID, paneID, 
 
 func TestRegisterUsesAliasPrecedenceAndCaptures(t *testing.T) {
 	sock := startCLITestDaemon(t)
+	t.Setenv("MUSTER_DEVICE_NAME", "testdev")
 	t.Setenv("TMUX", "/tmp/tmux-0/proj-muster,1,0")
 	t.Setenv("TMUX_PANE", "%0")
 	t.Setenv("MUSTER_ALIAS", "")
@@ -103,13 +105,14 @@ func TestRegisterUsesAliasPrecedenceAndCaptures(t *testing.T) {
 	if err := cmdRegister([]string{"--model", "codex", "--role", "peer"}, &buf); err != nil {
 		t.Fatal(err)
 	}
-	// verify via list_agents that alias == "muster-2", project=="muster", label=="frontend"
+	// verify via list_agents that alias == the seeded session name, project=="muster", label=="frontend"
 	agents := listAgentsForTest(t, sock)
-	if len(agents) != 1 || agents[0].Alias != "muster-2" || agents[0].Project != "muster" || agents[0].Label != "frontend" || !agents[0].LabelManual {
+	if len(agents) != 1 || agents[0].Alias != "testdev-muster-2" || agents[0].Project != "muster" || agents[0].Label != "frontend" || !agents[0].LabelManual {
 		t.Fatalf("registered=%+v", agents)
 	}
 
-	// explicit positional alias wins over session name
+	// explicit positional alias wins over session name, and is seeded exactly
+	// like the derived one — every mint site seeds, no exceptions.
 	buf.Reset()
 	if err := cmdRegister([]string{"backend", "--model", "codex"}, &buf); err != nil {
 		t.Fatal(err)
@@ -117,12 +120,12 @@ func TestRegisterUsesAliasPrecedenceAndCaptures(t *testing.T) {
 	agents = listAgentsForTest(t, sock)
 	found := false
 	for _, a := range agents {
-		if a.Alias == "backend" {
+		if a.Alias == "testdev-backend" {
 			found = true
 		}
 	}
 	if !found {
-		t.Fatalf("expected 'backend' among registered agents: %+v", agents)
+		t.Fatalf("expected 'testdev-backend' among registered agents: %+v", agents)
 	}
 }
 
@@ -140,6 +143,118 @@ func TestDeregisterUsesAliasPrecedence(t *testing.T) {
 	agents := listAgentsForTest(t, sock)
 	if len(agents) != 1 || agents[0].Alias != "gone" || !agents[0].Departed {
 		t.Fatalf("expected 'gone' to survive deregister, tombstoned, got %+v", agents)
+	}
+}
+
+// TestDeregisterExpandsExplicitArgLocalFirst is the self-review case: the
+// roster holds BOTH a local seeded row and a foreign bare row sharing the
+// same short name. `muster deregister work` must depart the LOCAL one — on
+// this machine a short name is mine — never the foreign row a stranger
+// happens to have registered under the bare string.
+func TestDeregisterExpandsExplicitArgLocalFirst(t *testing.T) {
+	sock := startCLITestDaemon(t)
+	t.Setenv("MUSTER_DEVICE_NAME", "personal")
+	registerViaDaemon(t, sock, "personal-work", "/s", "$1")
+	registerViaDaemon(t, sock, "work", "/s2", "$2")
+
+	var buf bytes.Buffer
+	if err := cmdDeregister([]string{"work"}, &buf); err != nil {
+		t.Fatal(err)
+	}
+	agents := listAgentsForTest(t, sock)
+	var local, foreign agentRow
+	for _, a := range agents {
+		switch a.Alias {
+		case "personal-work":
+			local = a
+		case "work":
+			foreign = a
+		}
+	}
+	if !local.Departed {
+		t.Fatalf("local row 'personal-work' must be departed, got %+v", local)
+	}
+	if foreign.Departed {
+		t.Fatalf("foreign row 'work' must survive untouched, got %+v", foreign)
+	}
+}
+
+// TestDeregisterMusterAliasEnvBranchSeeds covers the no-arg $MUSTER_ALIAS
+// branch. This is RECONSTRUCTING the exact alias cmdRegister would have
+// minted for the same env var (register's own MUSTER_ALIAS branch seeds —
+// see cmdRegister), not looking up an operator-typed short name — so the
+// derivation must seed, not expand.
+func TestDeregisterMusterAliasEnvBranchSeeds(t *testing.T) {
+	sock := startCLITestDaemon(t)
+	t.Setenv("MUSTER_DEVICE_NAME", "personal")
+	t.Setenv("MUSTER_ALIAS", "worker")
+	registerViaDaemon(t, sock, "personal-worker", "/s", "$1")
+
+	var buf bytes.Buffer
+	if err := cmdDeregister(nil, &buf); err != nil {
+		t.Fatal(err)
+	}
+	agents := listAgentsForTest(t, sock)
+	if len(agents) != 1 || agents[0].Alias != "personal-worker" || !agents[0].Departed {
+		t.Fatalf("expected 'personal-worker' (the seeded MUSTER_ALIAS derivation) departed, got %+v", agents)
+	}
+}
+
+// TestDeregisterSessionNameBranchSeeds covers the no-arg tmux-session-name
+// branch, mirroring cmdRegister's own derivation of the same value
+// (TestRegisterUsesAliasPrecedenceAndCaptures) — bare `muster deregister`
+// inside the tmux session that registered must find the row it minted, not
+// an unseeded near-miss.
+func TestDeregisterSessionNameBranchSeeds(t *testing.T) {
+	sock := startCLITestDaemon(t)
+	t.Setenv("MUSTER_DEVICE_NAME", "personal")
+	t.Setenv("MUSTER_ALIAS", "")
+	t.Setenv("TMUX", "/tmp/tmux-0/proj-muster,1,0")
+	t.Setenv("TMUX_PANE", "%0")
+	prev := tmuxenv.Run
+	tmuxenv.Run = hookRun(map[string]string{"#{session_id}": "$1", "#{session_name}": "muster-2"})
+	t.Cleanup(func() { tmuxenv.Run = prev })
+	registerViaDaemon(t, sock, "personal-muster-2", "/tmp/tmux-0/proj-muster", "$1")
+
+	var buf bytes.Buffer
+	if err := cmdDeregister(nil, &buf); err != nil {
+		t.Fatal(err)
+	}
+	agents := listAgentsForTest(t, sock)
+	if len(agents) != 1 || agents[0].Alias != "personal-muster-2" || !agents[0].Departed {
+		t.Fatalf("expected 'personal-muster-2' (the seeded session-name derivation) departed, got %+v", agents)
+	}
+}
+
+// TestDeregisterPanelessFallbackBranchSeeds covers the last-resort paneless
+// branch (no tmux, no MUSTER_ALIAS, no harness-owned rows): the cwd
+// basename fallback, mirroring cmdRegister's `seedAlias(h.Alias())` (see
+// cmdRegister's paneless default case).
+func TestDeregisterPanelessFallbackBranchSeeds(t *testing.T) {
+	sock := startCLITestDaemon(t)
+	t.Setenv("MUSTER_DEVICE_NAME", "personal")
+	t.Setenv("MUSTER_ALIAS", "")
+	t.Setenv("CLAUDE_CODE_SESSION_ID", "")
+	// This test process is itself running inside a real tmux pane — without
+	// clearing these, tmuxenv.CaptureEnv would pick up THAT session instead
+	// of exercising the paneless fallback this test targets.
+	t.Setenv("TMUX", "")
+	t.Setenv("TMUX_PANE", "")
+	dir := t.TempDir()
+	work := dir + "/some-project"
+	if err := os.MkdirAll(work, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(work)
+	registerViaDaemon(t, sock, "personal-some-project", "", "")
+
+	var buf bytes.Buffer
+	if err := cmdDeregister(nil, &buf); err != nil {
+		t.Fatal(err)
+	}
+	agents := listAgentsForTest(t, sock)
+	if len(agents) != 1 || agents[0].Alias != "personal-some-project" || !agents[0].Departed {
+		t.Fatalf("expected 'personal-some-project' (the seeded cwd-basename fallback) departed, got %+v", agents)
 	}
 }
 
@@ -388,11 +503,14 @@ func tmuxCaptureStub(t *testing.T, sessionID, sessionName string) {
 // must fail with "if_absent conflict" and leave the row on tuple A untouched.
 func TestRegisterIfAbsentConflict(t *testing.T) {
 	startTestDaemon(t)
+	t.Setenv("MUSTER_DEVICE_NAME", "testdev")
 	t.Setenv("TMUX", "/tmp/tmux-0/proj-muster,1,0")
 	t.Setenv("TMUX_PANE", "%0")
 	t.Setenv("MUSTER_ALIAS", "")
 	socketPath := "/tmp/tmux-0/proj-muster"
-	registerViaDaemon(t, "", "seed", socketPath, "$A")
+	// The pre-existing row is seeded exactly as cmdRegister's typed-name path
+	// will seed the incoming "seed" arg, so the collision is on the SAME row.
+	registerViaDaemon(t, "", "testdev-seed", socketPath, "$A")
 
 	tmuxCaptureStub(t, "$B", "seed")
 
@@ -418,12 +536,15 @@ func TestRegisterIfAbsentConflict(t *testing.T) {
 // (bad) overwrite would have clobbered.
 func TestRegisterIfAbsentRefusesForeignHarnessClaim(t *testing.T) {
 	startTestDaemon(t)
+	t.Setenv("MUSTER_DEVICE_NAME", "testdev")
 	t.Setenv("TMUX", "/tmp/tmux-0/proj-muster,1,0")
 	t.Setenv("TMUX_PANE", "%0")
 	t.Setenv("MUSTER_ALIAS", "")
 	socketPath := "/tmp/tmux-0/proj-muster"
+	// Seeded to match what cmdRegister's typed-name path will produce from
+	// "seed-owned" below, so the CAS lands on the same row.
 	if _, err := callData("register_agent", map[string]any{
-		"alias": "seed-owned", "socket_path": socketPath, "session_id": "$A",
+		"alias": "testdev-seed-owned", "socket_path": socketPath, "session_id": "$A",
 		"harness_session_id": "uuid-owner",
 	}); err != nil {
 		t.Fatal(err)
@@ -448,11 +569,14 @@ func TestRegisterIfAbsentRefusesForeignHarnessClaim(t *testing.T) {
 // wrapper re-running against its own already-seeded identity must succeed.
 func TestRegisterIfAbsentSameTupleIdempotent(t *testing.T) {
 	startTestDaemon(t)
+	t.Setenv("MUSTER_DEVICE_NAME", "testdev")
 	t.Setenv("TMUX", "/tmp/tmux-0/proj-muster,1,0")
 	t.Setenv("TMUX_PANE", "%0")
 	t.Setenv("MUSTER_ALIAS", "")
 	socketPath := "/tmp/tmux-0/proj-muster"
-	registerViaDaemon(t, "", "seed2", socketPath, "$SAME")
+	// Seeded to match what cmdRegister's typed-name path will produce from
+	// "seed2" below, so this is genuinely the same row, not a fresh one.
+	registerViaDaemon(t, "", "testdev-seed2", socketPath, "$SAME")
 
 	tmuxCaptureStub(t, "$SAME", "seed2")
 
@@ -471,6 +595,7 @@ func TestRegisterIfAbsentSameTupleIdempotent(t *testing.T) {
 // the CAS only ever blocks a DIFFERENT-tuple collision, never a fresh claim.
 func TestRegisterIfAbsentOnFreshAlias(t *testing.T) {
 	startTestDaemon(t)
+	t.Setenv("MUSTER_DEVICE_NAME", "testdev")
 	t.Setenv("TMUX", "/tmp/tmux-0/proj-muster,1,0")
 	t.Setenv("TMUX_PANE", "%0")
 	t.Setenv("MUSTER_ALIAS", "")
@@ -481,8 +606,8 @@ func TestRegisterIfAbsentOnFreshAlias(t *testing.T) {
 		t.Fatalf("--if-absent on a fresh alias should succeed, got %v", err)
 	}
 	agents := listAgentsForTest(t, "")
-	if len(agents) != 1 || agents[0].Alias != "freshalias" {
-		t.Fatalf("expected a fresh row to be created, got %+v", agents)
+	if len(agents) != 1 || agents[0].Alias != "testdev-freshalias" {
+		t.Fatalf("expected a fresh seeded row to be created, got %+v", agents)
 	}
 }
 
@@ -508,6 +633,7 @@ func TestRegisterIfAbsentRejectedForPaneless(t *testing.T) {
 // same command.
 func TestRegisterPrintsRevivalAndUnread(t *testing.T) {
 	startTestDaemon(t)
+	t.Setenv("MUSTER_DEVICE_NAME", "testdev")
 	t.Setenv("TMUX", "")
 	t.Setenv("CLAUDE_CODE_SESSION_ID", "")
 	t.Setenv("MUSTER_ALIAS", "")
@@ -517,10 +643,12 @@ func TestRegisterPrintsRevivalAndUnread(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	seed("register_agent", map[string]any{"alias": "backend", "socket_path": "/s", "session_id": "$1"})
+	// Pre-existing row is seeded to match what cmdRegister's typed-name path
+	// will produce from "backend" below, so the revive lands on this row.
+	seed("register_agent", map[string]any{"alias": "testdev-backend", "socket_path": "/s", "session_id": "$1"})
 	seed("register_agent", map[string]any{"alias": "sender", "socket_path": "/s", "session_id": "$2"})
-	seed("send_message", map[string]any{"from": "sender", "to_kind": "agent", "to_target": "backend", "subject": "hi", "body": "b"})
-	seed("deregister_agent", map[string]any{"alias": "backend"})
+	seed("send_message", map[string]any{"from": "sender", "to_kind": "agent", "to_target": "testdev-backend", "subject": "hi", "body": "b"})
+	seed("deregister_agent", map[string]any{"alias": "testdev-backend"})
 
 	var buf bytes.Buffer
 	if err := cmdRegister([]string{"backend"}, &buf); err != nil {

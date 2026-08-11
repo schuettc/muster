@@ -10,11 +10,15 @@ import (
 
 // cmdDevice prints this machine's device name, or sets it when given one.
 //
-// The name exists so an operator can say which machine they mean — "the ci-cd
-// session on my work laptop" — and have an agent resolve it against the
-// roster. The default is the machine's hostname reduced to alias-safe form,
-// which is matchable but not usually what anyone says out loud, so setting it
-// is the expected gesture rather than an advanced one.
+// A name is no longer something an operator must remember to set: the first
+// time this machine registers anything, muster adopts one automatically from
+// the hostname, reduced to alias-safe form, and pins it to disk. That default
+// is matchable but not usually what anyone says out loud, so setting one
+// deliberately replaces the adopted name with something a human would
+// actually say — "the ci-cd session on my work laptop" — which an agent can
+// then resolve against the roster. Either way, the name prefixes every alias
+// this machine mints; the prefix is hidden on this machine and shown in full
+// from every other machine on the bus.
 //
 // Setting writes a file under MUSTER_HOME rather than asking the operator to
 // export anything. That is what makes it survive a reboot without touching a

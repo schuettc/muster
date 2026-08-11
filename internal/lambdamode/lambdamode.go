@@ -216,7 +216,10 @@ func Run() int {
 		return 1
 	}
 	fmt.Fprintln(os.Stderr, "muster: lambda mode over DynamoDB table", table)
-	lambda.Start(Handler(daemon.New(s, nil), EnvAuth{}))
+	// "" disables daemon-side short-alias expansion: this Lambda fronts a
+	// shared store for every device on the bus, so it has no single device's
+	// name to expand against — see daemon.New.
+	lambda.Start(Handler(daemon.New(s, nil, ""), EnvAuth{}))
 	// Unreachable on the happy path — lambda.Start blocks for the life of the
 	// container. Reaching here means the runtime died, which is a failure
 	// however quietly it happened, so do not report success.

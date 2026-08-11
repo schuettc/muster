@@ -70,9 +70,49 @@ func cmdBecome(args []string, out io.Writer) error {
 		default:
 			return fmt.Errorf("this session has aliases %s; pass --from <alias>", strings.Join(live, ", "))
 		}
+	} else {
+		// A typed --from may be short; expand it local-first against this
+		// session's own live aliases, exactly the same operation resolveVia
+		// applies to every other input site.
+		liveSet := make(map[string]bool, len(live))
+		for _, a := range live {
+			liveSet[a] = true
+		}
+		// Exact match against THIS session's OWN live aliases wins before
+		// expandAlias's local-first bias even runs. expandAlias's local-first
+		// comment explains why local-first is right everywhere else: a bare
+		// name is ambiguous against the WIDER roster, and guessing wrong
+		// reaches a stranger's row on another machine — action at a distance
+		// the design exists to prevent. That risk needs a candidate this
+		// session does not own. Here every candidate comes from
+		// becomeLiveAliases, which returns only aliases live on THIS session
+		// — there is no stranger's row in the set to protect against, so an
+		// exact hit is simply the more precise read of what was typed. This
+		// is also what makes a legacy unprefixed row nameable again: a
+		// session holding both "dotfiles" and its seeded twin
+		// "personal-dotfiles" has expandAlias always preferring the twin, so
+		// without this exact-first check "dotfiles" could never be named —
+		// the twin's own literal spelling was never in danger, only the
+		// legacy row's was. Naming a row exactly now claims exactly that row.
+		if !liveSet[fromAlias] {
+			fromAlias = expandAlias(fromAlias, func(a string) bool { return liveSet[a] })
+		}
 	}
 
-	raw, err := callData("become", map[string]any{"from": fromAlias, "to": to})
+	// The CLAIM is seeded; the injected harness name and the confirmation are
+	// not. syncAgentName sets the tmux/harness session name, which is a human
+	// surface and the identity `proj` reads — it must stay short, or the
+	// prefix reappears in exactly the title bar this design clears.
+	//
+	// Both derive from `claim`, not from the raw `to`: a full alias read off
+	// ANOTHER machine and pasted back here is a supported input (it is the
+	// round trip Seed's idempotence guard exists for), and it already carries
+	// the prefix, so `to` is not reliably short. dispAlias(claim) is "the
+	// stored alias as a human sees it", which is exactly what both surfaces
+	// want and is identical for a short and a full input.
+	claim := seedAlias(to)
+	shown := dispAlias(claim)
+	raw, err := callData("become", map[string]any{"from": fromAlias, "to": claim})
 	if err != nil {
 		return err
 	}
@@ -90,9 +130,9 @@ func cmdBecome(args []string, out io.Writer) error {
 	// statusline promoting a /rename the agent itself typed) — re-injecting
 	// would loop the same text back into the pane.
 	if !*noInject {
-		syncAgentName(out, to, c.SocketPath, c.SessionID)
+		syncAgentName(out, shown, c.SocketPath, c.SessionID)
 	}
-	_, err = fmt.Fprintf(out, "you are now '%s' (was '%s') — %d unread thread(s)\n", to, fromAlias, res.Unread)
+	_, err = fmt.Fprintf(out, "you are now '%s' (was '%s') — %d unread thread(s)\n", shown, dispAlias(fromAlias), res.Unread)
 	return err
 }
 

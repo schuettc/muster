@@ -12,6 +12,7 @@ import (
 // this session; become claims the new name and reports the trade.
 func TestBecomeClaimsSingleAliasSession(t *testing.T) {
 	startTestDaemon(t)
+	t.Setenv("MUSTER_DEVICE_NAME", "testdev")
 	t.Setenv("TMUX", "/tmp/sock,1,0")
 	t.Setenv("TMUX_PANE", "%1")
 	prev := tmuxenv.Run
@@ -28,10 +29,12 @@ func TestBecomeClaimsSingleAliasSession(t *testing.T) {
 	if err := Dispatch([]string{"become", "alias-routing"}, &buf); err != nil {
 		t.Fatalf("become: %v", err)
 	}
+	// The confirmation and the typed-into-pane name stay short; only the
+	// daemon claim underneath is seeded.
 	if !strings.Contains(buf.String(), "you are now 'alias-routing' (was 'muster-2')") {
 		t.Fatalf("output = %q", buf.String())
 	}
-	ag, ok, _ := hookGetAgent("alias-routing")
+	ag, ok, _ := hookGetAgent("testdev-alias-routing")
 	if !ok || ag.Departed || ag.SessionID != "$1" {
 		t.Fatalf("claimed row = %+v (ok=%v)", ag, ok)
 	}
@@ -167,6 +170,7 @@ func TestBecomeRenamesLiveClaudePane(t *testing.T) {
 // every such call silently failed, stranding the bus alias on rename.
 func TestBecomeNoInjectSkipsRename(t *testing.T) {
 	startTestDaemon(t)
+	t.Setenv("MUSTER_DEVICE_NAME", "testdev")
 	t.Setenv("TMUX", "/tmp/sock,1,0")
 	t.Setenv("TMUX_PANE", "%5")
 	if _, err := callData("register_agent", map[string]any{
@@ -202,7 +206,8 @@ func TestBecomeNoInjectSkipsRename(t *testing.T) {
 	if len(sent) != 0 {
 		t.Fatalf("--no-inject must never type into the pane, got %v", sent)
 	}
-	if ag, ok, _ := hookGetAgent("dotfiles/error"); !ok || ag.Departed {
+	// The daemon claim is seeded even though the pane never sees the prefix.
+	if ag, ok, _ := hookGetAgent("testdev-dotfiles/error"); !ok || ag.Departed {
 		t.Fatalf("claim must still land with --no-inject, got %+v (ok=%v)", ag, ok)
 	}
 }
@@ -218,6 +223,7 @@ func TestBecomeNoInjectSkipsRename(t *testing.T) {
 // asserting on err.Error() catches the stutter at its source.
 func TestBecomeToExistsErrorHasNoPrefixStutter(t *testing.T) {
 	startTestDaemon(t)
+	t.Setenv("MUSTER_DEVICE_NAME", "testdev")
 	t.Setenv("TMUX", "/tmp/sock,1,0")
 	t.Setenv("TMUX_PANE", "%1")
 	prev := tmuxenv.Run
@@ -228,7 +234,9 @@ func TestBecomeToExistsErrorHasNoPrefixStutter(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := callData("register_agent", map[string]any{"alias": "taken"}); err != nil {
+	// Pre-existing row is seeded to match what cmdBecome will seed "taken" to
+	// below, so the claim genuinely collides.
+	if _, err := callData("register_agent", map[string]any{"alias": "testdev-taken"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -242,5 +250,173 @@ func TestBecomeToExistsErrorHasNoPrefixStutter(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "become: become:") {
 		t.Fatalf("prefix stutter survived: %q", err.Error())
+	}
+}
+
+// TestBecomeFromExpandsLocalFirst covers become.go's --from bypass site:
+// this session owns a live seeded alias, and a foreign live alias of the
+// SAME short name also happens to exist on the bus (registered directly,
+// unseeded, standing in for another device's bare row). Typing the short
+// name into --from must claim from THIS session's own live alias, never the
+// foreign one — becomeLiveAliases already restricts candidates to this
+// session's tuple, so this proves the short name expands to the row become
+// is actually allowed to touch, not a same-named row elsewhere on the bus.
+func TestBecomeFromExpandsLocalFirst(t *testing.T) {
+	startTestDaemon(t)
+	t.Setenv("MUSTER_DEVICE_NAME", "personal")
+	t.Setenv("TMUX", "/tmp/sock,1,0")
+	t.Setenv("TMUX_PANE", "%1")
+	prev := tmuxenv.Run
+	tmuxenv.Run = hookRun(map[string]string{"#{session_id}": "$1", "#{session_created}": "100"})
+	t.Cleanup(func() { tmuxenv.Run = prev })
+	if _, err := callData("register_agent", map[string]any{
+		"alias": "personal-cost-audit", "socket_path": "/tmp/sock", "session_id": "$1", "session_created": 100,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// A foreign row with the bare short name, on a DIFFERENT session tuple —
+	// not live on this session, so becomeLiveAliases would never offer it,
+	// but it must also not be what --from "cost-audit" silently expands to.
+	if _, err := callData("register_agent", map[string]any{
+		"alias": "cost-audit", "socket_path": "/tmp/othersock", "session_id": "$9", "session_created": 100,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	if err := Dispatch([]string{"become", "alias-routing", "--from", "cost-audit"}, &buf); err != nil {
+		t.Fatalf("become --from cost-audit: %v", err)
+	}
+	if !strings.Contains(buf.String(), "was 'cost-audit'") {
+		t.Fatalf("output = %q", buf.String())
+	}
+	// The LOCAL row (personal-cost-audit) must be the one retired by become
+	// (superseded); the foreign row must be untouched.
+	local, ok, _ := hookGetAgent("personal-cost-audit")
+	if !ok || local.SupersededBy == "" {
+		t.Fatalf("local row must be retired by the claim, got %+v (ok=%v)", local, ok)
+	}
+	foreign, ok, _ := hookGetAgent("cost-audit")
+	if !ok || foreign.SupersededBy != "" || foreign.Departed {
+		t.Fatalf("foreign row must be untouched, got %+v (ok=%v)", foreign, ok)
+	}
+}
+
+// TestBecomeFromExactMatchWinsOverTwin is the regression test for the bug an
+// earlier fix only half-solved: this session holds BOTH a legacy unprefixed
+// row ("dotfiles") and its seeded twin ("personal-dotfiles"), both live on
+// the SAME session tuple. expandAlias's local-first bias always prefers the
+// seeded form, so without an exact-match check ahead of it, `--from
+// dotfiles` would silently retire "personal-dotfiles" while the confirmation
+// (stripped for display) still read "was 'dotfiles'" — the wrong row,
+// reported as though it were the right one. Naming a live alias EXACTLY must
+// claim exactly that row: --from dotfiles retires dotfiles, not its twin.
+func TestBecomeFromExactMatchWinsOverTwin(t *testing.T) {
+	startTestDaemon(t)
+	t.Setenv("MUSTER_DEVICE_NAME", "personal")
+	t.Setenv("TMUX", "/tmp/sock,1,0")
+	t.Setenv("TMUX_PANE", "%1")
+	prev := tmuxenv.Run
+	tmuxenv.Run = hookRun(map[string]string{"#{session_id}": "$1", "#{session_created}": "100"})
+	t.Cleanup(func() { tmuxenv.Run = prev })
+	for _, a := range []string{"dotfiles", "personal-dotfiles"} {
+		if _, err := callData("register_agent", map[string]any{
+			"alias": a, "socket_path": "/tmp/sock", "session_id": "$1", "session_created": 100,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var buf bytes.Buffer
+	if err := Dispatch([]string{"become", "alias-routing", "--from", "dotfiles"}, &buf); err != nil {
+		t.Fatalf("become --from dotfiles: %v", err)
+	}
+	if !strings.Contains(buf.String(), "was 'dotfiles'") {
+		t.Fatalf("output = %q", buf.String())
+	}
+
+	// The row named EXACTLY ("dotfiles") is the one retired (superseded);
+	// its twin is untouched.
+	legacy, ok, _ := hookGetAgent("dotfiles")
+	if !ok || legacy.SupersededBy == "" {
+		t.Fatalf("the exactly-named row must be retired by the claim, got %+v (ok=%v)", legacy, ok)
+	}
+	twin, ok, _ := hookGetAgent("personal-dotfiles")
+	if !ok || twin.SupersededBy != "" || twin.Departed {
+		t.Fatalf("twin row must be untouched, got %+v (ok=%v)", twin, ok)
+	}
+}
+
+// TestBecomeSeedsTheClaimNotTheInjectedName pins the split inside become: the
+// stored alias carries the device prefix, while the name typed into the pane
+// and reported to the operator stays short. Injecting the seeded name would
+// put the prefix straight back into the tmux session name and the title bar.
+func TestBecomeSeedsTheClaimNotTheInjectedName(t *testing.T) {
+	t.Setenv("MUSTER_HOME", t.TempDir())
+	t.Setenv("MUSTER_DEVICE_NAME", "personal")
+	if got, want := seedAlias("galley/design"), "personal-galley/design"; got != want {
+		t.Fatalf("claim = %q, want %q", got, want)
+	}
+	// A full alias pasted back from the other machine claims the same row.
+	if got, want := seedAlias("personal-galley/design"), "personal-galley/design"; got != want {
+		t.Fatalf("re-seeded claim = %q, want %q", got, want)
+	}
+}
+
+// TestBecomeInjectsTheStrippedNameForAFullAlias is the round trip
+// device.Seed's idempotence guard exists to support: an operator reads a full
+// alias off ANOTHER machine (where it renders unstripped) and pastes it back
+// here. The claim underneath is identical either way — that is what
+// idempotence buys — but the name typed into the pane is a human surface, and
+// injecting the pasted prefix puts the device name straight back into the
+// title bar this design clears. `become galley/design` and
+// `become testdev-galley/design` must therefore type the SAME thing.
+func TestBecomeInjectsTheStrippedNameForAFullAlias(t *testing.T) {
+	startTestDaemon(t)
+	t.Setenv("MUSTER_DEVICE_NAME", "testdev")
+	t.Setenv("TMUX", "/tmp/sock,1,0")
+	t.Setenv("TMUX_PANE", "%5")
+	if _, err := callData("register_agent", map[string]any{
+		"alias": "muster-2", "socket_path": "/tmp/sock", "session_id": "$1",
+		"pane_id": "%5", "model_type": "claude", "session_created": 1700000000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var sent [][]string
+	prev := tmuxenv.Run
+	tmuxenv.Run = func(args ...string) (string, error) {
+		last := args[len(args)-1]
+		switch last {
+		case "#{session_id}":
+			return "$1", nil
+		case "#{pane_id}":
+			return "%5", nil
+		case "#{session_created}":
+			return "1700000000", nil
+		}
+		if len(args) > 2 && args[2] == "send-keys" {
+			sent = append(sent, append([]string(nil), args...))
+		}
+		return "", nil
+	}
+	t.Cleanup(func() { tmuxenv.Run = prev })
+
+	var buf bytes.Buffer
+	if err := Dispatch([]string{"become", "testdev-galley/design"}, &buf); err != nil {
+		t.Fatalf("become: %v", err)
+	}
+	if len(sent) != 2 {
+		t.Fatalf("expected /rename type + Enter submit, got %v", sent)
+	}
+	if got := sent[0][len(sent[0])-1]; got != "/rename galley/design" {
+		t.Fatalf("typed %q, want %q — the device prefix must not be re-injected", got, "/rename galley/design")
+	}
+	// The claim itself is the seeded form, unchanged by the paste.
+	if ag, ok, _ := hookGetAgent("testdev-galley/design"); !ok || ag.Departed {
+		t.Fatalf("claimed row = %+v (ok=%v)", ag, ok)
+	}
+	if !strings.Contains(buf.String(), "you are now 'galley/design'") {
+		t.Fatalf("expected the stripped claim summary, got %q", buf.String())
 	}
 }

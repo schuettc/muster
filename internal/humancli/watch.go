@@ -72,7 +72,13 @@ func cmdWatch(args []string, out io.Writer, o watchOpts) error {
 		o.wait = signalWait()
 	}
 
-	page, err := fetchEvents(*agent, *kind, *thread, -1, *backlog) // backlog mode
+	// A short local alias must expand before it reaches the daemon's exact
+	// list_events filter, exactly like every other input site. Expanded once
+	// up front — the roster a device name maps against does not change over
+	// one watch invocation's life.
+	agentArg := expandAlias(*agent, rosterAliasExists())
+
+	page, err := fetchEvents(agentArg, *kind, *thread, -1, *backlog) // backlog mode
 	if err != nil {
 		return err
 	}
@@ -87,7 +93,7 @@ func cmdWatch(args []string, out io.Writer, o watchOpts) error {
 		if !o.wait(*interval) {
 			return nil // interrupted
 		}
-		page, err := fetchEvents(*agent, *kind, *thread, cursor, 0) // follow mode
+		page, err := fetchEvents(agentArg, *kind, *thread, cursor, 0) // follow mode
 		if err != nil {
 			_, _ = fmt.Fprintln(o.errw, "watch: poll failed, retrying:", err)
 			continue

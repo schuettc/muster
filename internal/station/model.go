@@ -20,6 +20,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/schuettc/muster/internal/device"
 	"github.com/schuettc/muster/internal/nudge"
 	"github.com/schuettc/muster/internal/render"
 )
@@ -169,9 +170,10 @@ type Model struct {
 	events       []render.EventRow
 	activity     *render.Renderer // renders agent-activity lines
 
-	agents       []agentEnriched
-	labels       map[string]string // alias → current label, shared by the activity view and every row renderer
-	labelCollide map[string]bool   // alias → true when its current label needs its alias appended to stay unambiguous (spec §5-LOCK item 7)
+	agents            []agentEnriched
+	labels            map[string]string // alias → current label, shared by the activity view and every row renderer
+	labelCollide      map[string]bool   // alias → true when its current label needs its alias appended to stay unambiguous (spec §5-LOCK item 7)
+	aliasStripCollide map[string]bool   // alias → true when stripping this machine's device prefix would render it identically to another agent's post-strip alias; forces full form on BOTH sides (see computeAliasStripCollisions)
 
 	threads []listThreadRow
 
@@ -1364,6 +1366,7 @@ func (m Model) applyAgents(msg agentsMsg) Model {
 	}
 	m.labels = labels
 	m.labelCollide = computeLabelCollisions(m.agents)
+	m.aliasStripCollide = computeAliasStripCollisions(m.agents)
 	m.activity.SetLabels(labels)
 
 	projects := m.projectRows()
@@ -1500,6 +1503,17 @@ func (m Model) applyInboxAck(msg inboxAckMsg) Model {
 // ambiguous (spec §5-LOCK item 7) — the ONE shared helper every label-
 // rendering call site in the package goes through, so "who → who" can never
 // read as nonsense regardless of where it renders.
+//
+// alias is always the full, stored form (m.labels and m.labelCollide are
+// keyed by it) — station is a human surface, so this machine's device
+// prefix comes off wherever a raw alias would otherwise render: the
+// no-label/Aliases-mode fallback, and the alias inside the "label (alias)"
+// collision fallback. A label itself is never stripped; it isn't an alias.
+// Both strip sites route through m.dispAlias, which forces the full,
+// unstripped form when computeAliasStripCollisions flagged this alias as
+// colliding with another agent's post-strip form — otherwise two different
+// agents (a locally seeded "personal-relay" and a legacy bare "relay")
+// could strip to the identical displayed string.
 func (m Model) dispLabel(alias string) string {
 	base := alias
 	if !m.opts.Aliases {
@@ -1508,9 +1522,27 @@ func (m Model) dispLabel(alias string) string {
 		}
 	}
 	if base != alias && m.labelCollide[alias] {
-		return base + " (" + alias + ")"
+		return base + " (" + m.dispAlias(alias) + ")"
+	}
+	if base == alias {
+		return m.dispAlias(alias)
 	}
 	return base
+}
+
+// dispAlias strips this machine's device prefix off alias for display,
+// UNLESS computeAliasStripCollisions flagged alias as colliding with
+// another agent's post-strip form — in which case it returns alias
+// untouched. This is the one place in the package that calls
+// device.Strip on an alias bound for the screen; every display call site
+// funnels through it via dispLabel (and renderQuitAgentLine, its one
+// by-design bypass of dispLabel itself) so the collision guard can never be
+// skipped by a second, parallel strip call.
+func (m Model) dispAlias(alias string) string {
+	if m.aliasStripCollide[alias] {
+		return alias
+	}
+	return device.Strip(device.Name(), alias)
 }
 
 // dispToTarget renders a thread's (to_kind, to_target) pair for display:

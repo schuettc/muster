@@ -132,7 +132,7 @@ func startWithNotifierAndStore(t *testing.T, n *fakeNotifier) (string, *store.St
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = s.Close() })
-	d, err := Serve(paths.SocketPath(), s, n)
+	d, err := Serve(paths.SocketPath(), s, n, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -192,7 +192,7 @@ func TestNilNotifierIsSafe(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = s.Close() })
-	d, err := Serve(paths.SocketPath(), s, nil)
+	d, err := Serve(paths.SocketPath(), s, nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -211,7 +211,7 @@ func TestNilNotifierIsSafe(t *testing.T) {
 // change to either can't regress it silently.
 func TestNilNotifierWritePathIsSafe(t *testing.T) {
 	s := newDaemonTestStore(t)
-	d := New(s, nil)
+	d := New(s, nil, "")
 
 	reg := d.Dispatch(proto.Request{Op: "register_agent", Args: map[string]any{
 		"alias": "a1", "role": "worker",
@@ -509,7 +509,7 @@ func TestGetInboxFailsWhenMarkReadFails(t *testing.T) {
 	fs := &markReadFailingStore{Store: realStore}
 
 	n := &fakeNotifier{}
-	d, err := Serve(paths.SocketPath(), fs, n)
+	d, err := Serve(paths.SocketPath(), fs, n, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -580,7 +580,7 @@ func TestNotifyDrainInterleaving(t *testing.T) {
 	t.Cleanup(func() { _ = s.Close() })
 
 	n := &blockingNotifier{proceed: make(chan struct{}), entered: make(chan struct{})}
-	d, err := Serve(paths.SocketPath(), s, n)
+	d, err := Serve(paths.SocketPath(), s, n, "")
 	if err != nil {
 		t.Fatal(err)
 	}

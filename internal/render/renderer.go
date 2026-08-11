@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/schuettc/muster/internal/device"
 	"github.com/schuettc/muster/internal/display"
 )
 
@@ -30,18 +31,25 @@ const (
 // (watch/station) and only grow, so columns stay aligned to real content
 // instead of guessed fixed widths while the feed streams.
 type Renderer struct {
-	labels   map[string]string // alias → current label ("" or missing = show the alias)
-	aliases  bool              // true = raw aliases, ignore labels
-	fullTime bool              // true = date + time; false = time only
-	whoW     int
-	threadW  int
-	width    int // total line budget (terminal columns)
+	labels map[string]string // alias → current label ("" or missing = show the alias)
+	// stripCollide is alias → "render this one in full": stripping this
+	// machine's device prefix off it would produce the same string as
+	// stripping some OTHER alias in the same roster. Derived from labels'
+	// KEYS, which are the whole roster (both producers — render.LoadLabels
+	// and station's applyAgents — key one entry per registered agent,
+	// label or not), so it is recomputed wherever labels is.
+	stripCollide map[string]bool
+	aliases      bool // true = raw aliases, ignore labels
+	fullTime     bool // true = date + time; false = time only
+	whoW         int
+	threadW      int
+	width        int // total line budget (terminal columns)
 }
 
 // NewRenderer sizes columns from rows. labels may be nil (aliases render
 // as-is). width <= 0 falls back to $COLUMNS, then defaultLineWidth.
 func NewRenderer(rows []EventRow, labels map[string]string, aliases, fullTime bool, width int) *Renderer {
-	r := &Renderer{labels: labels, aliases: aliases, fullTime: fullTime, whoW: 6, threadW: 3, width: width}
+	r := &Renderer{labels: labels, stripCollide: aliasStripCollisions(labels), aliases: aliases, fullTime: fullTime, whoW: 6, threadW: 3, width: width}
 	if r.width <= 0 {
 		if c, err := strconv.Atoi(os.Getenv("COLUMNS")); err == nil && c > 40 {
 			r.width = c
@@ -63,9 +71,52 @@ func (r *Renderer) HasLabel(alias string) bool {
 }
 
 // SetLabels replaces the renderer's label map (e.g. after a streaming
-// caller refreshes it for a newly-registered agent).
+// caller refreshes it for a newly-registered agent). The strip-collision set
+// is recomputed with it: a newly-registered agent is exactly what brings a
+// collision into existence, so a set frozen at construction would miss the
+// case it exists for.
 func (r *Renderer) SetLabels(labels map[string]string) {
 	r.labels = labels
+	r.stripCollide = aliasStripCollisions(labels)
+}
+
+// aliasStripCollisions reports, for each alias in the roster-derived label
+// map, whether stripping this machine's device prefix would render it
+// identically to some OTHER alias's post-strip form — a legacy bare "relay"
+// beside a locally seeded "personal-relay", or a foreign machine's bare alias
+// matching one of ours. Both sides then render in full (spec §5): a feed
+// showing one name for two agents is worse than one showing a prefix.
+//
+// This is the third implementation of that rule, matching
+// humancli.aliasDisplay and station.computeAliasStripCollisions. It differs
+// from them only in what it counts over: they see one view's rows, this sees
+// the whole roster, which is what the renderer has at render time — a
+// streamed feed prints one event at a time and never holds "the set of rows
+// on screen". Counting over the roster is the more conservative direction: it
+// can render an alias in full because of a colliding agent that has no event
+// in the visible window, which is legible, where the reverse would not be.
+//
+// An alias with no roster row at all — an event from an agent since purged —
+// is absent from the map and strips unconditionally, exactly as before.
+func aliasStripCollisions(labels map[string]string) map[string]bool {
+	name := device.Name()
+	if name == "" || len(labels) == 0 {
+		return nil
+	}
+	count := make(map[string]int, len(labels))
+	for alias := range labels {
+		count[device.Strip(name, alias)]++ // map keys are already distinct
+	}
+	var out map[string]bool
+	for alias := range labels {
+		if count[device.Strip(name, alias)] > 1 {
+			if out == nil {
+				out = map[string]bool{}
+			}
+			out[alias] = true
+		}
+	}
+	return out
 }
 
 // SetAliases toggles raw-alias mode (true = ignore labels, show aliases
@@ -107,20 +158,35 @@ func (r *Renderer) fit(e EventRow) {
 }
 
 // disp resolves an alias for display: the agent's current label when one is
-// known (pinned or auto topic), the alias otherwise. Labels resolve at
+// known (pinned or auto topic), the alias otherwise — with this machine's
+// device-name prefix stripped, exactly like the rest of the CLI's human
+// surfaces (internal/humancli's dispAlias/aliasDisplay). Labels resolve at
 // render time, so old events show whoever the agent is *today* — use
-// --aliases for the stable raw view.
+// --aliases for the stable raw view (still stripped: --aliases only turns
+// off label resolution, it does not re-expose the wire-format alias).
+//
+// A label wins over the strip-collision fallback: it has already replaced the
+// alias entirely, and station guards label ambiguity separately
+// (computeLabelCollisions). The fallback is about two ALIASES rendering the
+// same string.
 func (r *Renderer) disp(alias string) string {
 	if !r.aliases {
 		if l := r.labels[alias]; l != "" {
 			return l
 		}
 	}
-	return alias
+	if r.stripCollide[alias] {
+		return alias
+	}
+	return device.Strip(device.Name(), alias)
 }
 
 // dispTarget renders a journal target ('agent:x' / 'role:r' / 'broadcast' /
-// 'broadcast:<project>' / bare alias) for display.
+// 'broadcast:<project>' / bare alias) for display. Only the 'agent:' and
+// bare-alias forms carry an alias — role names and broadcast/project scopes
+// are never run through disp/device.Strip, since they are not aliases and a
+// role or project name that happened to share this device's prefix must not
+// be mangled.
 func (r *Renderer) dispTarget(target string) string {
 	if a, ok := strings.CutPrefix(target, "agent:"); ok {
 		return r.disp(a)

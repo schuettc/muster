@@ -65,5 +65,13 @@ func resolveVia(given string) (string, error) {
 	if err := json.Unmarshal(raw, &rows); err != nil {
 		return "", err
 	}
+	// Expand a short local name to the stored alias BEFORE resolution, so
+	// internal/resolve stays device-blind (its Candidate carries no device
+	// field, and its precedence rules are unchanged).
+	byAlias := make(map[string]bool, len(rows))
+	for _, r := range rows {
+		byAlias[r.Alias] = true
+	}
+	given = expandAlias(given, func(a string) bool { return byAlias[a] })
 	return ResolveTarget(enrichAgents(rows), given, callerProject())
 }
