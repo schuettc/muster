@@ -10,8 +10,16 @@ import (
 // TestEndToEndOverMCP boots the real server (all tools) on an in-memory
 // transport and drives it with an MCP client — the cross-model scenario:
 // create a review task, claim it, complete it, and read it back.
+//
+// MUSTER_DEVICE_NAME is pinned so register_agent's mint-time seeding
+// (device.SeedMinted) is deterministic: the daemon stores "e2e-backend" and
+// "e2e-reviewer1", not the bare aliases this test asks for, so every later
+// reference to those agents (from/by) must use the seeded form too — the
+// same thing a real MCP client does by reading the alias back out of the
+// register_agent reply rather than assuming its own input still matches.
 func TestEndToEndOverMCP(t *testing.T) {
 	startTestDaemon(t)
+	t.Setenv("MUSTER_DEVICE_NAME", "e2e")
 	ctx := context.Background()
 
 	srv := mcp.NewServer(&mcp.Implementation{Name: "muster", Version: version}, nil)
@@ -41,7 +49,7 @@ func TestEndToEndOverMCP(t *testing.T) {
 	call("register_agent", map[string]any{"alias": "backend", "role": "producer", "model_type": "claude"})
 	call("register_agent", map[string]any{"alias": "reviewer1", "role": "reviewer", "model_type": "codex"})
 	created := call("task_create", map[string]any{
-		"from": "backend", "to_kind": "role", "to_target": "reviewer",
+		"from": "e2e-backend", "to_kind": "role", "to_target": "reviewer",
 		"subject": "Review feat/wagers", "ref": "repo=bhw", "body": "please review",
 	})
 	sc, ok := created.StructuredContent.(map[string]any)
@@ -52,8 +60,8 @@ func TestEndToEndOverMCP(t *testing.T) {
 	if !ok || tid == 0 {
 		t.Fatalf("no thread_id in task_create output: %v", sc)
 	}
-	call("task_claim", map[string]any{"thread_id": tid, "by": "reviewer1"})
-	call("task_transition", map[string]any{"thread_id": tid, "by": "reviewer1", "status": "completed", "note": "LGTM"})
+	call("task_claim", map[string]any{"thread_id": tid, "by": "e2e-reviewer1"})
+	call("task_transition", map[string]any{"thread_id": tid, "by": "e2e-reviewer1", "status": "completed", "note": "LGTM"})
 
 	got := call("get_thread", map[string]any{"thread_id": tid})
 	gsc, _ := got.StructuredContent.(map[string]any)

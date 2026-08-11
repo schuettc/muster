@@ -10,9 +10,21 @@ import (
 	"github.com/schuettc/muster/internal/tmuxenv"
 )
 
+// TestMCPRegistrationSeedsTheModelSuppliedAlias closes the hole this task
+// exists for: a model registering the same name from two machines would
+// otherwise take the other machine's row, and its inbox with it.
+func TestMCPRegistrationSeedsTheModelSuppliedAlias(t *testing.T) {
+	t.Setenv("MUSTER_HOME", t.TempDir())
+	t.Setenv("MUSTER_DEVICE_NAME", "personal")
+	if got, want := device.SeedMinted("researcher"), "personal-researcher"; got != want {
+		t.Fatalf("mint seeding = %q, want %q", got, want)
+	}
+}
+
 func TestRegisterAgentCapturesTmuxEnv(t *testing.T) {
 	t.Setenv("TMUX", "/private/tmp/tmux-501/proj-muster,123,0")
 	t.Setenv("TMUX_PANE", "%6")
+	t.Setenv("MUSTER_DEVICE_NAME", "personal") // isolate the mint site's device.Adopt() from this machine's real config
 	prev := tmuxenv.Run
 	tmuxenv.Run = func(args ...string) (string, error) {
 		switch args[len(args)-1] {
@@ -93,6 +105,7 @@ func TestRegisterAgentIdempotentForRegisteredPane(t *testing.T) {
 func TestRegisterAgentGhostSessionCreatedRegisters(t *testing.T) {
 	t.Setenv("TMUX", "/tmp/sock,1,0")
 	t.Setenv("TMUX_PANE", "%14")
+	t.Setenv("MUSTER_DEVICE_NAME", "personal") // isolate the mint site's device.Adopt() from this machine's real config
 	prevCall := callDaemon
 	t.Cleanup(func() { callDaemon = prevCall })
 	prevRun := tmuxenv.Run
@@ -134,6 +147,7 @@ func TestRegisterAgentGhostSessionCreatedRegisters(t *testing.T) {
 func TestRegisterAgentSameAliasStillUpserts(t *testing.T) {
 	t.Setenv("TMUX", "/tmp/sock,1,0")
 	t.Setenv("TMUX_PANE", "%14")
+	t.Setenv("MUSTER_DEVICE_NAME", "personal") // isolate the mint site's device.Adopt() from this machine's real config
 	prevCall := callDaemon
 	t.Cleanup(func() { callDaemon = prevCall })
 	prevRun := tmuxenv.Run
@@ -168,6 +182,7 @@ func TestRegisterAgentStampsHarnessLinkAndReportsRevival(t *testing.T) {
 	t.Setenv("TMUX", "/tmp/sock,1,0")
 	t.Setenv("TMUX_PANE", "%6")
 	t.Setenv("CLAUDE_CODE_SESSION_ID", "uuid-7")
+	t.Setenv("MUSTER_DEVICE_NAME", "personal") // isolate the mint site's device.Adopt() from this machine's real config
 	prev := tmuxenv.Run
 	tmuxenv.Run = func(args ...string) (string, error) {
 		switch args[len(args)-1] {
@@ -207,6 +222,7 @@ func TestRegisterAgentStampsHarnessLinkAndReportsRevival(t *testing.T) {
 func TestRegisterAgentFreshPaneRegisters(t *testing.T) {
 	t.Setenv("TMUX", "/tmp/sock,1,0")
 	t.Setenv("TMUX_PANE", "%14")
+	t.Setenv("MUSTER_DEVICE_NAME", "personal") // isolate the mint site's device.Adopt() from this machine's real config
 	prevCall := callDaemon
 	t.Cleanup(func() { callDaemon = prevCall })
 	prevRun := tmuxenv.Run
@@ -214,12 +230,14 @@ func TestRegisterAgentFreshPaneRegisters(t *testing.T) {
 	t.Cleanup(func() { tmuxenv.Run = prevRun })
 
 	var registered bool
-	callDaemon = func(op string, _ map[string]any) (json.RawMessage, error) {
+	var got map[string]any
+	callDaemon = func(op string, args map[string]any) (json.RawMessage, error) {
 		switch op {
 		case "list_agents":
 			return json.RawMessage(`[]`), nil
 		case "register_agent":
 			registered = true
+			got = args
 			return json.RawMessage(`null`), nil
 		}
 		return nil, nil
@@ -228,14 +246,31 @@ func TestRegisterAgentFreshPaneRegisters(t *testing.T) {
 	if err != nil || !out.OK || !registered {
 		t.Fatalf("fresh pane must register: registered=%v out=%+v err=%v", registered, out, err)
 	}
+	// register_agent is the second MCP mint site: the model-supplied alias
+	// must be seeded with the device name before it reaches the daemon, and
+	// the reply text must report that same seeded alias — not the bare one —
+	// so a model quoting it back on another machine addresses the right row.
+	if got["alias"] != "personal-fresh" {
+		t.Fatalf("register_agent alias = %v, want seeded 'personal-fresh'", got["alias"])
+	}
+	if !strings.Contains(out.Detail, "personal-fresh") {
+		t.Fatalf("Detail = %q, want the seeded alias 'personal-fresh'", out.Detail)
+	}
 }
 
 // TestRegisterAgentBecomeClaimsThroughPaneGuard: an already-registered pane
 // calling register_agent with become:true issues the become op instead of
 // the refusal, and the Detail reports the trade.
+//
+// It also covers the become path's mint site: the model supplies a bare
+// alias ("alias-routing"), which must be seeded with the device name before
+// it reaches the daemon's "to" argument and before it appears in the reply
+// text — the same rule TestRegisterAgentFreshPaneRegisters pins for the
+// register_agent mint site.
 func TestRegisterAgentBecomeClaimsThroughPaneGuard(t *testing.T) {
 	t.Setenv("TMUX", "/tmp/sock,1,0")
 	t.Setenv("TMUX_PANE", "%6")
+	t.Setenv("MUSTER_DEVICE_NAME", "personal")
 	prev := tmuxenv.Run
 	tmuxenv.Run = func(args ...string) (string, error) {
 		if args[len(args)-1] == "#{session_id}" {
@@ -251,7 +286,7 @@ func TestRegisterAgentBecomeClaimsThroughPaneGuard(t *testing.T) {
 		switch op {
 		case "become":
 			becomeArgs = args
-			return []byte(`{"from":"muster-2","to":"alias-routing","unread":2}`), nil
+			return []byte(`{"from":"muster-2","to":"personal-alias-routing","unread":2}`), nil
 		default: // paneRegistration's roster probe: this pane already owns muster-2
 			return []byte(`[{"alias":"muster-2","socket_path":"/tmp/sock","session_id":"$1","pane_id":"%6"}]`), nil
 		}
@@ -264,10 +299,10 @@ func TestRegisterAgentBecomeClaimsThroughPaneGuard(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if becomeArgs["from"] != "muster-2" || becomeArgs["to"] != "alias-routing" {
-		t.Fatalf("become args = %+v", becomeArgs)
+	if becomeArgs["from"] != "muster-2" || becomeArgs["to"] != "personal-alias-routing" {
+		t.Fatalf("become args = %+v, want to = seeded 'personal-alias-routing'", becomeArgs)
 	}
-	if !strings.Contains(out.Detail, "you are now 'alias-routing' (was 'muster-2')") ||
+	if !strings.Contains(out.Detail, "you are now 'personal-alias-routing' (was 'muster-2')") ||
 		!strings.Contains(out.Detail, "2 unread") {
 		t.Fatalf("Detail = %q", out.Detail)
 	}

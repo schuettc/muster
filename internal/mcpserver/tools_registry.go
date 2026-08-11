@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/schuettc/muster/internal/device"
 	"github.com/schuettc/muster/internal/harnessenv"
 	"github.com/schuettc/muster/internal/tmuxenv"
 )
@@ -39,7 +40,8 @@ func registerAgentHandler(_ context.Context, _ *mcp.CallToolRequest, in Register
 	c := tmuxenv.CaptureEnv()
 	if row, ok := paneRegistration(c.SocketPath, c.SessionID, c.PaneID, c.SessionCreated); ok && row.Alias != in.Alias {
 		if in.Become {
-			raw, err := callDaemon("become", map[string]any{"from": row.Alias, "to": in.Alias})
+			to := device.SeedMinted(in.Alias)
+			raw, err := callDaemon("become", map[string]any{"from": row.Alias, "to": to})
 			if err != nil {
 				return nil, OKOut{}, err
 			}
@@ -49,7 +51,7 @@ func registerAgentHandler(_ context.Context, _ *mcp.CallToolRequest, in Register
 				Unread int    `json:"unread"`
 			}
 			_ = json.Unmarshal(raw, &trade)
-			detail := fmt.Sprintf("you are now '%s' (was '%s'); %d unread thread(s): call get_inbox with alias '%s'", trade.To, trade.From, trade.Unread, trade.To)
+			detail := fmt.Sprintf("you are now '%s' (was '%s'); %d unread thread(s): call get_inbox with alias '%s'", to, trade.From, trade.Unread, to)
 			return nil, OKOut{OK: true, Detail: detail}, nil
 		}
 		detail := fmt.Sprintf("already registered as '%s'", row.Alias)
@@ -78,8 +80,9 @@ func registerAgentHandler(_ context.Context, _ *mcp.CallToolRequest, in Register
 		socketPath, paneID = "", ""
 		sessionID, project = h.SessionID, h.Project()
 	}
+	alias := device.SeedMinted(in.Alias)
 	raw, err := callDaemon("register_agent", map[string]any{
-		"alias":              in.Alias,
+		"alias":              alias,
 		"role":               in.Role,
 		"model_type":         in.ModelType,
 		"session_name":       sessionName,
@@ -100,12 +103,12 @@ func registerAgentHandler(_ context.Context, _ *mcp.CallToolRequest, in Register
 		Unread  int    `json:"unread"`
 	}
 	_ = json.Unmarshal(raw, &ack)
-	detail := "registered " + in.Alias
+	detail := "registered " + alias
 	if ack.Outcome == "revived" {
-		detail = fmt.Sprintf("reconnected as '%s' — revived a previous registration", in.Alias)
+		detail = fmt.Sprintf("reconnected as '%s' — revived a previous registration", alias)
 	}
 	if ack.Unread > 0 {
-		detail += fmt.Sprintf("; %d unread thread(s): call get_inbox with alias '%s'", ack.Unread, in.Alias)
+		detail += fmt.Sprintf("; %d unread thread(s): call get_inbox with alias '%s'", ack.Unread, alias)
 	}
 	return nil, OKOut{OK: true, Detail: detail}, nil
 }

@@ -68,3 +68,20 @@ func TestStripNeverEmptiesAnAlias(t *testing.T) {
 		t.Fatalf("Strip of a bare-prefix alias = %q, want it untouched", got)
 	}
 }
+
+// TestSeedMintedAdoptsThenSeeds pins the composite every client mints through.
+// The ordering is the point: adoption runs first, so there is always a name to
+// seed with and no caller needs its own "is a name configured" gate.
+func TestSeedMintedAdoptsThenSeeds(t *testing.T) {
+	t.Setenv("MUSTER_HOME", t.TempDir())
+	t.Setenv("MUSTER_DEVICE_NAME", "personal")
+	if got, want := SeedMinted("researcher"), "personal-researcher"; got != want {
+		t.Fatalf("SeedMinted = %q, want %q", got, want)
+	}
+	if got := SeedMinted("personal-researcher"); got != "personal-researcher" {
+		t.Fatalf("SeedMinted not idempotent: %q", got)
+	}
+	if got := SeedMinted(""); got != "" {
+		t.Fatalf("SeedMinted(\"\") = %q, want \"\"", got)
+	}
+}

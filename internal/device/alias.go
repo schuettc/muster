@@ -45,3 +45,31 @@ func Strip(deviceName, alias string) string {
 	}
 	return rest
 }
+
+// SeedMinted is the one call every client makes when it MINTS an alias:
+// adopt a device name if the operator has not chosen one, then seed.
+//
+// It lives here rather than in each client package because a rule enforced at
+// N call sites is a rule that eventually is not. Four mint sites were missed
+// while this feature was built — three in the session hooks, one in the MCP
+// server — each of them a path where two machines could silently claim the
+// same roster row, and the row IS the identity, so the loser's inbox goes with
+// it.
+//
+// This is for MINTS only. A LOOKUP of an existing alias must not be seeded:
+// seeding a lookup makes an existing alias unfindable, and the paneless
+// allocator in particular reads a candidate's row before deciding to resume,
+// revive, or suffix past it.
+//
+// An adoption failure degrades to the unseeded alias rather than blocking:
+// a machine that cannot name itself must still be able to register.
+func SeedMinted(alias string) string {
+	if alias == "" {
+		return alias
+	}
+	name, _, err := Adopt()
+	if err != nil {
+		return alias
+	}
+	return Seed(name, alias)
+}

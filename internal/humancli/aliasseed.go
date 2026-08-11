@@ -18,13 +18,10 @@ import "github.com/schuettc/muster/internal/device"
 // minted. An adoption failure degrades to the unseeded alias rather than
 // blocking registration — a machine that cannot name itself still needs to be
 // able to register.
+//
+// This is a delegation to device.SeedMinted, the one mint helper every
+// client — humancli and mcpserver alike — calls, so the rule lives in one
+// place rather than in each client's own copy.
 func seedAlias(alias string) string {
-	if alias == "" {
-		return alias
-	}
-	name, _, err := device.Adopt()
-	if err != nil {
-		return alias
-	}
-	return device.Seed(name, alias)
+	return device.SeedMinted(alias)
 }
