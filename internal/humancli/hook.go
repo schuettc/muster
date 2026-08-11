@@ -459,7 +459,11 @@ func hookSessionEnd(c tmuxenv.Capture, h harnessenv.Capture) {
 		if ag.PaneID != "" && ag.PaneID != c.PaneID {
 			continue // a sibling pane's identity: not ours to tombstone
 		}
-		_ = cmdDeregister([]string{ag.Alias}, io.Discard)
+		// ag.Alias is already the exact stored alias for this row — route
+		// through deregisterAlias, not cmdDeregister, so it is never
+		// re-expanded local-first into an unrelated live agent's alias (see
+		// deregisterAlias's doc comment).
+		_ = deregisterAlias(ag.Alias, io.Discard)
 	}
 }
 
@@ -485,7 +489,9 @@ func hookSessionEndPaneless(h harnessenv.Capture) {
 		if ag.SocketPath != "" && tmuxenv.IsSessionAlive(ag.SocketPath, ag.SessionID, ag.SessionCreated) {
 			continue
 		}
-		_ = cmdDeregister([]string{ag.Alias}, io.Discard)
+		// ag.Alias is already the exact stored alias for this row — see the
+		// tmux sweep above for why this must not go through cmdDeregister.
+		_ = deregisterAlias(ag.Alias, io.Discard)
 	}
 }
 

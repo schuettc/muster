@@ -1,6 +1,11 @@
 package humancli
 
-import "testing"
+import (
+	"testing"
+	"time"
+
+	"github.com/schuettc/muster/internal/mustertest"
+)
 
 // TestAliasDisplayStripsTheLocalPrefix is the everyday case: this machine's
 // own rows read short.
@@ -94,5 +99,46 @@ func TestExpandAliasLeavesUnknownNamesAlone(t *testing.T) {
 	exists := func(string) bool { return false }
 	if got, want := expandAlias("typo", exists), "typo"; got != want {
 		t.Fatalf("expandAlias = %q, want %q", got, want)
+	}
+}
+
+// TestRosterAliasExistsConstructionIsLazy is the eager-fetch regression this
+// task's review caught: every call site passes rosterAliasExists() as an
+// argument expression to expandAlias — events.go, watch.go, thread.go,
+// humancli.go, identity.go — even when the operator typed no name to expand
+// at all (an empty --agent, --from, or deregister arg). expandAlias itself
+// already short-circuits on an empty `given` before ever calling `exists`,
+// but Go evaluates a call's arguments before the call runs, so MERELY
+// CONSTRUCTING rosterAliasExists() paid a full list_agents round trip
+// regardless of whether anything downstream ever asked it a question. Plain
+// `muster events` (no --agent) must not pay that cost.
+//
+// Proven the same way TestHookSessionEndUnresolvableIdentityNeverDialsDaemon
+// proves its own "never dials" invariant: point at a dead, isolated socket
+// path with auto-spawn left ACTIVE (MUSTER_NO_AUTOSPAWN unset — see
+// client.dialOrSpawn) and bound with a timeout well under dialOrSpawn's
+// ~5-second spawn-and-retry loop. A regression that dials eagerly would spawn
+// the daemon (re-exec'ing this very test binary as "serve" — the same fork
+// hazard that test guards against) and only return once that loop times out,
+// well past the bound; a construction that touches nothing returns
+// immediately.
+func TestRosterAliasExistsConstructionIsLazy(t *testing.T) {
+	dir, cleanup, err := mustertest.ShortHome()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(cleanup)
+	t.Setenv("MUSTER_HOME", dir) // isolated, dead socket path — nothing listens here
+	t.Setenv("MUSTER_NO_AUTOSPAWN", "")
+
+	done := make(chan struct{})
+	go func() {
+		rosterAliasExists()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(1 * time.Second):
+		t.Fatal("rosterAliasExists() did not return promptly — construction dialed the daemon eagerly")
 	}
 }

@@ -378,8 +378,14 @@ func cmdSend(args []string, out io.Writer) error {
 		}
 		body = strings.Join(rest[1:], " ")
 	}
+	// --from is an operator-typed name, exactly like reply's --from
+	// (thread.go) — local-first expand it before it reaches the daemon, or a
+	// bare --from (the very short form the CLI prints as its own hint)
+	// either mis-attributes the thread to an unrelated foreign agent of that
+	// name or, with none, an unresolvable orphan FromAgent.
+	fromAlias := expandAlias(*v.from, rosterAliasExists())
 	raw, err := callData("send_message", map[string]any{
-		"from": *v.from, "to_kind": toKind, "to_target": toTarget,
+		"from": fromAlias, "to_kind": toKind, "to_target": toTarget,
 		"subject": *v.subject, "ref": *v.ref, "body": body, "intent": *v.intent,
 	})
 	if err != nil {

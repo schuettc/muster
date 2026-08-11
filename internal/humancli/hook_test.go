@@ -772,6 +772,61 @@ func TestHookSessionEndNoOpForForeignTuple(t *testing.T) {
 	}
 }
 
+// TestHookSessionEndDoesNotExpandOwnedRowIntoALiveForeignAgent is the review
+// finding on this task: hookSessionEnd enumerates rows already resolved off
+// the roster (ag.Alias, an exact stored string for THIS tuple) and used to
+// hand them to cmdDeregister's explicit-arg branch, which local-first
+// expands. A bare row belonging to the dying session ("work" on tuple B) can
+// share its bare short name with an unrelated LIVE seeded row on a different
+// tuple ("personal-work" on tuple A) — expansion must never let tuple B's
+// SessionEnd reach across and tombstone tuple A's agent. Only tuple B's own
+// "work" row may depart; "personal-work" must stay live. This is the same
+// leftover-identity hazard hookSessionEnd's own doc comment (the lake-broker
+// incident) exists to prevent, now via a different mechanism (expansion
+// instead of an unswept alias).
+func TestHookSessionEndDoesNotExpandOwnedRowIntoALiveForeignAgent(t *testing.T) {
+	startTestDaemon(t)
+	t.Setenv("MUSTER_DEVICE_NAME", "personal")
+	if _, err := callData("register_agent", map[string]any{
+		"alias": "personal-work", "socket_path": "/tmp/sockA", "session_id": "$A", "session_created": 100, "pane_id": "%1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := callData("register_agent", map[string]any{
+		"alias": "work", "socket_path": "/tmp/sockB", "session_id": "$B", "session_created": 100, "pane_id": "%2",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("TMUX", "/tmp/sockB,1,0")
+	t.Setenv("TMUX_PANE", "%2")
+	t.Setenv("MUSTER_ALIAS", "")
+	prev := tmuxenv.Run
+	tmuxenv.Run = hookRun(map[string]string{"#{session_id}": "$B", "#{session_created}": "100", "#{session_name}": "work"})
+	t.Cleanup(func() { tmuxenv.Run = prev })
+
+	var buf bytes.Buffer
+	if err := cmdHook([]string{"SessionEnd"}, strings.NewReader(""), &buf); err != nil {
+		t.Fatalf("SessionEnd: %v", err)
+	}
+
+	var local, foreign agentRow
+	for _, a := range listAgentsForTest(t, "") {
+		switch a.Alias {
+		case "personal-work":
+			local = a
+		case "work":
+			foreign = a
+		}
+	}
+	if local.Departed {
+		t.Fatalf("session B's SessionEnd must not tombstone session A's live 'personal-work', got %+v", local)
+	}
+	if !foreign.Departed {
+		t.Fatalf("session B's own 'work' row must be departed, got %+v", foreign)
+	}
+}
+
 func TestHookSessionStartBestEffortWhenDaemonUnreachable(t *testing.T) {
 	// No test daemon started, and no tmux identity to fall back on: cmdRegister
 	// will fail (can't determine alias / can't reach daemon), but the hook must

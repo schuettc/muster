@@ -227,6 +227,50 @@ func TestInboxTableShowsLastFromAndUnread(t *testing.T) {
 	}
 }
 
+// TestSendFromExpandsLocalFirst is send's twin of
+// TestDeregisterExpandsExplicitArgLocalFirst / TestBecomeFromExpandsLocalFirst:
+// the roster holds BOTH a local seeded row ("personal-backend") and a
+// foreign bare row of the same short name ("backend", a different tuple).
+// `muster send consumer body --from backend` must attribute the thread to
+// the LOCAL row — send --from was, before this fix, passed to send_message
+// verbatim with no expansion at all, so a bare --from (the very form the CLI
+// prints as its hint) either mis-attributed the thread to a stranger's real
+// agent of that name, or created an orphan FromAgent with no roster row.
+func TestSendFromExpandsLocalFirst(t *testing.T) {
+	startTestDaemon(t)
+	t.Setenv("MUSTER_DEVICE_NAME", "personal")
+	if _, err := callData("register_agent", map[string]any{"alias": "consumer", "role": "consumer", "model_type": "codex"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := callData("register_agent", map[string]any{"alias": "personal-backend", "socket_path": "/s", "session_id": "$1"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := callData("register_agent", map[string]any{"alias": "backend", "socket_path": "/s2", "session_id": "$2"}); err != nil {
+		t.Fatal(err)
+	}
+
+	var sendBuf bytes.Buffer
+	if err := Dispatch([]string{"send", "consumer", "the API changed", "--from", "backend"}, &sendBuf); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+
+	raw, err := callData("list_threads", map[string]any{"limit": 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var res struct {
+		Threads []struct {
+			FromAgent string `json:"from_agent"`
+		} `json:"threads"`
+	}
+	if err := json.Unmarshal(raw, &res); err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Threads) != 1 || res.Threads[0].FromAgent != "personal-backend" {
+		t.Fatalf("expected thread attributed to local row 'personal-backend', got %+v", res.Threads)
+	}
+}
+
 // TestSendCommandAcceptsIntent proves --intent lands on the thread (visible
 // via list_threads) and renders as a journal tag in `muster events`.
 func TestSendCommandAcceptsIntent(t *testing.T) {

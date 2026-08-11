@@ -214,6 +214,23 @@ func cmdDeregister(args []string, out io.Writer) error {
 			}
 		}
 	}
+	return deregisterAlias(alias, out)
+}
+
+// deregisterAlias tombstones a stored alias exactly as given — no expansion.
+// This is the entry point for callers that already hold a fully-resolved
+// stored alias (a `list_agents` row's own Alias field, as the SessionEnd hook
+// sweeps do in hook.go) rather than an operator-typed name that might be
+// short. Routing such a caller through cmdDeregister's explicit-arg branch
+// instead would run it through expandAlias, which is local-first: a bare row
+// belonging to the session actually ending can share its short name with an
+// unrelated LIVE seeded row on a different tuple, and expansion would silently
+// retarget the tombstone onto that other, live agent instead of the row the
+// caller actually meant — precisely the leftover-identity leak
+// hookSessionEnd's own doc comment (the lake-broker incident) exists to
+// prevent, reintroduced through a different mechanism. Machine callers pass
+// stored aliases and must never have them rewritten.
+func deregisterAlias(alias string, out io.Writer) error {
 	if alias == "" {
 		return fmt.Errorf("cannot determine alias to deregister")
 	}

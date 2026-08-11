@@ -2,6 +2,7 @@ package humancli
 
 import (
 	"encoding/json"
+	"sync"
 
 	"github.com/schuettc/muster/internal/device"
 )
@@ -74,25 +75,40 @@ func expandAlias(given string, exists func(string) bool) string {
 	return given
 }
 
-// rosterAliasExists fetches the live roster and returns an `exists`
-// predicate over it for expandAlias, for the input sites that do not
-// already have a roster fetch of their own in hand (resolveVia builds its
-// own from the rows it already fetched). A roster fetch failure degrades to
-// "nothing exists" rather than blocking the caller — expandAlias then
-// returns the operator's literal input unchanged, exactly like an unknown
-// name.
+// rosterAliasExists returns an `exists` predicate over the live roster for
+// expandAlias, for the input sites that do not already have a roster fetch
+// of their own in hand (resolveVia builds its own from the rows it already
+// fetched). The fetch is LAZY — deferred to the predicate's first actual
+// call, not performed here: expandAlias short-circuits on an empty `given`
+// before ever calling `exists`, but every call site passes
+// rosterAliasExists() as an argument expression, and Go evaluates arguments
+// before the call runs. Fetching eagerly here would therefore pay a full
+// list_agents round trip on every invocation regardless of whether the
+// operator typed anything to expand — e.g. plain `muster events` with no
+// --agent. A roster fetch failure degrades to "nothing exists" rather than
+// blocking the caller — expandAlias then returns the operator's literal
+// input unchanged, exactly like an unknown name.
 func rosterAliasExists() func(string) bool {
-	raw, err := callData("list_agents", nil)
-	if err != nil {
-		return func(string) bool { return false }
+	var (
+		once sync.Once
+		set  map[string]bool
+	)
+	fetch := func() {
+		raw, err := callData("list_agents", nil)
+		if err != nil {
+			return
+		}
+		var rows []agentRow
+		if json.Unmarshal(raw, &rows) != nil {
+			return
+		}
+		set = make(map[string]bool, len(rows))
+		for _, r := range rows {
+			set[r.Alias] = true
+		}
 	}
-	var rows []agentRow
-	if json.Unmarshal(raw, &rows) != nil {
-		return func(string) bool { return false }
+	return func(a string) bool {
+		once.Do(fetch)
+		return set[a]
 	}
-	set := make(map[string]bool, len(rows))
-	for _, r := range rows {
-		set[r.Alias] = true
-	}
-	return func(a string) bool { return set[a] }
 }
