@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"strings"
+
+	"github.com/schuettc/muster/internal/device"
 )
 
 // newBecomeFlagsWithVals declares become's flags and returns typed access to
@@ -77,6 +79,18 @@ func cmdBecome(args []string, out io.Writer) error {
 		liveSet := make(map[string]bool, len(live))
 		for _, a := range live {
 			liveSet[a] = true
+		}
+		// expandAlias always prefers the seeded form when it exists, with no
+		// regard for whether the literal --from ALSO names a live alias on
+		// its own — which is exactly true of a legacy unprefixed row sitting
+		// beside its seeded twin. Left alone, expandAlias would silently
+		// retire the twin while the confirmation (stripped for display)
+		// prints the legacy name, reading as though that row were the one
+		// retired. Refuse rather than guess which of the two was meant;
+		// dispAlias is not used here because the whole point is telling two
+		// rows apart that dispAlias would strip to the same string.
+		if seeded := device.Seed(device.Name(), fromAlias); seeded != fromAlias && liveSet[fromAlias] && liveSet[seeded] {
+			return fmt.Errorf("--from %q is ambiguous: this session has both %q and %q live; pass --from with the exact alias you mean", fromAlias, fromAlias, seeded)
 		}
 		fromAlias = expandAlias(fromAlias, func(a string) bool { return liveSet[a] })
 	}

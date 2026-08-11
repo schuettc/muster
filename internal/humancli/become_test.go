@@ -302,6 +302,52 @@ func TestBecomeFromExpandsLocalFirst(t *testing.T) {
 	}
 }
 
+// TestBecomeFromRefusesAmbiguousLegacyTwin covers the review finding: this
+// session holds BOTH a legacy unprefixed row ("dotfiles") and its seeded
+// twin ("personal-dotfiles"), both live on the SAME session tuple.
+// `--from dotfiles` must not silently expand to the twin and retire it while
+// reporting "was 'dotfiles'" — the operator named the legacy row, and
+// expandAlias's local-first bias would pick the OTHER one. become must
+// refuse instead, naming both candidates, and must retire neither.
+func TestBecomeFromRefusesAmbiguousLegacyTwin(t *testing.T) {
+	startTestDaemon(t)
+	t.Setenv("MUSTER_DEVICE_NAME", "personal")
+	t.Setenv("TMUX", "/tmp/sock,1,0")
+	t.Setenv("TMUX_PANE", "%1")
+	prev := tmuxenv.Run
+	tmuxenv.Run = hookRun(map[string]string{"#{session_id}": "$1", "#{session_created}": "100"})
+	t.Cleanup(func() { tmuxenv.Run = prev })
+	for _, a := range []string{"dotfiles", "personal-dotfiles"} {
+		if _, err := callData("register_agent", map[string]any{
+			"alias": a, "socket_path": "/tmp/sock", "session_id": "$1", "session_created": 100,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var buf bytes.Buffer
+	err := Dispatch([]string{"become", "alias-routing", "--from", "dotfiles"}, &buf)
+	if err == nil {
+		t.Fatalf("want an ambiguity refusal, got none (out %q)", buf.String())
+	}
+	if !strings.Contains(err.Error(), "dotfiles") || !strings.Contains(err.Error(), "personal-dotfiles") {
+		t.Fatalf("error must name both candidates, got %q", err.Error())
+	}
+	if buf.Len() != 0 {
+		t.Fatalf("must not print anything before refusing, got %q", buf.String())
+	}
+
+	// Neither row was touched: no claim, no supersession, no departure.
+	legacy, ok, _ := hookGetAgent("dotfiles")
+	if !ok || legacy.SupersededBy != "" || legacy.Departed {
+		t.Fatalf("legacy row must be untouched, got %+v (ok=%v)", legacy, ok)
+	}
+	twin, ok, _ := hookGetAgent("personal-dotfiles")
+	if !ok || twin.SupersededBy != "" || twin.Departed {
+		t.Fatalf("twin row must be untouched, got %+v (ok=%v)", twin, ok)
+	}
+}
+
 // TestBecomeSeedsTheClaimNotTheInjectedName pins the split inside become: the
 // stored alias carries the device prefix, while the name typed into the pane
 // and reported to the operator stays short. Injecting the seeded name would
