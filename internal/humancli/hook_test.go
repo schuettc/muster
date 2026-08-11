@@ -1992,7 +1992,7 @@ func TestSessionAliasesForHookFallbackStaysEmptyWithNoSessionName(t *testing.T) 
 	startTestDaemon(t)
 	t.Setenv("MUSTER_DEVICE_NAME", "testdev")
 	prev := tmuxenv.Run
-	tmuxenv.Run = func(args ...string) (string, error) { return "", errors.New("no tmux") }
+	tmuxenv.Run = func(_ ...string) (string, error) { return "", errors.New("no tmux") }
 	t.Cleanup(func() { tmuxenv.Run = prev })
 
 	got := sessionAliasesForHook("/tmp/sock", "$1", 100)
