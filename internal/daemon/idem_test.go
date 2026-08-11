@@ -76,7 +76,7 @@ func seedAgent(t *testing.T, d *Daemon, alias string) {
 
 func TestDispatchDeduplicatesWritesByIdemKey(t *testing.T) {
 	s := newDaemonTestStore(t)
-	d := New(s, nil)
+	d := New(s, nil, "")
 	seedAgent(t, d, "a1")
 
 	req := proto.Request{
@@ -110,7 +110,7 @@ func TestDispatchDeduplicatesWritesByIdemKey(t *testing.T) {
 // record behind, so a LATER write on the same key still gets to execute.
 func TestDispatchIgnoresIdemKeyOnReads(t *testing.T) {
 	s := newDaemonTestStore(t)
-	d := New(s, nil)
+	d := New(s, nil, "")
 	seedAgent(t, d, "a1")
 
 	r1 := d.Dispatch(proto.Request{Op: "list_agents", IdemKey: "k-read"})
@@ -138,7 +138,7 @@ func TestDispatchIgnoresIdemKeyOnReads(t *testing.T) {
 // before this wrapper existed.
 func TestDispatchWithoutIdemKeyIsUnaffected(t *testing.T) {
 	s := newDaemonTestStore(t)
-	d := New(s, nil)
+	d := New(s, nil, "")
 	seedAgent(t, d, "a1")
 
 	req := proto.Request{Op: "send_message", Args: map[string]any{
@@ -162,7 +162,7 @@ func TestDispatchWithoutIdemKeyIsUnaffected(t *testing.T) {
 // leaves behind.
 func TestDispatchInFlightCollisionIsRetryable(t *testing.T) {
 	s := newDaemonTestStore(t)
-	d := New(s, nil)
+	d := New(s, nil, "")
 	seedAgent(t, d, "a1")
 
 	if _, _, found, err := s.IdemBegin("k-inflight"); err != nil || found {
@@ -213,7 +213,7 @@ func (m *idemFailingStore) IdemComplete(key string, resp []byte) error {
 // rather than invite a same-key retry that could sit wedged until the TTL.
 func TestDispatchIdemBeginErrorDoesNotExecute(t *testing.T) {
 	fs := &idemFailingStore{Store: newDaemonTestStore(t)}
-	d := New(fs, nil)
+	d := New(fs, nil, "")
 	seedAgent(t, d, "a1")
 
 	fs.failBegin = true
@@ -242,7 +242,7 @@ func TestDispatchIdemBeginErrorDoesNotExecute(t *testing.T) {
 // execution).
 func TestDispatchIdemCompleteErrorStillAnswers(t *testing.T) {
 	fs := &idemFailingStore{Store: newDaemonTestStore(t)}
-	d := New(fs, nil)
+	d := New(fs, nil, "")
 	seedAgent(t, d, "a1")
 
 	fs.failComplete = true
@@ -262,7 +262,7 @@ func TestDispatchIdemCompleteErrorStillAnswers(t *testing.T) {
 // exists to prevent — the recorded failure replays instead.
 func TestDispatchReplaysFailedWritesToo(t *testing.T) {
 	s := newDaemonTestStore(t)
-	d := New(s, nil)
+	d := New(s, nil, "")
 
 	req := proto.Request{
 		Op:      "prune_events",
@@ -286,7 +286,7 @@ func TestDispatchReplaysFailedWritesToo(t *testing.T) {
 // ORIGINAL unread counts.
 func TestGetInboxIsIdempotencyProtected(t *testing.T) {
 	s := newDaemonTestStore(t)
-	d := New(s, nil)
+	d := New(s, nil, "")
 	seedAgent(t, d, "author")
 	seedAgent(t, d, "reader")
 

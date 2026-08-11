@@ -1,6 +1,9 @@
 package daemon
 
-import "github.com/schuettc/muster/internal/resolve"
+import (
+	"github.com/schuettc/muster/internal/device"
+	"github.com/schuettc/muster/internal/resolve"
+)
 
 // resolveAgentTarget resolves to_target for a send_message/task_create op
 // whose to_kind=="agent" against the CURRENT roster (spec: the black-hole
@@ -27,6 +30,26 @@ func (d *Daemon) resolveAgentTarget(from, given string) (string, error) {
 	agents, err := d.s.ListAgents()
 	if err != nil {
 		return "", err
+	}
+	// Expand a short local name to the stored alias. This is the ONLY place a
+	// model-supplied target is checked: MCP passes to_target straight through
+	// with no client-side resolution, so without this a model that read a
+	// short alias off the roster could not address it at all. Local-first,
+	// matching the CLI's expandAlias (internal/humancli/dispalias.go): try
+	// <device>-<given> before the literal given, and expand only when the
+	// seeded form actually exists in the roster already in hand — an
+	// unexpandable name is left untouched so the caller's error names what
+	// was actually sent. "" disables expansion (Lambda mode, which serves
+	// many devices and must never guess one).
+	if d.deviceName != "" {
+		if seeded := device.Seed(d.deviceName, given); seeded != given {
+			for _, ag := range agents {
+				if ag.Alias == seeded {
+					given = seeded
+					break
+				}
+			}
+		}
 	}
 	candidates := make([]resolve.Candidate, len(agents))
 	for i, ag := range agents {

@@ -32,7 +32,7 @@ func startTestDaemon(t *testing.T) *store.Store {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = s.Close() })
-	d, err := daemon.Serve(paths.SocketPath(), s, nil)
+	d, err := daemon.Serve(paths.SocketPath(), s, nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}

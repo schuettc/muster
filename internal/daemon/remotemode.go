@@ -56,7 +56,13 @@ func ServeRemote(socketPath string, up Upstream, n wake.Notifier, deviceID, devi
 	if err != nil {
 		return nil, err
 	}
-	d := &Daemon{n: n, up: up, deviceID: deviceID, deviceName: deviceName, recStop: make(chan struct{})}
+	// s is nil: remote mode has no local store, and serve() always checks
+	// d.up first and forwards, so dispatch (and resolveAgentTarget's use of
+	// deviceName for expansion) is never reached from this mode — d.s and
+	// the expansion deviceName enables are both unused here.
+	d := New(nil, n, deviceName)
+	d.up = up
+	d.deviceID = deviceID
 	d.ln = ln
 	go d.acceptLoop()
 	return d, nil

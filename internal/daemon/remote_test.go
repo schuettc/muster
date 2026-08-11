@@ -193,7 +193,7 @@ func TestStampDeviceDoesNotMutateTheCallersArgs(t *testing.T) {
 // agent is on. Local clients send no device_id and are unaffected.
 func TestRegisterAgentRecordsDeviceID(t *testing.T) {
 	s := newDaemonTestStore(t)
-	d := New(s, nil)
+	d := New(s, nil, "")
 	resp := d.Dispatch(proto.Request{Op: "register_agent", Args: map[string]any{
 		"alias": "a1", "device_id": "dev-9",
 	}})

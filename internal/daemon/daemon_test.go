@@ -22,7 +22,7 @@ func startTestDaemon(t *testing.T) string {
 		t.Fatalf("store.Open: %v", err)
 	}
 	t.Cleanup(func() { _ = s.Close() })
-	d, err := Serve(paths.SocketPath(), s, nil)
+	d, err := Serve(paths.SocketPath(), s, nil, "")
 	if err != nil {
 		t.Fatalf("Serve: %v", err)
 	}
@@ -39,7 +39,7 @@ func TestDaemonRegisterAndList(t *testing.T) {
 	t.Cleanup(func() { _ = s.Close() })
 
 	sock := filepath.Join(dir, "sock")
-	d, err := Serve(sock, s, nil)
+	d, err := Serve(sock, s, nil, "")
 	if err != nil {
 		t.Fatalf("serve: %v", err)
 	}
@@ -77,7 +77,7 @@ func TestTaskClaimAcceptsStringThreadID(t *testing.T) {
 	t.Cleanup(func() { _ = s.Close() })
 
 	sock := filepath.Join(dir, "sock")
-	d, err := Serve(sock, s, nil)
+	d, err := Serve(sock, s, nil, "")
 	if err != nil {
 		t.Fatalf("serve: %v", err)
 	}

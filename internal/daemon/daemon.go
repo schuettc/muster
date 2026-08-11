@@ -42,9 +42,14 @@ type Daemon struct {
 	// are zero in local mode, which is what keeps local behaviour identical.
 	up       Upstream
 	deviceID string
-	// deviceName rides alongside deviceID on forwarded registrations. It is
-	// display only — nothing routes, scopes, or compares by it — so unlike
-	// deviceID a wrong or empty value costs legibility, never correctness.
+	// deviceName rides alongside deviceID on forwarded registrations, where
+	// it is display only — nothing routes, scopes, or compares by it there,
+	// so unlike deviceID a wrong or empty value costs legibility, never
+	// correctness. Local mode (New/Serve) also populates it, for a second,
+	// unrelated purpose: resolveAgentTarget expands a short local alias
+	// against it before resolution. "" disables that expansion, which is
+	// also local mode's zero-value default and Lambda mode's deliberate
+	// choice (it serves many devices, so it must never expand).
 	deviceName string
 
 	// recClosed is set by Close and is the reconcile loop's stop signal;
@@ -81,20 +86,25 @@ type Daemon struct {
 
 // New builds a Daemon over s with no listener bound. Lambda mode uses this to
 // get a Dispatch target without a unix socket; n may be nil, in which case no
-// notifications are delivered.
-func New(s store.API, n wake.Notifier) *Daemon {
-	return &Daemon{s: s, n: n, recStop: make(chan struct{})}
+// notifications are delivered. deviceName is this machine's name, used to
+// expand a short local alias on input; "" disables expansion (Lambda mode,
+// which serves no single device).
+func New(s store.API, n wake.Notifier, deviceName string) *Daemon {
+	return &Daemon{s: s, n: n, deviceName: deviceName, recStop: make(chan struct{})}
 }
 
 // Serve binds socketPath (replacing any stale socket) and serves in a
 // goroutine. n may be nil, in which case no notifications are delivered.
-func Serve(socketPath string, s store.API, n wake.Notifier) (*Daemon, error) {
+// deviceName is snapshotted here rather than re-read per request, matching
+// ServeRemote: a name change mid-run is not tracked, and auto-adoption makes
+// changes rare and deliberate.
+func Serve(socketPath string, s store.API, n wake.Notifier, deviceName string) (*Daemon, error) {
 	_ = os.Remove(socketPath) // clear a stale socket from a previous run
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {
 		return nil, err
 	}
-	d := New(s, n)
+	d := New(s, n, deviceName)
 	d.ln = ln
 	go d.acceptLoop()
 	return d, nil
