@@ -312,6 +312,7 @@ func TestHookStopSessionAliasesFailureFallsBackToSessionName(t *testing.T) {
 
 func TestHookSessionStartAndEnd(t *testing.T) {
 	startTestDaemon(t)
+	t.Setenv("MUSTER_DEVICE_NAME", "testdev")
 	t.Setenv("TMUX", "/tmp/tmux-0/proj-muster,1,0")
 	t.Setenv("TMUX_PANE", "%0")
 	prev := tmuxenv.Run
@@ -334,12 +335,12 @@ func TestHookSessionStartAndEnd(t *testing.T) {
 	agents := listAgentsForTest(t, "")
 	found := false
 	for _, a := range agents {
-		if a.Alias == "muster-hook" && a.ModelType == "codex" {
+		if a.Alias == "testdev-muster-hook" && a.ModelType == "codex" {
 			found = true
 		}
 	}
 	if !found {
-		t.Fatalf("expected muster-hook registered via SessionStart hook: %+v", agents)
+		t.Fatalf("expected testdev-muster-hook registered via SessionStart hook: %+v", agents)
 	}
 
 	buf.Reset()
@@ -349,15 +350,15 @@ func TestHookSessionStartAndEnd(t *testing.T) {
 	agents = listAgentsForTest(t, "")
 	found = false
 	for _, a := range agents {
-		if a.Alias == "muster-hook" {
+		if a.Alias == "testdev-muster-hook" {
 			found = true
 			if !a.Departed {
-				t.Fatalf("expected muster-hook tombstoned (Departed=true) via SessionEnd hook, got %+v", a)
+				t.Fatalf("expected testdev-muster-hook tombstoned (Departed=true) via SessionEnd hook, got %+v", a)
 			}
 		}
 	}
 	if !found {
-		t.Fatalf("expected muster-hook's row to SURVIVE SessionEnd (tombstoned, not deleted): %+v", agents)
+		t.Fatalf("expected testdev-muster-hook's row to SURVIVE SessionEnd (tombstoned, not deleted): %+v", agents)
 	}
 }
 
@@ -468,9 +469,14 @@ func TestHookSessionStartClaims(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			startTestDaemon(t)
+			t.Setenv("MUSTER_DEVICE_NAME", "testdev")
 			if c.preRegister {
+				// Pre-registered under the seeded form: the incoming derived
+				// session name "claim-me" is seeded to "testdev-claim-me"
+				// before the hook claims it, so the pre-existing row must be
+				// under that same seeded alias for the claim to land on it.
 				if _, err := callData("register_agent", map[string]any{
-					"alias": "claim-me", "socket_path": c.socketPath, "session_id": c.sessionID, "pane_id": c.storedPane,
+					"alias": "testdev-claim-me", "socket_path": c.socketPath, "session_id": c.sessionID, "pane_id": c.storedPane,
 				}); err != nil {
 					t.Fatal(err)
 				}
@@ -491,9 +497,9 @@ func TestHookSessionStartClaims(t *testing.T) {
 			if err := cmdHook([]string{"SessionStart"}, strings.NewReader(""), &buf); err != nil {
 				t.Fatalf("SessionStart: %v", err)
 			}
-			pane, found := hookAgentPane(t, "claim-me")
+			pane, found := hookAgentPane(t, "testdev-claim-me")
 			if !found || pane != "%2" {
-				t.Fatalf("expected claim-me claimed to my pane '%%2', got pane=%q found=%v", pane, found)
+				t.Fatalf("expected testdev-claim-me claimed to my pane '%%2', got pane=%q found=%v", pane, found)
 			}
 		})
 	}
@@ -793,12 +799,15 @@ func TestHookSessionStartBestEffortWhenDaemonUnreachable(t *testing.T) {
 // claimable regardless of whether its stored pane is alive.
 func TestHookSessionStartClaimsOverDepartedRow(t *testing.T) {
 	startTestDaemon(t)
+	t.Setenv("MUSTER_DEVICE_NAME", "testdev")
+	// Pre-existing row is seeded to match what the incoming derived session
+	// name "claim-departed" will be seeded to below.
 	if _, err := callData("register_agent", map[string]any{
-		"alias": "claim-departed", "socket_path": "/tmp/sockDep", "session_id": "$1", "session_created": 100, "pane_id": "%1",
+		"alias": "testdev-claim-departed", "socket_path": "/tmp/sockDep", "session_id": "$1", "session_created": 100, "pane_id": "%1",
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := callData("deregister_agent", map[string]any{"alias": "claim-departed"}); err != nil {
+	if _, err := callData("deregister_agent", map[string]any{"alias": "testdev-claim-departed"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -817,15 +826,15 @@ func TestHookSessionStartClaimsOverDepartedRow(t *testing.T) {
 	if err := cmdHook([]string{"SessionStart"}, strings.NewReader(""), &buf); err != nil {
 		t.Fatalf("SessionStart: %v", err)
 	}
-	ag, found, _ := hookGetAgent("claim-departed")
+	ag, found, _ := hookGetAgent("testdev-claim-departed")
 	if !found {
-		t.Fatal("expected claim-departed to still be registered")
+		t.Fatal("expected testdev-claim-departed to still be registered")
 	}
 	if ag.PaneID != "%2" {
 		t.Fatalf("expected the roster pane to become mine ('%%2'), got %q", ag.PaneID)
 	}
 	if ag.Departed {
-		t.Fatalf("expected claim-departed revived (Departed=false) after SessionStart claims it, got %+v", ag)
+		t.Fatalf("expected testdev-claim-departed revived (Departed=false) after SessionStart claims it, got %+v", ag)
 	}
 }
 
@@ -1197,6 +1206,7 @@ func TestHookSessionStartResumeReclaimsAlias(t *testing.T) {
 // reclaimed the hook falls through to the normal session-name register.
 func TestHookSessionStartResumeSkipsLiveCollision(t *testing.T) {
 	startTestDaemon(t)
+	t.Setenv("MUSTER_DEVICE_NAME", "testdev")
 	t.Setenv("TMUX", "/tmp/sock,1,0")
 	t.Setenv("TMUX_PANE", "%9")
 	t.Setenv("MUSTER_ALIAS", "")
@@ -1231,8 +1241,9 @@ func TestHookSessionStartResumeSkipsLiveCollision(t *testing.T) {
 	if ag.SessionID != "$OLD" {
 		t.Fatalf("collision row moved to %q — must stay on $OLD", ag.SessionID)
 	}
-	if fallback, found, _ := hookGetAgent("muster-3"); !found || fallback.Departed || fallback.SessionID != "$NEW" {
-		t.Fatalf("nothing reclaimed: expected the default session-name alias 'muster-3' registered on $NEW, got %+v found=%v", fallback, found)
+	// The default session-name path seeds, like every other mint site.
+	if fallback, found, _ := hookGetAgent("testdev-muster-3"); !found || fallback.Departed || fallback.SessionID != "$NEW" {
+		t.Fatalf("nothing reclaimed: expected the default session-name alias 'testdev-muster-3' registered on $NEW, got %+v found=%v", fallback, found)
 	}
 }
 
@@ -1433,6 +1444,7 @@ func TestHookProjectNameWarnsOnCollision(t *testing.T) {
 // custom-titled transcript registers AND projects, in one hook.
 func TestHookSessionStartProjectsNameOnFreshStart(t *testing.T) {
 	startTestDaemon(t)
+	t.Setenv("MUSTER_DEVICE_NAME", "testdev")
 	tp := writeTranscript(t, "nfl-3")
 	t.Setenv("TMUX", "/tmp/sockP,1,0")
 	t.Setenv("TMUX_PANE", "%3")
@@ -1448,7 +1460,7 @@ func TestHookSessionStartProjectsNameOnFreshStart(t *testing.T) {
 	if err := cmdHook([]string{"SessionStart"}, strings.NewReader(payload), &buf); err != nil {
 		t.Fatal(err)
 	}
-	ag := agentRowForTest(t, "proj-start")
+	ag := agentRowForTest(t, "testdev-proj-start")
 	if ag.Label != "nfl-3" || !ag.LabelManual {
 		t.Fatalf("fresh SessionStart must project the name onto the bus, got (%q, manual=%v)", ag.Label, ag.LabelManual)
 	}
@@ -1502,9 +1514,14 @@ func TestHookSessionStartProjectsNameOnResume(t *testing.T) {
 // (labels are addresses: `send nfl-3` would then misroute).
 func TestHookSessionStartSiblingPaneDoesNotStompName(t *testing.T) {
 	startTestDaemon(t)
+	t.Setenv("MUSTER_DEVICE_NAME", "testdev")
 	tp := writeTranscript(t, "nfl-3")
+	// Pre-existing row is seeded to match what hookAlias will derive from the
+	// incoming session name "primary" below — the gate looks the row up by
+	// that seeded alias, so the row must live there for ownership to resolve
+	// correctly.
 	if _, err := callData("register_agent", map[string]any{
-		"alias": "primary", "socket_path": "/tmp/sockS", "session_id": "$1",
+		"alias": "testdev-primary", "socket_path": "/tmp/sockS", "session_id": "$1",
 		"session_created": 100, "pane_id": "%1",
 		"label": "primary-name", "label_manual": true,
 	}); err != nil {
@@ -1527,7 +1544,7 @@ func TestHookSessionStartSiblingPaneDoesNotStompName(t *testing.T) {
 	if err := cmdHook([]string{"SessionStart"}, strings.NewReader(payload), &buf); err != nil {
 		t.Fatal(err)
 	}
-	ag := agentRowForTest(t, "primary")
+	ag := agentRowForTest(t, "testdev-primary")
 	if ag.Label != "primary-name" || !ag.LabelManual {
 		t.Fatalf("a sibling pane stomped the session's name: label = (%q, manual=%v), want (primary-name, true)", ag.Label, ag.LabelManual)
 	}
@@ -1818,6 +1835,7 @@ func TestHookMayClaimIdentityClaimsWhenRowAbsent(t *testing.T) {
 // here would silently disable a primary's whole identity machinery.
 func TestHookPrimaryMentioningTeamFlagStillRegisters(t *testing.T) {
 	startTestDaemon(t)
+	t.Setenv("MUSTER_DEVICE_NAME", "testdev")
 	pinTeammateArgv(t, `claude -p why does the hook check --team-name here`)
 	tp := writeTranscript(t, "nfl-3")
 	t.Setenv("TMUX", "/tmp/sockQ,1,0")
@@ -1834,7 +1852,8 @@ func TestHookPrimaryMentioningTeamFlagStillRegisters(t *testing.T) {
 	if err := cmdHook([]string{"SessionStart"}, strings.NewReader(payload), &buf); err != nil {
 		t.Fatal(err)
 	}
-	if ag := agentRowForTest(t, "prim-start"); ag.Label != "nfl-3" || !ag.LabelManual {
+	// The derived session name is seeded, like every other mint site.
+	if ag := agentRowForTest(t, "testdev-prim-start"); ag.Label != "nfl-3" || !ag.LabelManual {
 		t.Fatalf("a primary that merely mentions --team-name must still register and project, got (%q, manual=%v)", ag.Label, ag.LabelManual)
 	}
 }

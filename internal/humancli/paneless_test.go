@@ -51,21 +51,24 @@ func panelessEnv(t *testing.T, uuid, dirName string) string {
 
 func TestRegisterPanelessFallsBackToCwdAlias(t *testing.T) {
 	startTestDaemon(t)
+	t.Setenv("MUSTER_DEVICE_NAME", "testdev")
 	panelessEnv(t, "hs-reg-1", "wt-alpha")
 
 	var buf bytes.Buffer
 	if err := cmdRegister(nil, &buf); err != nil {
 		t.Fatalf("paneless register must succeed on the cwd fallback, got %v", err)
 	}
-	if !strings.Contains(buf.String(), "registered wt-alpha (paneless") {
-		t.Fatalf("output must name the alias and the paneless shape, got %q", buf.String())
+	// The paneless base is seeded before allocation, like every other mint
+	// site.
+	if !strings.Contains(buf.String(), "registered testdev-wt-alpha (paneless") {
+		t.Fatalf("output must name the seeded alias and the paneless shape, got %q", buf.String())
 	}
 	agents := listAgentsForTest(t, "")
 	if len(agents) != 1 {
 		t.Fatalf("expected one registration, got %+v", agents)
 	}
 	a := agents[0]
-	if a.Alias != "wt-alpha" || a.SocketPath != "" || a.PaneID != "" || a.SessionID != "hs-reg-1" {
+	if a.Alias != "testdev-wt-alpha" || a.SocketPath != "" || a.PaneID != "" || a.SessionID != "hs-reg-1" {
 		t.Fatalf("paneless row shape wrong: %+v", a)
 	}
 }
@@ -367,6 +370,7 @@ func TestGCSparesLivePanelessRows(t *testing.T) {
 // tuple with the label leading the reason, SessionEnd tombstones it.
 func TestLaunchHandshakeLifecycle(t *testing.T) {
 	startTestDaemon(t)
+	t.Setenv("MUSTER_DEVICE_NAME", "testdev")
 
 	// Pane side: tmux env present, handshake registration.
 	t.Setenv("TMUX", "/tmp/sockHS,1,0")
@@ -382,7 +386,8 @@ func TestLaunchHandshakeLifecycle(t *testing.T) {
 	if err := cmdRegister([]string{"--harness-session", "hs-shake"}, &buf); err != nil {
 		t.Fatalf("handshake register: %v", err)
 	}
-	ag, found, _ := hookGetAgent("bh-workspace-4")
+	// The derived session name is seeded, like every other mint site.
+	ag, found, _ := hookGetAgent("testdev-bh-workspace-4")
 	if !found {
 		t.Fatal("handshake row missing")
 	}
@@ -403,7 +408,7 @@ func TestLaunchHandshakeLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := callData("send_message", map[string]any{
-		"from": "sender", "to_kind": "agent", "to_target": "bh-workspace-4", "subject": "s", "body": "b",
+		"from": "sender", "to_kind": "agent", "to_target": "testdev-bh-workspace-4", "subject": "s", "body": "b",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -417,7 +422,7 @@ func TestLaunchHandshakeLifecycle(t *testing.T) {
 	if err := cmdHook([]string{"Stop"}, strings.NewReader(`{"session_id":"hs-shake"}`), &stop); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(stop.String(), "alias 'bh-workspace-4'") || !strings.Contains(stop.String(), "You are 'debug alarms'") {
+	if !strings.Contains(stop.String(), "alias 'testdev-bh-workspace-4'") || !strings.Contains(stop.String(), "You are 'debug alarms'") {
 		t.Fatalf("Stop must address the handshake alias and lead with its label, got %q", stop.String())
 	}
 
@@ -431,7 +436,7 @@ func TestLaunchHandshakeLifecycle(t *testing.T) {
 	if err := cmdHook([]string{"SessionEnd"}, strings.NewReader(payload), &buf); err != nil {
 		t.Fatal(err)
 	}
-	ag, found, _ = hookGetAgent("bh-workspace-4")
+	ag, found, _ = hookGetAgent("testdev-bh-workspace-4")
 	if !found || !ag.Departed {
 		t.Fatalf("SessionEnd must tombstone the handshake row, got %+v found=%v", ag, found)
 	}

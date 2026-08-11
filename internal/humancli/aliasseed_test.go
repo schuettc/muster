@@ -2,41 +2,53 @@ package humancli
 
 import "testing"
 
-// TestSeedAliasOnlyWhenDeviceNamed pins the gate: the overwhelmingly common
-// case is one machine on a local bus with no device name ever set, and that
-// case must be byte-for-byte unchanged.
-func TestSeedAliasOnlyWhenDeviceNamed(t *testing.T) {
+// TestSeedAliasAppliesToEveryMintedName pins the rule that replaced the
+// derived-only carve-out. Once the prefix is hidden locally, a typed name and
+// a derived one look identical on screen, so an operator cannot tell which of
+// their names is device-scoped and which will collide on a second machine.
+// One rule with no exceptions is the only rule that survives being invisible.
+func TestSeedAliasAppliesToEveryMintedName(t *testing.T) {
 	t.Setenv("MUSTER_HOME", t.TempDir())
-	t.Setenv("MUSTER_DEVICE_NAME", "")
-	if got := seedAlias("muster-2"); got != "muster-2" {
-		t.Fatalf("seedAlias with no device name = %q, want it untouched", got)
-	}
-	t.Setenv("MUSTER_DEVICE_NAME", "work-laptop")
-	if got, want := seedAlias("muster-2"), "work-laptop-muster-2"; got != want {
-		t.Fatalf("seedAlias = %q, want %q", got, want)
+	t.Setenv("MUSTER_DEVICE_NAME", "personal")
+	for _, in := range []string{"dotfiles/main", "galley/design", "muster-2"} {
+		want := "personal-" + in
+		if got := seedAlias(in); got != want {
+			t.Fatalf("seedAlias(%q) = %q, want %q", in, got, want)
+		}
 	}
 }
 
-// TestSeedAliasIsIdempotent is the one that would bite in production: hooks
-// re-register on every session start, so seeding an already-seeded alias
-// would mint a second identity each time and orphan the previous one's mail.
+// TestSeedAliasIsIdempotent: hooks re-register on every session start, and an
+// operator may paste back a full alias read off the other machine.
 func TestSeedAliasIsIdempotent(t *testing.T) {
 	t.Setenv("MUSTER_HOME", t.TempDir())
-	t.Setenv("MUSTER_DEVICE_NAME", "work-laptop")
-	once := seedAlias("muster-2")
+	t.Setenv("MUSTER_DEVICE_NAME", "personal")
+	once := seedAlias("dotfiles/main")
 	if twice := seedAlias(once); twice != once {
 		t.Fatalf("seedAlias not idempotent: %q then %q", once, twice)
 	}
-	// A session actually named after the device is left alone rather than
-	// doubled.
-	if got := seedAlias("work-laptop"); got != "work-laptop" {
-		t.Fatalf("seedAlias(%q) = %q, want it untouched", "work-laptop", got)
+	if got := seedAlias("personal"); got != "personal" {
+		t.Fatalf("seedAlias(%q) = %q, want it untouched", "personal", got)
+	}
+}
+
+// TestSeedAliasAdoptsAName covers the ordering the whole design rests on:
+// adoption runs ahead of the seed, so there is always a name to seed with.
+func TestSeedAliasAdoptsAName(t *testing.T) {
+	t.Setenv("MUSTER_HOME", t.TempDir())
+	t.Setenv("MUSTER_DEVICE_NAME", "")
+	got := seedAlias("dotfiles/main")
+	if got == "dotfiles/main" {
+		t.Fatal("seedAlias did not adopt a device name before seeding")
+	}
+	if want := seedAlias("dotfiles/main"); got != want {
+		t.Fatalf("seedAlias not stable across calls: %q then %q", got, want)
 	}
 }
 
 func TestSeedAliasLeavesEmptyAlone(t *testing.T) {
 	t.Setenv("MUSTER_HOME", t.TempDir())
-	t.Setenv("MUSTER_DEVICE_NAME", "work-laptop")
+	t.Setenv("MUSTER_DEVICE_NAME", "personal")
 	if got := seedAlias(""); got != "" {
 		t.Fatalf("seedAlias(\"\") = %q, want \"\"", got)
 	}

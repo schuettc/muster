@@ -64,12 +64,14 @@ func cmdRegister(args []string, out io.Writer) error {
 	alias := ""
 	switch {
 	case len(rest) > 0:
-		alias = rest[0]
+		// Typed names seed exactly like derived ones. With the prefix hidden
+		// locally, an operator cannot see which of their names is device-scoped,
+		// so an exception here would be invisible at the moment it mattered.
+		alias = seedAlias(rest[0])
 	case os.Getenv("MUSTER_ALIAS") != "":
-		alias = os.Getenv("MUSTER_ALIAS")
+		alias = seedAlias(os.Getenv("MUSTER_ALIAS"))
 	case c.SessionName != "":
-		// Derived, so seeded with the device name when one is configured —
-		// two machines can easily share a tmux session name.
+		// Derived: two machines can easily share a tmux session name.
 		alias = seedAlias(c.SessionName)
 	default:
 		// Paneless cwd fallback: every session in a directory derives the
@@ -115,8 +117,13 @@ func cmdRegister(args []string, out io.Writer) error {
 				return nil
 			}
 		}
+		// The paneless base is a raw cwd basename (e.g. "dotfiles"), identical
+		// on any two machines with the same directory checked out — seed it
+		// before allocating suffixed candidates so the whole family
+		// (base, base-2, ...) carries the device prefix, exactly like every
+		// other mint site.
 		var err error
-		if alias, err = allocPanelessAlias(h.Alias(), h.SessionID, regFn); err != nil {
+		if alias, err = allocPanelessAlias(seedAlias(h.Alias()), h.SessionID, regFn); err != nil {
 			return err
 		}
 		_, err = fmt.Fprintf(out, "registered %s (paneless, project %q, model %s)\n", alias, h.Project(), *model)

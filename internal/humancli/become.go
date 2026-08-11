@@ -72,7 +72,12 @@ func cmdBecome(args []string, out io.Writer) error {
 		}
 	}
 
-	raw, err := callData("become", map[string]any{"from": fromAlias, "to": to})
+	// The CLAIM is seeded; the injected harness name and the confirmation are
+	// not. syncAgentName sets the tmux/harness session name, which is a human
+	// surface and the identity `proj` reads — it must stay short, or the
+	// prefix reappears in exactly the title bar this design clears.
+	claim := seedAlias(to)
+	raw, err := callData("become", map[string]any{"from": fromAlias, "to": claim})
 	if err != nil {
 		return err
 	}

@@ -12,6 +12,7 @@ import (
 // this session; become claims the new name and reports the trade.
 func TestBecomeClaimsSingleAliasSession(t *testing.T) {
 	startTestDaemon(t)
+	t.Setenv("MUSTER_DEVICE_NAME", "testdev")
 	t.Setenv("TMUX", "/tmp/sock,1,0")
 	t.Setenv("TMUX_PANE", "%1")
 	prev := tmuxenv.Run
@@ -28,10 +29,12 @@ func TestBecomeClaimsSingleAliasSession(t *testing.T) {
 	if err := Dispatch([]string{"become", "alias-routing"}, &buf); err != nil {
 		t.Fatalf("become: %v", err)
 	}
+	// The confirmation and the typed-into-pane name stay short; only the
+	// daemon claim underneath is seeded.
 	if !strings.Contains(buf.String(), "you are now 'alias-routing' (was 'muster-2')") {
 		t.Fatalf("output = %q", buf.String())
 	}
-	ag, ok, _ := hookGetAgent("alias-routing")
+	ag, ok, _ := hookGetAgent("testdev-alias-routing")
 	if !ok || ag.Departed || ag.SessionID != "$1" {
 		t.Fatalf("claimed row = %+v (ok=%v)", ag, ok)
 	}
@@ -167,6 +170,7 @@ func TestBecomeRenamesLiveClaudePane(t *testing.T) {
 // every such call silently failed, stranding the bus alias on rename.
 func TestBecomeNoInjectSkipsRename(t *testing.T) {
 	startTestDaemon(t)
+	t.Setenv("MUSTER_DEVICE_NAME", "testdev")
 	t.Setenv("TMUX", "/tmp/sock,1,0")
 	t.Setenv("TMUX_PANE", "%5")
 	if _, err := callData("register_agent", map[string]any{
@@ -202,7 +206,8 @@ func TestBecomeNoInjectSkipsRename(t *testing.T) {
 	if len(sent) != 0 {
 		t.Fatalf("--no-inject must never type into the pane, got %v", sent)
 	}
-	if ag, ok, _ := hookGetAgent("dotfiles/error"); !ok || ag.Departed {
+	// The daemon claim is seeded even though the pane never sees the prefix.
+	if ag, ok, _ := hookGetAgent("testdev-dotfiles/error"); !ok || ag.Departed {
 		t.Fatalf("claim must still land with --no-inject, got %+v (ok=%v)", ag, ok)
 	}
 }
@@ -218,6 +223,7 @@ func TestBecomeNoInjectSkipsRename(t *testing.T) {
 // asserting on err.Error() catches the stutter at its source.
 func TestBecomeToExistsErrorHasNoPrefixStutter(t *testing.T) {
 	startTestDaemon(t)
+	t.Setenv("MUSTER_DEVICE_NAME", "testdev")
 	t.Setenv("TMUX", "/tmp/sock,1,0")
 	t.Setenv("TMUX_PANE", "%1")
 	prev := tmuxenv.Run
@@ -228,7 +234,9 @@ func TestBecomeToExistsErrorHasNoPrefixStutter(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := callData("register_agent", map[string]any{"alias": "taken"}); err != nil {
+	// Pre-existing row is seeded to match what cmdBecome will seed "taken" to
+	// below, so the claim genuinely collides.
+	if _, err := callData("register_agent", map[string]any{"alias": "testdev-taken"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -242,5 +250,21 @@ func TestBecomeToExistsErrorHasNoPrefixStutter(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "become: become:") {
 		t.Fatalf("prefix stutter survived: %q", err.Error())
+	}
+}
+
+// TestBecomeSeedsTheClaimNotTheInjectedName pins the split inside become: the
+// stored alias carries the device prefix, while the name typed into the pane
+// and reported to the operator stays short. Injecting the seeded name would
+// put the prefix straight back into the tmux session name and the title bar.
+func TestBecomeSeedsTheClaimNotTheInjectedName(t *testing.T) {
+	t.Setenv("MUSTER_HOME", t.TempDir())
+	t.Setenv("MUSTER_DEVICE_NAME", "personal")
+	if got, want := seedAlias("galley/design"), "personal-galley/design"; got != want {
+		t.Fatalf("claim = %q, want %q", got, want)
+	}
+	// A full alias pasted back from the other machine claims the same row.
+	if got, want := seedAlias("personal-galley/design"), "personal-galley/design"; got != want {
+		t.Fatalf("re-seeded claim = %q, want %q", got, want)
 	}
 }
