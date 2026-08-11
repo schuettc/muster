@@ -1933,3 +1933,27 @@ func TestHookPrimaryMentioningTeamFlagStillRegisters(t *testing.T) {
 		t.Fatalf("a primary that merely mentions --team-name must still register and project, got (%q, manual=%v)", ag.Label, ag.LabelManual)
 	}
 }
+
+// TestHookOutputKeepsTheFullAlias is the humancli-side half of the
+// human/model alias split (see mcpserver.TestModelSurfacesKeepTheFullAlias
+// for the full rationale). hookSessionStartResume's reconnect line is
+// injected straight into an agent's context by the harness, so it is a MODEL
+// surface: the alias it tells the model to call get_inbox with must be the
+// full stored alias, never the device-stripped short form CLI/station
+// surfaces render for a human. If this test fails because someone made hook
+// text match the short display form elsewhere, that inconsistency was the
+// point — a short alias here re-resolves against the READING machine's own
+// device prefix, not the one that minted it, and silently lands on a
+// different, real agent with nothing to report the misroute.
+func TestHookOutputKeepsTheFullAlias(t *testing.T) {
+	t.Setenv("MUSTER_HOME", t.TempDir())
+	t.Setenv("MUSTER_DEVICE_NAME", "personal")
+
+	line := reconnectLine("personal-dotfiles/main", "revived", 3)
+	if !strings.Contains(line, "personal-dotfiles/main") {
+		t.Fatalf("hook line %q dropped the full alias", line)
+	}
+	if strings.Contains(line, "'dotfiles/main'") {
+		t.Fatalf("hook line %q used the device-stripped short alias instead of the full one", line)
+	}
+}

@@ -282,10 +282,23 @@ func hookSessionStartResume(c tmuxenv.Capture, h harnessenv.Capture, model strin
 		}
 	}
 	for _, ln := range lines {
-		_, _ = fmt.Fprintf(out, "muster: reconnected as '%s' (%s) — %d unread thread(s); call get_inbox with alias '%s'\n",
-			ln.alias, ln.outcome, ln.unread, ln.alias)
+		_, _ = fmt.Fprint(out, reconnectLine(ln.alias, ln.outcome, ln.unread))
 	}
 	return true
+}
+
+// reconnectLine formats one resume line of hookSessionStartResume's output.
+// Pulled out to a named function so it is directly testable: this text is
+// injected into an agent's context (the harness pipes hook stdout back into
+// the conversation), which makes it a MODEL surface — unlike the CLI/station
+// display helpers, it must carry the FULL stored alias, never the
+// device-stripped short form a human-facing surface would show. See
+// mcpserver.TestModelSurfacesKeepTheFullAlias for why: a short alias here
+// would re-resolve against whatever device the model's own machine is, not
+// the one that minted it, and silently reach a different, real agent.
+func reconnectLine(alias, outcome string, unread int) string {
+	return fmt.Sprintf("muster: reconnected as '%s' (%s) — %d unread thread(s); call get_inbox with alias '%s'\n",
+		alias, outcome, unread, alias)
 }
 
 // hookSessionStartPaneless auto-registers a session that has no tmux pane in
