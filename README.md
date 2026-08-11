@@ -200,6 +200,38 @@ accepts a target of the form `<alias|label|proj:label>`:
 - a **label**, resolved within your current project: `muster send frontend "…"`
 - a **qualified label** to cross projects: `muster send timewalk:frontend "…"`
 
+**Aliases are device-relative on screen, not in storage.** Every alias this
+machine mints — derived, typed, or allocated — is stored with this machine's
+device name in front of it (`work-laptop-dotfiles/main`), because the alias
+is the roster's primary key and registration is an upsert: without a prefix,
+two machines with the same repos and tmux conventions would silently take
+over each other's row, inbox and all (see `muster help device`). A name is
+adopted automatically from the hostname the first time this machine
+registers anything, so this happens whether or not you ever run `muster
+device`.
+
+Every human-facing view — `muster agents`, `inbox`, `tasks`, `thread`,
+`station`, the `@muster_agent` tmux badge — strips that prefix when it's
+this machine's own, so day to day you just see `dotfiles/main`, and typing
+the short form (`muster nudge dotfiles`) resolves it back to the stored
+alias before lookup, tried ahead of the literal string. Two rows that would
+strip to the same display string both render in full instead, so nothing
+is ever hidden by the collision it was meant to prevent.
+
+MCP tools and the text muster injects into hook context never strip the
+prefix: an agent reads and reports its OWN alias in full
+(`work-laptop-dotfiles/main`) even on the machine that minted it, so **it is
+normal and expected for an agent to identify itself by a longer name than
+what your terminal shows for the same session.** This is not a display bug —
+a model writes aliases into message bodies and task descriptions that get
+read on *other* machines, where a bare `dotfiles/main` would silently
+re-resolve against that machine's own roster and reach a different, real
+agent instead of erroring. A human who mistypes a short name gets an error
+and retries; a model that wrote a short name into a durable thread would
+produce a silent misroute nothing reports. Humans get the readable short
+form because a human can recover from a mistake; the wire format stays full
+because a model's mistake would look like success.
+
 A bare label never silently crosses projects; if it's ambiguous or only exists
 elsewhere, muster errors and lists the `proj:label` candidates. Resolution is
 canonical on the daemon side, not just the CLI: an unresolvable target fails
@@ -346,9 +378,13 @@ binary your devices run:
 curl -fsSL https://muster.tools/install.sh | sh -s -- --with-deploy
 ```
 
-Then on each device — name it first, which both makes the roster legible
-("message the ci-cd session on my **work laptop**") and stops two machines with
-the same repos checked out from silently claiming the same alias:
+Every alias is already seeded with a device name — auto-adopted from the
+hostname the first time each machine registers anything — so two machines
+with the same repos checked out can't silently claim the same alias even if
+you skip this step. Naming each device explicitly is still worth doing
+before you join the bus, because it's not retroactive: it makes the roster
+legible ("message the ci-cd session on my **work laptop**" beats
+"message the courts-macbook-pro-2-ci-cd session") instead of just collision-safe:
 
 ```sh
 muster device work-laptop

@@ -291,11 +291,21 @@ cwd guess.`,
 			Help: `With no argument, prints this machine's device name, where it came from,
 and its device id. With one argument, sets the name.
 
-The name is how a human refers to this machine — "the ci-cd session on my
-work laptop" — and it appears in the roster's DEVICE column so an agent can
-resolve that phrase to an alias. It defaults to the hostname reduced to
-lowercase letters, digits and dashes, which is matchable but rarely what
-anyone says out loud, so setting it deliberately is the expected gesture.
+A name is no longer something you must remember to set: the first time this
+machine registers anything, muster adopts one automatically from the
+hostname, reduced to lowercase letters, digits and dashes, and pins it to
+disk. Running this command deliberately just replaces that adopted default
+with one a human would actually say — "the ci-cd session on my work laptop"
+— which is also what appears in the roster's DEVICE column so an agent can
+resolve the phrase to an alias.
+
+Once a name is in force, adopted or set, it prefixes every alias this
+machine mints — derived, typed, or allocated — so two machines with the same
+repos and tmux conventions can never silently take over each other's roster
+row. The prefix is hidden on the machine that minted it (its own agents just
+read as "dotfiles/main") and shown in full from every other machine
+("work-laptop-dotfiles/main"), because that is the one context where the
+prefix disambiguates something.
 
 Setting writes <MUSTER_HOME>/device-name. That is a file rather than an
 export on purpose: it survives reboots with no shell configuration, and
@@ -303,9 +313,10 @@ every process reads the same answer however it was launched.
 $MUSTER_DEVICE_NAME overrides it for a single shell.
 
 Existing roster rows keep the name and alias they registered with. Plain
-re-registration after naming does NOT update them — a seeded alias is a
-different alias, so it creates a second identity and leaves the mail on the
-first. Use 'muster become <new-alias>' to carry identity and inbox across.`,
+re-registration after naming (auto-adopted or explicit) does NOT update
+them — a seeded alias is a different alias, so it creates a second identity
+and leaves the mail on the first. Use 'muster become <new-alias>' to carry
+identity and inbox across.`,
 			Group: GroupIdentity,
 			Run:   cmdDevice,
 		},

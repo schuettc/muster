@@ -75,10 +75,14 @@ type agentRow struct {
 	// DeviceID names the MACHINE this row was registered from (see
 	// store.Agent.DeviceID). It is location, never identity: nothing
 	// addressable is scoped by it, and internal/resolve takes no device
-	// argument — an alias means the same agent from every device on the bus.
-	// cmdAgents renders it purely so an operator can answer "which box is
-	// that on", a question a bus spanning machines makes askable and
-	// nothing else in the CLI could answer.
+	// argument. What device DOES affect is presentation. The STORED alias is
+	// globally unique and carries this machine's name; the DISPLAYED alias
+	// drops that prefix on the machine that minted it, and a short name typed
+	// there expands back before resolution. So an alias still means the same
+	// agent from every device — it is just written two ways, short at home
+	// and in full abroad. cmdAgents renders DeviceID purely so an operator can
+	// answer "which box is that on", a question a bus spanning machines makes
+	// askable and nothing else in the CLI could answer.
 	DeviceID string `json:"device_id"`
 	// DeviceName is that machine's operator-chosen name, rendered in the
 	// DEVICE column because "work-laptop" is what someone would say and
