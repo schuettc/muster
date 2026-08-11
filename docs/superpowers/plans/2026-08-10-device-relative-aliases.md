@@ -1282,6 +1282,126 @@ git commit -m "docs(proj): drop the stale primary-clone cue from the home base r
 
 ---
 
+### Task 12: One mint helper, shared by every client — closes the MCP hole
+
+Found during Task 3's review: `internal/mcpserver` mints aliases the same way `internal/humancli` does and seeds neither — `registerAgentHandler` passes the model-supplied `in.Alias` straight through at `tools_registry.go:41` (the `become` claim) and `:81` (`register_agent`). An agent registering itself via MCP from two machines still collides, which is the exact failure this feature exists to prevent, on the path models use.
+
+The fix is not to seed in a second place. `humancli.seedAlias` is already "adopt, then seed"; that composite moves into `internal/device` so there is ONE function every client calls, rather than each package carrying its own copy of the rule. Rejected: seeding defensively in the daemon as a backstop — clients must seed anyway (see below), so a daemon seed is redundant work that reads as duplication and invites deletion.
+
+**Why clients must seed rather than the daemon:** `allocPanelessAlias` (`internal/humancli/paneless.go:39-60`) decides each candidate by looking it up first (`hookGetAgent(cand)`) and inspecting the row's tuple to tell "my own row (resume)" from "a tombstone (revive)" from "a live owner (next suffix)". If the daemon rewrote aliases on write while clients read by the pre-rewrite key, a restarting session would miss its own row, suffix past itself, and mint `foo-2`, `foo-3`, … on every launch — orphaning its inbox each time.
+
+**Files:**
+- Modify: `internal/device/alias.go` (add the composite), `internal/device/alias_test.go`
+- Modify: `internal/humancli/aliasseed.go` (delegate), `internal/mcpserver/tools_registry.go:41,81`
+- Test: `internal/mcpserver/tools_registry_test.go`
+
+**Interfaces:**
+- Consumes: `device.Seed` (Task 1), `device.Adopt` (Task 2).
+- Produces: `device.SeedMinted(alias string) string` — adopts a device name if none is configured, then seeds. The one function every mint site calls.
+
+- [ ] **Step 1: Write the failing tests**
+
+Append to `internal/device/alias_test.go`:
+
+```go
+// TestSeedMintedAdoptsThenSeeds pins the composite every client mints through.
+// The ordering is the point: adoption runs first, so there is always a name to
+// seed with and no caller needs its own "is a name configured" gate.
+func TestSeedMintedAdoptsThenSeeds(t *testing.T) {
+	t.Setenv("MUSTER_HOME", t.TempDir())
+	t.Setenv("MUSTER_DEVICE_NAME", "personal")
+	if got, want := SeedMinted("researcher"), "personal-researcher"; got != want {
+		t.Fatalf("SeedMinted = %q, want %q", got, want)
+	}
+	if got := SeedMinted("personal-researcher"); got != "personal-researcher" {
+		t.Fatalf("SeedMinted not idempotent: %q", got)
+	}
+	if got := SeedMinted(""); got != "" {
+		t.Fatalf("SeedMinted(\"\") = %q, want \"\"", got)
+	}
+}
+```
+
+Append to `internal/mcpserver/tools_registry_test.go` (check the file's package clause first and qualify to match):
+
+```go
+// TestMCPRegistrationSeedsTheModelSuppliedAlias closes the hole this task
+// exists for: a model registering the same name from two machines would
+// otherwise take the other machine's row, and its inbox with it.
+func TestMCPRegistrationSeedsTheModelSuppliedAlias(t *testing.T) {
+	t.Setenv("MUSTER_HOME", t.TempDir())
+	t.Setenv("MUSTER_DEVICE_NAME", "personal")
+	if got, want := device.SeedMinted("researcher"), "personal-researcher"; got != want {
+		t.Fatalf("mint seeding = %q, want %q", got, want)
+	}
+}
+```
+
+- [ ] **Step 2: Run the tests to verify they fail**
+
+Run: `go test ./internal/device/ -run TestSeedMinted -v` and `go test ./internal/mcpserver/ -run TestMCPRegistration -v`
+Expected: FAIL — `undefined: SeedMinted`.
+
+- [ ] **Step 3: Add the composite**
+
+Append to `internal/device/alias.go`:
+
+```go
+// SeedMinted is the one call every client makes when it MINTS an alias:
+// adopt a device name if the operator has not chosen one, then seed.
+//
+// It lives here rather than in each client package because a rule enforced at
+// N call sites is a rule that eventually is not. Four mint sites were missed
+// while this feature was built — three in the session hooks, one in the MCP
+// server — each of them a path where two machines could silently claim the
+// same roster row, and the row IS the identity, so the loser's inbox goes with
+// it.
+//
+// This is for MINTS only. A LOOKUP of an existing alias must not be seeded:
+// seeding a lookup makes an existing alias unfindable, and the paneless
+// allocator in particular reads a candidate's row before deciding to resume,
+// revive, or suffix past it.
+//
+// An adoption failure degrades to the unseeded alias rather than blocking:
+// a machine that cannot name itself must still be able to register.
+func SeedMinted(alias string) string {
+	if alias == "" {
+		return alias
+	}
+	name, _, err := Adopt()
+	if err != nil {
+		return alias
+	}
+	return Seed(name, alias)
+}
+```
+
+- [ ] **Step 4: Delegate from humancli and apply in mcpserver**
+
+In `internal/humancli/aliasseed.go`, `seedAlias` becomes a one-line delegation to `device.SeedMinted`, keeping its existing doc comment's explanation of WHY every minted alias is seeded. Do not change any call site — they keep calling `seedAlias`.
+
+In `internal/mcpserver/tools_registry.go`, seed both mint sites:
+- line ~41: the `become` claim — `"to": device.SeedMinted(in.Alias)`
+- line ~81: `register_agent` — `"alias": device.SeedMinted(in.Alias)`
+
+The detail strings returned to the model must report the **seeded** alias, not `in.Alias`. Model-facing surfaces carry the full stored alias by design (a model writes aliases into message bodies read on other machines), so a reply saying `registered as 'researcher'` when the row is `personal-researcher` would hand the model an address that resolves to the wrong agent when quoted elsewhere. Bind the seeded value to a local variable and use it for both the daemon call and the reply text.
+
+Leave `paneRegistration`'s lookup at `tools_registry.go:39` alone — it reads an existing row and is not a mint.
+
+- [ ] **Step 5: Run the tests**
+
+Run: `go test ./internal/device/ ./internal/mcpserver/ ./internal/humancli/` then `go test ./...`
+Expected: PASS.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add internal/device/ internal/humancli/aliasseed.go internal/mcpserver/
+git commit -m "feat(alias): one shared mint helper, seeding MCP registration too"
+```
+
+---
+
 ## Final verification
 
 - [ ] `go test ./...` passes in the muster worktree — including `internal/storetest`'s conformance suite, which exercises rows carrying no device name and must keep passing unchanged.
