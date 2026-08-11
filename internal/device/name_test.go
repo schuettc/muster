@@ -38,9 +38,12 @@ func TestSanitizeNameIsBounded(t *testing.T) {
 	}
 }
 
-// TestNameConfiguredDistinguishesChosenFromDerived pins the rule that decides
-// whether derived aliases get seeded: a name the operator picked counts, a
-// hostname nobody chose does not.
+// TestNameConfiguredDistinguishesChosenFromDerived pins what NameConfigured
+// still distinguishes now that seeding no longer depends on it: nothing
+// persisted yet versus a name pinned to disk, by an operator or by Adopt().
+// That distinction is what devicename.go's source=hostname|configured display
+// reads; it no longer decides whether an alias gets seeded, which happens
+// unconditionally.
 func TestNameConfiguredDistinguishesChosenFromDerived(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("MUSTER_HOME", home)
