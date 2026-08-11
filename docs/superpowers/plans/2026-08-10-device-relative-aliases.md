@@ -1402,6 +1402,57 @@ git commit -m "feat(alias): one shared mint helper, seeding MCP registration too
 
 ---
 
+### Task 13: Expand short aliases in remote mode too
+
+Found during Task 7's review. Task 7 added daemon-side expansion in `resolveAgentTarget`, but a **remote-mode daemon never reaches it**: `serve` checks `d.up != nil` first and returns `d.forward(req)` unconditionally (`internal/daemon/remotemode.go:74-79`), and `ServeRemote` always sets `d.up`. The request goes to the Lambda, which dispatches through `daemon.New(s, nil, "")` (`internal/lambdamode/lambdamode.go:222`) and so cannot expand either — correctly, since it serves many devices and has no single device name to expand against.
+
+Net effect: with `MUSTER_BACKEND=remote`, a model-supplied short alias is expanded **nowhere**. `send_message` with `to_target: "dotfiles/main"` reaches the Lambda as that literal, and if any other device holds a bare or legacy row of that name, the message is silently delivered to that stranger's agent. This is the action-at-a-distance the design exists to remove, in the one configuration the device prefix exists for.
+
+The CLI is unaffected — it expands client-side before the socket. The exposure is a short alias reaching a model from a human surface, an operator paste, or hook text.
+
+**Files:**
+- Modify: `internal/daemon/remotemode.go` (expand in the forward path)
+- Test: `internal/daemon/remote_test.go`
+
+**Interfaces:**
+- Consumes: `device.Seed` (Task 1), `Daemon.deviceName` (Task 7), `upstreamAgents()` (`internal/daemon/remotemode.go:527`).
+- Produces: nothing new — behavior change confined to remote mode's forward path.
+
+- [ ] **Step 1: Write the failing test**
+
+In `internal/daemon/remote_test.go`, against a fake upstream whose roster holds BOTH `personal-dotfiles/main` and a foreign bare `dotfiles/main`: forward a `send_message` with `to_kind: "agent"` and `to_target: "dotfiles/main"` through a `ServeRemote` daemon whose `deviceName` is `personal`, and assert the request that reaches the upstream carries `to_target: "personal-dotfiles/main"`.
+
+This must be a two-row roster. A single-row test cannot distinguish local-first from exact-first, and isolated-call tests have already hidden two bugs on this branch.
+
+Add a second test asserting a target with no local counterpart forwards **unchanged**, so the upstream's error names what was actually sent.
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+Run: `go test ./internal/daemon/ -run TestForward -v`
+Expected: FAIL — the literal `dotfiles/main` reaches the upstream.
+
+- [ ] **Step 3: Implement expansion in the forward path**
+
+Expand only for `send_message` and `task_create`, and only when `to_kind == "agent"` — those are the two ops whose target is an alias. Apply the same rule as everywhere else: try `device.Seed(d.deviceName, given)` first, use it **only if that alias exists in the roster**, otherwise forward the input untouched. Skip entirely when `d.deviceName == ""`.
+
+**The roster read must be cached, not paid per send.** `upstreamAgents()` is a network round trip to the Lambda; doing it inline on every message would put a full RTT in front of every send. Cache the alias set with a short TTL, or hang it off the existing reconcile poll, which already fetches upstream state on a timer.
+
+State the staleness policy in a comment and pick the safe direction: on a cache miss or a fetch failure, forward the input **unexpanded**. An unexpanded short alias fails loudly at the upstream resolver as an unknown target; a wrongly-expanded one is delivered silently to the wrong agent. Prefer the loud failure.
+
+- [ ] **Step 4: Run the tests**
+
+Run: `go test ./internal/daemon/` then `go test ./...`
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add internal/daemon/
+git commit -m "feat(daemon): expand short local aliases in remote mode too"
+```
+
+---
+
 ## Final verification
 
 - [ ] `go test ./...` passes in the muster worktree — including `internal/storetest`'s conformance suite, which exercises rows carrying no device name and must keep passing unchanged.
