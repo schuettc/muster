@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/schuettc/muster/internal/device"
 )
 
 // TestModelSurfacesKeepTheFullAlias is the counterweight to every stripping
@@ -50,5 +52,89 @@ func TestModelSurfacesKeepTheFullAlias(t *testing.T) {
 	}
 	if strings.HasPrefix(got, "dotfiles/") {
 		t.Fatal("AgentView.Alias was device-stripped; model surfaces must carry the full alias")
+	}
+}
+
+// TestGetInboxKeepsTheFullFromAgent covers ThreadView.FromAgent, the second
+// model-facing shape populated from the same unstripped stored alias
+// (internal/daemon/daemon.go's CreateThread call sites set FromAgent: from
+// directly off the sender's alias — no device.Strip in the chain). get_inbox
+// hands this straight into model context, same as list_agents, so the same
+// asymmetry applies: a model that read a stripped from_agent here could echo
+// it into a reply, and on another machine that bare name re-resolves against
+// THAT device's own prefix and reaches a different, real agent.
+//
+// This drives the real getInboxHandler with a stubbed callDaemon (the daemon
+// JSON get_inbox actually returns), not a hand-built ThreadView, so it also
+// proves nothing strips the prefix between the daemon and the tool response.
+//
+// If you are here because this test failed while making alias rendering
+// consistent: that inconsistency is the feature — see
+// TestModelSurfacesKeepTheFullAlias for the full rationale.
+func TestGetInboxKeepsTheFullFromAgent(t *testing.T) {
+	t.Setenv("MUSTER_DEVICE_NAME", "personal")
+
+	const fullAlias = "personal-dotfiles/main"
+	prevDaemon := callDaemon
+	callDaemon = func(op string, _ map[string]any) (json.RawMessage, error) {
+		if op != "get_inbox" {
+			t.Fatalf("unexpected op %s", op)
+		}
+		return json.RawMessage(`[{"id":1,"kind":"message","from_agent":"` + fullAlias + `","to_kind":"agent","to_target":"peer","subject":"hi","last_from":"` + fullAlias + `"}]`), nil
+	}
+	t.Cleanup(func() { callDaemon = prevDaemon })
+
+	_, out, err := getInboxHandler(context.Background(), nil, GetInboxIn{Alias: "peer"})
+	if err != nil {
+		t.Fatalf("getInboxHandler: %v", err)
+	}
+	if len(out.Threads) != 1 {
+		t.Fatalf("threads = %+v, want exactly one", out.Threads)
+	}
+	got := out.Threads[0].FromAgent
+	if got != fullAlias {
+		t.Fatalf("ThreadView.FromAgent = %q, want the full stored alias %q", got, fullAlias)
+	}
+	if short := device.Strip("personal", fullAlias); got == short {
+		t.Fatalf("ThreadView.FromAgent = %q, was device-stripped to %q; model surfaces must carry the full alias", got, short)
+	}
+}
+
+// TestGetThreadKeepsTheFullFromAgent covers both ThreadView.FromAgent and
+// EntryView.FromAgent as returned by get_thread — the same unstripped stored
+// alias, populated by a different daemon op and MCP handler than
+// TestGetInboxKeepsTheFullFromAgent, so the two guards do not share a single
+// point of failure. See TestModelSurfacesKeepTheFullAlias for why the
+// human/model asymmetry is deliberate rather than an oversight to "fix".
+func TestGetThreadKeepsTheFullFromAgent(t *testing.T) {
+	t.Setenv("MUSTER_DEVICE_NAME", "personal")
+
+	const fullAlias = "personal-dotfiles/main"
+	prevDaemon := callDaemon
+	callDaemon = func(op string, _ map[string]any) (json.RawMessage, error) {
+		if op != "get_thread" {
+			t.Fatalf("unexpected op %s", op)
+		}
+		return json.RawMessage(`{"thread":{"id":1,"kind":"message","from_agent":"` + fullAlias + `","to_kind":"agent","to_target":"peer"},"entries":[{"id":1,"thread_id":1,"from_agent":"` + fullAlias + `","body":"hi"}]}`), nil
+	}
+	t.Cleanup(func() { callDaemon = prevDaemon })
+
+	_, out, err := getThreadHandler(context.Background(), nil, GetThreadIn{ThreadID: 1})
+	if err != nil {
+		t.Fatalf("getThreadHandler: %v", err)
+	}
+	if len(out.Entries) != 1 {
+		t.Fatalf("entries = %+v, want exactly one", out.Entries)
+	}
+	gotThread, gotEntry := out.Thread.FromAgent, out.Entries[0].FromAgent
+	if gotThread != fullAlias {
+		t.Fatalf("ThreadView.FromAgent = %q, want the full stored alias %q", gotThread, fullAlias)
+	}
+	if gotEntry != fullAlias {
+		t.Fatalf("EntryView.FromAgent = %q, want the full stored alias %q", gotEntry, fullAlias)
+	}
+	short := device.Strip("personal", fullAlias)
+	if gotThread == short || gotEntry == short {
+		t.Fatalf("FromAgent was device-stripped to %q; model surfaces must carry the full alias (thread=%q entry=%q)", short, gotThread, gotEntry)
 	}
 }

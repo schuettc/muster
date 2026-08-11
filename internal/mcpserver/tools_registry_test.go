@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/schuettc/muster/internal/device"
 	"github.com/schuettc/muster/internal/tmuxenv"
 )
 
@@ -360,5 +361,100 @@ func TestListAgentsCarriesAddressableLabel(t *testing.T) {
 	gone := byAlias["bettor-help-workspace-5"]
 	if !gone.Departed || gone.Label != "corpus-rebuild" {
 		t.Fatalf("departed row = %+v, want departed true with its label still visible", gone)
+	}
+}
+
+// TestRegisterAgentAlreadyRegisteredDetailKeepsFullAlias guards the
+// "already registered as '%s'" detail string registerAgentHandler builds
+// from row.Alias — the pane's existing registration. This string tells a
+// model what alias to address itself as, so it is subject to the same
+// human/model asymmetry as list_agents and get_inbox/get_thread (see
+// TestModelSurfacesKeepTheFullAlias): a short form here would be echoed by
+// the model and could re-resolve against a different device's own prefix
+// when read elsewhere. Human CLI/TUI surfaces strip; this MCP tool detail
+// must not — deliberately, not by oversight.
+func TestRegisterAgentAlreadyRegisteredDetailKeepsFullAlias(t *testing.T) {
+	t.Setenv("TMUX", "/tmp/sock,1,0")
+	t.Setenv("TMUX_PANE", "%14")
+	t.Setenv("MUSTER_DEVICE_NAME", "personal")
+	prevCall := callDaemon
+	t.Cleanup(func() { callDaemon = prevCall })
+	prevRun := tmuxenv.Run
+	tmuxenv.Run = func(args ...string) (string, error) {
+		if args[len(args)-1] == "#{session_created}" {
+			return "500", nil // same incarnation as the roster row below
+		}
+		return "$1", nil
+	}
+	t.Cleanup(func() { tmuxenv.Run = prevRun })
+
+	const fullAlias = "personal-work/backend"
+	callDaemon = func(op string, _ map[string]any) (json.RawMessage, error) {
+		if op != "list_agents" {
+			t.Fatalf("unexpected op %s", op)
+		}
+		return json.RawMessage(`[{"alias":"` + fullAlias + `","model_type":"claude","socket_path":"/tmp/sock","pane_id":"%14","session_id":"$1","session_created":500,"departed":false}]`), nil
+	}
+
+	_, out, err := registerAgentHandler(context.Background(), nil, RegisterAgentIn{Alias: "personal-work/frontend", ModelType: "claude"})
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	if !strings.Contains(out.Detail, "already registered as '"+fullAlias+"'") {
+		t.Fatalf("Detail = %q, want the full stored alias %q", out.Detail, fullAlias)
+	}
+	short := device.Strip("personal", fullAlias)
+	if strings.Contains(out.Detail, "'"+short+"'") {
+		t.Fatalf("Detail = %q, was device-stripped to %q; model surfaces must carry the full alias", out.Detail, short)
+	}
+}
+
+// TestRegisterAgentBecomeDetailKeepsFullAlias guards the "you are now '%s'
+// (was '%s'); ... call get_inbox with alias '%s'" detail string the become
+// path builds from trade.To/trade.From. Same rationale as
+// TestRegisterAgentAlreadyRegisteredDetailKeepsFullAlias: this instructs the
+// model what alias to use going forward, including in a follow-up tool call,
+// so it must carry the full device-prefixed alias even though the human
+// surfaces for the same identity render short.
+func TestRegisterAgentBecomeDetailKeepsFullAlias(t *testing.T) {
+	t.Setenv("TMUX", "/tmp/sock,1,0")
+	t.Setenv("TMUX_PANE", "%6")
+	t.Setenv("MUSTER_DEVICE_NAME", "personal")
+	prev := tmuxenv.Run
+	tmuxenv.Run = func(args ...string) (string, error) {
+		if args[len(args)-1] == "#{session_id}" {
+			return "$1", nil
+		}
+		return "", nil
+	}
+	t.Cleanup(func() { tmuxenv.Run = prev })
+
+	const fromFull, toFull = "personal-work/backend", "personal-work/frontend"
+	prevDaemon := callDaemon
+	callDaemon = func(op string, _ map[string]any) (json.RawMessage, error) {
+		switch op {
+		case "become":
+			return []byte(`{"from":"` + fromFull + `","to":"` + toFull + `","unread":2}`), nil
+		default: // paneRegistration's roster probe: this pane already owns fromFull
+			return []byte(`[{"alias":"` + fromFull + `","socket_path":"/tmp/sock","session_id":"$1","pane_id":"%6"}]`), nil
+		}
+	}
+	t.Cleanup(func() { callDaemon = prevDaemon })
+
+	_, out, err := registerAgentHandler(context.TODO(), nil, RegisterAgentIn{
+		Alias: toFull, Role: "peer", ModelType: "claude", Become: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.Detail, "you are now '"+toFull+"' (was '"+fromFull+"')") {
+		t.Fatalf("Detail = %q, want full 'you are now'/'was' aliases", out.Detail)
+	}
+	if !strings.Contains(out.Detail, "call get_inbox with alias '"+toFull+"'") {
+		t.Fatalf("Detail = %q, want the full alias in the get_inbox instruction", out.Detail)
+	}
+	shortFrom, shortTo := device.Strip("personal", fromFull), device.Strip("personal", toFull)
+	if strings.Contains(out.Detail, "'"+shortFrom+"'") || strings.Contains(out.Detail, "'"+shortTo+"'") {
+		t.Fatalf("Detail = %q, was device-stripped; model surfaces must carry the full alias", out.Detail)
 	}
 }
