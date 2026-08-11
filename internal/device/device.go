@@ -54,15 +54,23 @@ func Name() string {
 	return SanitizeName(host)
 }
 
-// NameConfigured returns the name the operator explicitly chose — the
-// environment override or the persisted file — and "" when the name is merely
-// derived from the hostname.
+// NameConfigured returns this device's PERSISTED name — the environment
+// override, or the device-name file — and "" only when neither exists yet.
 //
-// The distinction drives alias seeding: a machine whose name the operator
-// actually picked contributes that name to derived aliases, and a machine
-// still answering to whatever the OS calls it does not. Seeding on a hostname
-// nobody chose would put "courts-macbook-pro" in front of every alias on a
-// purely local bus, which helps no one.
+// A non-empty return no longer proves the operator chose the name: Adopt()
+// (called by seedAlias ahead of every mint) writes the sanitized hostname
+// into the same file on a machine's first use, exactly as an operator's own
+// `muster device <name>` would. Once either has run, this returns the same
+// thing either way — that is deliberate, since Adopt()'s whole point is to
+// guarantee a name is pinned (never merely a live, re-derivable hostname
+// lookup) by the time an alias is minted, so seeding can be unconditional.
+//
+// What still depends on this: Name() falls back to a live hostname lookup
+// only while this is still "" (nothing has adopted or set a name yet).
+// `muster device`'s source=hostname|configured display (devicename.go) also
+// reads this — once a name is pinned, by an operator or by Adopt(), it
+// reports "configured", since from that point nothing here distinguishes the
+// two.
 func NameConfigured() string {
 	if v := SanitizeName(os.Getenv(NameEnv)); v != "" {
 		return v

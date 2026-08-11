@@ -1177,6 +1177,7 @@ func TestStampHarnessLinksScopesToOwnedPane(t *testing.T) {
 // session-name alias.
 func TestHookSessionStartResumeReclaimsAlias(t *testing.T) {
 	startTestDaemon(t)
+	t.Setenv("MUSTER_DEVICE_NAME", "testdev")
 	t.Setenv("TMUX", "/tmp/sock,1,0")
 	t.Setenv("TMUX_PANE", "%9")
 	t.Setenv("MUSTER_ALIAS", "")
@@ -1214,7 +1215,9 @@ func TestHookSessionStartResumeReclaimsAlias(t *testing.T) {
 	if !ok || ag.Departed || ag.SessionID != "$NEW" || ag.Label != "lake" {
 		t.Fatalf("reclaimed row = %+v (found=%v), want live on $NEW with label kept", ag, ok)
 	}
-	if _, exists, _ := hookGetAgent("muster-3"); exists {
+	// The fresh session-name register this guards against would also seed;
+	// check the form it would actually mint, not the unseeded bare name.
+	if _, exists, _ := hookGetAgent("testdev-muster-3"); exists {
 		t.Fatalf("resume must not also register a fresh session-name alias")
 	}
 }

@@ -408,7 +408,10 @@ func TestLaunchHandshakeLifecycle(t *testing.T) {
 	if err := cmdHook([]string{"SessionStart"}, strings.NewReader(payload), &buf); err != nil {
 		t.Fatal(err)
 	}
-	if _, found, _ := hookGetAgent("some-worktree-dir"); found {
+	// The would-be cwd alias is also seeded — check the form the hook would
+	// actually mint if the handshake early-return ever broke, not the
+	// unseeded bare name (which would never appear either way).
+	if _, found, _ := hookGetAgent("testdev-some-worktree-dir"); found {
 		t.Fatal("SessionStart must not allocate a cwd alias when the handshake row exists")
 	}
 
