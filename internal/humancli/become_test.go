@@ -302,14 +302,16 @@ func TestBecomeFromExpandsLocalFirst(t *testing.T) {
 	}
 }
 
-// TestBecomeFromRefusesAmbiguousLegacyTwin covers the review finding: this
-// session holds BOTH a legacy unprefixed row ("dotfiles") and its seeded
-// twin ("personal-dotfiles"), both live on the SAME session tuple.
-// `--from dotfiles` must not silently expand to the twin and retire it while
-// reporting "was 'dotfiles'" — the operator named the legacy row, and
-// expandAlias's local-first bias would pick the OTHER one. become must
-// refuse instead, naming both candidates, and must retire neither.
-func TestBecomeFromRefusesAmbiguousLegacyTwin(t *testing.T) {
+// TestBecomeFromExactMatchWinsOverTwin is the regression test for the bug an
+// earlier fix only half-solved: this session holds BOTH a legacy unprefixed
+// row ("dotfiles") and its seeded twin ("personal-dotfiles"), both live on
+// the SAME session tuple. expandAlias's local-first bias always prefers the
+// seeded form, so without an exact-match check ahead of it, `--from
+// dotfiles` would silently retire "personal-dotfiles" while the confirmation
+// (stripped for display) still read "was 'dotfiles'" — the wrong row,
+// reported as though it were the right one. Naming a live alias EXACTLY must
+// claim exactly that row: --from dotfiles retires dotfiles, not its twin.
+func TestBecomeFromExactMatchWinsOverTwin(t *testing.T) {
 	startTestDaemon(t)
 	t.Setenv("MUSTER_DEVICE_NAME", "personal")
 	t.Setenv("TMUX", "/tmp/sock,1,0")
@@ -326,21 +328,18 @@ func TestBecomeFromRefusesAmbiguousLegacyTwin(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	err := Dispatch([]string{"become", "alias-routing", "--from", "dotfiles"}, &buf)
-	if err == nil {
-		t.Fatalf("want an ambiguity refusal, got none (out %q)", buf.String())
+	if err := Dispatch([]string{"become", "alias-routing", "--from", "dotfiles"}, &buf); err != nil {
+		t.Fatalf("become --from dotfiles: %v", err)
 	}
-	if !strings.Contains(err.Error(), "dotfiles") || !strings.Contains(err.Error(), "personal-dotfiles") {
-		t.Fatalf("error must name both candidates, got %q", err.Error())
-	}
-	if buf.Len() != 0 {
-		t.Fatalf("must not print anything before refusing, got %q", buf.String())
+	if !strings.Contains(buf.String(), "was 'dotfiles'") {
+		t.Fatalf("output = %q", buf.String())
 	}
 
-	// Neither row was touched: no claim, no supersession, no departure.
+	// The row named EXACTLY ("dotfiles") is the one retired (superseded);
+	// its twin is untouched.
 	legacy, ok, _ := hookGetAgent("dotfiles")
-	if !ok || legacy.SupersededBy != "" || legacy.Departed {
-		t.Fatalf("legacy row must be untouched, got %+v (ok=%v)", legacy, ok)
+	if !ok || legacy.SupersededBy == "" {
+		t.Fatalf("the exactly-named row must be retired by the claim, got %+v (ok=%v)", legacy, ok)
 	}
 	twin, ok, _ := hookGetAgent("personal-dotfiles")
 	if !ok || twin.SupersededBy != "" || twin.Departed {

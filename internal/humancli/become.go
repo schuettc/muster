@@ -7,8 +7,6 @@ import (
 	"fmt"
 	"io"
 	"strings"
-
-	"github.com/schuettc/muster/internal/device"
 )
 
 // newBecomeFlagsWithVals declares become's flags and returns typed access to
@@ -80,19 +78,25 @@ func cmdBecome(args []string, out io.Writer) error {
 		for _, a := range live {
 			liveSet[a] = true
 		}
-		// expandAlias always prefers the seeded form when it exists, with no
-		// regard for whether the literal --from ALSO names a live alias on
-		// its own — which is exactly true of a legacy unprefixed row sitting
-		// beside its seeded twin. Left alone, expandAlias would silently
-		// retire the twin while the confirmation (stripped for display)
-		// prints the legacy name, reading as though that row were the one
-		// retired. Refuse rather than guess which of the two was meant;
-		// dispAlias is not used here because the whole point is telling two
-		// rows apart that dispAlias would strip to the same string.
-		if seeded := device.Seed(device.Name(), fromAlias); seeded != fromAlias && liveSet[fromAlias] && liveSet[seeded] {
-			return fmt.Errorf("--from %q is ambiguous: this session has both %q and %q live; pass --from with the exact alias you mean", fromAlias, fromAlias, seeded)
+		// Exact match against THIS session's OWN live aliases wins before
+		// expandAlias's local-first bias even runs. expandAlias's local-first
+		// comment explains why local-first is right everywhere else: a bare
+		// name is ambiguous against the WIDER roster, and guessing wrong
+		// reaches a stranger's row on another machine — action at a distance
+		// the design exists to prevent. That risk needs a candidate this
+		// session does not own. Here every candidate comes from
+		// becomeLiveAliases, which returns only aliases live on THIS session
+		// — there is no stranger's row in the set to protect against, so an
+		// exact hit is simply the more precise read of what was typed. This
+		// is also what makes a legacy unprefixed row nameable again: a
+		// session holding both "dotfiles" and its seeded twin
+		// "personal-dotfiles" has expandAlias always preferring the twin, so
+		// without this exact-first check "dotfiles" could never be named —
+		// the twin's own literal spelling was never in danger, only the
+		// legacy row's was. Naming a row exactly now claims exactly that row.
+		if !liveSet[fromAlias] {
+			fromAlias = expandAlias(fromAlias, func(a string) bool { return liveSet[a] })
 		}
-		fromAlias = expandAlias(fromAlias, func(a string) bool { return liveSet[a] })
 	}
 
 	// The CLAIM is seeded; the injected harness name and the confirmation are
