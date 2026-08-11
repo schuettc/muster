@@ -628,7 +628,7 @@ func cmdNudge(args []string, out io.Writer) error {
 	// re-registers, or the operator can re-register from the live pane now.
 	if ag.SocketPath != "" && !tmuxenv.IsPaneAlive(ag.SocketPath, ag.PaneID) &&
 		tmuxenv.IsSessionAlive(ag.SocketPath, ag.SessionID, ag.SessionCreated) {
-		return fmt.Errorf("nudge %s: stored pane %s is gone but its session is alive — the row heals at the session's next start/resume (or re-register from the live pane); refusing to type into a guessed pane", ag.Alias, ag.PaneID)
+		return fmt.Errorf("nudge %s: stored pane %s is gone but its session is alive — the row heals at the session's next start/resume (or re-register from the live pane); refusing to type into a guessed pane", dispAlias(ag.Alias), ag.PaneID)
 	}
 	// session_name is mutable — tmux lets an operator rename a session at any
 	// time — so the stored (registration-time) snapshot goes stale the
@@ -640,7 +640,10 @@ func cmdNudge(args []string, out io.Writer) error {
 		sessionName = ag.SessionName
 	}
 	if sessionName == "" {
-		sessionName = ag.Alias
+		// Stripped, like the alias beside it: this field's vocabulary is tmux
+		// session names, which never carry the device prefix, and the stripped
+		// alias is exactly the name the session was registered under.
+		sessionName = dispAlias(ag.Alias)
 	}
 	if _, err := fmt.Fprintf(out, "nudging %s → session %s / pane %s on %s\n", dispAlias(ag.Alias), sessionName, ag.PaneID, ag.SocketPath); err != nil {
 		return err

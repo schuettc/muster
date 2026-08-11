@@ -696,3 +696,74 @@ func TestSplitFlagsAndPositional(t *testing.T) {
 		})
 	}
 }
+
+// TestNudgeRefusalStripsTheDevicePrefix: cmdNudge's success line runs the
+// alias through dispAlias, so its refusal must too — one command must not
+// speak two vocabularies, naming the agent "dotfiles/main" when it works and
+// "testdev-dotfiles/main" when it doesn't.
+func TestNudgeRefusalStripsTheDevicePrefix(t *testing.T) {
+	startTestDaemon(t)
+	t.Setenv("MUSTER_DEVICE_NAME", "testdev")
+	if _, err := callData("register_agent", map[string]any{
+		"alias": "testdev-dotfiles/main", "role": "reviewer", "model_type": "codex",
+		"socket_path": "/s", "pane_id": "%99", "session_id": "$1",
+		"session_created": 200,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	origNudge := nudgeRun
+	nudgeRun = func(_ ...string) error { return nil }
+	t.Cleanup(func() { nudgeRun = origNudge })
+
+	origRun := tmuxenv.Run
+	// Session alive (created matches), pane %99 gone → the refusal path.
+	tmuxenv.Run = hookRun(map[string]string{"#{session_created}": "200"})
+	t.Cleanup(func() { tmuxenv.Run = origRun })
+
+	var buf bytes.Buffer
+	err := Dispatch([]string{"nudge", "dotfiles/main"}, &buf)
+	if err == nil {
+		t.Fatalf("expected the stale-pane refusal, got nil (out=%q)", buf.String())
+	}
+	if !strings.Contains(err.Error(), "nudge dotfiles/main:") {
+		t.Fatalf("refusal must name the agent as every other human surface does, got %q", err.Error())
+	}
+	if strings.Contains(err.Error(), "testdev-") {
+		t.Fatalf("refusal leaked the device prefix: %q", err.Error())
+	}
+}
+
+// TestNudgeSessionNameFallbackStripsTheDevicePrefix: with no live and no
+// stored session name, nudge prints the alias in the "session" field — a
+// field whose whole vocabulary is short tmux names, and whose short form the
+// alias's stripped rendering IS.
+func TestNudgeSessionNameFallbackStripsTheDevicePrefix(t *testing.T) {
+	startTestDaemon(t)
+	t.Setenv("MUSTER_DEVICE_NAME", "testdev")
+	if _, err := callData("register_agent", map[string]any{
+		"alias": "testdev-dotfiles/main", "role": "reviewer", "model_type": "codex",
+		"socket_path": "/s", "pane_id": "%2", "session_id": "$1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	origNudge := nudgeRun
+	nudgeRun = func(_ ...string) error { return nil }
+	t.Cleanup(func() { nudgeRun = origNudge })
+
+	origRun := tmuxenv.Run
+	tmuxenv.Run = func(_ ...string) (string, error) { return "", fmt.Errorf("no tmux") }
+	t.Cleanup(func() { tmuxenv.Run = origRun })
+
+	var buf bytes.Buffer
+	if err := Dispatch([]string{"nudge", "dotfiles/main"}, &buf); err != nil {
+		t.Fatalf("nudge: %v", err)
+	}
+	if !strings.Contains(buf.String(), "session dotfiles/main /") {
+		t.Fatalf("session-name fallback must render like every other human surface, got %q", buf.String())
+	}
+	if strings.Contains(buf.String(), "testdev-") {
+		t.Fatalf("nudge output leaked the device prefix: %q", buf.String())
+	}
+}
