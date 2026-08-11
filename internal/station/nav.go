@@ -2,6 +2,8 @@ package station
 
 import (
 	"sort"
+
+	"github.com/schuettc/muster/internal/device"
 )
 
 // This file is the station navigation/data-derivation concern (spec
@@ -422,6 +424,42 @@ func computeLabelCollisions(agents []agentEnriched) map[string]bool {
 		}
 		if collide {
 			out[a.Alias] = true
+		}
+	}
+	return out
+}
+
+// computeAliasStripCollisions reports, for every agent, whether stripping
+// this machine's device prefix off its alias (station's normal display
+// treatment — see Model.dispLabel) would make it render identically to some
+// OTHER agent's post-strip form. Two different agents rendering the same
+// string is the exact "who → who" ambiguity computeLabelCollisions guards
+// against for labels, but that check compares labels, not the stripped
+// alias — a locally seeded "personal-relay" and a legacy bare "relay" have
+// distinct labels (both fall back to their own alias) yet strip to the same
+// "relay". When flagged here, BOTH sides fall back to their full,
+// unstripped alias, mirroring aliasDisplay in
+// internal/humancli/dispalias.go, whose doc comment claims parity with
+// station.
+func computeAliasStripCollisions(agents []agentEnriched) map[string]bool {
+	name := device.Name()
+	stripCount := map[string]int{}
+	seen := map[string]bool{}
+	for _, a := range agents {
+		// Count DISTINCT aliases, not occurrences: the same alias can
+		// legitimately appear more than once in the roster snapshot, and
+		// counting every occurrence would make an alias collide with
+		// itself.
+		if seen[a.Alias] {
+			continue
+		}
+		seen[a.Alias] = true
+		stripCount[device.Strip(name, a.Alias)]++
+	}
+	out := map[string]bool{}
+	for alias := range seen {
+		if stripCount[device.Strip(name, alias)] > 1 {
+			out[alias] = true
 		}
 	}
 	return out

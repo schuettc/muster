@@ -39,7 +39,7 @@ func newLambdaTestStore(t *testing.T) *store.Store {
 // v1 environment authenticator (the tests set MUSTER_TOKEN with t.Setenv).
 func newHandler(t *testing.T) func(context.Context, events.APIGatewayV2HTTPRequest) (events.APIGatewayV2HTTPResponse, error) {
 	t.Helper()
-	return lambdamode.Handler(daemon.New(newLambdaTestStore(t), nil), lambdamode.EnvAuth{})
+	return lambdamode.Handler(daemon.New(newLambdaTestStore(t), nil, ""), lambdamode.EnvAuth{})
 }
 
 // authed is the header set every handler test needs; the handler rejects
@@ -298,7 +298,7 @@ func TestHandlerKeepsProtocolErrorsAt200(t *testing.T) {
 func TestHandlerSurfacesIdempotencyCollisionAs409(t *testing.T) {
 	t.Setenv("MUSTER_TOKEN", "good-token")
 	s := newLambdaTestStore(t)
-	h := lambdamode.Handler(daemon.New(s, nil), lambdamode.EnvAuth{})
+	h := lambdamode.Handler(daemon.New(s, nil, ""), lambdamode.EnvAuth{})
 
 	// Claim the key without completing it: the record is now in flight, so
 	// the next dispatch under it is the collision.

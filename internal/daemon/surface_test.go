@@ -375,7 +375,7 @@ func newDaemonTestStore(t *testing.T) *store.Store {
 // depends on to get a Dispatch target without a unix socket.
 func TestNewDispatchesWithoutListener(t *testing.T) {
 	s := newDaemonTestStore(t)
-	d := New(s, nil)
+	d := New(s, nil, "")
 	resp := d.Dispatch(proto.Request{Op: "list_agents"})
 	if !resp.OK {
 		t.Fatalf("list_agents via New+Dispatch: %s", resp.Error)

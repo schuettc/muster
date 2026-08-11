@@ -176,7 +176,7 @@ func TestPollerStopsOnClose(t *testing.T) {
 // starting a goroutine that would nil-pointer on the first tick is worse than
 // starting none.
 func TestStartPollerIsANoOpInLocalMode(t *testing.T) {
-	d := New(nil, nil)
+	d := New(nil, nil, "")
 	d.StartPoller(time.Millisecond)
 	time.Sleep(20 * time.Millisecond)
 	if err := d.Close(); err != nil {

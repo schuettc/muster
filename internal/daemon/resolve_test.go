@@ -3,6 +3,8 @@ package daemon
 import (
 	"strings"
 	"testing"
+
+	"github.com/schuettc/muster/internal/proto"
 )
 
 // TestSendMessageResolvesManualLabelInSenderProject is the direct fix for
@@ -222,5 +224,73 @@ func TestSendMessageRoleAndBroadcastUnaffected(t *testing.T) {
 		"from": "sender-1", "to_kind": "broadcast", "subject": "s", "body": "b",
 	}); !resp.OK {
 		t.Fatalf("broadcast send must be unaffected by agent resolution, got %+v", resp)
+	}
+}
+
+// registerTestAgent registers alias against d with no tmux identity, via
+// Dispatch — the same seam lambda mode uses to reach the daemon without a
+// unix socket. t.Fatal on failure so a broken fixture never masquerades as a
+// resolution bug in the test that calls it.
+func registerTestAgent(t *testing.T, d *Daemon, alias string) {
+	t.Helper()
+	resp := d.Dispatch(proto.Request{Op: "register_agent", Args: map[string]any{"alias": alias}})
+	if !resp.OK {
+		t.Fatalf("register_agent %q: %+v", alias, resp)
+	}
+}
+
+// TestResolveAgentTargetExpandsAShortLocalAlias covers the path a model takes:
+// MCP passes to_target straight through with no client-side resolution, so if
+// the daemon does not expand, a model that read a short alias off the roster
+// cannot address it at all.
+func TestResolveAgentTargetExpandsAShortLocalAlias(t *testing.T) {
+	d := New(newDaemonTestStore(t), nil, "personal")
+	registerTestAgent(t, d, "personal-dotfiles/main")
+
+	got, err := d.resolveAgentTarget("", "dotfiles/main")
+	if err != nil {
+		t.Fatalf("resolveAgentTarget: %v", err)
+	}
+	if want := "personal-dotfiles/main"; got != want {
+		t.Fatalf("resolveAgentTarget = %q, want %q", got, want)
+	}
+}
+
+// TestResolveAgentTargetKeepsForeignAliasesExact: the full form always
+// resolves to itself, which is what makes cross-machine references written
+// into message bodies correct wherever they are read.
+func TestResolveAgentTargetKeepsForeignAliasesExact(t *testing.T) {
+	d := New(newDaemonTestStore(t), nil, "personal")
+	registerTestAgent(t, d, "work-dotfiles/main")
+
+	got, err := d.resolveAgentTarget("", "work-dotfiles/main")
+	if err != nil {
+		t.Fatalf("resolveAgentTarget: %v", err)
+	}
+	if want := "work-dotfiles/main"; got != want {
+		t.Fatalf("resolveAgentTarget = %q, want %q", got, want)
+	}
+}
+
+// TestResolveAgentTargetPrefersLocalSeededOverForeignBareAlias is the
+// discriminator between local-first and exact-first precedence: the roster
+// holds BOTH a foreign row registered under the exact literal
+// "dotfiles/main" AND this device's own seeded row for the same short name.
+// Local-first means the given short name must resolve to THIS device's
+// agent, not the foreign one that happens to already match the literal
+// input — an isolated-call test (only one of the two rows present) cannot
+// catch a resolver that got exact-first backwards, since either precedence
+// produces the same answer when there is nothing to prefer between.
+func TestResolveAgentTargetPrefersLocalSeededOverForeignBareAlias(t *testing.T) {
+	d := New(newDaemonTestStore(t), nil, "personal")
+	registerTestAgent(t, d, "dotfiles/main")          // foreign bare alias, exact match on the literal input
+	registerTestAgent(t, d, "personal-dotfiles/main") // this device's own seeded alias
+
+	got, err := d.resolveAgentTarget("", "dotfiles/main")
+	if err != nil {
+		t.Fatalf("resolveAgentTarget: %v", err)
+	}
+	if want := "personal-dotfiles/main"; got != want {
+		t.Fatalf("resolveAgentTarget = %q, want %q (local-first must win over the foreign exact match)", got, want)
 	}
 }

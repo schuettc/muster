@@ -1,44 +1,27 @@
 package humancli
 
-import (
-	"strings"
+import "github.com/schuettc/muster/internal/device"
 
-	"github.com/schuettc/muster/internal/device"
-)
-
-// seedAlias prefixes a DERIVED alias with this machine's configured device
-// name, so two machines cannot silently claim the same one.
+// seedAlias prefixes an alias with this machine's device name, adopting a name
+// first if the operator has not chosen one.
 //
-// The problem it solves is specific and, before a bus could span devices,
-// impossible. Derived aliases come from a tmux session name or a working
-// directory basename — both of which are IDENTICAL on two machines with the
-// same repos checked out and the same tmux conventions. Registering is an
-// upsert, so the second machine to register would take the alias, and because
-// the roster row IS the identity it would take the inbox and read-state with
-// it. Worse, session hooks re-register on every session start, so the two
-// machines would trade the alias back and forth with mail following whoever
-// registered last, and nothing anywhere would report it.
+// Every alias this machine mints is seeded — derived, typed, or allocated.
+// The rule used to exempt typed names on the reasoning that an explicit choice
+// should not be silently rewritten. Hiding the prefix locally inverts that:
+// once the roster shows "dotfiles/main" and "galley/design" side by side,
+// nothing distinguishes the alias that is device-scoped from the one that will
+// collide, so an operator would reasonably type `become galley/design` on a
+// second machine believing it behaves like every other name on screen.
 //
-// Only DERIVED aliases are seeded. An alias the operator typed, or set via
-// $MUSTER_ALIAS, is an explicit choice and is left exactly as given — if
-// someone deliberately registers "worker" on two machines, that is a decision
-// muster should not quietly rewrite.
+// Adoption runs ahead of the seed (device.Adopt), which is why this needs no
+// "is a name configured" gate: there is always a name by the time an alias is
+// minted. An adoption failure degrades to the unseeded alias rather than
+// blocking registration — a machine that cannot name itself still needs to be
+// able to register.
 //
-// Seeding is gated on the device name being CONFIGURED rather than merely
-// derived from the hostname. A machine still answering to whatever the OS
-// calls it contributes nothing worth putting in front of every alias, and the
-// overwhelmingly common case — one machine, local bus, no device name ever
-// set — is byte-for-byte unchanged.
-func seedAlias(derived string) string {
-	name := device.NameConfigured()
-	if name == "" || derived == "" {
-		return derived
-	}
-	// Already carrying the prefix: re-registering must produce the SAME alias
-	// it produced last time, or a resume would register a second identity
-	// ("work-laptop-work-laptop-muster") and orphan the first one's mail.
-	if strings.HasPrefix(derived, name+"-") || derived == name {
-		return derived
-	}
-	return name + "-" + derived
+// This is a delegation to device.SeedMinted, the one mint helper every
+// client — humancli and mcpserver alike — calls, so the rule lives in one
+// place rather than in each client's own copy.
+func seedAlias(alias string) string {
+	return device.SeedMinted(alias)
 }

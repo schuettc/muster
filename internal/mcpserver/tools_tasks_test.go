@@ -8,10 +8,15 @@ import (
 
 func TestTaskCreateClaimTransition(t *testing.T) {
 	startTestDaemon(t)
-	if _, err := callDaemon("register_agent", map[string]any{
-		"alias": "backend", "role": "producer", "model_type": "claude",
-	}); err != nil {
-		t.Fatal(err)
+	// rev2 exists only so the second claim below fails for the reason this
+	// test is about — the store's atomic claim — rather than bouncing off
+	// task_claim's actor-existence check and pinning nothing.
+	for _, alias := range []string{"backend", "rev1", "rev2"} {
+		if _, err := callDaemon("register_agent", map[string]any{
+			"alias": alias, "role": "producer", "model_type": "claude",
+		}); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	_, created, err := taskCreateHandler(context.Background(), nil, TaskCreateIn{

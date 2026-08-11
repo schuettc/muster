@@ -282,10 +282,23 @@ func hookSessionStartResume(c tmuxenv.Capture, h harnessenv.Capture, model strin
 		}
 	}
 	for _, ln := range lines {
-		_, _ = fmt.Fprintf(out, "muster: reconnected as '%s' (%s) — %d unread thread(s); call get_inbox with alias '%s'\n",
-			ln.alias, ln.outcome, ln.unread, ln.alias)
+		_, _ = fmt.Fprint(out, reconnectLine(ln.alias, ln.outcome, ln.unread))
 	}
 	return true
+}
+
+// reconnectLine formats one resume line of hookSessionStartResume's output.
+// Pulled out to a named function so it is directly testable: this text is
+// injected into an agent's context (the harness pipes hook stdout back into
+// the conversation), which makes it a MODEL surface — unlike the CLI/station
+// display helpers, it must carry the FULL stored alias, never the
+// device-stripped short form a human-facing surface would show. See
+// mcpserver.TestModelSurfacesKeepTheFullAlias for why: a short alias here
+// would re-resolve against whatever device the model's own machine is, not
+// the one that minted it, and silently reach a different, real agent.
+func reconnectLine(alias, outcome string, unread int) string {
+	return fmt.Sprintf("muster: reconnected as '%s' (%s) — %d unread thread(s); call get_inbox with alias '%s'\n",
+		alias, outcome, unread, alias)
 }
 
 // hookSessionStartPaneless auto-registers a session that has no tmux pane in
@@ -304,7 +317,7 @@ func hookSessionStartPaneless(h harnessenv.Capture, model string) {
 		return err
 	}
 	if alias := os.Getenv("MUSTER_ALIAS"); alias != "" {
-		_ = regFn(alias, false)
+		_ = regFn(seedAlias(alias), false)
 		return
 	}
 	if h.SessionID == "" && h.Alias() == "" {
@@ -330,15 +343,26 @@ func hookSessionStartPaneless(h harnessenv.Capture, model string) {
 			return
 		}
 	}
-	_, _ = allocPanelessAlias(h.Alias(), h.SessionID, regFn)
+	// Same rule as cmdRegister's paneless fallback: the base is a raw cwd
+	// basename, identical on any two machines with the same directory
+	// checked out, so it is seeded before allocation like every other mint
+	// site — this is the SessionStart hook's own paneless registration path,
+	// the way daemon-hosted (no tmux pane) sessions actually register in
+	// production.
+	_, _ = allocPanelessAlias(seedAlias(h.Alias()), h.SessionID, regFn)
 }
 
 // hookAlias resolves the identity a hook event acts on, mirroring
 // cmdRegister/cmdDeregister's no-arg precedence: $MUSTER_ALIAS, else the
 // captured tmux session name.
+//
+// Both branches seed. Every alias this machine mints is seeded — there is no
+// carve-out for an explicit choice, because once the prefix is hidden locally
+// an operator cannot tell a device-scoped name from an unqualified one, and a
+// silent exception here would be invisible at the moment it mattered.
 func hookAlias(c tmuxenv.Capture) string {
 	if v := os.Getenv("MUSTER_ALIAS"); v != "" {
-		return v // explicit operator choice: never rewritten
+		return seedAlias(v)
 	}
 	return seedAlias(c.SessionName)
 }
@@ -448,7 +472,11 @@ func hookSessionEnd(c tmuxenv.Capture, h harnessenv.Capture) {
 		if ag.PaneID != "" && ag.PaneID != c.PaneID {
 			continue // a sibling pane's identity: not ours to tombstone
 		}
-		_ = cmdDeregister([]string{ag.Alias}, io.Discard)
+		// ag.Alias is already the exact stored alias for this row — route
+		// through deregisterAlias, not cmdDeregister, so it is never
+		// re-expanded local-first into an unrelated live agent's alias (see
+		// deregisterAlias's doc comment).
+		_ = deregisterAlias(ag.Alias, io.Discard)
 	}
 }
 
@@ -474,7 +502,9 @@ func hookSessionEndPaneless(h harnessenv.Capture) {
 		if ag.SocketPath != "" && tmuxenv.IsSessionAlive(ag.SocketPath, ag.SessionID, ag.SessionCreated) {
 			continue
 		}
-		_ = cmdDeregister([]string{ag.Alias}, io.Discard)
+		// ag.Alias is already the exact stored alias for this row — see the
+		// tmux sweep above for why this must not go through cmdDeregister.
+		_ = deregisterAlias(ag.Alias, io.Discard)
 	}
 }
 
@@ -731,6 +761,15 @@ func stampHarnessLinks(aliases []string, h harnessenv.Capture, socketPath, sessi
 // list holding today's session-name wording (spec §3) — the hook always has
 // something to address.
 //
+// That fallback is SEEDED, because "session name == alias" is no longer true:
+// registration mints seedAlias(<session name>), so the bare name names no
+// roster row. Both consumers need the stored form — hookReason's "call
+// get_inbox with alias '%s'" is a MODEL surface, and hookStopOwnsAnyAlias
+// looks the alias up in the roster. Minting it the same way registration does
+// is what makes the guess land on the row registration created; device.Seed's
+// empty-alias guard keeps an unreachable tmux from producing a bare
+// "<device>-".
+//
 // sessionCreated is the caller's live incarnation, forwarded so the daemon
 // scopes the lineage walk to it (spec §5.1): a legacy row stranded on a
 // recycled session ID is not this conversation's identity and must not be
@@ -746,7 +785,7 @@ func sessionAliasesForHook(socketPath, sessionID string, sessionCreated int64) [
 			return res.Aliases
 		}
 	}
-	return []string{tmuxenv.CurrentSessionName()}
+	return []string{seedAlias(tmuxenv.CurrentSessionName())}
 }
 
 // sessionUnreadForHook calls the session_unread op. ok is false on any

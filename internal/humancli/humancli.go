@@ -75,10 +75,14 @@ type agentRow struct {
 	// DeviceID names the MACHINE this row was registered from (see
 	// store.Agent.DeviceID). It is location, never identity: nothing
 	// addressable is scoped by it, and internal/resolve takes no device
-	// argument — an alias means the same agent from every device on the bus.
-	// cmdAgents renders it purely so an operator can answer "which box is
-	// that on", a question a bus spanning machines makes askable and
-	// nothing else in the CLI could answer.
+	// argument. What device DOES affect is presentation. The STORED alias is
+	// globally unique and carries this machine's name; the DISPLAYED alias
+	// drops that prefix on the machine that minted it, and a short name typed
+	// there expands back before resolution. So an alias still means the same
+	// agent from every device — it is just written two ways, short at home
+	// and in full abroad. cmdAgents renders DeviceID purely so an operator can
+	// answer "which box is that on", a question a bus spanning machines makes
+	// askable and nothing else in the CLI could answer.
 	DeviceID string `json:"device_id"`
 	// DeviceName is that machine's operator-chosen name, rendered in the
 	// DEVICE column because "work-laptop" is what someone would say and
@@ -192,6 +196,12 @@ func cmdAgents(out io.Writer) error {
 	}
 	showDevice := len(devices) > 1
 
+	all := make([]string, 0, len(agents))
+	for _, a := range agents {
+		all = append(all, a.Alias)
+	}
+	disp := aliasDisplay(all)
+
 	tw := tabwriter.NewWriter(out, 0, 2, 2, ' ', 0)
 	header := "PROJECT\tALIAS\tLABEL\tMODEL\tLIVE"
 	if showDevice {
@@ -235,9 +245,9 @@ func cmdAgents(out io.Writer) error {
 		var err error
 		if showDevice {
 			_, err = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
-				proj, a.Alias, label, a.ModelType, deviceCell(a.DeviceID, a.DeviceName, localDevice), live)
+				proj, disp[a.Alias], label, a.ModelType, deviceCell(a.DeviceID, a.DeviceName, localDevice), live)
 		} else {
-			_, err = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", proj, a.Alias, label, a.ModelType, live)
+			_, err = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", proj, disp[a.Alias], label, a.ModelType, live)
 		}
 		if err != nil {
 			return err
@@ -372,8 +382,14 @@ func cmdSend(args []string, out io.Writer) error {
 		}
 		body = strings.Join(rest[1:], " ")
 	}
+	// --from is an operator-typed name, exactly like reply's --from
+	// (thread.go) — local-first expand it before it reaches the daemon, or a
+	// bare --from (the very short form the CLI prints as its own hint)
+	// either mis-attributes the thread to an unrelated foreign agent of that
+	// name or, with none, an unresolvable orphan FromAgent.
+	fromAlias := expandAlias(*v.from, rosterAliasExists())
 	raw, err := callData("send_message", map[string]any{
-		"from": *v.from, "to_kind": toKind, "to_target": toTarget,
+		"from": fromAlias, "to_kind": toKind, "to_target": toTarget,
 		"subject": *v.subject, "ref": *v.ref, "body": body, "intent": *v.intent,
 	})
 	if err != nil {
@@ -520,6 +536,17 @@ func printThreads(out io.Writer, alias string, tasksOnly bool) error {
 	if err := json.Unmarshal(raw, &threads); err != nil {
 		return err
 	}
+	// Only FROM, LAST-FROM, and a to_kind=agent TO target are aliases — a
+	// to_kind=role/broadcast target is a role or project name, never an
+	// alias, and must not be run through the alias display map.
+	aliases := make([]string, 0, len(threads)*3)
+	for _, th := range threads {
+		aliases = append(aliases, th.FromAgent, th.LastFrom)
+		if th.ToKind == "agent" {
+			aliases = append(aliases, th.ToTarget)
+		}
+	}
+	disp := aliasDisplay(aliases)
 	tw := tabwriter.NewWriter(out, 0, 2, 2, ' ', 0)
 	if _, err := fmt.Fprintln(tw, "ID\tKIND\tFROM\tTO\tSTATUS\tLAST-FROM\tUNREAD\tSUBJECT"); err != nil {
 		return err
@@ -530,9 +557,13 @@ func printThreads(out io.Writer, alias string, tasksOnly bool) error {
 		}
 		to := th.ToKind
 		if th.ToTarget != "" {
-			to = th.ToKind + ":" + th.ToTarget
+			target := th.ToTarget
+			if th.ToKind == "agent" {
+				target = disp[th.ToTarget]
+			}
+			to = th.ToKind + ":" + target
 		}
-		if _, err := fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%s\t%s\t%d\t%s\n", th.ID, th.Kind, th.FromAgent, to, th.Status, th.LastFrom, th.Unread, th.Subject); err != nil {
+		if _, err := fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%s\t%s\t%d\t%s\n", th.ID, th.Kind, disp[th.FromAgent], to, th.Status, disp[th.LastFrom], th.Unread, th.Subject); err != nil {
 			return err
 		}
 	}
@@ -597,7 +628,7 @@ func cmdNudge(args []string, out io.Writer) error {
 	// re-registers, or the operator can re-register from the live pane now.
 	if ag.SocketPath != "" && !tmuxenv.IsPaneAlive(ag.SocketPath, ag.PaneID) &&
 		tmuxenv.IsSessionAlive(ag.SocketPath, ag.SessionID, ag.SessionCreated) {
-		return fmt.Errorf("nudge %s: stored pane %s is gone but its session is alive — the row heals at the session's next start/resume (or re-register from the live pane); refusing to type into a guessed pane", ag.Alias, ag.PaneID)
+		return fmt.Errorf("nudge %s: stored pane %s is gone but its session is alive — the row heals at the session's next start/resume (or re-register from the live pane); refusing to type into a guessed pane", dispAlias(ag.Alias), ag.PaneID)
 	}
 	// session_name is mutable — tmux lets an operator rename a session at any
 	// time — so the stored (registration-time) snapshot goes stale the
@@ -609,9 +640,12 @@ func cmdNudge(args []string, out io.Writer) error {
 		sessionName = ag.SessionName
 	}
 	if sessionName == "" {
-		sessionName = ag.Alias
+		// Stripped, like the alias beside it: this field's vocabulary is tmux
+		// session names, which never carry the device prefix, and the stripped
+		// alias is exactly the name the session was registered under.
+		sessionName = dispAlias(ag.Alias)
 	}
-	if _, err := fmt.Fprintf(out, "nudging %s → session %s / pane %s on %s\n", ag.Alias, sessionName, ag.PaneID, ag.SocketPath); err != nil {
+	if _, err := fmt.Fprintf(out, "nudging %s → session %s / pane %s on %s\n", dispAlias(ag.Alias), sessionName, ag.PaneID, ag.SocketPath); err != nil {
 		return err
 	}
 	n := nudge.TmuxNudger{Run: nudgeRun} // nil in prod → real tmux

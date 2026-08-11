@@ -12,7 +12,9 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
+	"github.com/schuettc/muster/internal/device"
 	"github.com/schuettc/muster/internal/display"
 	"github.com/schuettc/muster/internal/proto"
 	"github.com/schuettc/muster/internal/store"
@@ -42,9 +44,16 @@ type Daemon struct {
 	// are zero in local mode, which is what keeps local behaviour identical.
 	up       Upstream
 	deviceID string
-	// deviceName rides alongside deviceID on forwarded registrations. It is
-	// display only — nothing routes, scopes, or compares by it — so unlike
-	// deviceID a wrong or empty value costs legibility, never correctness.
+	// deviceName rides alongside deviceID on forwarded registrations, where
+	// it is display only — nothing routes, scopes, or compares by it there,
+	// so unlike deviceID a wrong or empty value costs legibility, never
+	// correctness. Local mode (New/Serve) also populates it, for a second,
+	// unrelated purpose: resolveAgentTarget (addressees) and
+	// requireKnownAlias (actors — task_claim/task_transition's `by`,
+	// get_inbox's alias) expand a short local alias against it before
+	// resolution. "" disables that expansion, which is
+	// also local mode's zero-value default and Lambda mode's deliberate
+	// choice (it serves many devices, so it must never expand).
 	deviceName string
 
 	// recClosed is set by Close and is the reconcile loop's stop signal;
@@ -70,6 +79,17 @@ type Daemon struct {
 	localAgents map[string]store.SessionRef
 	localSeeded bool
 
+	// aliasSet/aliasAt are forward's cache of "which aliases exist in the
+	// hosted roster", consulted by expandAliasArg before it trusts a
+	// device.Seed guess enough to rewrite a caller's alias argument. See
+	// aliasesForExpansion (remotemode.go) for the staleness policy: this is
+	// a short-TTL cache, not a per-request roster read, so a burst of sends
+	// pays at most one upstream list_agents per aliasCacheTTL window rather
+	// than one per send.
+	aliasMu  sync.Mutex
+	aliasSet map[string]bool
+	aliasAt  time.Time
+
 	// sessLocks serializes {SessionUnread recompute, tmux option write,
 	// journal} per (socket_path, session_id) tuple (spec §3): a concurrent
 	// notify and get_inbox drain on the same session must not race, or the
@@ -81,20 +101,25 @@ type Daemon struct {
 
 // New builds a Daemon over s with no listener bound. Lambda mode uses this to
 // get a Dispatch target without a unix socket; n may be nil, in which case no
-// notifications are delivered.
-func New(s store.API, n wake.Notifier) *Daemon {
-	return &Daemon{s: s, n: n, recStop: make(chan struct{})}
+// notifications are delivered. deviceName is this machine's name, used to
+// expand a short local alias on input; "" disables expansion (Lambda mode,
+// which serves no single device).
+func New(s store.API, n wake.Notifier, deviceName string) *Daemon {
+	return &Daemon{s: s, n: n, deviceName: deviceName, recStop: make(chan struct{})}
 }
 
 // Serve binds socketPath (replacing any stale socket) and serves in a
 // goroutine. n may be nil, in which case no notifications are delivered.
-func Serve(socketPath string, s store.API, n wake.Notifier) (*Daemon, error) {
+// deviceName is snapshotted here rather than re-read per request, matching
+// ServeRemote: a name change mid-run is not tracked, and auto-adoption makes
+// changes rare and deliberate.
+func Serve(socketPath string, s store.API, n wake.Notifier, deviceName string) (*Daemon, error) {
 	_ = os.Remove(socketPath) // clear a stale socket from a previous run
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {
 		return nil, err
 	}
-	d := New(s, n)
+	d := New(s, n, deviceName)
 	d.ln = ln
 	go d.acceptLoop()
 	return d, nil
@@ -480,18 +505,22 @@ func (d *Daemon) sessionAliasesFor(socketPath, sessionID string) ([]string, erro
 	if err != nil {
 		return nil, err
 	}
-	return liveAliasesFor(agents, socketPath, sessionID), nil
+	return liveAliasesFor(agents, socketPath, sessionID, d.deviceName), nil
 }
 
 // liveAliasesFor is sessionAliasesFor's filter over a roster already in hand —
 // the one place the "live aliases of this session tuple" rule is written, so
 // the local path (which reads the roster from the store) and the remote one
 // (which reads it upstream) cannot disagree about who the badge advertises.
-func liveAliasesFor(agents []store.Agent, socketPath, sessionID string) []string {
+func liveAliasesFor(agents []store.Agent, socketPath, sessionID, deviceName string) []string {
 	aliases := []string{}
 	for _, ag := range agents {
 		if ag.SocketPath == socketPath && ag.SessionID == sessionID && !ag.Departed {
-			aliases = append(aliases, ag.Alias)
+			// The badge is a human surface — it renders into the terminal
+			// title. Strip here rather than in wake.SetAgents, which joins
+			// verbatim by contract, so the local and remote badge paths (both
+			// of which come through this one filter) cannot disagree.
+			aliases = append(aliases, device.Strip(deviceName, ag.Alias))
 		}
 	}
 	sort.Strings(aliases)
@@ -789,18 +818,29 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 		d.notifyForThread(id, from)
 		return ok(map[string]any{"thread_id": id})
 	case "task_claim":
-		if err := d.s.ClaimTask(i64(a, "thread_id"), str(a, "by")); err != nil {
+		// `by` is an actor alias and lands verbatim in entries.from_agent —
+		// expanded and existence-checked BEFORE the write, never after (see
+		// requireKnownAlias).
+		by, err := d.requireKnownAlias("by", str(a, "by"))
+		if err != nil {
 			return fail(err)
 		}
-		d.logEvent(store.Event{Kind: "claim", Agent: str(a, "by"), ThreadID: i64(a, "thread_id")})
-		d.notifyForThread(i64(a, "thread_id"), str(a, "by"))
+		if err := d.s.ClaimTask(i64(a, "thread_id"), by); err != nil {
+			return fail(err)
+		}
+		d.logEvent(store.Event{Kind: "claim", Agent: by, ThreadID: i64(a, "thread_id")})
+		d.notifyForThread(i64(a, "thread_id"), by)
 		return ok(nil)
 	case "task_transition":
-		if err := d.s.TransitionTask(i64(a, "thread_id"), str(a, "by"), str(a, "status"), str(a, "note")); err != nil {
+		by, err := d.requireKnownAlias("by", str(a, "by"))
+		if err != nil {
 			return fail(err)
 		}
-		d.logEvent(store.Event{Kind: "transition", Agent: str(a, "by"), ThreadID: i64(a, "thread_id"), Detail: str(a, "status")})
-		d.notifyForThread(i64(a, "thread_id"), str(a, "by"))
+		if err := d.s.TransitionTask(i64(a, "thread_id"), by, str(a, "status"), str(a, "note")); err != nil {
+			return fail(err)
+		}
+		d.logEvent(store.Event{Kind: "transition", Agent: by, ThreadID: i64(a, "thread_id"), Detail: str(a, "status")})
+		d.notifyForThread(i64(a, "thread_id"), by)
 		return ok(nil)
 	case "reply":
 		id, err := d.s.AppendEntry(i64(a, "thread_id"), str(a, "from"), str(a, "body"), "")
@@ -818,7 +858,13 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 		}
 		return ok(map[string]any{"entry_id": id})
 	case "get_inbox":
-		alias := str(a, "alias")
+		// Same treatment as task_claim's `by`: expand a short local alias, and
+		// refuse an alias that names no roster row rather than answering "no
+		// mail" for an agent that does not exist. A DEPARTED row still drains.
+		alias, err := d.requireKnownAlias("alias", str(a, "alias"))
+		if err != nil {
+			return fail(err)
+		}
 		threads, err := d.s.Inbox(alias)
 		if err != nil {
 			return fail(err)

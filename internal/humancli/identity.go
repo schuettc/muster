@@ -64,12 +64,14 @@ func cmdRegister(args []string, out io.Writer) error {
 	alias := ""
 	switch {
 	case len(rest) > 0:
-		alias = rest[0]
+		// Typed names seed exactly like derived ones. With the prefix hidden
+		// locally, an operator cannot see which of their names is device-scoped,
+		// so an exception here would be invisible at the moment it mattered.
+		alias = seedAlias(rest[0])
 	case os.Getenv("MUSTER_ALIAS") != "":
-		alias = os.Getenv("MUSTER_ALIAS")
+		alias = seedAlias(os.Getenv("MUSTER_ALIAS"))
 	case c.SessionName != "":
-		// Derived, so seeded with the device name when one is configured —
-		// two machines can easily share a tmux session name.
+		// Derived: two machines can easily share a tmux session name.
 		alias = seedAlias(c.SessionName)
 	default:
 		// Paneless cwd fallback: every session in a directory derives the
@@ -106,7 +108,7 @@ func cmdRegister(args []string, out io.Writer) error {
 			if ag, ok := firstUnsuperseded(owned); ok {
 				alias = ag.Alias
 				ack := reviveRow(ag, *model)
-				if _, err := fmt.Fprintf(out, "registered %s (existing identity, project %q, model %s)\n", alias, ag.Project, *model); err != nil {
+				if _, err := fmt.Fprintf(out, "registered %s (existing identity, project %q, model %s)\n", dispAlias(alias), ag.Project, *model); err != nil {
 					return err
 				}
 				if s := ack.line(alias); s != "" {
@@ -115,11 +117,16 @@ func cmdRegister(args []string, out io.Writer) error {
 				return nil
 			}
 		}
+		// The paneless base is a raw cwd basename (e.g. "dotfiles"), identical
+		// on any two machines with the same directory checked out — seed it
+		// before allocating suffixed candidates so the whole family
+		// (base, base-2, ...) carries the device prefix, exactly like every
+		// other mint site.
 		var err error
-		if alias, err = allocPanelessAlias(h.Alias(), h.SessionID, regFn); err != nil {
+		if alias, err = allocPanelessAlias(seedAlias(h.Alias()), h.SessionID, regFn); err != nil {
 			return err
 		}
-		_, err = fmt.Fprintf(out, "registered %s (paneless, project %q, model %s)\n", alias, h.Project(), *model)
+		_, err = fmt.Fprintf(out, "registered %s (paneless, project %q, model %s)\n", dispAlias(alias), h.Project(), *model)
 		return err
 	}
 	if alias == "" {
@@ -160,7 +167,7 @@ func cmdRegister(args []string, out io.Writer) error {
 	if paneless {
 		shape = "paneless, "
 	}
-	if _, err := fmt.Fprintf(out, "registered %s (%sproject %q, model %s)\n", alias, shape, project, *model); err != nil {
+	if _, err := fmt.Fprintf(out, "registered %s (%sproject %q, model %s)\n", dispAlias(alias), shape, project, *model); err != nil {
 		return err
 	}
 	if s := decodeRegisterAck(raw).line(alias); s != "" {
@@ -174,6 +181,15 @@ func cmdRegister(args []string, out io.Writer) error {
 // cmdDeregister removes an agent's registration. Alias precedence mirrors
 // register: explicit arg → $MUSTER_ALIAS → tmux session name → working
 // directory basename (paneless fallback).
+//
+// The explicit arg is a name an operator TYPED, possibly short — it goes
+// through expandAlias, local-first, exactly like resolveVia. The other three
+// branches instead RECONSTRUCT the exact alias cmdRegister would have minted
+// for this same session (they mirror register's own precedence, seeding
+// each derived value just as register does — see seedAlias and hookAlias,
+// which apply the identical rule for the hook-driven SessionEnd path). That
+// is seeding, not lookup: the goal is not "find something matching this
+// short name" but "reproduce the one alias this session is known to own".
 func cmdDeregister(args []string, out io.Writer) error {
 	if helpRequested(args) {
 		return HelpFor("deregister", out)
@@ -181,11 +197,11 @@ func cmdDeregister(args []string, out io.Writer) error {
 	alias := ""
 	switch {
 	case len(args) > 0:
-		alias = args[0]
+		alias = expandAlias(args[0], rosterAliasExists())
 	case os.Getenv("MUSTER_ALIAS") != "":
-		alias = os.Getenv("MUSTER_ALIAS")
+		alias = seedAlias(os.Getenv("MUSTER_ALIAS"))
 	default:
-		alias = tmuxenv.CaptureEnv().SessionName
+		alias = seedAlias(tmuxenv.CaptureEnv().SessionName)
 		if alias == "" {
 			// No tmux: this session's alias may be handshake- or
 			// suffix-allocated, so resolve through the roster by harness
@@ -194,17 +210,34 @@ func cmdDeregister(args []string, out io.Writer) error {
 			if owned := harnessOwnedRows(h.SessionID); len(owned) > 0 {
 				alias = owned[0].Alias
 			} else {
-				alias = h.Alias()
+				alias = seedAlias(h.Alias())
 			}
 		}
 	}
+	return deregisterAlias(alias, out)
+}
+
+// deregisterAlias tombstones a stored alias exactly as given — no expansion.
+// This is the entry point for callers that already hold a fully-resolved
+// stored alias (a `list_agents` row's own Alias field, as the SessionEnd hook
+// sweeps do in hook.go) rather than an operator-typed name that might be
+// short. Routing such a caller through cmdDeregister's explicit-arg branch
+// instead would run it through expandAlias, which is local-first: a bare row
+// belonging to the session actually ending can share its short name with an
+// unrelated LIVE seeded row on a different tuple, and expansion would silently
+// retarget the tombstone onto that other, live agent instead of the row the
+// caller actually meant — precisely the leftover-identity leak
+// hookSessionEnd's own doc comment (the lake-broker incident) exists to
+// prevent, reintroduced through a different mechanism. Machine callers pass
+// stored aliases and must never have them rewritten.
+func deregisterAlias(alias string, out io.Writer) error {
 	if alias == "" {
 		return fmt.Errorf("cannot determine alias to deregister")
 	}
 	if _, err := callData("deregister_agent", map[string]any{"alias": alias}); err != nil {
 		return err
 	}
-	_, err := fmt.Fprintf(out, "deregistered %s\n", alias)
+	_, err := fmt.Fprintf(out, "deregistered %s\n", dispAlias(alias))
 	return err
 }
 
@@ -291,7 +324,7 @@ func cmdGC(args []string, out io.Writer) error {
 			if _, err := callData("purge_agent", map[string]any{"alias": a.Alias}); err != nil {
 				return err
 			}
-			if _, err := fmt.Fprintf(out, "purged %s\n", a.Alias); err != nil {
+			if _, err := fmt.Fprintf(out, "purged %s\n", dispAlias(a.Alias)); err != nil {
 				return err
 			}
 			purged++
@@ -318,7 +351,7 @@ func cmdGC(args []string, out io.Writer) error {
 			if a.SessionCreated == 0 {
 				reason = "legacy row: no session_created, unprovable incarnation"
 			}
-			if _, err := fmt.Fprintf(out, "tombstoned %s (%s)\n", a.Alias, reason); err != nil {
+			if _, err := fmt.Fprintf(out, "tombstoned %s (%s)\n", dispAlias(a.Alias), reason); err != nil {
 				return err
 			}
 			tombstoned++

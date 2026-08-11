@@ -30,6 +30,7 @@ func (a registerAck) line(alias string) string {
 	if a.Outcome != "revived" && a.Unread == 0 {
 		return ""
 	}
+	alias = dispAlias(alias)
 	msg := fmt.Sprintf("reconnected: identity '%s' %s", alias, a.Outcome)
 	if a.Unread > 0 {
 		msg += fmt.Sprintf(" — %d unread thread(s); run `muster inbox '%s'`", a.Unread, alias)

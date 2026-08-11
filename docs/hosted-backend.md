@@ -250,43 +250,50 @@ That URL is what goes in `MUSTER_REMOTE_URL` on every device.
 
 Do this on each machine that should join the bus.
 
-### Name the machine first
+### Name the machine (recommended, not required)
 
 ```sh
 muster device work-laptop
 ```
 
-Do this before registering anything, because it changes two things and neither
-is retroactive.
+You no longer have to run this before registering anything. The first time a
+machine registers *any* agent, muster adopts a device name automatically from
+its hostname reduced to lowercase letters, digits and dashes — `courts-
+macbook-pro-2` — and pins it to `<MUSTER_HOME>/device-name` so it survives
+reboots and later hostname changes. That adopted name already does the job
+that matters most: **every alias this machine mints — derived, typed, or
+allocated — is seeded with it**, so two machines with the same repos checked
+out (identical tmux session names, identical directory basenames) can never
+silently take over each other's roster row, inbox and read-state included.
+Registering is an upsert and the roster row *is* the identity, so without
+seeding, the second machine to register would take the first one's row —
+and since session hooks re-register on every start, the two machines would
+trade it back and forth with mail following whoever went last, silently.
 
-It puts a human-meaningful name on every agent this machine registers, which is
-what lets you say *"message the ci-cd session on my work laptop"* and have an
-agent resolve it — the roster's `device_name` is the field it matches, and a
-UUID could never serve. Without a name set, the machine falls back to its
-hostname reduced to lowercase and dashes; `courts-macbook-pro-2` is matchable
-but not what anyone says out loud.
-
-It also **seeds derived aliases**. An alias you do not choose comes from the
-tmux session name or the working directory, and both are identical on two
-machines with the same repos checked out. Registering is an upsert and the
-roster row *is* the identity, so without seeding the second machine to register
-takes the first one's alias, inbox and read-state — and since session hooks
-re-register on every start, the two machines trade it back and forth with mail
-following whoever went last, silently. With a device name set, that machine's
-derived aliases become `work-laptop-<name>` and cannot collide. Aliases you
-type explicitly are never rewritten.
+Running `muster device work-laptop` yourself doesn't add that protection —
+you already have it — it swaps the auto-adopted hostname for something a
+human would actually say: *"message the ci-cd session on my work laptop"*
+resolves because the roster's `device_name` column matches it, and a
+sanitized hostname could never serve that purpose as well. The prefix itself
+you mostly won't see: it's stripped from every alias on the machine that
+minted it (`muster agents` on work-laptop just shows `dotfiles/main`) and
+shown in full everywhere else (`work-laptop-dotfiles/main` on your other
+machine) — see the "Aliases are device-relative on screen" note in the
+[README](../README.md#addressing) for the full display split, including why
+an *agent* still reports itself by the full form even on its own machine.
 
 The name lives in `<MUSTER_HOME>/device-name`, not an environment variable, so
 it survives reboots without touching a shell profile and every process agrees
 on it however it was launched. `$MUSTER_DEVICE_NAME` overrides it for one
 shell.
 
-**Naming a machine after it has already registered is safe, but it is not
-retroactive and re-registering will not fix it.** A seeded alias is a
-*different* alias, so re-registering creates a second identity and leaves your
-inbox and read-state on the first. Nothing is lost, and mail to the old alias
-still arrives — you just end up with two names for one session. To carry the
-identity across properly, use the command built for exactly this:
+**Renaming a machine — auto-adopted or explicit — is not retroactive, and
+plain re-registration will not fix it.** A seeded alias is a *different*
+alias, so re-registering under the new name creates a second identity and
+leaves your inbox and read-state on the first. Nothing is lost, and mail to
+the old alias still arrives — you just end up with two names for one
+session. To carry the identity across properly, use the command built for
+exactly this:
 
 ```sh
 muster become work-laptop-ci-cd
@@ -294,6 +301,37 @@ muster become work-laptop-ci-cd
 
 That tombstones the old row, marks it superseded, and moves the identity and
 its mail to the new alias.
+
+Three more things worth knowing if you're renaming or upgrading an existing
+install rather than starting fresh:
+
+- **A running daemon doesn't pick up a rename until it restarts.** `muster
+  device <name>` takes effect immediately for anything a CLI command mints
+  (`register`, `become`, …), since each invocation reads the name file fresh.
+  But the daemon reads its device name once at startup and holds it for the
+  life of the process, so until you restart it, it keeps *expanding* a
+  short, operator-typed name (for `send`, `nudge`, an MCP tool's `to_target`)
+  against the *old* name even while new registrations are already seeded
+  under the new one.
+- **A bare `muster deregister` (no argument) can no longer find a row that
+  predates this feature.** With no argument it reconstructs the alias
+  `register` would mint for the current session — which is now always the
+  seeded form — so it won't match an old, unprefixed row.
+- **An old unprefixed row is visible but no longer addressable once the same
+  session has re-registered under its seeded name.** You will see both in
+  `muster agents` and in station, each shown in full so they don't read as
+  one agent. But the old row's *only* address is its bare name, and a bare
+  name on this machine now means the seeded one — so `muster inbox dotfiles`,
+  `nudge`, `send`, `deregister`, a claim or an inbox read from an MCP tool,
+  and even `muster become --from dotfiles` all reach the new row instead.
+  (`become` is the one to watch: it retires the *new* row and its
+  confirmation, printed short, reads as though it retired the old one.) What
+  still works is anything that isn't an alias lookup: the row renders, `muster
+  thread <id>` reads its threads by ID, and mail already addressed to it still
+  lights its badge. Nothing carries the old row's leftover mail forward —
+  read what you need by thread ID, then let `muster gc --purge-agents` reap
+  the row once it's departed. There is deliberately no flag to address it
+  directly: that would be a permanent escape hatch for a migration artifact.
 
 ### Getting the URL and token onto the other machine
 
