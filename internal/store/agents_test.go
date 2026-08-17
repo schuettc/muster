@@ -25,7 +25,7 @@ func TestMarkReadRecordsEntryWatermark(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.MarkRead("a"); err != nil {
+	if err := s.MarkRead("a", 1); err != nil {
 		t.Fatal(err)
 	}
 	if n, err := s.UnreadCount("a"); err != nil || n != 0 {
@@ -262,7 +262,7 @@ func TestBecomeClonesIdentityAndRetiresSeed(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.MarkRead("muster-2"); err != nil { // establish a nonzero watermark
+	if err := s.MarkRead("muster-2", 0); err != nil {
 		t.Fatal(err)
 	}
 	seed, _, _ := s.GetAgent("muster-2")

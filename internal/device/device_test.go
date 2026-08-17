@@ -55,6 +55,24 @@ func TestIDHonorsEnvOverride(t *testing.T) {
 	}
 }
 
+func TestIDRepairsHomeDirectoryMode(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("MUSTER_HOME", dir)
+	if err := os.Chmod(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := device.ID(); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o700 {
+		t.Fatalf("MUSTER_HOME mode = %#o, want 0700", got)
+	}
+}
+
 // TestIDFailsRatherThanRotatingOnAReadError pins the ENOENT narrowing.
 //
 // The device id is the wake-routing key. Every agent registered from this

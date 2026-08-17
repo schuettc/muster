@@ -637,9 +637,7 @@ func TestMarkReadIgnoresEntriesOutsideTheAliasesPartitions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}
-	if err := s.MarkRead("r"); err != nil {
-		t.Fatalf("MarkRead (drain the opener): %v", err)
-	}
+	markReadInbox(t, s, "r")
 
 	// A reply to r is allocated an id and then stalls before committing.
 	lowID, err := s.nextID(ctx, "entry")
@@ -655,9 +653,7 @@ func TestMarkReadIgnoresEntriesOutsideTheAliasesPartitions(t *testing.T) {
 	}
 	// r reads its inbox in the gap. The global entry log now holds an id above
 	// lowID; r's own partitions do not, so r's watermark must not move.
-	if err := s.MarkRead("r"); err != nil {
-		t.Fatalf("MarkRead (in the gap): %v", err)
-	}
+	markReadInbox(t, s, "r")
 
 	// The stalled reply finally commits, under the watermark MarkRead wrote.
 	now := clock.NowMillis()
@@ -693,9 +689,7 @@ func TestMarkReadStillOvershootsWithinOnePartition(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}
-	if err := s.MarkRead("r"); err != nil {
-		t.Fatalf("MarkRead (drain the opener): %v", err)
-	}
+	markReadInbox(t, s, "r")
 
 	lowID, err := s.nextID(ctx, "entry")
 	if err != nil {
@@ -708,9 +702,7 @@ func TestMarkReadStillOvershootsWithinOnePartition(t *testing.T) {
 	}, "overtakes the stalled one"); err != nil {
 		t.Fatalf("CreateThread (overtaker): %v", err)
 	}
-	if err := s.MarkRead("r"); err != nil {
-		t.Fatalf("MarkRead (in the gap): %v", err)
-	}
+	markReadInbox(t, s, "r")
 
 	now := clock.NowMillis()
 	late := entryItem(mine, lowID, "peer", "the late reply", "", now, rcpt("agent", "r"))

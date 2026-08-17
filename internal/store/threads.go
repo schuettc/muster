@@ -237,7 +237,7 @@ unread AS (
 SELECT recent.id, recent.kind, recent.from_agent, recent.to_kind, recent.to_target,
        recent.subject, recent.ref, recent.status, recent.eff_intent,
        recent.created_at, recent.updated_at, recent.origin_project,
-       le.from_agent, le.created_at, last.n, COALESCE(unread.n, 0)
+       last.max_id, le.from_agent, le.created_at, last.n, COALESCE(unread.n, 0)
 FROM recent`+threadLastEntryJoin+`
 LEFT JOIN unread ON unread.thread_id = recent.id
 ORDER BY recent.updated_at DESC`, alias, alias, alias, alias, alias, alias)
@@ -252,7 +252,7 @@ ORDER BY recent.updated_at DESC`, alias, alias, alias, alias, alias, alias)
 		if err := rows.Scan(&t.ID, &t.Kind, &t.FromAgent, &t.ToKind, &t.ToTarget,
 			&t.Subject, &t.Ref, &status, &t.Intent,
 			&t.CreatedAt, &t.UpdatedAt, &t.OriginProject,
-			&t.LastFrom, &t.LastAt, &t.EntryCount, &t.Unread); err != nil {
+			&t.LastEntryID, &t.LastFrom, &t.LastAt, &t.EntryCount, &t.Unread); err != nil {
 			return nil, err
 		}
 		if status.Valid {
@@ -297,7 +297,7 @@ WITH recent AS (
 SELECT recent.id, recent.kind, recent.from_agent, recent.to_kind, recent.to_target,
        recent.subject, recent.ref, recent.status, recent.eff_intent,
        recent.created_at, recent.updated_at, recent.origin_project,
-       le.from_agent, le.created_at, last.n
+       last.max_id, le.from_agent, le.created_at, last.n
 FROM recent`+threadLastEntryJoin+`
 ORDER BY recent.updated_at DESC, recent.id DESC`, limit)
 	if err != nil {
@@ -311,7 +311,7 @@ ORDER BY recent.updated_at DESC, recent.id DESC`, limit)
 		if err := rows.Scan(&t.ID, &t.Kind, &t.FromAgent, &t.ToKind, &t.ToTarget,
 			&t.Subject, &t.Ref, &status, &t.Intent,
 			&t.CreatedAt, &t.UpdatedAt, &t.OriginProject,
-			&t.LastFrom, &t.LastAt, &t.EntryCount); err != nil {
+			&t.LastEntryID, &t.LastFrom, &t.LastAt, &t.EntryCount); err != nil {
 			return nil, err
 		}
 		if status.Valid {

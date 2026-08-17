@@ -58,6 +58,10 @@ func ServeRemote(socketPath string, up Upstream, n wake.Notifier, deviceID, devi
 	if err != nil {
 		return nil, err
 	}
+	if err := os.Chmod(socketPath, 0o600); err != nil {
+		_ = ln.Close()
+		return nil, err
+	}
 	// s is nil: remote mode has no local store, and serve() always checks
 	// d.up first and forwards, so dispatch (and resolveAgentTarget's use of
 	// deviceName for expansion) is never reached from this mode — d.s and

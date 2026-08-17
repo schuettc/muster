@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -136,10 +137,19 @@ func pollInterval() time.Duration {
 // every client above the daemon is identical either way. Local mode touches no
 // remote code at all, and neither mode links the AWS SDK.
 func runServe() int {
-	if err := os.MkdirAll(paths.Home(), 0o755); err != nil {
+	if err := paths.EnsureHome(); err != nil {
 		fmt.Fprintln(os.Stderr, "muster: mkdir:", err)
 		return 1
 	}
+	serveLock, acquired, err := acquireServeLock()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "muster: serve lock:", err)
+		return 1
+	}
+	if !acquired {
+		return 0
+	}
+	defer func() { _ = serveLock.Close() }()
 	notifier := wake.NewTmuxNotifier("@muster_inbox", 500*time.Millisecond)
 
 	var d *daemon.Daemon
@@ -177,6 +187,25 @@ func runServe() int {
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	<-sig
 	return 0
+}
+
+// acquireServeLock serializes daemon ownership of the local socket. A client
+// may auto-spawn serve concurrently with another first client; only the owner
+// may clear a stale socket and bind a new listener.
+func acquireServeLock() (*os.File, bool, error) {
+	f, err := os.OpenFile(filepath.Join(paths.Home(), "serve.lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, false, err
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		if errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN) {
+			_ = f.Close()
+			return nil, false, nil
+		}
+		_ = f.Close()
+		return nil, false, err
+	}
+	return f, true, nil
 }
 
 // serveRemote builds the remote-mode daemon: it keeps the unix socket and the

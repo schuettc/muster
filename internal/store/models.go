@@ -114,14 +114,15 @@ type Thread struct {
 	// the roster-only project mapping that made ghost-site's threads vanish
 	// (spec iteration-4 queue item 4) has this as its durable fallback.
 	OriginProject string `json:"origin_project"`
-	// LastFrom, LastAt, and EntryCount are query-time only, populated by
+	// LastEntryID, LastFrom, LastAt, and EntryCount are query-time only, populated by
 	// Threads() and Inbox() from the thread's last entry (by MAX(id), never
 	// MAX(created_at) — same-millisecond entries must not tie-break on
 	// timestamp) and its total entry count. GetThread/CreateThread leave
 	// them zero.
-	LastFrom   string `json:"last_from"`
-	LastAt     int64  `json:"last_at"`
-	EntryCount int    `json:"entry_count"`
+	LastEntryID int64  `json:"last_entry_id"`
+	LastFrom    string `json:"last_from"`
+	LastAt      int64  `json:"last_at"`
+	EntryCount  int    `json:"entry_count"`
 	// Unread is query-time only, populated by Inbox(alias): the count of
 	// this thread's entries after alias's last_read_entry_id watermark that
 	// were NOT written by alias (the same predicate as UnreadCount, scoped

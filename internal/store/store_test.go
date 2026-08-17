@@ -1,6 +1,7 @@
 package store
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -27,6 +28,27 @@ func TestOpenCreatesSchema(t *testing.T) {
 	}
 	if n != 4 {
 		t.Fatalf("expected 4 tables, got %d", n)
+	}
+}
+
+func TestOpenSecuresDatabaseFiles(t *testing.T) {
+	db := filepath.Join(t.TempDir(), "bus.db")
+	s, err := Open(db)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	for _, path := range []string{db, db + "-wal", db + "-shm"} {
+		info, err := os.Stat(path)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			t.Fatalf("Stat(%s): %v", path, err)
+		}
+		if got := info.Mode().Perm(); got != 0o600 {
+			t.Errorf("%s mode = %#o, want 0600", path, got)
+		}
 	}
 }
 

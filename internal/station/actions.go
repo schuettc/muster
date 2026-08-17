@@ -6,7 +6,9 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/schuettc/muster/internal/nudgeguard"
 	"github.com/schuettc/muster/internal/render"
+	"github.com/schuettc/muster/internal/store"
 )
 
 // This file holds the operator-action Cmds (spec §5): the composer's
@@ -42,18 +44,17 @@ func nudgeCmd(caller render.Caller, n nudger, alias string) tea.Cmd {
 			return nudgeResultMsg{alias: alias, err: err}
 		}
 		var res struct {
-			Found bool `json:"found"`
-			Agent struct {
-				SocketPath string `json:"socket_path"`
-				PaneID     string `json:"pane_id"`
-				ModelType  string `json:"model_type"`
-			} `json:"agent"`
+			Found bool        `json:"found"`
+			Agent store.Agent `json:"agent"`
 		}
 		if err := json.Unmarshal(raw, &res); err != nil {
 			return nudgeResultMsg{alias: alias, err: err}
 		}
 		if !res.Found {
 			return nudgeResultMsg{alias: alias, err: fmt.Errorf("no agent registered as %q", alias)}
+		}
+		if err := nudgeguard.Check(res.Agent, res.Agent.Alias); err != nil {
+			return nudgeResultMsg{alias: alias, err: err}
 		}
 		submitted, err := n.Nudge(res.Agent.SocketPath, res.Agent.PaneID, res.Agent.ModelType, true)
 		if err != nil {

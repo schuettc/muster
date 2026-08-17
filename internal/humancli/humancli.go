@@ -15,8 +15,10 @@ import (
 	"github.com/schuettc/muster/internal/client"
 	"github.com/schuettc/muster/internal/device"
 	"github.com/schuettc/muster/internal/nudge"
+	"github.com/schuettc/muster/internal/nudgeguard"
 	"github.com/schuettc/muster/internal/paths"
 	"github.com/schuettc/muster/internal/proto"
+	"github.com/schuettc/muster/internal/store"
 	"github.com/schuettc/muster/internal/tmuxenv"
 	"github.com/schuettc/muster/internal/version"
 )
@@ -37,7 +39,9 @@ type agentFull struct {
 	// still alive, pane reaped underneath it) from a fully dead one, so it
 	// can refuse the dead-pane case with a remedy instead of a doomed
 	// send-keys.
-	SessionCreated int64 `json:"session_created"`
+	SessionCreated int64  `json:"session_created"`
+	DeviceID       string `json:"device_id"`
+	DeviceName     string `json:"device_name"`
 	// HarnessSessionID mirrors agentRow's own copy (see store.Agent.HarnessSessionID)
 	// — stampHarnessLinks reads it via hookGetAgent to skip a row that already
 	// has a link.
@@ -619,16 +623,11 @@ func cmdNudge(args []string, out io.Writer) error {
 		return fmt.Errorf("no agent registered as %q", alias)
 	}
 	ag := res.Agent
-	// A stored pane can go stale between registration and nudge — most
-	// commonly a reaped teammate's pane, closed out from under a row that
-	// still names it. Refuse rather than guess: with teammate panes sharing
-	// the session, typing into whatever pane happens to be there next is
-	// worse than failing loudly (spec §3, no auto-retargeting). The row
-	// heals itself the next time that session starts/resumes and
-	// re-registers, or the operator can re-register from the live pane now.
-	if ag.SocketPath != "" && !tmuxenv.IsPaneAlive(ag.SocketPath, ag.PaneID) &&
-		tmuxenv.IsSessionAlive(ag.SocketPath, ag.SessionID, ag.SessionCreated) {
-		return fmt.Errorf("nudge %s: stored pane %s is gone but its session is alive — the row heals at the session's next start/resume (or re-register from the live pane); refusing to type into a guessed pane", dispAlias(ag.Alias), ag.PaneID)
+	if err := nudgeguard.Check(store.Agent{
+		Alias: ag.Alias, DeviceID: ag.DeviceID, DeviceName: ag.DeviceName,
+		SocketPath: ag.SocketPath, SessionID: ag.SessionID, SessionCreated: ag.SessionCreated, PaneID: ag.PaneID,
+	}, dispAlias(ag.Alias)); err != nil {
+		return err
 	}
 	// session_name is mutable — tmux lets an operator rename a session at any
 	// time — so the stored (registration-time) snapshot goes stale the

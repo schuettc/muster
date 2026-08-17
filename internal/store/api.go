@@ -104,7 +104,10 @@ type API interface {
 	GetThread(id int64) (Thread, []Entry, error)
 	Threads(limit int) ([]Thread, error)
 	Inbox(alias string) ([]Thread, error)
-	MarkRead(alias string) error
+	// MarkRead records that alias has read an Inbox snapshot through
+	// upToEntryID. Callers must derive the bound from that snapshot, never
+	// from a later query, so an entry committed in between remains unread.
+	MarkRead(alias string, upToEntryID int64) error
 	UnreadCount(alias string) (int, error)
 	SessionUnread(deviceID, socketPath, sessionID string, sessionCreated int64) (total, action int, err error)
 	SessionAliasLineage(deviceID, socketPath, sessionID string, sessionCreated int64) ([]string, error)

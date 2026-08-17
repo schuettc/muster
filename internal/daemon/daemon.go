@@ -119,6 +119,10 @@ func Serve(socketPath string, s store.API, n wake.Notifier, deviceName string) (
 	if err != nil {
 		return nil, err
 	}
+	if err := os.Chmod(socketPath, 0o600); err != nil {
+		_ = ln.Close()
+		return nil, err
+	}
 	d := New(s, n, deviceName)
 	d.ln = ln
 	go d.acceptLoop()
@@ -872,7 +876,7 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 		// A read that didn't persist must not report success (spec §3): if
 		// MarkRead fails, the op fails outright — no read event, badge
 		// untouched.
-		if err := d.s.MarkRead(alias); err != nil {
+		if err := d.s.MarkRead(alias, inboxLastEntryID(threads)); err != nil {
 			return fail(err)
 		}
 		detail := ""
@@ -1130,6 +1134,19 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 	default:
 		return proto.Response{Error: "unknown op: " + req.Op}
 	}
+}
+
+// inboxLastEntryID returns the highest entry ID actually carried by an Inbox
+// snapshot. MarkRead must receive this value rather than querying the store
+// again, otherwise mail committed between Inbox and MarkRead is lost.
+func inboxLastEntryID(threads []store.Thread) int64 {
+	var maxID int64
+	for _, thread := range threads {
+		if thread.LastEntryID > maxID {
+			maxID = thread.LastEntryID
+		}
+	}
+	return maxID
 }
 
 // paginateEntries slices entries (already ordered oldest-first by

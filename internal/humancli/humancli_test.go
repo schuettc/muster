@@ -447,13 +447,16 @@ func TestNudgeCommandRejectsUnknownAlias(t *testing.T) {
 func TestNudgeCommandResolvesAndNudges(t *testing.T) {
 	startTestDaemon(t)
 	// register an agent with a pane via the daemon op directly
-	if _, err := callData("register_agent", map[string]any{"alias": "rev", "role": "reviewer", "model_type": "codex", "socket_path": "/s", "pane_id": "%2", "session_id": "$1"}); err != nil {
+	if _, err := callData("register_agent", map[string]any{"alias": "rev", "role": "reviewer", "model_type": "codex", "socket_path": "/s", "pane_id": "%2", "session_id": "$1", "session_created": 100}); err != nil {
 		t.Fatal(err)
 	}
 	var recorded [][]string
 	origNudge := nudgeRun
 	nudgeRun = func(args ...string) error { recorded = append(recorded, args); return nil }
 	t.Cleanup(func() { nudgeRun = origNudge })
+	origRun := tmuxenv.Run
+	tmuxenv.Run = hookRun(map[string]string{"#{session_created}": "100", "#{pane_id}": "%2"})
+	t.Cleanup(func() { tmuxenv.Run = origRun })
 
 	var buf bytes.Buffer
 	if err := Dispatch([]string{"nudge", "rev"}, &buf); err != nil {
@@ -514,7 +517,7 @@ func TestNudgePrintsLiveSessionName(t *testing.T) {
 	startTestDaemon(t)
 	if _, err := callData("register_agent", map[string]any{
 		"alias": "rev", "role": "reviewer", "model_type": "codex",
-		"socket_path": "/s", "pane_id": "%2", "session_id": "$1",
+		"socket_path": "/s", "pane_id": "%2", "session_id": "$1", "session_created": 100,
 		"session_name": "stale-name",
 	}); err != nil {
 		t.Fatal(err)
@@ -525,7 +528,7 @@ func TestNudgePrintsLiveSessionName(t *testing.T) {
 	t.Cleanup(func() { nudgeRun = origNudge })
 
 	origRun := tmuxenv.Run
-	tmuxenv.Run = hookRun(map[string]string{"#{session_name}": "renamed-live"})
+	tmuxenv.Run = hookRun(map[string]string{"#{session_created}": "100", "#{pane_id}": "%2", "#{session_name}": "renamed-live"})
 	t.Cleanup(func() { tmuxenv.Run = origRun })
 
 	var buf bytes.Buffer
@@ -547,7 +550,7 @@ func TestNudgeFallsBackToStoredSessionNameWhenLiveQueryFails(t *testing.T) {
 	startTestDaemon(t)
 	if _, err := callData("register_agent", map[string]any{
 		"alias": "rev", "role": "reviewer", "model_type": "codex",
-		"socket_path": "/s", "pane_id": "%2", "session_id": "$1",
+		"socket_path": "/s", "pane_id": "%2", "session_id": "$1", "session_created": 100,
 		"session_name": "stored-name",
 	}); err != nil {
 		t.Fatal(err)
@@ -558,7 +561,16 @@ func TestNudgeFallsBackToStoredSessionNameWhenLiveQueryFails(t *testing.T) {
 	t.Cleanup(func() { nudgeRun = origNudge })
 
 	origRun := tmuxenv.Run
-	tmuxenv.Run = func(_ ...string) (string, error) { return "", fmt.Errorf("no tmux") }
+	tmuxenv.Run = func(args ...string) (string, error) {
+		switch args[len(args)-1] {
+		case "#{session_created}":
+			return "100", nil
+		case "#{pane_id}":
+			return "%2", nil
+		default:
+			return "", fmt.Errorf("no tmux")
+		}
+	}
 	t.Cleanup(func() { tmuxenv.Run = origRun })
 
 	var buf bytes.Buffer
@@ -574,12 +586,15 @@ func TestNudgeFallsBackToStoredSessionNameWhenLiveQueryFails(t *testing.T) {
 // row exists for the target alias (best-effort log_event call from cmdNudge).
 func TestNudgeSelfReportsJournalRow(t *testing.T) {
 	startTestDaemon(t)
-	if _, err := callData("register_agent", map[string]any{"alias": "rev", "role": "reviewer", "model_type": "codex", "socket_path": "/s", "pane_id": "%2", "session_id": "$1"}); err != nil {
+	if _, err := callData("register_agent", map[string]any{"alias": "rev", "role": "reviewer", "model_type": "codex", "socket_path": "/s", "pane_id": "%2", "session_id": "$1", "session_created": 100}); err != nil {
 		t.Fatal(err)
 	}
 	origNudge := nudgeRun
 	nudgeRun = func(_ ...string) error { return nil }
 	t.Cleanup(func() { nudgeRun = origNudge })
+	origRun := tmuxenv.Run
+	tmuxenv.Run = hookRun(map[string]string{"#{session_created}": "100", "#{pane_id}": "%2"})
+	t.Cleanup(func() { tmuxenv.Run = origRun })
 
 	var buf bytes.Buffer
 	if err := Dispatch([]string{"nudge", "rev"}, &buf); err != nil {
@@ -609,12 +624,15 @@ func TestNudgeSelfReportsJournalRow(t *testing.T) {
 // the journal records detail="typed" (not submitted).
 func TestNudgeSelfReportsTypedWhenNoSubmit(t *testing.T) {
 	startTestDaemon(t)
-	if _, err := callData("register_agent", map[string]any{"alias": "rev", "role": "reviewer", "model_type": "codex", "socket_path": "/s", "pane_id": "%2", "session_id": "$1"}); err != nil {
+	if _, err := callData("register_agent", map[string]any{"alias": "rev", "role": "reviewer", "model_type": "codex", "socket_path": "/s", "pane_id": "%2", "session_id": "$1", "session_created": 100}); err != nil {
 		t.Fatal(err)
 	}
 	origNudge := nudgeRun
 	nudgeRun = func(_ ...string) error { return nil }
 	t.Cleanup(func() { nudgeRun = origNudge })
+	origRun := tmuxenv.Run
+	tmuxenv.Run = hookRun(map[string]string{"#{session_created}": "100", "#{pane_id}": "%2"})
+	t.Cleanup(func() { tmuxenv.Run = origRun })
 
 	var buf bytes.Buffer
 	if err := Dispatch([]string{"nudge", "--no-submit", "rev"}, &buf); err != nil {
@@ -743,7 +761,7 @@ func TestNudgeSessionNameFallbackStripsTheDevicePrefix(t *testing.T) {
 	t.Setenv("MUSTER_DEVICE_NAME", "testdev")
 	if _, err := callData("register_agent", map[string]any{
 		"alias": "testdev-dotfiles/main", "role": "reviewer", "model_type": "codex",
-		"socket_path": "/s", "pane_id": "%2", "session_id": "$1",
+		"socket_path": "/s", "pane_id": "%2", "session_id": "$1", "session_created": 100,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -753,7 +771,16 @@ func TestNudgeSessionNameFallbackStripsTheDevicePrefix(t *testing.T) {
 	t.Cleanup(func() { nudgeRun = origNudge })
 
 	origRun := tmuxenv.Run
-	tmuxenv.Run = func(_ ...string) (string, error) { return "", fmt.Errorf("no tmux") }
+	tmuxenv.Run = func(args ...string) (string, error) {
+		switch args[len(args)-1] {
+		case "#{session_created}":
+			return "100", nil
+		case "#{pane_id}":
+			return "%2", nil
+		default:
+			return "", fmt.Errorf("no tmux")
+		}
+	}
 	t.Cleanup(func() { tmuxenv.Run = origRun })
 
 	var buf bytes.Buffer
