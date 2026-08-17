@@ -47,10 +47,11 @@
 // consistent even if they wanted to be. Where one of them feeds a
 // consistency-sensitive decision, it is used for MEMBERSHIP only and the
 // per-item state is re-read from the base table — SessionUnread is the worked
-// example. MarkRead is the one place that rule is knowingly bent: the
-// watermark it writes comes from an eventually consistent index read, and it
-// can still overshoot an entry that has not landed yet. See the next section
-// for what that costs and what bounds it.
+// example. MarkRead is the one place that rule is knowingly bent: the bound
+// it writes originates in Inbox's eventually consistent index read (the
+// caller hands back the snapshot's highest last_entry_id), and it can still
+// overshoot an entry that has not landed yet. See the next section for what
+// that costs and what bounds it.
 //
 // # The MarkRead watermark can overshoot within one recipient partition
 //
@@ -74,22 +75,27 @@
 // TestMarkReadStillOvershootsWithinOnePartition a deterministic test rather
 // than a race.
 //
-// MarkRead bounds it as tightly as it can without new durable state:
-// readableThrough derives the watermark from the entries the alias could
-// actually have been shown — its own gsi1 partitions, filtered to threads that
-// concern it — rather than from the global entry log. That leaves the race
-// only between writers landing in the SAME recipient partition set. A message
-// between two other agents can no longer bury one in flight to this alias
-// (TestMarkReadIgnoresEntriesOutsideTheAliasesPartitions), which matters
-// because the un-bounded version scaled with total bus traffic — quadratic in
-// concurrent writers — and permitting concurrent writers is what this backend
-// exists for. The remaining window scales with writers to one recipient.
+// MarkRead bounds it as tightly as a watermark can be bound: it performs no
+// read of its own, writing max(current watermark, upToEntryID) where the
+// bound is supplied by the CALLER — the daemon passes the highest
+// last_entry_id its Inbox snapshot actually carried (store.API). The
+// watermark therefore covers only entries that were genuinely SHOWN, by
+// construction: a message between two other agents can never bury one in
+// flight to this alias (TestMarkReadIgnoresEntriesOutsideTheAliasesPartitions
+// pins it), and a message committed after the snapshot stays unread on both
+// backends (the MarkReadStopsAtTheInboxSnapshot conformance case). What
+// remains is the same-recipient window: Inbox itself can display a committed
+// higher id while a lower allocated id is still in flight to the SAME
+// recipient, and acknowledging that snapshot writes a watermark above the
+// in-flight entry. The window scales with writers to one recipient, not with
+// total bus traffic.
 //
-// Reading the same index Inbox reads also closes a second window that used to
-// exist independently: one base write fans out to gsi1 and gsi2 as separate
-// replications, so a MarkRead reading gsi2 could see an entry gsi1 had not
-// shown Inbox yet and mark it read with no second writer involved. One index,
-// no cross-index skew.
+// Deriving the bound from the snapshot also removes, by construction, a
+// cross-index window that used to exist independently: one base write fans
+// out to gsi1 and gsi2 as separate replications, and a MarkRead that read
+// gsi2 could see an entry gsi1 had not shown Inbox yet and mark it read with
+// no second writer involved. MarkRead now reads no index at all — the bound
+// IS what gsi1 showed Inbox.
 //
 // The remaining repairs are all worse or expensive. Reading the counter item
 // is strongly consistent but strictly worse — it marks ids never written at
@@ -97,9 +103,12 @@
 // price. Ordering allocation with the commit needs durable in-flight state
 // plus its own crash-recovery story (an allocation whose writer died must be
 // released, or every reader's watermark wedges behind it). What is accepted
-// today is the same-partition case, and the price of the bound is that
-// get_inbox pays for the concerns/entriesAfter fan-out twice: once in Inbox,
-// once in MarkRead.
+// today is the same-recipient case above, plus one write-side residue: the
+// UpdateItem is unconditional, its max() computed from a base-table read
+// rather than inside a conditional expression, so two concurrent MarkReads
+// for one alias can interleave and keep the LOWER watermark. That residue
+// errs toward re-flagging shown mail as unread — duplicated signal, never
+// lost signal — which is the survivable direction.
 //
 // Allocation-before-commit is a PACKAGE-WIDE fact, not a MarkRead quirk, and
 // three places answer to it. MarkRead bounds it and accepts what is left (this
@@ -110,11 +119,15 @@
 // watermark that will not pass an id it has not seen (see pollWatermark). Any new
 // watermark over these ids owes the same question an answer.
 //
-// The SQLite backend has neither window. store.Open sets SetMaxOpenConns(1),
-// so its MarkRead transaction (SELECT MAX(id) FROM entries, then the UPDATE)
-// holds the only connection there is, and entry ids come from AUTOINCREMENT
-// inside the inserting transaction rather than ahead of it. This is a real
-// divergence between the two backends, not a limitation they share.
+// The SQLite backend has neither window. Both backends now write the same
+// caller-supplied bound, but SQLite's entry ids come from AUTOINCREMENT
+// inside the inserting transaction on the one pinned connection
+// (SetMaxOpenConns(1)), so a committed higher id proves every lower id is
+// also committed — a snapshot bound can never overshoot an in-flight entry
+// there. Its UPDATE also takes MAX(last_read_entry_id, ?) atomically in SQL,
+// so concurrent MarkReads cannot regress the watermark the way the
+// unconditional Dynamo write can. Real divergences between the two backends,
+// not limitations they share.
 //
 // # The recipient denormalization is write-once
 //

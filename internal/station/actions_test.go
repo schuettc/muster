@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/schuettc/muster/internal/tmuxenv"
 )
 
 // nudgeCall records one fakeNudger.Nudge invocation.
@@ -243,12 +245,25 @@ func TestComposerReplyFromFocusedConversation(t *testing.T) {
 // <label>? y/n"; confirming with 'y' invokes the SAME sequence cmdNudge does
 // (get_agent, TmuxNudger.Nudge, then a best-effort log_event self-report).
 func TestNudgeConfirmGateYesInvokesNudgeWithSelfReport(t *testing.T) {
+	t.Setenv("MUSTER_DEVICE_ID", "station-device")
+	origRun := tmuxenv.Run
+	tmuxenv.Run = func(args ...string) (string, error) {
+		switch args[len(args)-1] {
+		case "#{session_created}":
+			return "100", nil
+		case "#{pane_id}":
+			return "%1", nil
+		default:
+			return "", nil
+		}
+	}
+	t.Cleanup(func() { tmuxenv.Run = origRun })
 	var logCalls []map[string]any
 	fn := &fakeNudger{submitted: true}
 	fake := fakeCaller{fn: func(op string, args map[string]any) (json.RawMessage, error) {
 		switch op {
 		case "get_agent":
-			return json.RawMessage(`{"found":true,"agent":{"socket_path":"/s","pane_id":"%1","model_type":"claude"}}`), nil
+			return json.RawMessage(`{"found":true,"agent":{"alias":"backend-1","socket_path":"/s","pane_id":"%1","session_id":"$1","session_created":100,"model_type":"claude","device_id":"station-device"}}`), nil
 		case "log_event":
 			logCalls = append(logCalls, args)
 		}
@@ -294,6 +309,24 @@ func TestNudgeConfirmGateYesInvokesNudgeWithSelfReport(t *testing.T) {
 	}
 	if !strings.Contains(m.status, "backend") {
 		t.Fatalf("status after nudging = %q, want it to mention the label", m.status)
+	}
+}
+
+func TestStationNudgeRefusesForeignDevice(t *testing.T) {
+	t.Setenv("MUSTER_DEVICE_ID", "this-device")
+	fn := &fakeNudger{submitted: true}
+	fake := fakeCaller{fn: func(op string, _ map[string]any) (json.RawMessage, error) {
+		if op == "get_agent" {
+			return json.RawMessage(`{"found":true,"agent":{"alias":"remote","socket_path":"/s","pane_id":"%1","session_id":"$1","session_created":100,"model_type":"claude","device_id":"other-device","device_name":"work-laptop"}}`), nil
+		}
+		return json.RawMessage(`{}`), nil
+	}}
+	msg := nudgeCmd(fake, fn, "remote")().(nudgeResultMsg)
+	if msg.err == nil || !strings.Contains(msg.err.Error(), "registered on work-laptop") {
+		t.Fatalf("foreign-device result = %+v, want registered-on-device refusal", msg)
+	}
+	if len(fn.calls) != 0 {
+		t.Fatalf("foreign-device refusal must not send keys, got %+v", fn.calls)
 	}
 }
 

@@ -500,11 +500,11 @@ type markReadFailingStore struct {
 	failMarkRead bool
 }
 
-func (m *markReadFailingStore) MarkRead(alias string) error {
+func (m *markReadFailingStore) MarkRead(alias string, upToEntryID int64) error {
 	if m.failMarkRead {
 		return fmt.Errorf("injected MarkRead failure")
 	}
-	return m.Store.MarkRead(alias)
+	return m.Store.MarkRead(alias, upToEntryID)
 }
 
 func TestGetInboxFailsWhenMarkReadFails(t *testing.T) {

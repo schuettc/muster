@@ -95,6 +95,7 @@ var cases = []conformanceCase{
 	// Inbox and unread.
 	{"UnreadCountRespectsWatermark", testUnreadWatermark},
 	{"BroadcastCountsAsUnread", testBroadcastUnread},
+	{"MarkReadStopsAtTheInboxSnapshot", testMarkReadStopsAtInboxSnapshot},
 	{"MarkReadUnknownAliasIsNoOp", testMarkReadUnknown},
 	{"StatusCountsPerAliasSideEffectFree", testStatusCounts},
 	{"InboxMatchesAgentRoleBroadcastAndOriginated", testInboxArms},
@@ -263,6 +264,25 @@ func mustAppend(t *testing.T, s store.API, id int64, from, body, statusChange st
 	t.Helper()
 	if _, err := s.AppendEntry(id, from, body, statusChange); err != nil {
 		t.Fatalf("AppendEntry: %v", err)
+	}
+}
+
+// markReadInbox acknowledges exactly the Inbox snapshot it just read. Tests
+// use it whenever they need the ordinary "drain the current inbox" operation.
+func markReadInbox(t *testing.T, s store.API, alias string) {
+	t.Helper()
+	threads, err := s.Inbox(alias)
+	if err != nil {
+		t.Fatalf("Inbox(%q): %v", alias, err)
+	}
+	var upToEntryID int64
+	for _, thread := range threads {
+		if thread.LastEntryID > upToEntryID {
+			upToEntryID = thread.LastEntryID
+		}
+	}
+	if err := s.MarkRead(alias, upToEntryID); err != nil {
+		t.Fatalf("MarkRead(%q): %v", alias, err)
 	}
 }
 
@@ -441,9 +461,7 @@ func testDepartAgentTombstone(t *testing.T, s store.API) {
 	mustThread(t, s, store.Thread{
 		Kind: "message", FromAgent: "x", ToKind: "agent", ToTarget: "muster-2",
 	}, "hi")
-	if err := s.MarkRead("muster-2"); err != nil {
-		t.Fatalf("MarkRead: %v", err)
-	}
+	markReadInbox(t, s, "muster-2")
 	before, ok, err := s.GetAgent("muster-2")
 	if err != nil || !ok {
 		t.Fatalf("GetAgent: ok=%v err=%v", ok, err)
@@ -968,7 +986,7 @@ func testUnreadWatermark(t *testing.T, s store.API) {
 	if n != 1 {
 		t.Fatalf("UnreadCount = %d, want 1", n)
 	}
-	if err := s.MarkRead("a2"); err != nil {
+	if err := s.MarkRead("a2", 1); err != nil {
 		t.Fatalf("MarkRead: %v", err)
 	}
 	if n, err := s.UnreadCount("a2"); err != nil || n != 0 {
@@ -1032,8 +1050,37 @@ func testStatusCounts(t *testing.T, s store.API) {
 	}
 }
 
+// testMarkReadStopsAtInboxSnapshot reproduces the get_inbox interleave: mail
+// committed after the inbox snapshot must remain unread when that snapshot is
+// acknowledged. The daemon will supply the snapshot's final entry ID once
+// MarkRead accepts the bound.
+func testMarkReadStopsAtInboxSnapshot(t *testing.T, s store.API) {
+	mustRegister(t, s, store.Agent{Alias: "receiver"})
+	mustThread(t, s, store.Thread{
+		Kind: "message", FromAgent: "sender", ToKind: "agent", ToTarget: "receiver",
+	}, "shown in the snapshot")
+
+	snapshot, err := s.Inbox("receiver")
+	if err != nil {
+		t.Fatalf("Inbox: %v", err)
+	}
+	if len(snapshot) != 1 || snapshot[0].Unread != 1 {
+		t.Fatalf("Inbox snapshot = %+v, want one unread thread", snapshot)
+	}
+
+	mustThread(t, s, store.Thread{
+		Kind: "message", FromAgent: "sender", ToKind: "agent", ToTarget: "receiver",
+	}, "committed after the snapshot")
+	if err := s.MarkRead("receiver", snapshot[0].LastEntryID); err != nil {
+		t.Fatalf("MarkRead: %v", err)
+	}
+	if n, err := s.UnreadCount("receiver"); err != nil || n != 1 {
+		t.Fatalf("newer entry after snapshot is unread = %d (%v), want 1", n, err)
+	}
+}
+
 func testMarkReadUnknown(t *testing.T, s store.API) {
-	if err := s.MarkRead("nobody"); err != nil {
+	if err := s.MarkRead("nobody", 0); err != nil {
 		t.Fatalf("MarkRead on an unknown alias: %v", err)
 	}
 	agents, err := s.ListAgents()
@@ -1107,9 +1154,7 @@ func testUnreadOriginatorSeesReply(t *testing.T, s store.API) {
 	if n, err := s.UnreadCount("web"); err != nil || n != 1 {
 		t.Fatalf("peer reply on an originated thread = %d unread (%v), want 1", n, err)
 	}
-	if err := s.MarkRead("web"); err != nil {
-		t.Fatalf("MarkRead: %v", err)
-	}
+	markReadInbox(t, s, "web")
 	if n, err := s.UnreadCount("web"); err != nil || n != 0 {
 		t.Fatalf("unread after MarkRead = %d (%v), want 0", n, err)
 	}
@@ -1120,9 +1165,7 @@ func testUnreadIgnoresOwnReply(t *testing.T, s store.API) {
 	id := mustThread(t, s, store.Thread{
 		Kind: "message", FromAgent: "web", ToKind: "agent", ToTarget: "api",
 	}, "req")
-	if err := s.MarkRead("api"); err != nil {
-		t.Fatalf("MarkRead: %v", err)
-	}
+	markReadInbox(t, s, "api")
 	mustAppend(t, s, id, "api", "done", "")
 	if n, err := s.UnreadCount("api"); err != nil || n != 0 {
 		t.Fatalf("own reply re-flagged own inbox: %d unread (%v), want 0", n, err)
@@ -1177,9 +1220,7 @@ func testInboxUnreadDrops(t *testing.T, s store.API) {
 	if len(before) != 1 || before[0].Unread != 1 {
 		t.Fatalf("before MarkRead: %+v, want one thread with unread 1", before)
 	}
-	if err := s.MarkRead("web"); err != nil {
-		t.Fatalf("MarkRead: %v", err)
-	}
+	markReadInbox(t, s, "web")
 	after, err := s.Inbox("web")
 	if err != nil {
 		t.Fatalf("Inbox: %v", err)
@@ -1565,16 +1606,12 @@ func testSessionUnreadPerAliasWatermark(t *testing.T, s store.API) {
 	if total, _, err := s.SessionUnread("", "/s", "$1", liveCreated); err != nil || total != 1 {
 		t.Fatalf("before any read: total=%d (%v), want 1", total, err)
 	}
-	if err := s.MarkRead("a2"); err != nil {
-		t.Fatalf("MarkRead a2: %v", err)
-	}
+	markReadInbox(t, s, "a2")
 	if total, _, err := s.SessionUnread("", "/s", "$1", liveCreated); err != nil || total != 1 {
 		t.Fatalf("after a sibling's MarkRead: total=%d (%v), want 1 — each alias is judged against its OWN watermark",
 			total, err)
 	}
-	if err := s.MarkRead("a1"); err != nil {
-		t.Fatalf("MarkRead a1: %v", err)
-	}
+	markReadInbox(t, s, "a1")
 	if total, _, err := s.SessionUnread("", "/s", "$1", liveCreated); err != nil || total != 0 {
 		t.Fatalf("after the concerned alias's MarkRead: total=%d (%v), want 0", total, err)
 	}
@@ -2572,9 +2609,7 @@ func testBecomeCarriesWatermark(t *testing.T, s store.API) {
 	mustThread(t, s, store.Thread{
 		Kind: "message", FromAgent: "peer", ToKind: "agent", ToTarget: "seed",
 	}, "old news")
-	if err := s.MarkRead("seed"); err != nil {
-		t.Fatalf("MarkRead: %v", err)
-	}
+	markReadInbox(t, s, "seed")
 	seed, _, err := s.GetAgent("seed")
 	if err != nil {
 		t.Fatalf("GetAgent(seed): %v", err)

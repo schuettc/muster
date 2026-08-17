@@ -483,9 +483,7 @@ func TestTaskEntriesLandInTheRecipientPartition(t *testing.T) {
 		t.Fatalf("RegisterAgent: %v", err)
 	}
 	id := newTestTask(t, s)
-	if err := s.MarkRead("watcher"); err != nil {
-		t.Fatalf("MarkRead: %v", err)
-	}
+	markReadInbox(t, s, "watcher")
 	if n, err := s.UnreadCount("watcher"); err != nil || n != 0 {
 		t.Fatalf("UnreadCount after drain = %d, %v; want 0", n, err)
 	}

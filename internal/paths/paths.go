@@ -23,6 +23,15 @@ func Home() string {
 	return filepath.Join(base, HomeSuffix())
 }
 
+// EnsureHome creates the local state directory with owner-only access and
+// repairs an older, more-permissive directory in place.
+func EnsureHome() error {
+	if err := os.MkdirAll(Home(), 0o700); err != nil {
+		return err
+	}
+	return os.Chmod(Home(), 0o700)
+}
+
 // DBPath is the SQLite database path.
 func DBPath() string { return filepath.Join(Home(), "bus.db") }
 

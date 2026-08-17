@@ -111,7 +111,10 @@ type API interface {
 	GetThread(id int64) (Thread, []Entry, error)
 	Threads(limit int) ([]Thread, error)
 	Inbox(alias string) ([]Thread, error)
-	MarkRead(alias string) error
+	// MarkRead records that alias has read an Inbox snapshot through
+	// upToEntryID. Callers must derive the bound from that snapshot, never
+	// from a later query, so an entry committed in between remains unread.
+	MarkRead(alias string, upToEntryID int64) error
 	UnreadCount(alias string) (int, error)
 	// StatusCounts returns every alias's side-effect-free (unread,
 	// action_required) counts — a pure read for a polling picker; see the
