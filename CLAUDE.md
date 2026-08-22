@@ -39,9 +39,18 @@ the release line. Never develop on `main` — do feature work in a git worktree 
 when the promotion PR merges to `main`, the release workflow tags `v<VERSION>`,
 creates the GitHub release with generated notes, and attaches cross-compiled
 binaries (darwin/linux × arm64/amd64) with checksums. A merge to `main` that
-doesn't bump `VERSION` releases nothing. Afterwards, run
-`contrib/release-sign.sh v<VERSION>` from a Mac to sign + notarize the darwin
-assets in place (CI attaches unsigned ones).
+doesn't bump `VERSION` releases nothing. The darwin binaries are signed and
+notarized by the release job itself, which is why that job runs on a macOS
+runner, and it fails rather than publishing anything unsigned — so a green
+release needs no manual signing step. `contrib/release-sign.sh v<VERSION>`
+remains only for repairing an already-published release by hand.
+
+Pick the next version from the TAGS, not from `dev`'s `VERSION` file. The
+release commit bumps `VERSION` on `main` only, so until someone back-merges,
+`dev` still shows the version before the last release and a feature branch cut
+from it will propose a number that is already tagged — v0.14.0 was chosen this
+way after v0.13.0 had shipped. CI's `version-guard` catches the collision, but
+only once the PR is open.
 
 ## Architecture (the mental model)
 
