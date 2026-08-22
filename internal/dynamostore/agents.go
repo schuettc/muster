@@ -174,6 +174,56 @@ func (s *Store) agentByAlias(ctx context.Context, alias string) (store.Agent, bo
 	return itemToAgent(out.Item), true, nil
 }
 
+// FindConversation answers "which live row IS this conversation" (spec
+// 2026-08-21 §2), the same question GetAgent answers by alias and this
+// answers by identity instead. Like DepartStaleSiblings and
+// SetSessionLabel, there is no index for "one agent by tuple", so this is a
+// roster scan: transcript match first (deviceID + transcriptPath, non-empty,
+// live only), highest LastSeen wins a tie; then the full live pane tuple
+// (sameSession + paneID, live only), again highest LastSeen. Harness session
+// ID is deliberately not a lookup key — it can change under /login, which is
+// the defect this op exists to close. A zero sessionCreated or empty paneID
+// never pane-matches, mirroring sameSession's own absence-of-proof rule.
+func (s *Store) FindConversation(deviceID, transcriptPath, socketPath, sessionID string, sessionCreated int64, paneID string) (store.Agent, bool, error) {
+	items, err := s.roster(backgroundCtx())
+	if err != nil {
+		return store.Agent{}, false, err
+	}
+	agents := make([]store.Agent, 0, len(items))
+	for _, item := range items {
+		agents = append(agents, itemToAgent(item))
+	}
+
+	if transcriptPath != "" {
+		best, ok := store.Agent{}, false
+		for _, a := range agents {
+			if a.Departed || a.DeviceID != deviceID || a.TranscriptPath != transcriptPath {
+				continue
+			}
+			if !ok || a.LastSeen > best.LastSeen {
+				best, ok = a, true
+			}
+		}
+		if ok {
+			return best, true, nil
+		}
+	}
+
+	if socketPath == "" || sessionID == "" || sessionCreated == 0 || paneID == "" {
+		return store.Agent{}, false, nil
+	}
+	best, ok := store.Agent{}, false
+	for _, a := range agents {
+		if a.Departed || a.PaneID != paneID || !sameSession(a, deviceID, socketPath, sessionID, sessionCreated) {
+			continue
+		}
+		if !ok || a.LastSeen > best.LastSeen {
+			best, ok = a, true
+		}
+	}
+	return best, ok, nil
+}
+
 // TouchAgent bumps last_seen. No error if the agent is unknown.
 //
 // The condition keeps this from resurrecting a deleted agent as a row with

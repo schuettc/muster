@@ -70,10 +70,20 @@ FROM agents ORDER BY alias`)
 // registered at all — a departed (tombstoned) agent still reports ok=true,
 // with Departed set (see DepartAgent).
 func (s *Store) GetAgent(alias string) (Agent, bool, error) {
+	return s.scanOneAgent(`WHERE alias=?`, alias)
+}
+
+// agentColumns is the exact column list every single-row agent scan uses —
+// GetAgent and FindConversation alike — so the two can never drift apart.
+const agentColumns = `alias, role, model_type, socket_path, pane_id, session_name, session_id, session_created, device_id, device_name, harness_session_id, transcript_path, project, label, label_manual, registered_at, last_seen, last_read_entry_id, departed, superseded_by`
+
+// scanOneAgent runs a `SELECT <agentColumns> FROM agents ` + where query with
+// args and scans the single resulting row. ok is false (not an error) when
+// the where clause matches no row — mirroring GetAgent's own contract, since
+// GetAgent is now just this with `WHERE alias=?`.
+func (s *Store) scanOneAgent(where string, args ...any) (Agent, bool, error) {
 	var a Agent
-	err := s.db.QueryRow(`
-SELECT alias, role, model_type, socket_path, pane_id, session_name, session_id, session_created, device_id, device_name, harness_session_id, transcript_path, project, label, label_manual, registered_at, last_seen, last_read_entry_id, departed, superseded_by
-FROM agents WHERE alias=?`, alias).
+	err := s.db.QueryRow(`SELECT `+agentColumns+` FROM agents `+where, args...).
 		Scan(&a.Alias, &a.Role, &a.ModelType, &a.SocketPath, &a.PaneID, &a.SessionName, &a.SessionID, &a.SessionCreated, &a.DeviceID, &a.DeviceName, &a.HarnessSessionID, &a.TranscriptPath, &a.Project, &a.Label, &a.LabelManual, &a.RegisteredAt, &a.LastSeen, &a.LastReadEntryID, &a.Departed, &a.SupersededBy)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Agent{}, false, nil
@@ -82,6 +92,26 @@ FROM agents WHERE alias=?`, alias).
 		return Agent{}, false, err
 	}
 	return a, true, nil
+}
+
+// FindConversation answers "which live row IS this conversation" (spec
+// 2026-08-21 §2): by transcript path when the caller has one, else by the
+// full live pane tuple. Harness session ID is deliberately not a key here —
+// it can change under /login, which is the defect this op exists to close.
+// A zero sessionCreated or empty paneID never pane-matches (absence of
+// proof), mirroring every other tuple surface.
+func (s *Store) FindConversation(deviceID, transcriptPath, socketPath, sessionID string, sessionCreated int64, paneID string) (Agent, bool, error) {
+	if transcriptPath != "" {
+		a, ok, err := s.scanOneAgent(`WHERE device_id=? AND transcript_path=? AND departed=0 ORDER BY last_seen DESC LIMIT 1`, deviceID, transcriptPath)
+		if err != nil || ok {
+			return a, ok, err
+		}
+	}
+	if socketPath == "" || sessionID == "" || sessionCreated == 0 || paneID == "" {
+		return Agent{}, false, nil
+	}
+	return s.scanOneAgent(`WHERE device_id=? AND socket_path=? AND session_id=? AND session_created=? AND pane_id=? AND departed=0 ORDER BY last_seen DESC LIMIT 1`,
+		deviceID, socketPath, sessionID, sessionCreated, paneID)
 }
 
 // TouchAgent bumps last_seen. No error if the agent is unknown.

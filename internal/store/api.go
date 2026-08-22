@@ -108,6 +108,16 @@ type API interface {
 	UnreadCount(alias string) (int, error)
 	SessionUnread(deviceID, socketPath, sessionID string, sessionCreated int64) (total, action int, err error)
 	SessionAliasLineage(deviceID, socketPath, sessionID string, sessionCreated int64) ([]string, error)
+	// FindConversation answers "which live row IS this conversation" (spec
+	// 2026-08-21 §2): by transcript path first when the caller has one
+	// (transcriptPath != ""), else by the full live pane tuple
+	// (deviceID, socketPath, sessionID, sessionCreated, paneID). Harness
+	// session ID is deliberately not a lookup key — it can change under
+	// /login, which is the defect this op exists to close. A zero
+	// sessionCreated or empty paneID never pane-matches (absence of proof,
+	// mirroring every other tuple surface on this interface), and only live
+	// (non-departed) rows are ever returned.
+	FindConversation(deviceID, transcriptPath, socketPath, sessionID string, sessionCreated int64, paneID string) (Agent, bool, error)
 	StampHarness(alias, harnessSessionID, transcriptPath string) error
 	// Become claims a new name for an existing identity: it clones from onto
 	// to and retires from, stamping from.superseded_by = to. It is a

@@ -131,6 +131,11 @@ var cases = []conformanceCase{
 	{"BecomeRefusesAnExistingTarget", testBecomeRefusesExistingTarget},
 	{"BecomeRefusesAMissingSource", testBecomeRefusesMissingSource},
 	{"BecomeIsAtomicOnRefusal", testBecomeAtomicOnRefusal},
+	{"FindConversationByTranscript", testFindConversationTranscript},
+	{"FindConversationByPaneTuple", testFindConversationPane},
+	{"FindConversationTranscriptBeatsPane", testFindConversationPrecedence},
+	{"FindConversationIgnoresDepartedAndOtherDevices", testFindConversationScope},
+	{"FindConversationRefusesUnprovenIncarnation", testFindConversationZeroCreated},
 	{"SessionUnreadFollowsSupersessionLineage", testSessionUnreadLineage},
 	{"SessionUnreadFollowsChainedLineage", testSessionUnreadChainedLineage},
 	{"SessionAliasLineageWalksTheChain", testSessionAliasLineage},
@@ -2370,6 +2375,59 @@ func testBecomeAtomicOnRefusal(t *testing.T, s store.API) {
 	}
 	if taken.Project != "other" || taken.SocketPath != "/other" {
 		t.Fatalf("a refused claim overwrote the existing alias: %+v", taken)
+	}
+}
+
+func testFindConversationTranscript(t *testing.T, s store.API) {
+	mustRegister(t, s, store.Agent{Alias: "a", DeviceID: "d", SocketPath: "/s", SessionID: "$1", SessionCreated: 5, PaneID: "%1", TranscriptPath: "/t/a.jsonl"})
+	got, ok, err := s.FindConversation("d", "/t/a.jsonl", "/other", "$9", 1, "%9")
+	if err != nil || !ok || got.Alias != "a" {
+		t.Fatalf("by transcript: ok=%v alias=%q err=%v", ok, got.Alias, err)
+	}
+}
+
+func testFindConversationPane(t *testing.T, s store.API) {
+	mustRegister(t, s, store.Agent{Alias: "a", DeviceID: "d", SocketPath: "/s", SessionID: "$1", SessionCreated: 5, PaneID: "%1"})
+	got, ok, _ := s.FindConversation("d", "", "/s", "$1", 5, "%1")
+	if !ok || got.Alias != "a" {
+		t.Fatalf("by pane: ok=%v alias=%q", ok, got.Alias)
+	}
+	if _, ok, _ := s.FindConversation("d", "", "/s", "$1", 5, "%2"); ok {
+		t.Fatal("a different pane is a different conversation")
+	}
+	if _, ok, _ := s.FindConversation("d", "/t/none.jsonl", "/s", "$1", 5, "%1"); !ok {
+		t.Fatal("an unknown transcript must still fall through to the pane match")
+	}
+}
+
+func testFindConversationPrecedence(t *testing.T, s store.API) {
+	mustRegister(t, s, store.Agent{Alias: "by-pane", DeviceID: "d", SocketPath: "/s", SessionID: "$1", SessionCreated: 5, PaneID: "%1"})
+	mustRegister(t, s, store.Agent{Alias: "by-transcript", DeviceID: "d", SocketPath: "/old", SessionID: "$3", SessionCreated: 2, PaneID: "%7", TranscriptPath: "/t/c.jsonl"})
+	got, ok, _ := s.FindConversation("d", "/t/c.jsonl", "/s", "$1", 5, "%1")
+	if !ok || got.Alias != "by-transcript" {
+		t.Fatalf("transcript must win: ok=%v alias=%q", ok, got.Alias)
+	}
+}
+
+func testFindConversationScope(t *testing.T, s store.API) {
+	mustRegister(t, s, store.Agent{Alias: "gone", DeviceID: "d", SocketPath: "/s", SessionID: "$1", SessionCreated: 5, PaneID: "%1", TranscriptPath: "/t/g.jsonl"})
+	_ = s.DepartAgent("gone")
+	if _, ok, _ := s.FindConversation("d", "/t/g.jsonl", "/s", "$1", 5, "%1"); ok {
+		t.Fatal("departed rows are never a live conversation")
+	}
+	mustRegister(t, s, store.Agent{Alias: "elsewhere", DeviceID: "other", SocketPath: "/s", SessionID: "$1", SessionCreated: 5, PaneID: "%1", TranscriptPath: "/t/e.jsonl"})
+	if _, ok, _ := s.FindConversation("d", "/t/e.jsonl", "/s", "$1", 5, "%1"); ok {
+		t.Fatal("another device's row must not match")
+	}
+}
+
+func testFindConversationZeroCreated(t *testing.T, s store.API) {
+	mustRegister(t, s, store.Agent{Alias: "a", DeviceID: "d", SocketPath: "/s", SessionID: "$1", SessionCreated: 5, PaneID: "%1"})
+	if _, ok, _ := s.FindConversation("d", "", "/s", "$1", 0, "%1"); ok {
+		t.Fatal("session_created=0 is absence of proof: no pane match")
+	}
+	if _, ok, _ := s.FindConversation("d", "", "/s", "$1", 5, ""); ok {
+		t.Fatal("empty pane id never matches")
 	}
 }
 
