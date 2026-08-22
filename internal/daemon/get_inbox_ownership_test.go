@@ -15,7 +15,7 @@ func TestGetInboxOwnedMarksRead(t *testing.T) {
 	call(t, sock, "send_message", map[string]any{"from": "peer", "to_kind": "agent", "to_target": "me", "subject": "s", "body": "b"})
 
 	resp := call(t, sock, "get_inbox", map[string]any{
-		"alias": "me", "caller_socket_path": "/s", "caller_session_id": "$1", "caller_session_created": 5, "caller_pane_id": "%1",
+		"alias": "me", "caller_socket_path": "/s", "caller_session_id": "$1", "caller_session_created": 5,
 	})
 	if !resp.OK {
 		t.Fatalf("get_inbox: %+v", resp)
@@ -41,8 +41,8 @@ func TestGetInboxUnownedIsAPeek(t *testing.T) {
 
 	for _, args := range []map[string]any{
 		{"alias": "me"}, // no proof
-		{"alias": "me", "caller_socket_path": "/s", "caller_session_id": "$2", "caller_session_created": 5, "caller_pane_id": "%2"}, // peer's pane
-		{"alias": "me", "caller_socket_path": "/s", "caller_session_id": "$1", "caller_session_created": 0, "caller_pane_id": "%1"}, // unproven incarnation
+		{"alias": "me", "caller_socket_path": "/s", "caller_session_id": "$2", "caller_session_created": 5}, // peer's session
+		{"alias": "me", "caller_socket_path": "/s", "caller_session_id": "$1", "caller_session_created": 0}, // unproven incarnation
 	} {
 		resp := call(t, sock, "get_inbox", args)
 		if !resp.OK {
@@ -78,7 +78,7 @@ func TestGetInboxChainSeedIsOwned(t *testing.T) {
 	call(t, sock, "become", map[string]any{"from": "seed", "to": "me"})
 
 	resp := call(t, sock, "get_inbox", map[string]any{
-		"alias": "seed", "caller_socket_path": "/s", "caller_session_id": "$1", "caller_session_created": 5, "caller_pane_id": "%1",
+		"alias": "seed", "caller_socket_path": "/s", "caller_session_id": "$1", "caller_session_created": 5,
 	})
 	if !resp.OK {
 		t.Fatalf("get_inbox: %+v", resp)

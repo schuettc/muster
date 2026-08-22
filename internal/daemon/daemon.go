@@ -411,6 +411,15 @@ func coalesce(a, b string) string {
 // watermark (spec 2026-08-21 §3.2): alias is in the lineage of the caller's
 // proven tmux tuple, or — paneless — its row carries the caller's harness
 // UUID. No proof, or a zero session_created, owns nothing.
+//
+// Ownership is deliberately SESSION-granular, not pane-granular: there is no
+// caller_pane_id here, and there should never be one. SessionAliasLineage
+// keys on (device, socket, session_id, session_created) — a tuple, not a
+// pane — matching how the rest of the bus already treats a session as one
+// actor identity (SessionUnread sums every alias on the tuple as a single
+// badge; the tmux badge itself is a session-level option). A sibling pane in
+// the same tmux session sharing that tuple already shares the badge, so it
+// sharing the read watermark too is consistent, not a leak.
 func (d *Daemon) callerOwns(alias string, a map[string]any) (bool, error) {
 	if hid := str(a, "caller_harness_session_id"); hid != "" {
 		if ag, found, err := d.s.GetAgent(alias); err != nil {
