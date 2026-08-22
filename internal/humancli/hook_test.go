@@ -1246,6 +1246,50 @@ func TestStampHarnessLinksScopesToOwnedPane(t *testing.T) {
 	}
 }
 
+// TestStampHarnessLinksProtectsEmptyPaneRowsExistingLink covers Finding 6: a
+// row with an EMPTY pane_id (e.g. registered before its pane was captured,
+// or a paneless-shaped row that still shares this tuple) carries no pane-
+// level ownership proof, so the sibling-pane check above can't rule out an
+// unrelated pane sharing the tuple. Before the fix, stampHarnessLinks
+// rewrote such a row's harness link on EVERY Stop from ANY pane in the
+// session — so a sibling pane's Stop could clobber a link that genuinely
+// belonged to a different conversation/harness session. The stamp must
+// still update the link when the caller's transcript PROVES it owns the
+// row (Task 8's resume case), but must never overwrite an existing,
+// differently-transcripted link on transcript proof alone being absent.
+func TestStampHarnessLinksProtectsEmptyPaneRowsExistingLink(t *testing.T) {
+	startTestDaemon(t)
+	if _, err := callData("register_agent", map[string]any{
+		"alias": "shared", "socket_path": "/tmp/sockShared", "session_id": "$1", "session_created": 100,
+		// no pane_id: ambiguous ownership by design of this test
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Give it an established link belonging to a DIFFERENT conversation.
+	if _, err := callData("stamp_harness_session", map[string]any{
+		"alias": "shared", "harness_session_id": "uuid-owner", "transcript_path": "/t/owner.jsonl",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// A sibling pane's Stop hook, with no transcript proof that it IS the
+	// owning conversation, must not clobber the existing link.
+	stampHarnessLinks([]string{"shared"}, harnessenv.Capture{SessionID: "uuid-sibling", TranscriptPath: "/t/sibling.jsonl"}, "/tmp/sockShared", "$1", "%9")
+	ag, _, _ := hookGetAgent("shared")
+	if ag.HarnessSessionID != "uuid-owner" || ag.TranscriptPath != "/t/owner.jsonl" {
+		t.Fatalf("an unrelated sibling must not overwrite the existing link, got %+v", ag)
+	}
+
+	// The OWNING conversation (transcript matches) resuming under a new
+	// harness session id must still be able to repair the link — this is
+	// exactly what Task 8 needed.
+	stampHarnessLinks([]string{"shared"}, harnessenv.Capture{SessionID: "uuid-owner-2", TranscriptPath: "/t/owner.jsonl"}, "/tmp/sockShared", "$1", "%9")
+	ag, _, _ = hookGetAgent("shared")
+	if ag.HarnessSessionID != "uuid-owner-2" {
+		t.Fatalf("the owning conversation (transcript match) must be able to repair its own link, got %+v", ag)
+	}
+}
+
 // TestHookSessionStartResumeReclaimsAlias is the durable-alias spec's core
 // scenario end to end: a conversation's alias was registered in a now-dead
 // tmux session (tombstoned), mail arrived, and the conversation is resumed

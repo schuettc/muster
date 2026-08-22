@@ -752,6 +752,21 @@ func stampHarnessLinks(aliases []string, h harnessenv.Capture, socketPath, sessi
 		if ag.PaneID != "" && ag.PaneID != myPane {
 			continue // a sibling pane's alias: not mine to stamp
 		}
+		// Finding 6: a row with an EMPTY pane_id carries no pane-level proof
+		// of ownership (the same convention hookOwnsIdentity/
+		// hookStopOwnsAnyAlias use), so the pane check above cannot rule out
+		// a sibling pane sharing this tuple. Task 8 needs the stamp to be
+		// able to UPDATE an existing link — a resumed conversation legitimately
+		// gets a new harness_session_id while its transcript_path stays put —
+		// but that repair must be provably THIS conversation, not just any
+		// pane in the session. Restore the repair-only posture for exactly
+		// the ambiguous (empty pane_id) case: stamp a fresh link freely, but
+		// only overwrite an EXISTING one when the caller's transcript proves
+		// it. A pane-scoped row (PaneID == myPane) already has real proof and
+		// skips this check entirely.
+		if ag.PaneID == "" && ag.HarnessSessionID != "" && ag.TranscriptPath != h.TranscriptPath {
+			continue // an unrelated sibling: don't clobber another row's proven link
+		}
 		_, _ = callData("stamp_harness_session", map[string]any{
 			"alias": alias, "harness_session_id": h.SessionID, "transcript_path": h.TranscriptPath,
 		})
