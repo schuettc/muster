@@ -41,9 +41,14 @@ func TestBecomeOpClaimsAndReports(t *testing.T) {
 		t.Fatalf("no become journal event: %+v", ev.Data)
 	}
 
+	// "peer" is LIVE, so become must refuse — and the message must not
+	// advise purging, which cannot remove a live row (see the handler).
 	resp = call(t, sock, "become", map[string]any{"from": "alias-routing", "to": "peer"})
-	if resp.OK || !strings.Contains(resp.Error, "already has history") {
+	if resp.OK || !strings.Contains(resp.Error, "held by a live session") {
 		t.Fatalf("existing-to guard: %+v", resp)
+	}
+	if strings.Contains(resp.Error, "purge") {
+		t.Fatalf("refusal must not advise purging a live alias: %+v", resp)
 	}
 }
 

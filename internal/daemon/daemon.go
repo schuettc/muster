@@ -1236,7 +1236,12 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 				// "become: " doubled into "become: become: ..." on the CLI.
 				return fail(fmt.Errorf("no such alias %q to become from; register first", from))
 			case errors.Is(err, store.ErrBecomeToExists):
-				return fail(fmt.Errorf("alias %q already has history; pick another name, or purge it with `muster gc --purge-agents`", to))
+				// A DEPARTED target is reclaimed rather than refused now
+				// (store.Become), so this error can only mean a LIVE session
+				// holds the name — and the old advice to purge it was both
+				// useless and dangerous here: `gc --purge-agents` deletes
+				// departed or tmux-dead rows, never a live one.
+				return fail(fmt.Errorf("alias %q is held by a live session; pick another name, or have that session release it first", to))
 			}
 			return fail(err)
 		}
