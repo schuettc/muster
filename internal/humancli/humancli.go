@@ -42,6 +42,10 @@ type agentFull struct {
 	// — stampHarnessLinks reads it via hookGetAgent to skip a row that already
 	// has a link.
 	HarnessSessionID string `json:"harness_session_id"`
+	// TranscriptPath mirrors agentRow's own copy (see store.Agent.TranscriptPath)
+	// — stampHarnessLinks reads it via hookGetAgent to decide whether a row's
+	// transcript link is already current.
+	TranscriptPath string `json:"transcript_path"`
 	// Departed mirrors store.Agent.Departed (see agentRow's own copy above):
 	// get_agent returns tombstoned rows with found=true, so hook gates must
 	// decode this to tell a live owner from a dead one.
@@ -50,7 +54,7 @@ type agentFull struct {
 	// manually-pinned label survives the reclaim onto the new tuple.
 	Label string `json:"label"`
 	// SupersededBy mirrors store.Agent.SupersededBy — hookSessionStartResume
-	// reads it via hookGetAgent/harnessOwnedRows to tell a become-retired
+	// reads it via hookGetAgent/conversationRows to tell a become-retired
 	// seed (never reclaim) from an ordinary tombstone (reclaim as before).
 	SupersededBy string `json:"superseded_by"`
 }
@@ -71,7 +75,13 @@ type agentRow struct {
 	// store.Agent.HarnessSessionID) — how a daemon-hosted session's hooks,
 	// which see no tmux, find their own rows.
 	HarnessSessionID string `json:"harness_session_id"`
-	SessionName      string `json:"session_name"`
+	// TranscriptPath links a row to the harness conversation's transcript
+	// file (see store.Agent.TranscriptPath) — the identity anchor that
+	// survives a resume even when the harness mints a NEW harness session id
+	// each time (unlike HarnessSessionID, which does not). conversationRows
+	// matches on it first.
+	TranscriptPath string `json:"transcript_path"`
+	SessionName    string `json:"session_name"`
 	// DeviceID names the MACHINE this row was registered from (see
 	// store.Agent.DeviceID). It is location, never identity: nothing
 	// addressable is scoped by it, and internal/resolve takes no device

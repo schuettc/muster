@@ -229,7 +229,7 @@ func TestHookSessionEndPanelessReapsOnlyOwnAliases(t *testing.T) {
 }
 
 // TestHookSessionEndPanelessSparesLiveOtherTuple is finding F2's core
-// scenario: the resume-coexistence race. harnessOwnedRows keys purely on the
+// scenario: the resume-coexistence race. conversationRows keys purely on the
 // harness session UUID with no tuple discrimination, so a dying paneless
 // SessionEnd that enumerates them could tombstone a DIFFERENT alias's row
 // that a concurrent resume has already reclaimed onto a brand-new, live tmux

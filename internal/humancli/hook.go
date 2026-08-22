@@ -216,8 +216,8 @@ func hookRegisterPane(c tmuxenv.Capture, h harnessenv.Capture, model string) {
 		"alias": alias, "role": "", "model_type": model,
 		"session_name": c.SessionName, "session_id": c.SessionID,
 		"session_created":    c.SessionCreated,
-		"harness_session_id": h.SessionID,
-		"socket_path":        c.SocketPath, "pane_id": c.PaneID,
+		"harness_session_id": h.SessionID, "transcript_path": h.TranscriptPath,
+		"socket_path": c.SocketPath, "pane_id": c.PaneID,
 		"project": c.Project, "label": c.Label, "label_manual": c.LabelManual,
 	})
 }
@@ -225,7 +225,7 @@ func hookRegisterPane(c tmuxenv.Capture, h harnessenv.Capture, model string) {
 // hookSessionStartResume reclaims a resumed conversation's aliases onto the
 // tmux session it woke up in (durable-alias spec change 4). The harness
 // session UUID is the lookup key — resume keeps it (only fork mints a new
-// one) — and harnessOwnedRows returns every row this conversation ever
+// one) — and conversationRows returns every row this conversation ever
 // registered. Each row is re-registered onto the CURRENT tuple (the revive
 // path: read-state survives, the daemon reports outcome+unread), EXCEPT a
 // row still live in a different, provably-alive tmux session — that is a
@@ -260,7 +260,7 @@ func hookSessionStartResume(c tmuxenv.Capture, h harnessenv.Capture, model strin
 		unread         int
 	}
 	var lines []reclaimedLine
-	for _, ag := range harnessOwnedRows(h.SessionID) {
+	for _, ag := range conversationRows(h) {
 		if ag.Departed && ag.SupersededBy != "" {
 			continue // become-retired seed: SupersededBy already carries this identity forward, never resurrect it
 		}
@@ -270,7 +270,7 @@ func hookSessionStartResume(c tmuxenv.Capture, h harnessenv.Capture, model strin
 			_, _ = fmt.Fprintf(out, "muster: alias '%s' is still live in another tmux session — not reclaimed\n", ag.Alias)
 			continue
 		}
-		ack := reclaimRow(ag, c, h.SessionID, model)
+		ack := reclaimRow(ag, c, h, model)
 		lines = append(lines, reclaimedLine{ag.Alias, ack.Outcome, ack.Unread})
 	}
 	if len(lines) == 0 {
@@ -323,7 +323,7 @@ func hookSessionStartPaneless(h harnessenv.Capture, model string) {
 	if h.SessionID == "" && h.Alias() == "" {
 		return // no resolvable identity: never dial the daemon from an identity-less hook
 	}
-	if owned := harnessOwnedRows(h.SessionID); len(owned) > 0 {
+	if owned := conversationRows(h); len(owned) > 0 {
 		// This session already has an identity — the pane-side launch
 		// handshake pre-registered a tmux-anchored row, or a prior life of
 		// this session (resume) left one. A live row needs nothing from
@@ -339,7 +339,7 @@ func hookSessionStartPaneless(h harnessenv.Capture, model string) {
 			}
 		}
 		if ag, ok := firstUnsuperseded(owned); ok {
-			reviveRow(ag, model)
+			reviveRow(ag, h, model)
 			return
 		}
 	}
@@ -481,11 +481,11 @@ func hookSessionEnd(c tmuxenv.Capture, h harnessenv.Capture) {
 }
 
 // hookSessionEndPaneless tombstones every row the dying harness session owns
-// — handshake-registered tmux rows and paneless rows alike (harnessOwnedRows'
+// — handshake-registered tmux rows and paneless rows alike (conversationRows'
 // two match shapes). Rows of other sessions, or with no harness link at all
 // (pre-handshake registrations), are never this session's to tombstone.
 //
-// Belt-and-suspenders (finding F2): harnessOwnedRows keys purely on the
+// Belt-and-suspenders (finding F2): conversationRows keys purely on the
 // harness session UUID, with no tuple discrimination. In the resume
 // coexistence window — SessionEnd(reason:"resume") fires for the OLD side
 // while the NEW side has already registered its row under the SAME UUID on
@@ -495,7 +495,7 @@ func hookSessionEnd(c tmuxenv.Capture, h harnessenv.Capture) {
 // check in hookSessionStartResume) is therefore skipped: it belongs to
 // someone else's still-running session, not this dying one.
 func hookSessionEndPaneless(h harnessenv.Capture) {
-	for _, ag := range harnessOwnedRows(h.SessionID) {
+	for _, ag := range conversationRows(h) {
 		if ag.Departed {
 			continue
 		}
@@ -675,7 +675,7 @@ func hookStopDrain(socketPath, sessionID string, sessionCreated int64, myPane st
 // @muster_inbox tmux option to serve as the cheap firing gate, so this dials
 // the daemon directly on every Stop — two ops over a local unix socket, the
 // price of daemon-hosted mail. Identity resolves by harness session UUID
-// (harnessOwnedRows): handshake-registered tmux rows and paneless rows
+// (conversationRows): handshake-registered tmux rows and paneless rows
 // alike. An unregistered session prints nothing, and unlike the tmux path
 // there is no session-name fallback to address — a harness identity either
 // resolved from the roster or doesn't exist.
@@ -686,7 +686,7 @@ func hookStopPaneless(h harnessenv.Capture, out io.Writer) {
 	var aliases []string
 	var label string
 	var tup *agentRow
-	owned := harnessOwnedRows(h.SessionID)
+	owned := conversationRows(h)
 	for i, ag := range owned {
 		if ag.Departed {
 			continue
@@ -742,9 +742,12 @@ func stampHarnessLinks(aliases []string, h harnessenv.Capture, socketPath, sessi
 		// stamping a row whose ownership fields could not be read is the
 		// same class of mistake as claiming an identity blind.
 		ag, ok, err := hookGetAgent(alias)
-		if err != nil || !ok || ag.Departed || ag.HarnessSessionID != "" ||
+		if err != nil || !ok || ag.Departed ||
 			ag.SocketPath != socketPath || ag.SessionID != sessionID {
 			continue
+		}
+		if ag.HarnessSessionID == h.SessionID && ag.TranscriptPath == h.TranscriptPath {
+			continue // already stamped with both current links: nothing to do
 		}
 		if ag.PaneID != "" && ag.PaneID != myPane {
 			continue // a sibling pane's alias: not mine to stamp

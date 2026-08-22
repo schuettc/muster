@@ -1297,6 +1297,62 @@ func TestHookSessionStartResumeReclaimsAlias(t *testing.T) {
 	}
 }
 
+// TestHookSessionStartResumeReclaimsAliasByTranscript covers the case
+// TestHookSessionStartResumeReclaimsAlias doesn't: a harness that mints a NEW
+// session_id on every resume (unlike the tuple-stable id assumed above), so
+// matching owned rows by harness_session_id alone finds nothing. The
+// transcript_path is what's actually stable across a resume — it's the same
+// file — so conversationRows must fall back to matching on it when the
+// harness session id changed.
+func TestHookSessionStartResumeReclaimsAliasByTranscript(t *testing.T) {
+	startTestDaemon(t)
+	t.Setenv("MUSTER_DEVICE_NAME", "testdev")
+	t.Setenv("TMUX", "/tmp/sock,1,0")
+	t.Setenv("TMUX_PANE", "%9")
+	t.Setenv("MUSTER_ALIAS", "")
+	seed := func(op string, args map[string]any) {
+		t.Helper()
+		if _, err := callData(op, args); err != nil {
+			t.Fatal(err)
+		}
+	}
+	seed("register_agent", map[string]any{
+		"alias": "backend-2", "socket_path": "/tmp/dead-sock", "session_id": "$OLD",
+		"session_created": 111, "harness_session_id": "uuid-A", "transcript_path": "/t/c.jsonl",
+		"label": "lake", "label_manual": true,
+	})
+	seed("register_agent", map[string]any{"alias": "sender", "socket_path": "/tmp/sock", "session_id": "$2", "session_created": 100})
+	seed("send_message", map[string]any{"from": "sender", "to_kind": "agent", "to_target": "backend-2", "subject": "s", "body": "b"})
+	seed("deregister_agent", map[string]any{"alias": "backend-2"})
+
+	prev := tmuxenv.Run
+	tmuxenv.Run = hookRun(map[string]string{
+		"#{session_id}":      "$NEW",
+		"#{session_name}":    "muster-3",
+		"#{session_created}": "222",
+	})
+	t.Cleanup(func() { tmuxenv.Run = prev })
+
+	var buf bytes.Buffer
+	if err := cmdHook([]string{"SessionStart"}, strings.NewReader(`{"source":"resume","session_id":"uuid-B","transcript_path":"/t/c.jsonl"}`), &buf); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "reconnected as 'backend-2'") || !strings.Contains(out, "1 unread") {
+		t.Fatalf("resume-by-transcript summary missing alias/backlog:\n%s", out)
+	}
+	ag, ok, _ := hookGetAgent("backend-2")
+	if !ok || ag.Departed || ag.SessionID != "$NEW" || ag.Label != "lake" {
+		t.Fatalf("reclaimed row = %+v (found=%v), want live on $NEW with label kept", ag, ok)
+	}
+	if ag.HarnessSessionID != "uuid-B" {
+		t.Fatalf("reclaimed row harness_session_id = %q, want uuid-B (the new resume session id)", ag.HarnessSessionID)
+	}
+	if _, exists, _ := hookGetAgent("testdev-muster-3"); exists {
+		t.Fatalf("resume-by-transcript must not also register a fresh session-name alias")
+	}
+}
+
 // TestHookSessionStartResumeSkipsLiveCollision: a row still provably live in
 // another tmux session is reported, never clobbered — and with nothing
 // reclaimed the hook falls through to the normal session-name register.
