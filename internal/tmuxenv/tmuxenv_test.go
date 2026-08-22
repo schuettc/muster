@@ -2,8 +2,12 @@ package tmuxenv
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
+
+	"github.com/schuettc/muster/internal/mustertest"
 )
 
 func withRun(t *testing.T, fn func(args ...string) (string, error)) {
@@ -162,5 +166,34 @@ func TestSetSessionOptionOnUsesExplicitSocket(t *testing.T) {
 	}
 	if len(calls) != 2 || !reflect.DeepEqual(calls[0], want[0]) || !reflect.DeepEqual(calls[1], want[1]) {
 		t.Fatalf("unexpected tmux calls: %v", calls)
+	}
+}
+
+func TestCaptureEnvCanonicalizesSocketPath(t *testing.T) {
+	home, cleanup, err := mustertest.ShortHome()
+	if err != nil {
+		t.Fatalf("ShortHome: %v", err)
+	}
+	t.Cleanup(cleanup)
+	if r, err := filepath.EvalSymlinks(home); err == nil {
+		home = r
+	}
+	realDir := filepath.Join(home, "real")
+	if err := os.MkdirAll(realDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(home, "link")
+	if err := os.Symlink(realDir, link); err != nil {
+		t.Fatal(err)
+	}
+	sock := filepath.Join(link, "default")
+	if err := os.WriteFile(sock, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TMUX", sock+",123,0")
+	t.Setenv("TMUX_PANE", "%1")
+	c := CaptureEnv()
+	if want := filepath.Join(realDir, "default"); c.SocketPath != want {
+		t.Fatalf("SocketPath = %q, want canonical %q", c.SocketPath, want)
 	}
 }

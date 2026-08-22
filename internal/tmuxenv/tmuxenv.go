@@ -49,7 +49,11 @@ func SocketFromEnv() string {
 	if tmux == "" {
 		return ""
 	}
-	return strings.SplitN(tmux, ",", 2)[0]
+	p := strings.SplitN(tmux, ",", 2)[0]
+	if r, err := filepath.EvalSymlinks(p); err == nil {
+		p = r
+	}
+	return p
 }
 
 // ProjectFromSocket derives the project name from a per-project socket path

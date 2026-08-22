@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	_ "embed"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	_ "modernc.org/sqlite" // registers the "sqlite" database/sql driver
@@ -89,6 +90,41 @@ UPDATE threads SET origin_project = (SELECT project FROM agents WHERE alias = th
 WHERE origin_project = ''
   AND EXISTS (SELECT 1 FROM agents WHERE alias = threads.from_agent)`); err != nil {
 		return err
+	}
+
+	// Canonicalize socket paths (tmux/OS symlinks, e.g. macOS /tmp ->
+	// /private/tmp) so tuple matching against a freshly-captured, already
+	// canonical socket path (tmuxenv.SocketFromEnv) doesn't miss existing
+	// rows recorded before this normalization existed. Idempotent: an
+	// already-canonical path round-trips through EvalSymlinks unchanged, and
+	// an unresolvable path (dead socket, no longer on disk) is left as-is.
+	rows, err := db.Query(`SELECT DISTINCT socket_path FROM agents WHERE socket_path != ''`)
+	if err != nil {
+		return err
+	}
+	var paths []string
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		paths = append(paths, p)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, p := range paths {
+		r, err := filepath.EvalSymlinks(p)
+		if err != nil || r == p {
+			continue
+		}
+		if _, err := db.Exec(`UPDATE agents SET socket_path = ? WHERE socket_path = ?`, r, p); err != nil {
+			return err
+		}
 	}
 	return nil
 }
