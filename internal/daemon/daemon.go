@@ -300,16 +300,28 @@ func (d *Daemon) handleRegisterAgent(a map[string]any) proto.Response {
 		return fail(err)
 	} else if found && conv.Alias != alias {
 		// One conversation, one row (spec 2026-08-21 §3.2): the caller IS
-		// the conversation this row already describes — re-stamp the
-		// harness link and move the tuple, never insert a sibling.
-		if err := d.s.StampHarness(conv.Alias, newAgent.HarnessSessionID, newAgent.TranscriptPath); err != nil {
-			return fail(err)
-		}
+		// the conversation this row already describes — move the tuple onto
+		// it, never insert a sibling. RegisterAgent below writes the
+		// coalesced harness id and transcript path directly; no separate
+		// StampHarness call is needed.
 		moved := conv
 		moved.SocketPath, moved.SessionID, moved.SessionCreated, moved.PaneID = newAgent.SocketPath, newAgent.SessionID, newAgent.SessionCreated, newAgent.PaneID
 		moved.SessionName, moved.Project, moved.DeviceID, moved.DeviceName = newAgent.SessionName, newAgent.Project, newAgent.DeviceID, newAgent.DeviceName
 		moved.HarnessSessionID, moved.TranscriptPath = coalesce(newAgent.HarnessSessionID, conv.HarnessSessionID), coalesce(newAgent.TranscriptPath, conv.TranscriptPath)
+		// Role/model come from the caller (the live process is the authority
+		// on what it's running now — a conversation can change model between
+		// sessions), falling back to the adopted row's when the caller sent
+		// none. Label/label_manual/read-state stay conversation-owned via the
+		// `moved := conv` copy above — deliberately not overridden here.
+		moved.Role, moved.ModelType = coalesce(newAgent.Role, conv.Role), coalesce(newAgent.ModelType, conv.ModelType)
 		if err := d.s.RegisterAgent(moved); err != nil {
+			return fail(err)
+		}
+		// Ghost reaping (see the identical call+comment below): must run
+		// BEFORE badge reconciliation so a sibling left on the NEW tuple
+		// under a stale (recycled tmux session id) session_created doesn't
+		// get counted into the badge push.
+		if _, err := d.s.DepartStaleSiblings(moved.DeviceID, moved.SocketPath, moved.SessionID, moved.SessionCreated, moved.Alias); err != nil {
 			return fail(err)
 		}
 		d.reconcileBadge(conv.SocketPath, conv.SessionID, conv.SessionCreated)

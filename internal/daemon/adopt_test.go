@@ -61,6 +61,41 @@ func TestRegisterAdoptsBySamePane(t *testing.T) {
 	}
 }
 
+// TestRegisterAdoptReapsGhostOnNewTuple covers the ordering the non-adopt
+// path already documents: ghost reaping must run BEFORE badge
+// reconciliation, or a sibling left on the tuple an adopt just moved onto —
+// a leftover from a previous tmux server incarnation that recycled the
+// session id — survives to be counted into the pushed badge. Here "ghost-old"
+// occupies (socket, session, pane) under an old session_created; adopting
+// "seed" (found by transcript_path) onto that same tuple under a NEW
+// session_created must tombstone the ghost.
+func TestRegisterAdoptReapsGhostOnNewTuple(t *testing.T) {
+	sock, st := startWithNotifierAndStore(t, &fakeNotifier{})
+
+	// The conversation to be adopted, on its own (unrelated) tuple.
+	call(t, sock, "register_agent", map[string]any{
+		"alias": "seed", "socket_path": "/other", "session_id": "$9", "session_created": 1, "pane_id": "%9",
+		"transcript_path": "/t/c.jsonl",
+	})
+	// A ghost from a dead tmux server incarnation sitting on the tuple the
+	// adopt below is about to move "seed" onto.
+	call(t, sock, "register_agent", map[string]any{
+		"alias": "ghost-old", "socket_path": "/s", "session_id": "$1", "session_created": 5, "pane_id": "%1",
+	})
+
+	resp := call(t, sock, "register_agent", map[string]any{
+		"alias": "newcomer", "socket_path": "/s", "session_id": "$1", "session_created": 10, "pane_id": "%1",
+		"transcript_path": "/t/c.jsonl",
+	})
+	data, _ := resp.Data.(map[string]any)
+	if data["outcome"] != "adopted" || data["alias"] != "seed" {
+		t.Fatalf("want adopted as seed, got %v", data)
+	}
+	if a, ok, _ := st.GetAgent("ghost-old"); !ok || !a.Departed {
+		t.Fatalf("ghost on the adopted-onto tuple must be departed, got ok=%v %+v", ok, a)
+	}
+}
+
 // TestRegisterSameAliasStillRefreshes guards against the adopt path
 // misfiring on the ordinary revive/refresh case: FindConversation resolving
 // to the SAME alias the caller already asked for is a normal upsert, not an
@@ -77,5 +112,44 @@ func TestRegisterSameAliasStillRefreshes(t *testing.T) {
 	data, _ := resp.Data.(map[string]any)
 	if data["outcome"] != "refreshed" {
 		t.Fatalf("got %v", data)
+	}
+}
+
+// TestRegisterAdoptModelFromCallerLabelFromRow covers the field-ownership
+// split an adopt must observe: role/model_type come from the CALLER (the
+// live process is the authority on what it's running, and can change model
+// between sessions — the same rule reclaimRow already applies), falling back
+// to the adopted row's when the caller sends none, while label/label_manual
+// stay conversation-owned (an MCP caller's captured label may be stale) and
+// must never be overwritten by an adopt.
+func TestRegisterAdoptModelFromCallerLabelFromRow(t *testing.T) {
+	sock, st := startWithNotifierAndStore(t, &fakeNotifier{})
+
+	call(t, sock, "register_agent", map[string]any{
+		"alias": "seed", "socket_path": "/other", "session_id": "$9", "session_created": 1, "pane_id": "%9",
+		"transcript_path": "/t/c.jsonl", "model_type": "opus", "label": "conversation-label", "label_manual": true,
+	})
+
+	// Caller sends a non-empty model_type: it must win over the row's.
+	call(t, sock, "register_agent", map[string]any{
+		"alias": "newcomer", "socket_path": "/s", "session_id": "$1", "session_created": 5, "pane_id": "%1",
+		"transcript_path": "/t/c.jsonl", "model_type": "sonnet", "label": "stale-mcp-label",
+	})
+	a, _, _ := st.GetAgent("seed")
+	if a.ModelType != "sonnet" {
+		t.Fatalf("caller's non-empty model_type must win, got %q", a.ModelType)
+	}
+	if a.Label != "conversation-label" || !a.LabelManual {
+		t.Fatalf("label/label_manual must stay conversation-owned, got label=%q manual=%v", a.Label, a.LabelManual)
+	}
+
+	// Caller sends an empty model_type: the row's existing value survives.
+	call(t, sock, "register_agent", map[string]any{
+		"alias": "newcomer2", "socket_path": "/s2", "session_id": "$2", "session_created": 5, "pane_id": "%2",
+		"transcript_path": "/t/c.jsonl",
+	})
+	a, _, _ = st.GetAgent("seed")
+	if a.ModelType != "sonnet" {
+		t.Fatalf("caller's empty model_type must leave the row's value intact, got %q", a.ModelType)
 	}
 }
