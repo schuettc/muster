@@ -224,26 +224,26 @@ func TestSessionUnreadLineageCycleGuard(t *testing.T) {
 	_ = action
 }
 
-// TestSetHarnessSessionID covers the hook-repair path of the durable-alias
-// spec: an alias registered without a harness link (e.g. via the MCP tool in
-// an env with no harness UUID) gets one stamped later by the Stop hook.
-func TestSetHarnessSessionID(t *testing.T) {
+// TestStampHarness covers the hook-repair path of the durable-alias spec: an
+// alias registered without a harness link (e.g. via the MCP tool in an env
+// with no harness UUID) gets one stamped later by the Stop hook.
+func TestStampHarness(t *testing.T) {
 	s := newTestStore(t)
 	if err := s.RegisterAgent(Agent{Alias: "backend"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SetHarnessSessionID("backend", "uuid-1"); err != nil {
+	if err := s.StampHarness("backend", "uuid-1", "/t/a.jsonl"); err != nil {
 		t.Fatal(err)
 	}
 	ag, ok, err := s.GetAgent("backend")
 	if err != nil || !ok {
 		t.Fatalf("get: %v %v", ok, err)
 	}
-	if ag.HarnessSessionID != "uuid-1" {
-		t.Fatalf("harness_session_id = %q, want uuid-1", ag.HarnessSessionID)
+	if ag.HarnessSessionID != "uuid-1" || ag.TranscriptPath != "/t/a.jsonl" {
+		t.Fatalf("harness_session_id = %q transcript_path = %q, want uuid-1 /t/a.jsonl", ag.HarnessSessionID, ag.TranscriptPath)
 	}
 	// Unknown alias is a no-op, mirroring TouchAgent's contract.
-	if err := s.SetHarnessSessionID("ghost", "uuid-2"); err != nil {
+	if err := s.StampHarness("ghost", "uuid-2", "/t/x.jsonl"); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -294,8 +294,10 @@ func TestBecomeClonesIdentityAndRetiresSeed(t *testing.T) {
 // the seed's superseded_by must name the claimed alias, the CLONE must NOT
 // inherit it (a chained become's successor starts unsuperseded even though
 // its own seed was itself superseded), and re-registering the retired seed
-// must clear it (a revived/re-registered alias is no longer superseded — the
-// operator may have purged the successor and taken the name back).
+// must revive it while KEEPING superseded_by (a returning session on the
+// seed's old tuple is exactly the case become-lineage exists to route mail
+// through, not a signal that the claim never happened — see
+// TestRegisterKeepsSupersededBy in the conformance suite).
 func TestBecomeStampsSupersededBy(t *testing.T) {
 	s := newTestStore(t)
 	if err := s.RegisterAgent(Agent{Alias: "muster-2", SocketPath: "/s", SessionID: "$1"}); err != nil {
@@ -333,14 +335,14 @@ func TestBecomeStampsSupersededBy(t *testing.T) {
 		t.Fatalf("final clone must not inherit SupersededBy: %+v", end)
 	}
 
-	// Re-registering the retired seed clears it — a revived/re-registered
-	// alias is no longer superseded.
+	// Re-registering the retired seed revives it but keeps SupersededBy — a
+	// returning session must not forget its successor.
 	if err := s.RegisterAgent(Agent{Alias: "muster-2", SocketPath: "/s2", SessionID: "$9"}); err != nil {
 		t.Fatal(err)
 	}
 	revived, _, _ := s.GetAgent("muster-2")
-	if revived.SupersededBy != "" || revived.Departed {
-		t.Fatalf("re-register must clear SupersededBy and revive: %+v", revived)
+	if revived.SupersededBy != "alias-routing" || revived.Departed {
+		t.Fatalf("re-register must revive while keeping SupersededBy: %+v", revived)
 	}
 }
 
@@ -356,11 +358,16 @@ func TestBecomeGuards(t *testing.T) {
 	if err := s.Become("a", "b"); !errors.Is(err, ErrBecomeToExists) {
 		t.Fatalf("live to: got %v", err)
 	}
+	// A departed TO is reclaimable (spec 2026-08-21 §4): nobody's live
+	// identity owns it any more, so the claim replaces the tombstone with a
+	// clone of "a" instead of refusing.
 	_ = s.DepartAgent("b")
-	if err := s.Become("a", "b"); !errors.Is(err, ErrBecomeToExists) {
-		t.Fatalf("tombstoned to must ALSO refuse: got %v", err)
+	if err := s.Become("a", "b"); err != nil {
+		t.Fatalf("departed to should be reclaimable: %v", err)
 	}
 	// Departed FROM is fine: a session may claim after gc tombstoned its seed.
+	// "a" is already departed (Become just retired it onto "b"), so this
+	// exercises the same from-may-already-be-departed path either way.
 	_ = s.DepartAgent("a")
 	if err := s.Become("a", "c"); err != nil {
 		t.Fatalf("departed from should still clone: %v", err)

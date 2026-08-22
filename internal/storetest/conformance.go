@@ -33,6 +33,7 @@ package storetest
 import (
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -118,15 +119,24 @@ var cases = []conformanceCase{
 	{"SessionUnreadExemptsThePanelessTupleFromIncarnation", testSessionUnreadPanelessIgnoresIncarnation},
 
 	// Identity: harness link, become, and supersession lineage.
-	{"SetHarnessSessionIDStampsExistingRow", testSetHarnessSessionID},
-	{"SetHarnessSessionIDUnknownAliasIsNoOp", testSetHarnessSessionIDUnknown},
-	{"RegisterResetsSupersededBy", testRegisterResetsSupersededBy},
+	{"StampHarnessStampsBothFields", testStampHarness},
+	{"StampHarnessEmptyArgLeavesFieldAlone", testStampHarnessPartial},
+	{"StampHarnessUnknownAliasIsNoOp", testStampHarnessUnknown},
+	{"RegisterPersistsTranscriptPath", testRegisterTranscriptPath},
+	{"RegisterKeepsSupersededBy", testRegisterKeepsSupersededBy},
+	{"LineageExcludesTombstonesOfOtherConversations", testLineageExcludesForeignTombstones},
 	{"BecomeClonesIdentityAndRetiresSeed", testBecomeClonesAndRetires},
 	{"BecomeCarriesTheReadWatermark", testBecomeCarriesWatermark},
 	{"BecomeStampsSupersededBy", testBecomeStampsSupersededBy},
 	{"BecomeRefusesAnExistingTarget", testBecomeRefusesExistingTarget},
 	{"BecomeRefusesAMissingSource", testBecomeRefusesMissingSource},
 	{"BecomeIsAtomicOnRefusal", testBecomeAtomicOnRefusal},
+	{"BecomeReclaimsADepartedTarget", testBecomeReclaimsDeparted},
+	{"FindConversationByTranscript", testFindConversationTranscript},
+	{"FindConversationByPaneTuple", testFindConversationPane},
+	{"FindConversationTranscriptBeatsPane", testFindConversationPrecedence},
+	{"FindConversationIgnoresDepartedAndOtherDevices", testFindConversationScope},
+	{"FindConversationRefusesUnprovenIncarnation", testFindConversationZeroCreated},
 	{"SessionUnreadFollowsSupersessionLineage", testSessionUnreadLineage},
 	{"SessionUnreadFollowsChainedLineage", testSessionUnreadChainedLineage},
 	{"SessionAliasLineageWalksTheChain", testSessionAliasLineage},
@@ -2083,17 +2093,17 @@ func testSessionUnreadPaneless(t *testing.T, s store.API) {
 	}
 }
 
-func testSetHarnessSessionID(t *testing.T, s store.API) {
+func testStampHarness(t *testing.T, s store.API) {
 	mustRegister(t, s, store.Agent{Alias: "backend", SocketPath: "/s", SessionID: "$1"})
-	if err := s.SetHarnessSessionID("backend", "uuid-1"); err != nil {
-		t.Fatalf("SetHarnessSessionID: %v", err)
+	if err := s.StampHarness("backend", "uuid-1", "/t/a.jsonl"); err != nil {
+		t.Fatalf("StampHarness: %v", err)
 	}
 	a, ok, err := s.GetAgent("backend")
 	if err != nil || !ok {
 		t.Fatalf("GetAgent: %v (ok=%v)", err, ok)
 	}
-	if a.HarnessSessionID != "uuid-1" {
-		t.Fatalf("harness_session_id = %q, want %q", a.HarnessSessionID, "uuid-1")
+	if a.HarnessSessionID != "uuid-1" || a.TranscriptPath != "/t/a.jsonl" {
+		t.Fatalf("got harness=%q transcript=%q", a.HarnessSessionID, a.TranscriptPath)
 	}
 	// Identity, tuple and read state are untouched by the stamp.
 	if a.SocketPath != "/s" || a.SessionID != "$1" {
@@ -2101,13 +2111,31 @@ func testSetHarnessSessionID(t *testing.T, s store.API) {
 	}
 }
 
-// testSetHarnessSessionIDUnknown is the phantom-row guard. A backend whose
+func testStampHarnessPartial(t *testing.T, s store.API) {
+	mustRegister(t, s, store.Agent{Alias: "backend", SocketPath: "/s", SessionID: "$1", HarnessSessionID: "uuid-0", TranscriptPath: "/t/a.jsonl"})
+	if err := s.StampHarness("backend", "uuid-1", ""); err != nil {
+		t.Fatalf("StampHarness: %v", err)
+	}
+	a, _, _ := s.GetAgent("backend")
+	if a.HarnessSessionID != "uuid-1" || a.TranscriptPath != "/t/a.jsonl" {
+		t.Fatalf("empty transcript arg must not clear it: harness=%q transcript=%q", a.HarnessSessionID, a.TranscriptPath)
+	}
+	if err := s.StampHarness("backend", "", "/t/b.jsonl"); err != nil {
+		t.Fatalf("StampHarness: %v", err)
+	}
+	a, _, _ = s.GetAgent("backend")
+	if a.HarnessSessionID != "uuid-1" || a.TranscriptPath != "/t/b.jsonl" {
+		t.Fatalf("empty harness arg must not clear it: harness=%q transcript=%q", a.HarnessSessionID, a.TranscriptPath)
+	}
+}
+
+// testStampHarnessUnknown is the phantom-row guard. A backend whose
 // update is an upsert (DynamoDB's UpdateItem is) will CREATE a row for an
 // alias that was never registered, where the SQLite UPDATE matches nothing.
 // The phantom is a roster member with an empty tuple and no identity.
-func testSetHarnessSessionIDUnknown(t *testing.T, s store.API) {
-	if err := s.SetHarnessSessionID("ghost", "uuid-2"); err != nil {
-		t.Fatalf("SetHarnessSessionID on an unknown alias must be a no-op, got %v", err)
+func testStampHarnessUnknown(t *testing.T, s store.API) {
+	if err := s.StampHarness("ghost", "uuid-2", "/t/x.jsonl"); err != nil {
+		t.Fatalf("StampHarness on an unknown alias must be a no-op, got %v", err)
 	}
 	if _, ok, err := s.GetAgent("ghost"); err != nil || ok {
 		t.Fatalf("stamping an unknown alias created a phantom row (ok=%v, err=%v)", ok, err)
@@ -2121,24 +2149,59 @@ func testSetHarnessSessionIDUnknown(t *testing.T, s store.API) {
 	}
 }
 
-// testRegisterResetsSupersededBy: re-registering a claimed-away alias clears
-// its supersession pointer — the operator purged the successor and took the old
-// name back, so it is nobody's seed any more.
-func testRegisterResetsSupersededBy(t *testing.T, s store.API) {
+func testRegisterTranscriptPath(t *testing.T, s store.API) {
+	mustRegister(t, s, store.Agent{Alias: "a", SocketPath: "/s", SessionID: "$1", TranscriptPath: "/t/a.jsonl"})
+	a, _, _ := s.GetAgent("a")
+	if a.TranscriptPath != "/t/a.jsonl" {
+		t.Fatalf("transcript_path not persisted: %q", a.TranscriptPath)
+	}
+	all, _ := s.ListAgents()
+	if all[0].TranscriptPath != "/t/a.jsonl" {
+		t.Fatal("ListAgents must carry transcript_path")
+	}
+}
+
+// testRegisterKeepsSupersededBy: re-registering a claimed-away alias must NOT
+// forget its supersession pointer — a returning session on the old tuple is
+// exactly the case become-lineage exists to route mail through, not a signal
+// that the claim never happened.
+func testRegisterKeepsSupersededBy(t *testing.T, s store.API) {
 	mustRegister(t, s, store.Agent{Alias: "seed", SocketPath: "/s", SessionID: "$1"})
 	if err := s.Become("seed", "claimed"); err != nil {
 		t.Fatalf("Become: %v", err)
 	}
 	mustRegister(t, s, store.Agent{Alias: "seed", SocketPath: "/s", SessionID: "$1"})
-	a, ok, err := s.GetAgent("seed")
-	if err != nil || !ok {
-		t.Fatalf("GetAgent: %v (ok=%v)", err, ok)
-	}
-	if a.SupersededBy != "" {
-		t.Fatalf("re-registered alias still superseded by %q", a.SupersededBy)
+	a, _, _ := s.GetAgent("seed")
+	if a.SupersededBy != "claimed" {
+		t.Fatalf("re-register must not forget the successor: got %q", a.SupersededBy)
 	}
 	if a.Departed {
-		t.Fatal("re-registering must revive the tombstone")
+		t.Fatal("re-registering still revives the tombstone")
+	}
+}
+
+// testLineageExcludesForeignTombstones: a previous conversation's tombstone
+// sitting on the same tuple with no successor must never be pulled into a
+// live conversation's lineage walk — only rows that are either live or
+// chained through a successor belong to somebody's identity.
+func testLineageExcludesForeignTombstones(t *testing.T, s store.API) {
+	// A previous conversation's tombstone on the same tuple (no successor)…
+	mustRegister(t, s, store.Agent{Alias: "old-conv", SocketPath: "/s", SessionID: "$1", SessionCreated: 5, PaneID: "%1"})
+	if err := s.DepartAgent("old-conv"); err != nil {
+		t.Fatal(err)
+	}
+	// …and the live conversation with a become-chain seed.
+	mustRegister(t, s, store.Agent{Alias: "seed", SocketPath: "/s", SessionID: "$1", SessionCreated: 5, PaneID: "%1"})
+	if err := s.Become("seed", "me"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.SessionAliasLineage("", "/s", "$1", 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"me", "seed"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("lineage = %v, want %v (old-conv is another conversation's tombstone)", got, want)
 	}
 }
 
@@ -2260,10 +2323,10 @@ func testBecomeStampsSupersededBy(t *testing.T, s store.API) {
 	}
 }
 
-// testBecomeRefusesExistingTarget: `to` must not exist AT ALL. A live row is
-// someone else's identity; a tombstone is another conversation's history.
-// Merging identities is the confusion the feature exists to kill, so this is a
-// compare-and-swap, not a read-then-write.
+// testBecomeRefusesExistingTarget: `to` must not exist as a LIVE row. A live
+// row is someone else's identity, so merging into it is the confusion the
+// feature exists to kill; this is a compare-and-swap, not a read-then-write.
+// A departed target is a separate case — see testBecomeReclaimsDeparted.
 func testBecomeRefusesExistingTarget(t *testing.T, s store.API) {
 	mustRegister(t, s, store.Agent{Alias: "seed", SocketPath: "/s", SessionID: "$1"})
 	mustRegister(t, s, store.Agent{Alias: "taken", SocketPath: "/other", SessionID: "$2"})
@@ -2271,12 +2334,79 @@ func testBecomeRefusesExistingTarget(t *testing.T, s store.API) {
 	if err := s.Become("seed", "taken"); !errors.Is(err, store.ErrBecomeToExists) {
 		t.Fatalf("Become onto a live alias = %v, want ErrBecomeToExists", err)
 	}
-	// A tombstone is just as much of a refusal as a live row.
-	if err := s.DepartAgent("taken"); err != nil {
-		t.Fatalf("DepartAgent: %v", err)
+}
+
+// testBecomeReclaimsDeparted: a departed target is nobody's live identity any
+// more, so a claim onto it must succeed — the reclaimed row becomes a clone
+// of the seed, and the seed retires pointing at it exactly like any other
+// become.
+func testBecomeReclaimsDeparted(t *testing.T, s store.API) {
+	mustRegister(t, s, store.Agent{Alias: "old-name", SocketPath: "/s", SessionID: "$1", Label: "stale"})
+	_ = s.DepartAgent("old-name")
+	mustRegister(t, s, store.Agent{Alias: "seed", SocketPath: "/s", SessionID: "$2", Label: "fresh", HarnessSessionID: "u2"})
+	if err := s.Become("seed", "old-name"); err != nil {
+		t.Fatalf("Become over a departed target must succeed: %v", err)
 	}
-	if err := s.Become("seed", "taken"); !errors.Is(err, store.ErrBecomeToExists) {
-		t.Fatalf("Become onto a tombstone = %v, want ErrBecomeToExists", err)
+	a, ok, _ := s.GetAgent("old-name")
+	if !ok || a.Departed || a.Label != "fresh" || a.HarnessSessionID != "u2" || a.SessionID != "$2" {
+		t.Fatalf("reclaimed row must be the clone of seed, got %+v", a)
+	}
+	seed, _, _ := s.GetAgent("seed")
+	if !seed.Departed || seed.SupersededBy != "old-name" {
+		t.Fatalf("seed must be retired → old-name, got %+v", seed)
+	}
+}
+
+func testFindConversationTranscript(t *testing.T, s store.API) {
+	mustRegister(t, s, store.Agent{Alias: "a", DeviceID: "d", SocketPath: "/s", SessionID: "$1", SessionCreated: 5, PaneID: "%1", TranscriptPath: "/t/a.jsonl"})
+	got, ok, err := s.FindConversation("d", "/t/a.jsonl", "/other", "$9", 1, "%9")
+	if err != nil || !ok || got.Alias != "a" {
+		t.Fatalf("by transcript: ok=%v alias=%q err=%v", ok, got.Alias, err)
+	}
+}
+
+func testFindConversationPane(t *testing.T, s store.API) {
+	mustRegister(t, s, store.Agent{Alias: "a", DeviceID: "d", SocketPath: "/s", SessionID: "$1", SessionCreated: 5, PaneID: "%1"})
+	got, ok, _ := s.FindConversation("d", "", "/s", "$1", 5, "%1")
+	if !ok || got.Alias != "a" {
+		t.Fatalf("by pane: ok=%v alias=%q", ok, got.Alias)
+	}
+	if _, ok, _ := s.FindConversation("d", "", "/s", "$1", 5, "%2"); ok {
+		t.Fatal("a different pane is a different conversation")
+	}
+	if _, ok, _ := s.FindConversation("d", "/t/none.jsonl", "/s", "$1", 5, "%1"); !ok {
+		t.Fatal("an unknown transcript must still fall through to the pane match")
+	}
+}
+
+func testFindConversationPrecedence(t *testing.T, s store.API) {
+	mustRegister(t, s, store.Agent{Alias: "by-pane", DeviceID: "d", SocketPath: "/s", SessionID: "$1", SessionCreated: 5, PaneID: "%1"})
+	mustRegister(t, s, store.Agent{Alias: "by-transcript", DeviceID: "d", SocketPath: "/old", SessionID: "$3", SessionCreated: 2, PaneID: "%7", TranscriptPath: "/t/c.jsonl"})
+	got, ok, _ := s.FindConversation("d", "/t/c.jsonl", "/s", "$1", 5, "%1")
+	if !ok || got.Alias != "by-transcript" {
+		t.Fatalf("transcript must win: ok=%v alias=%q", ok, got.Alias)
+	}
+}
+
+func testFindConversationScope(t *testing.T, s store.API) {
+	mustRegister(t, s, store.Agent{Alias: "gone", DeviceID: "d", SocketPath: "/s", SessionID: "$1", SessionCreated: 5, PaneID: "%1", TranscriptPath: "/t/g.jsonl"})
+	_ = s.DepartAgent("gone")
+	if _, ok, _ := s.FindConversation("d", "/t/g.jsonl", "/s", "$1", 5, "%1"); ok {
+		t.Fatal("departed rows are never a live conversation")
+	}
+	mustRegister(t, s, store.Agent{Alias: "elsewhere", DeviceID: "other", SocketPath: "/s", SessionID: "$1", SessionCreated: 5, PaneID: "%1", TranscriptPath: "/t/e.jsonl"})
+	if _, ok, _ := s.FindConversation("d", "/t/e.jsonl", "/s", "$1", 5, "%1"); ok {
+		t.Fatal("another device's row must not match")
+	}
+}
+
+func testFindConversationZeroCreated(t *testing.T, s store.API) {
+	mustRegister(t, s, store.Agent{Alias: "a", DeviceID: "d", SocketPath: "/s", SessionID: "$1", SessionCreated: 5, PaneID: "%1"})
+	if _, ok, _ := s.FindConversation("d", "", "/s", "$1", 0, "%1"); ok {
+		t.Fatal("session_created=0 is absence of proof: no pane match")
+	}
+	if _, ok, _ := s.FindConversation("d", "", "/s", "$1", 5, ""); ok {
+		t.Fatal("empty pane id never matches")
 	}
 }
 

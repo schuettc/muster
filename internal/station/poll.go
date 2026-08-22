@@ -268,9 +268,15 @@ func fetchThreadPageCmd(caller render.Caller, threadID, offset, limit int64, old
 // acknowledge exception) — never on focus, selection, or poll.
 type inboxAckMsg struct{ err error }
 
-func fetchInboxAckCmd(caller render.Caller, alias string) tea.Cmd {
+func fetchInboxAckCmd(caller render.Caller, alias, socketPath, sessionID string, sessionCreated int64) tea.Cmd {
 	return func() tea.Msg {
-		_, err := caller.Call("get_inbox", map[string]any{"alias": alias})
+		_, err := caller.Call("get_inbox", map[string]any{
+			"alias": alias,
+			// Proves ownership (spec 2026-08-21 §3.2, task 7): without this,
+			// get_inbox is a peek and never advances station's own read
+			// watermark.
+			"caller_socket_path": socketPath, "caller_session_id": sessionID, "caller_session_created": sessionCreated,
+		})
 		return inboxAckMsg{err: err}
 	}
 }
@@ -309,6 +315,15 @@ func fetchLastActiveCmd(caller render.Caller, alias string, gen int64) tea.Cmd {
 			return lastActiveMsg{alias: alias, gen: gen, err: err}
 		}
 		for _, e := range page.Events {
+			// A "peek" event's Agent is the PEEKED alias, not the caller who
+			// did the peeking (Finding 5) — an unowned get_inbox read moves
+			// no watermark and is not that alias's own activity, so treating
+			// it as one would show an idle agent as just-active on every
+			// sweep of its inbox by someone else (an operator, a station
+			// poll, another agent checking in).
+			if e.Kind == "peek" {
+				continue
+			}
 			if e.Agent == alias {
 				return lastActiveMsg{alias: alias, ts: e.TS, gen: gen}
 			}

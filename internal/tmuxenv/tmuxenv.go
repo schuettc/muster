@@ -49,7 +49,25 @@ func SocketFromEnv() string {
 	if tmux == "" {
 		return ""
 	}
-	return strings.SplitN(tmux, ",", 2)[0]
+	p := strings.SplitN(tmux, ",", 2)[0]
+	return CanonicalSocketPath(p)
+}
+
+// CanonicalSocketPath resolves symlinks in a tmux socket path (e.g. macOS's
+// /tmp -> /private/tmp) so every capture path in this package produces the
+// same string for the same socket. Tolerant: a path that can't be resolved
+// (doesn't exist yet, permission denied) is returned unchanged rather than
+// discarded — an uncanonicalized value beats no value. This is the ONE place
+// that canonicalizes; every capture path (env, ancestry) must route through
+// it rather than calling filepath.EvalSymlinks itself.
+func CanonicalSocketPath(p string) string {
+	if p == "" {
+		return p
+	}
+	if r, err := filepath.EvalSymlinks(p); err == nil {
+		return r
+	}
+	return p
 }
 
 // ProjectFromSocket derives the project name from a per-project socket path

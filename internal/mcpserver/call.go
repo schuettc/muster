@@ -28,16 +28,37 @@ type rosterRow struct {
 	SessionCreated int64  `json:"session_created"`
 	Label          string `json:"label"`
 	Departed       bool   `json:"departed"`
+	// SupersededBy mirrors store.Agent.SupersededBy — non-empty on a row
+	// retired via `become`, naming the alias its identity moved onto.
+	// paneRegistration follows this chain by alias when a tuple match lands
+	// on a departed row.
+	SupersededBy string `json:"superseded_by"`
 }
 
+// maxBecomeChainHops bounds paneRegistration's superseded_by walk — a
+// pathological or corrupted chain must not loop the daemon call forever.
+const maxBecomeChainHops = 8
+
 // paneRegistration returns the calling pane's own live registration: the
-// non-departed roster row matching this exact (socket_path, session_id,
-// pane_id) tuple AND, when both sides know it, the same session incarnation
+// roster row matching this exact (socket_path, session_id, pane_id) tuple
+// AND, when both sides know it, the same session incarnation
 // (session_created — see rosterRow.SessionCreated). A row whose recorded
 // creation time differs from the caller's live one is a ghost left by a
-// recycled session ID, not a match. ok=false outside tmux, on any
-// daemon/decode failure (guards degrade open — today's behavior), when no
-// row matches the tuple, or when a tuple-matching row is a ghost.
+// recycled session ID, not a match.
+//
+// A tuple match that is DEPARTED with SupersededBy set is not "not
+// registered" — `become` retires the old alias in place (its stored tuple is
+// never cleared) while cloning the identity onto the successor, and that
+// successor may since have re-registered under an entirely different tuple
+// (a new pane, a later become of its own), so a second tuple scan over the
+// roster would never find it. followBecomeChain walks the alias link
+// directly (bounded, cycle-safe) to the first non-departed row in the chain
+// and returns THAT — the caller's actual current identity, wherever it now
+// lives. A departed tuple match with no successor (an ordinary tombstone) is
+// not a match; the outer scan continues in case another row also matches the
+// tuple. ok=false outside tmux, on any daemon/decode failure (guards degrade
+// open — today's behavior), when no row matches the tuple (chain-followed or
+// not), or when the only tuple-matching row is a ghost.
 func paneRegistration(socketPath, sessionID, paneID string, sessionCreated int64) (rosterRow, bool) {
 	if socketPath == "" || sessionID == "" || paneID == "" {
 		return rosterRow{}, false
@@ -50,13 +71,52 @@ func paneRegistration(socketPath, sessionID, paneID string, sessionCreated int64
 	if json.Unmarshal(raw, &rows) != nil {
 		return rosterRow{}, false
 	}
+	byAlias := make(map[string]rosterRow, len(rows))
 	for _, r := range rows {
-		if !r.Departed && r.SocketPath == socketPath && r.SessionID == sessionID && r.PaneID == paneID {
+		byAlias[r.Alias] = r
+	}
+	for _, r := range rows {
+		if r.SocketPath != socketPath || r.SessionID != sessionID || r.PaneID != paneID {
+			continue
+		}
+		if !r.Departed {
 			if r.SessionCreated != 0 && sessionCreated != 0 && r.SessionCreated != sessionCreated {
 				continue // ghost: same tuple, different session incarnation
 			}
 			return r, true
 		}
+		if r.SupersededBy == "" {
+			continue // ordinary tombstone: no successor to follow
+		}
+		if live, ok := followBecomeChain(byAlias, r.SupersededBy); ok {
+			return live, true
+		}
+	}
+	return rosterRow{}, false
+}
+
+// followBecomeChain walks a `become` superseded_by link, alias to alias, to
+// the first non-departed row — the caller's actual current identity. Bounded
+// to maxBecomeChainHops and cycle-safe via visited: a corrupted or
+// pathological chain must fail closed (ok=false), never loop.
+func followBecomeChain(byAlias map[string]rosterRow, alias string) (rosterRow, bool) {
+	visited := make(map[string]bool, maxBecomeChainHops)
+	for hops := 0; hops < maxBecomeChainHops; hops++ {
+		if visited[alias] {
+			return rosterRow{}, false
+		}
+		visited[alias] = true
+		r, found := byAlias[alias]
+		if !found {
+			return rosterRow{}, false
+		}
+		if !r.Departed {
+			return r, true
+		}
+		if r.SupersededBy == "" {
+			return rosterRow{}, false
+		}
+		alias = r.SupersededBy
 	}
 	return rosterRow{}, false
 }

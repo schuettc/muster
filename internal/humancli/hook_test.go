@@ -914,12 +914,26 @@ func TestHookSessionStartClaimsOverDepartedRow(t *testing.T) {
 	}
 }
 
-// TestHookStopDrainsWhenOnlyNamedOwnerIsDeparted covers finding 1's Stop half:
-// the session's only registered alias is a tombstone. A departed row must
-// neither grant nor deny ownership — hookStopOwnsAnyAlias must skip it
-// entirely, leaving sawNamedOwner false, so the gate falls through to true
-// (today's unconditional drain) rather than silently refusing forever.
-func TestHookStopDrainsWhenOnlyNamedOwnerIsDeparted(t *testing.T) {
+// TestHookStopSilentWhenOnlyOwnerIsAnUnclaimedTombstone: the session's only
+// registered alias was deregistered without ever being claimed onward via
+// Become. Per the one-conversation-one-identity spec (2026-08-21 §2, task 2:
+// store.SessionUnread / SessionAliasLineage's base case), such a row is
+// excluded from its tuple's lineage — it is indistinguishable from a PRIOR
+// conversation's leftover tombstone on a reused tuple, and nothing points
+// forward from it to claim its waiting mail. So session_unread correctly
+// reports 0 for this tuple and Stop prints nothing, rather than draining
+// mail addressed to an identity nobody live owns any more.
+//
+// This superseded an earlier test (TestHookStopDrainsWhenOnlyNamedOwnerIsDeparted)
+// that asserted the opposite — an unconditional drain — under the pre-task-2
+// semantics, where a bare departed row still counted toward session_unread.
+// hookStopOwnsAnyAlias's own "a tombstoned row neither grants nor denies
+// ownership" behavior is unchanged and still exercised whenever a departed
+// row DOES survive in scope (i.e. it has a successor — see
+// TestBecomeReclaimsDeparted-style chains in the store conformance suite);
+// this test instead covers the now-earlier `total <= 0` exit that fires
+// first when the only candidate row never chained forward.
+func TestHookStopSilentWhenOnlyOwnerIsAnUnclaimedTombstone(t *testing.T) {
 	startTestDaemon(t)
 	if _, err := callData("register_agent", map[string]any{
 		"alias": "stop-departed", "socket_path": "/tmp/sockStopDep", "session_id": "$5", "session_created": 100, "pane_id": "%1",
@@ -946,9 +960,12 @@ func TestHookStopDrainsWhenOnlyNamedOwnerIsDeparted(t *testing.T) {
 	tmuxenv.Run = hookRun(map[string]string{"@muster_inbox": "3", "#{session_id}": "$5", "#{session_created}": "100"})
 	t.Cleanup(func() { tmuxenv.Run = prev })
 
-	res := runHook(t)
-	if !strings.Contains(res.Reason, "alias 'stop-departed'") {
-		t.Fatalf("reason missing owner alias: %q", res.Reason)
+	var buf bytes.Buffer
+	if err := cmdHook([]string{"Stop"}, strings.NewReader(`not json`), &buf); err != nil {
+		t.Fatal(err)
+	}
+	if buf.Len() != 0 {
+		t.Fatalf("expected no output — an unclaimed tombstone's mail is orphaned, not drained, got %q", buf.String())
 	}
 }
 
@@ -1091,7 +1108,11 @@ func stubAncestryWalkToPane(t *testing.T, paneID, sessionID, sessionName string,
 		t.Fatal(err)
 	}
 	tmuxenv.SocketDir = func() string { return dir }
-	sock := filepath.Join(dir, "proj-walk")
+	// CaptureFromAncestry canonicalizes the matched socket path (Finding 1),
+	// so the sock this helper hands back to the caller for registration must
+	// match what the walk will actually resolve to — exactly as production
+	// registration (also routed through tmuxenv) would produce.
+	sock := tmuxenv.CanonicalSocketPath(filepath.Join(dir, "proj-walk"))
 
 	tmuxenv.Run = func(args ...string) (string, error) {
 		for _, a := range args {
@@ -1225,6 +1246,50 @@ func TestStampHarnessLinksScopesToOwnedPane(t *testing.T) {
 	}
 }
 
+// TestStampHarnessLinksProtectsEmptyPaneRowsExistingLink covers Finding 6: a
+// row with an EMPTY pane_id (e.g. registered before its pane was captured,
+// or a paneless-shaped row that still shares this tuple) carries no pane-
+// level ownership proof, so the sibling-pane check above can't rule out an
+// unrelated pane sharing the tuple. Before the fix, stampHarnessLinks
+// rewrote such a row's harness link on EVERY Stop from ANY pane in the
+// session — so a sibling pane's Stop could clobber a link that genuinely
+// belonged to a different conversation/harness session. The stamp must
+// still update the link when the caller's transcript PROVES it owns the
+// row (Task 8's resume case), but must never overwrite an existing,
+// differently-transcripted link on transcript proof alone being absent.
+func TestStampHarnessLinksProtectsEmptyPaneRowsExistingLink(t *testing.T) {
+	startTestDaemon(t)
+	if _, err := callData("register_agent", map[string]any{
+		"alias": "shared", "socket_path": "/tmp/sockShared", "session_id": "$1", "session_created": 100,
+		// no pane_id: ambiguous ownership by design of this test
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Give it an established link belonging to a DIFFERENT conversation.
+	if _, err := callData("stamp_harness_session", map[string]any{
+		"alias": "shared", "harness_session_id": "uuid-owner", "transcript_path": "/t/owner.jsonl",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// A sibling pane's Stop hook, with no transcript proof that it IS the
+	// owning conversation, must not clobber the existing link.
+	stampHarnessLinks([]string{"shared"}, harnessenv.Capture{SessionID: "uuid-sibling", TranscriptPath: "/t/sibling.jsonl"}, "/tmp/sockShared", "$1", "%9")
+	ag, _, _ := hookGetAgent("shared")
+	if ag.HarnessSessionID != "uuid-owner" || ag.TranscriptPath != "/t/owner.jsonl" {
+		t.Fatalf("an unrelated sibling must not overwrite the existing link, got %+v", ag)
+	}
+
+	// The OWNING conversation (transcript matches) resuming under a new
+	// harness session id must still be able to repair the link — this is
+	// exactly what Task 8 needed.
+	stampHarnessLinks([]string{"shared"}, harnessenv.Capture{SessionID: "uuid-owner-2", TranscriptPath: "/t/owner.jsonl"}, "/tmp/sockShared", "$1", "%9")
+	ag, _, _ = hookGetAgent("shared")
+	if ag.HarnessSessionID != "uuid-owner-2" {
+		t.Fatalf("the owning conversation (transcript match) must be able to repair its own link, got %+v", ag)
+	}
+}
+
 // TestHookSessionStartResumeReclaimsAlias is the durable-alias spec's core
 // scenario end to end: a conversation's alias was registered in a now-dead
 // tmux session (tombstoned), mail arrived, and the conversation is resumed
@@ -1277,6 +1342,62 @@ func TestHookSessionStartResumeReclaimsAlias(t *testing.T) {
 	// check the form it would actually mint, not the unseeded bare name.
 	if _, exists, _ := hookGetAgent("testdev-muster-3"); exists {
 		t.Fatalf("resume must not also register a fresh session-name alias")
+	}
+}
+
+// TestHookSessionStartResumeReclaimsAliasByTranscript covers the case
+// TestHookSessionStartResumeReclaimsAlias doesn't: a harness that mints a NEW
+// session_id on every resume (unlike the tuple-stable id assumed above), so
+// matching owned rows by harness_session_id alone finds nothing. The
+// transcript_path is what's actually stable across a resume — it's the same
+// file — so conversationRows must fall back to matching on it when the
+// harness session id changed.
+func TestHookSessionStartResumeReclaimsAliasByTranscript(t *testing.T) {
+	startTestDaemon(t)
+	t.Setenv("MUSTER_DEVICE_NAME", "testdev")
+	t.Setenv("TMUX", "/tmp/sock,1,0")
+	t.Setenv("TMUX_PANE", "%9")
+	t.Setenv("MUSTER_ALIAS", "")
+	seed := func(op string, args map[string]any) {
+		t.Helper()
+		if _, err := callData(op, args); err != nil {
+			t.Fatal(err)
+		}
+	}
+	seed("register_agent", map[string]any{
+		"alias": "backend-2", "socket_path": "/tmp/dead-sock", "session_id": "$OLD",
+		"session_created": 111, "harness_session_id": "uuid-A", "transcript_path": "/t/c.jsonl",
+		"label": "lake", "label_manual": true,
+	})
+	seed("register_agent", map[string]any{"alias": "sender", "socket_path": "/tmp/sock", "session_id": "$2", "session_created": 100})
+	seed("send_message", map[string]any{"from": "sender", "to_kind": "agent", "to_target": "backend-2", "subject": "s", "body": "b"})
+	seed("deregister_agent", map[string]any{"alias": "backend-2"})
+
+	prev := tmuxenv.Run
+	tmuxenv.Run = hookRun(map[string]string{
+		"#{session_id}":      "$NEW",
+		"#{session_name}":    "muster-3",
+		"#{session_created}": "222",
+	})
+	t.Cleanup(func() { tmuxenv.Run = prev })
+
+	var buf bytes.Buffer
+	if err := cmdHook([]string{"SessionStart"}, strings.NewReader(`{"source":"resume","session_id":"uuid-B","transcript_path":"/t/c.jsonl"}`), &buf); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "reconnected as 'backend-2'") || !strings.Contains(out, "1 unread") {
+		t.Fatalf("resume-by-transcript summary missing alias/backlog:\n%s", out)
+	}
+	ag, ok, _ := hookGetAgent("backend-2")
+	if !ok || ag.Departed || ag.SessionID != "$NEW" || ag.Label != "lake" {
+		t.Fatalf("reclaimed row = %+v (found=%v), want live on $NEW with label kept", ag, ok)
+	}
+	if ag.HarnessSessionID != "uuid-B" {
+		t.Fatalf("reclaimed row harness_session_id = %q, want uuid-B (the new resume session id)", ag.HarnessSessionID)
+	}
+	if _, exists, _ := hookGetAgent("testdev-muster-3"); exists {
+		t.Fatalf("resume-by-transcript must not also register a fresh session-name alias")
 	}
 }
 

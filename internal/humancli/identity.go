@@ -97,7 +97,7 @@ func cmdRegister(args []string, out io.Writer) error {
 			_, err := callData("register_agent", args)
 			return err
 		}
-		if owned := harnessOwnedRows(h.SessionID); len(owned) > 0 {
+		if owned := conversationRows(h); len(owned) > 0 {
 			// This session already has an identity (a handshake tmux row or a
 			// prior paneless one): refresh/revive it with its stored shape intact
 			// rather than allocating another — but never a become-retired seed
@@ -107,7 +107,7 @@ func cmdRegister(args []string, out io.Writer) error {
 			// exactly as if owned had been empty.
 			if ag, ok := firstUnsuperseded(owned); ok {
 				alias = ag.Alias
-				ack := reviveRow(ag, *model)
+				ack := reviveRow(ag, h, *model)
 				if _, err := fmt.Fprintf(out, "registered %s (existing identity, project %q, model %s)\n", dispAlias(alias), ag.Project, *model); err != nil {
 					return err
 				}
@@ -155,8 +155,8 @@ func cmdRegister(args []string, out io.Writer) error {
 		"alias": alias, "role": *role, "model_type": *model,
 		"session_name": sessionName, "session_id": sessionID,
 		"session_created":    created,
-		"harness_session_id": harnessID,
-		"socket_path":        socketPath, "pane_id": paneID,
+		"harness_session_id": harnessID, "transcript_path": h.TranscriptPath,
+		"socket_path": socketPath, "pane_id": paneID,
 		"project": project, "label": c.Label, "label_manual": c.LabelManual,
 		"if_absent": *ifAbsent,
 	})
@@ -207,7 +207,7 @@ func cmdDeregister(args []string, out io.Writer) error {
 			// suffix-allocated, so resolve through the roster by harness
 			// session UUID first; the raw cwd basename is only a last resort.
 			h := harnessenv.FromEnv()
-			if owned := harnessOwnedRows(h.SessionID); len(owned) > 0 {
+			if owned := conversationRows(h); len(owned) > 0 {
 				alias = owned[0].Alias
 			} else {
 				alias = seedAlias(h.Alias())

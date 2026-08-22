@@ -1,6 +1,7 @@
 package store
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -59,5 +60,54 @@ func TestOpenMigrationIsIdempotent(t *testing.T) {
 	}
 	if got.Project != "p" || got.Label != "l" || !got.LabelManual {
 		t.Fatalf("round-trip after re-migrate=%+v", got)
+	}
+}
+
+func TestMigrateNormalizesSocketPaths(t *testing.T) {
+	home := t.TempDir()
+	if r, err := filepath.EvalSymlinks(home); err == nil {
+		home = r
+	}
+	realDir := filepath.Join(home, "real")
+	if err := os.MkdirAll(realDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(home, "link")
+	if err := os.Symlink(realDir, link); err != nil {
+		t.Fatal(err)
+	}
+	sock := filepath.Join(realDir, "s")
+	if err := os.WriteFile(sock, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	db := filepath.Join(home, "bus.db")
+
+	s, err := Open(db)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := s.RegisterAgent(Agent{Alias: "a", SocketPath: filepath.Join(link, "s"), SessionID: "$1"}); err != nil {
+		t.Fatalf("RegisterAgent a: %v", err)
+	}
+	if err := s.RegisterAgent(Agent{Alias: "b", SocketPath: "/nonexistent/s", SessionID: "$1"}); err != nil {
+		t.Fatalf("RegisterAgent b: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	s, err = Open(db) // migrate runs again
+	if err != nil {
+		t.Fatalf("re-Open: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	a, _, _ := s.GetAgent("a")
+	b, _, _ := s.GetAgent("b")
+	if a.SocketPath != sock {
+		t.Fatalf("a = %q, want %q", a.SocketPath, sock)
+	}
+	if b.SocketPath != "/nonexistent/s" {
+		t.Fatalf("unresolvable path must be left alone: %q", b.SocketPath)
 	}
 }

@@ -69,6 +69,12 @@ Attribution requires proof: `session_created = 0` never matches a live
 session (tmuxenv.IsSessionAlive), while DepartStaleSiblings still spares
 those rows from reaping — attribution and tombstoning are distinct decisions.
 
+Naming and identity are separate questions. The naming contract above governs what a conversation is *called*; underneath it, a conversation's identity resolves by transcript path first, falling back to the live tmux pane tuple only when no row carries that transcript path yet.
+
+The harness session ID (Claude Code's own session identifier) is just an attribute on the row, re-stamped whenever it changes — it is never part of the identity key, because a `/login` (or any harness-internal event) can change it mid-conversation without starting a new conversation.
+
+register_agent resolves against that identity before ever inserting a row: a conversation whose transcript path already has a live row adopts that row instead of minting a sibling, so one conversation keeps exactly one live row even across a harness session ID change.
+
 ## Hard rules
 
 - **stdout is sacred in `mcp` mode** — it is the MCP channel. All diagnostics go to

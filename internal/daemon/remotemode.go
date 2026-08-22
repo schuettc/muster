@@ -102,6 +102,9 @@ func (d *Daemon) forward(req proto.Request) proto.Response {
 	if needsDevice(req.Op) {
 		req = d.stampDevice(req)
 	}
+	if needsCallerDevice(req.Op) {
+		req = d.stampCallerDevice(req)
+	}
 	req = d.expandAliasArg(req)
 
 	resp, err := d.up.Call(context.Background(), req)
@@ -299,6 +302,45 @@ var deviceOps = map[string]bool{
 // needsDevice reports whether op's args name a session and so must be stamped
 // with this device's id before being forwarded.
 func needsDevice(op string) bool { return deviceOps[op] }
+
+// callerDeviceOps are the ops whose arguments name the CALLER's session via
+// caller_* fields (spec 2026-08-21 §3.2) rather than the deviceOps
+// convention's bare device_id/session_id pair. get_inbox is the only member
+// today: its caller_socket_path/caller_session_id prove which session is
+// asking, and on a shared hosted store that proof is incomplete without a
+// device id — the roster's rows already carry a real one (register_agent is
+// in deviceOps), but neither the MCP server nor the CLI ever learns one to
+// send (see stampDevice's doc comment), so an unstamped forward always
+// arrives with caller_device_id="" and store.SessionAliasLineage's
+// device-scoped base case then matches nothing: every get_inbox on a hosted
+// bus would silently degrade to a peek, and no agent could ever clear its own
+// badge across devices. This is deliberately its own set, not folded into
+// deviceOps: deviceOps's args NAME a session (device_id/session_id, the pair
+// RegisterAgent etc. key rows by); get_inbox's args instead PROVE a caller's
+// session via a different key (caller_device_id) that would be wrong under
+// stampDevice's device_id/device_name keys.
+var callerDeviceOps = map[string]bool{"get_inbox": true}
+
+// needsCallerDevice reports whether op's args carry a caller_* proof that
+// must be stamped with this device's id before being forwarded.
+func needsCallerDevice(op string) bool { return callerDeviceOps[op] }
+
+// stampCallerDevice puts this daemon's device id on a forwarded caller-proof
+// op's caller_device_id (see callerDeviceOps) — the same reasoning as
+// stampDevice: the device id is known here and nowhere above, so this is the
+// only place the hosted bus can acquire a trustworthy one, and a
+// caller-supplied caller_device_id is overwritten rather than trusted (a
+// client cannot claim to be on another machine). The request is copied before
+// mutation, same as stampDevice.
+func (d *Daemon) stampCallerDevice(req proto.Request) proto.Request {
+	args := make(map[string]any, len(req.Args)+1)
+	for k, v := range req.Args {
+		args[k] = v
+	}
+	args["caller_device_id"] = d.deviceID
+	req.Args = args
+	return req
+}
 
 // stampDevice puts this daemon's device id on a forwarded session-scoped op
 // (see deviceOps). The device id is known here and nowhere above — the MCP

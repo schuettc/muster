@@ -74,28 +74,28 @@ func (s *Store) nextID(ctx context.Context, name string) (int64, error) {
 // registered_at is stamped only on first sight, departed is always reset to
 // false so a returning session revives its tombstone, and read state
 // (last_read_entry_id / last_read_at) is never touched by either branch so it
-// survives the round trip.
+// survives the round trip. superseded_by is left alone here — DynamoDB's
+// UpdateItem only ever SETs the attributes named in this map, so simply
+// omitting it from the set leaves an existing pointer untouched, exactly
+// mirroring the SQLite ON CONFLICT no longer resetting it: a re-register on
+// the seed's old tuple must not forget the successor. See Become.
 func (s *Store) RegisterAgent(a store.Agent) error {
 	ctx := backgroundCtx()
 	now := clock.NowMillis()
 
 	set := map[string]types.AttributeValue{
-		"alias":           attrS(a.Alias),
-		"role":            attrS(a.Role),
-		"model_type":      attrS(a.ModelType),
-		"socket_path":     attrS(a.SocketPath),
-		"pane_id":         attrS(a.PaneID),
-		"session_name":    attrS(a.SessionName),
-		"session_id":      attrS(a.SessionID),
-		"session_created": attrN(a.SessionCreated),
-		"device_id":       attrS(a.DeviceID),
-		"device_name":     attrS(a.DeviceName),
-		// superseded_by is reset to "" on every register, exactly like
-		// departed: a revived or re-registered alias is no longer superseded by
-		// whatever claimed it before (the operator may have purged the
-		// successor and re-registered the old name). See Become.
+		"alias":              attrS(a.Alias),
+		"role":               attrS(a.Role),
+		"model_type":         attrS(a.ModelType),
+		"socket_path":        attrS(a.SocketPath),
+		"pane_id":            attrS(a.PaneID),
+		"session_name":       attrS(a.SessionName),
+		"session_id":         attrS(a.SessionID),
+		"session_created":    attrN(a.SessionCreated),
+		"device_id":          attrS(a.DeviceID),
+		"device_name":        attrS(a.DeviceName),
 		"harness_session_id": attrS(a.HarnessSessionID),
-		"superseded_by":      attrS(""),
+		"transcript_path":    attrS(a.TranscriptPath),
 		"project":            attrS(a.Project),
 		"label":              attrS(a.Label),
 		"label_manual":       attrBool(a.LabelManual),
@@ -174,6 +174,56 @@ func (s *Store) agentByAlias(ctx context.Context, alias string) (store.Agent, bo
 	return itemToAgent(out.Item), true, nil
 }
 
+// FindConversation answers "which live row IS this conversation" (spec
+// 2026-08-21 §2), the same question GetAgent answers by alias and this
+// answers by identity instead. Like DepartStaleSiblings and
+// SetSessionLabel, there is no index for "one agent by tuple", so this is a
+// roster scan: transcript match first (deviceID + transcriptPath, non-empty,
+// live only), highest LastSeen wins a tie; then the full live pane tuple
+// (sameSession + paneID, live only), again highest LastSeen. Harness session
+// ID is deliberately not a lookup key — it can change under /login, which is
+// the defect this op exists to close. A zero sessionCreated or empty paneID
+// never pane-matches, mirroring sameSession's own absence-of-proof rule.
+func (s *Store) FindConversation(deviceID, transcriptPath, socketPath, sessionID string, sessionCreated int64, paneID string) (store.Agent, bool, error) {
+	items, err := s.roster(backgroundCtx())
+	if err != nil {
+		return store.Agent{}, false, err
+	}
+	agents := make([]store.Agent, 0, len(items))
+	for _, item := range items {
+		agents = append(agents, itemToAgent(item))
+	}
+
+	if transcriptPath != "" {
+		best, ok := store.Agent{}, false
+		for _, a := range agents {
+			if a.Departed || a.DeviceID != deviceID || a.TranscriptPath != transcriptPath {
+				continue
+			}
+			if !ok || a.LastSeen > best.LastSeen {
+				best, ok = a, true
+			}
+		}
+		if ok {
+			return best, true, nil
+		}
+	}
+
+	if socketPath == "" || sessionID == "" || sessionCreated == 0 || paneID == "" {
+		return store.Agent{}, false, nil
+	}
+	best, ok := store.Agent{}, false
+	for _, a := range agents {
+		if a.Departed || a.PaneID != paneID || !sameSession(a, deviceID, socketPath, sessionID, sessionCreated) {
+			continue
+		}
+		if !ok || a.LastSeen > best.LastSeen {
+			best, ok = a, true
+		}
+	}
+	return best, ok, nil
+}
+
 // TouchAgent bumps last_seen. No error if the agent is unknown.
 //
 // The condition keeps this from resurrecting a deleted agent as a row with
@@ -219,30 +269,44 @@ func (s *Store) DepartAgent(alias string) error {
 	return nil
 }
 
-// SetHarnessSessionID stamps the harness session UUID onto an EXISTING row —
-// the repair half of the durable-alias spec. Identity, tuple, and read state
-// are untouched; unknown alias is a no-op, mirroring TouchAgent's contract.
+// StampHarness attaches the harness link to an EXISTING row: the session
+// UUID and the transcript path, each only when non-empty — a hook that
+// knows one but not the other must not erase what another hook stamped.
+// Identity, tuple, and read state are untouched; both empty is a no-op that
+// skips the round trip entirely; unknown alias is a no-op, mirroring
+// TouchAgent's contract.
 //
 // attribute_exists(pk) is load-bearing for the same reason it is on TouchAgent:
 // UpdateItem is an upsert, so without it, stamping an unknown alias would
-// CREATE a phantom row carrying nothing but a harness UUID — where the SQLite
+// CREATE a phantom row carrying nothing but a harness link — where the SQLite
 // UPDATE simply matches no rows. That phantom would then be a roster member
 // with an empty tuple, which is exactly the shape SessionUnread's empty-tuple
 // guard exists to keep out.
-func (s *Store) SetHarnessSessionID(alias, id string) error {
+func (s *Store) StampHarness(alias, harnessSessionID, transcriptPath string) error {
+	set := map[string]types.AttributeValue{}
+	if harnessSessionID != "" {
+		set["harness_session_id"] = attrS(harnessSessionID)
+	}
+	if transcriptPath != "" {
+		set["transcript_path"] = attrS(transcriptPath)
+	}
+	if len(set) == 0 {
+		return nil
+	}
+	expr, names, values := setExpr(set)
 	_, err := s.c.UpdateItem(backgroundCtx(), &dynamodb.UpdateItemInput{
 		TableName:                 aws.String(s.table),
 		Key:                       agentKey(alias),
-		UpdateExpression:          aws.String("SET #harness_session_id = :harness_session_id"),
+		UpdateExpression:          aws.String(expr),
 		ConditionExpression:       aws.String("attribute_exists(pk)"),
-		ExpressionAttributeNames:  map[string]string{"#harness_session_id": "harness_session_id"},
-		ExpressionAttributeValues: map[string]types.AttributeValue{":harness_session_id": attrS(id)},
+		ExpressionAttributeNames:  names,
+		ExpressionAttributeValues: values,
 	})
 	if err != nil {
 		if isConditionFailed(err) {
 			return nil // unknown alias: no-op, matching the SQLite contract
 		}
-		return fmt.Errorf("dynamostore: set harness session id on %q: %w", alias, err)
+		return fmt.Errorf("dynamostore: stamp harness on %q: %w", alias, err)
 	}
 	return nil
 }
@@ -254,13 +318,29 @@ func (s *Store) SetHarnessSessionID(alias, id string) error {
 //
 // # This is a compare-and-swap, not a read-then-write
 //
-// `to` must not exist AT ALL: a live row is someone else's identity and a
-// tombstone is another conversation's history, and merging identities is the
-// exact confusion the feature exists to kill. Checking with a GetItem and then
-// writing would leave a window in which two sessions both observe `to` absent
-// and both claim it — the second silently obliterating the first. The guard is
-// therefore attribute_not_exists(pk) ON THE WRITE ITSELF, which DynamoDB
-// evaluates atomically with it.
+// `to` must not be a LIVE row: a live row is someone else's identity, and
+// merging identities is the exact confusion the feature exists to kill.
+// Checking with a GetItem and then writing would leave a window in which two
+// sessions both observe `to` absent and both claim it — the second silently
+// obliterating the first. The guard is therefore attribute_not_exists(pk) ON
+// THE WRITE ITSELF, which DynamoDB evaluates atomically with it.
+//
+// # A departed `to` is reclaimable
+//
+// Unlike a live row, a tombstone is nobody's live identity any more (spec
+// 2026-08-21 §4) — Become may reclaim it. DynamoDB forbids two operations on
+// the same key inside one TransactWriteItems, so the reclaim cannot be folded
+// into the transaction below as a Delete alongside the clone's Put on the same
+// pk; it is instead a SEPARATE conditional DeleteItem (condition: departed =
+// true) run BEFORE that transaction, leaving the transaction itself, and its
+// attribute_not_exists(pk) Put condition, completely unchanged. If the delete
+// fails its condition (to is absent or live), Become proceeds anyway: the
+// unchanged Put condition below reports the correct outcome either way — it
+// succeeds if to was truly absent, and fails into ErrBecomeToExists if a live
+// registration is racing this call. A race between OUR delete and the
+// transaction (something re-registers to as live in between) can therefore
+// only ever fail the Put, which the existing ErrBecomeToExists mapping below
+// already reports — never a silent merge.
 //
 // # Both writes are one transaction
 //
@@ -293,6 +373,24 @@ func (s *Store) Become(from, to string) error {
 	}
 	if raw == nil {
 		return store.ErrBecomeFromMissing
+	}
+
+	// Reclaim: a departed `to` is deleted ahead of the transaction below (see
+	// the doc comment's "A departed `to` is reclaimable" section for why this
+	// cannot be folded into that transaction). Best-effort by design — a
+	// condition failure here (to absent, or to live) is not itself an error;
+	// the Put's own attribute_not_exists(pk) condition is what actually
+	// decides the outcome.
+	_, err = s.c.DeleteItem(ctx, &dynamodb.DeleteItemInput{
+		TableName:           aws.String(s.table),
+		Key:                 agentKey(to),
+		ConditionExpression: aws.String("departed = :true"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":true": attrBool(true),
+		},
+	})
+	if err != nil && !isConditionFailed(err) {
+		return fmt.Errorf("dynamostore: reclaim %q for become %q -> %q: %w", to, from, to, err)
 	}
 
 	now := clock.NowMillis()
@@ -482,7 +580,14 @@ func (s *Store) sessionLineage(ctx context.Context, deviceID, socketPath, sessio
 		}
 		// Re-confirm the tuple against the fresh item: the index copy may
 		// have been written before the alias moved to a different session.
+		// A departed row with no successor is another conversation's
+		// tombstone on this tuple, not this conversation's identity — it
+		// only belongs in the walk if some later alias points back at it
+		// (picked up by the recursive step below), never as a base-case seed.
 		if !found || !sameSession(a, deviceID, socketPath, sessionID, sessionCreated) {
+			continue
+		}
+		if a.Departed && a.SupersededBy == "" {
 			continue
 		}
 		inSet[a.Alias] = true
@@ -538,7 +643,7 @@ func (s *Store) DeleteAgent(alias string) error {
 // address, and the tuple alone is not device-unique in a shared roster.
 //
 // attribute_exists(pk) is load-bearing here for the same reason it is on
-// TouchAgent and SetHarnessSessionID, and more so: membership comes from
+// TouchAgent and StampHarness, and more so: membership comes from
 // roster(), a GSI, so a purge_agent that already removed the base item can
 // still be lagging in the index. Without the condition this upsert would
 // RECREATE the deleted alias as a phantom base item holding only label and
@@ -729,6 +834,7 @@ func itemToAgent(item map[string]types.AttributeValue) store.Agent {
 		DeviceID:         strAttr(item, "device_id"),
 		DeviceName:       strAttr(item, "device_name"),
 		HarnessSessionID: strAttr(item, "harness_session_id"),
+		TranscriptPath:   strAttr(item, "transcript_path"),
 		Project:          strAttr(item, "project"),
 		Label:            strAttr(item, "label"),
 		LabelManual:      boolAttr(item, "label_manual"),

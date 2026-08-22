@@ -179,7 +179,7 @@ func CaptureFromAncestry() Capture {
 		for _, pid := range ancestors {
 			if f, hit := byPID[pid]; hit {
 				created, _ := strconv.ParseInt(f[4], 10, 64)
-				return capturePane(sock, f[1], f[2], f[3], created)
+				return capturePane(CanonicalSocketPath(sock), f[1], f[2], f[3], created)
 			}
 		}
 	}

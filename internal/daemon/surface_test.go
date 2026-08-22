@@ -1,7 +1,6 @@
 package daemon
 
 import (
-	"encoding/json"
 	"path/filepath"
 	"slices"
 	"testing"
@@ -262,16 +261,12 @@ VALUES ('task', 'backend', 'role', 'reviewer', 'old task', '', 'open', '', 1, 1)
 
 	// get_inbox
 	inResp := call(t, sock, "get_inbox", map[string]any{"alias": "reviewer"})
-	var inOut []store.Thread
-	raw, err := json.Marshal(inResp.Data)
-	if err != nil {
-		t.Fatal(err)
+	var inOut struct {
+		Threads []store.Thread `json:"threads"`
 	}
-	if err := json.Unmarshal(raw, &inOut); err != nil {
-		t.Fatal(err)
-	}
+	decode(t, inResp, &inOut)
 	var foundInInbox bool
-	for _, th := range inOut {
+	for _, th := range inOut.Threads {
 		if th.ID == taskID {
 			foundInInbox = true
 			if th.Intent != store.IntentAction {
@@ -304,8 +299,8 @@ VALUES ('task', 'backend', 'role', 'reviewer', 'old task', '', 'open', '', 1, 1)
 // unread=0 on that same thread.
 func TestGetInboxUnreadSurvivesOwnMarkRead(t *testing.T) {
 	sock, _ := startWithNotifierAndStore(t, &fakeNotifier{})
-	call(t, sock, "register_agent", map[string]any{"alias": "web", "role": "producer", "model_type": "claude"})
-	call(t, sock, "register_agent", map[string]any{"alias": "api", "role": "consumer", "model_type": "claude"})
+	call(t, sock, "register_agent", map[string]any{"alias": "web", "role": "producer", "model_type": "claude", "socket_path": "/s", "session_id": "$1", "session_created": 100})
+	call(t, sock, "register_agent", map[string]any{"alias": "api", "role": "consumer", "model_type": "claude", "socket_path": "/s", "session_id": "$2", "session_created": 100})
 
 	sendResp := call(t, sock, "send_message", map[string]any{"from": "web", "to_kind": "agent", "to_target": "api", "subject": "hi", "body": "x"})
 	var sendOut struct {
@@ -319,9 +314,14 @@ func TestGetInboxUnreadSurvivesOwnMarkRead(t *testing.T) {
 	// peer answered).
 	call(t, sock, "reply", map[string]any{"thread_id": sendOut.ThreadID, "from": "api", "body": "got it"})
 
-	firstResp := call(t, sock, "get_inbox", map[string]any{"alias": "web"})
-	var firstOut []store.Thread
-	decode(t, firstResp, &firstOut)
+	firstResp := call(t, sock, "get_inbox", map[string]any{
+		"alias": "web", "caller_socket_path": "/s", "caller_session_id": "$1", "caller_session_created": 100,
+	})
+	var firstDecoded struct {
+		Threads []store.Thread `json:"threads"`
+	}
+	decode(t, firstResp, &firstDecoded)
+	firstOut := firstDecoded.Threads
 	var first store.Thread
 	for _, th := range firstOut {
 		if th.ID == sendOut.ThreadID {
@@ -335,9 +335,14 @@ func TestGetInboxUnreadSurvivesOwnMarkRead(t *testing.T) {
 		t.Fatalf("first get_inbox: unread = %d, want 1 (must survive this same call's own MarkRead)", first.Unread)
 	}
 
-	secondResp := call(t, sock, "get_inbox", map[string]any{"alias": "web"})
-	var secondOut []store.Thread
-	decode(t, secondResp, &secondOut)
+	secondResp := call(t, sock, "get_inbox", map[string]any{
+		"alias": "web", "caller_socket_path": "/s", "caller_session_id": "$1", "caller_session_created": 100,
+	})
+	var secondDecoded struct {
+		Threads []store.Thread `json:"threads"`
+	}
+	decode(t, secondResp, &secondDecoded)
+	secondOut := secondDecoded.Threads
 	var second store.Thread
 	for _, th := range secondOut {
 		if th.ID == sendOut.ThreadID {

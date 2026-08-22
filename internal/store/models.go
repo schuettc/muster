@@ -53,11 +53,16 @@ type Agent struct {
 	// daemon-hosted harnesses — can still find their rows; paneless
 	// registrations carry it too. "" = unknown (pre-handshake rows).
 	HarnessSessionID string `json:"harness_session_id"`
-	Project          string `json:"project"`
-	Label            string `json:"label"`
-	LabelManual      bool   `json:"label_manual"`
-	RegisteredAt     int64  `json:"registered_at"`
-	LastSeen         int64  `json:"last_seen"`
+	// TranscriptPath is the harness conversation's transcript file — the
+	// strongest identity key (spec 2026-08-21 §2): Claude Code never changes
+	// it for a conversation, while the harness session ID can change under
+	// /login. '' when the harness provides none (Codex, paneless).
+	TranscriptPath string `json:"transcript_path"`
+	Project        string `json:"project"`
+	Label          string `json:"label"`
+	LabelManual    bool   `json:"label_manual"`
+	RegisteredAt   int64  `json:"registered_at"`
+	LastSeen       int64  `json:"last_seen"`
 	// LastReadEntryID is the entry-ID read watermark (see MarkRead/UnreadCount
 	// in agents.go): the highest entries.id visible the last time this
 	// agent's inbox was read. Supersedes the wall-clock last_read_at for
@@ -77,12 +82,13 @@ type Agent struct {
 	Departed bool `json:"departed"`
 	// SupersededBy is non-empty on a departed row that was claimed away via
 	// Become: it names the alias that now carries this identity forward.
-	// RegisterAgent's upsert always resets it to "" (a revived/re-registered
-	// alias is no longer superseded — e.g. the operator purged the successor
-	// and re-registered the old name), and Become's clone does NOT copy it
-	// onto the new alias (the successor starts unsuperseded). Resume reclaim
-	// (hookSessionStartResume) uses this as ground truth to skip resurrecting a
-	// retired seed, rather than inferring it from tuple coincidence.
+	// RegisterAgent's upsert only defaults it to "" on a brand-new row — a
+	// re-register of a claimed-away alias (the seed's session resuming on its
+	// old tuple) leaves it alone, so the returning session does not forget
+	// its successor. Become's clone does NOT copy it onto the new alias (the
+	// successor starts unsuperseded). Resume reclaim (hookSessionStartResume)
+	// uses this as ground truth to skip resurrecting a retired seed, rather
+	// than inferring it from tuple coincidence.
 	SupersededBy string `json:"superseded_by"`
 }
 

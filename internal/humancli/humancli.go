@@ -14,6 +14,7 @@ import (
 
 	"github.com/schuettc/muster/internal/client"
 	"github.com/schuettc/muster/internal/device"
+	"github.com/schuettc/muster/internal/harnessenv"
 	"github.com/schuettc/muster/internal/nudge"
 	"github.com/schuettc/muster/internal/paths"
 	"github.com/schuettc/muster/internal/proto"
@@ -42,6 +43,10 @@ type agentFull struct {
 	// — stampHarnessLinks reads it via hookGetAgent to skip a row that already
 	// has a link.
 	HarnessSessionID string `json:"harness_session_id"`
+	// TranscriptPath mirrors agentRow's own copy (see store.Agent.TranscriptPath)
+	// — stampHarnessLinks reads it via hookGetAgent to decide whether a row's
+	// transcript link is already current.
+	TranscriptPath string `json:"transcript_path"`
 	// Departed mirrors store.Agent.Departed (see agentRow's own copy above):
 	// get_agent returns tombstoned rows with found=true, so hook gates must
 	// decode this to tell a live owner from a dead one.
@@ -50,7 +55,7 @@ type agentFull struct {
 	// manually-pinned label survives the reclaim onto the new tuple.
 	Label string `json:"label"`
 	// SupersededBy mirrors store.Agent.SupersededBy — hookSessionStartResume
-	// reads it via hookGetAgent/harnessOwnedRows to tell a become-retired
+	// reads it via hookGetAgent/conversationRows to tell a become-retired
 	// seed (never reclaim) from an ordinary tombstone (reclaim as before).
 	SupersededBy string `json:"superseded_by"`
 }
@@ -71,7 +76,13 @@ type agentRow struct {
 	// store.Agent.HarnessSessionID) — how a daemon-hosted session's hooks,
 	// which see no tmux, find their own rows.
 	HarnessSessionID string `json:"harness_session_id"`
-	SessionName      string `json:"session_name"`
+	// TranscriptPath links a row to the harness conversation's transcript
+	// file (see store.Agent.TranscriptPath) — the identity anchor that
+	// survives a resume even when the harness mints a NEW harness session id
+	// each time (unlike HarnessSessionID, which does not). conversationRows
+	// matches on it first.
+	TranscriptPath string `json:"transcript_path"`
+	SessionName    string `json:"session_name"`
 	// DeviceID names the MACHINE this row was registered from (see
 	// store.Agent.DeviceID). It is location, never identity: nothing
 	// addressable is scoped by it, and internal/resolve takes no device
@@ -118,6 +129,28 @@ type threadRow struct {
 	Status    string `json:"status"`
 	LastFrom  string `json:"last_from"`
 	Unread    int    `json:"unread"`
+}
+
+// decodeInboxResponse decodes a get_inbox payload, tolerating BOTH shapes
+// (Finding 2): a 0.13.0+ daemon returns {threads, marked_read}, but a client
+// upgraded ahead of a still-running pre-0.13.0 daemon (or a device forwarding
+// to a not-yet-redeployed hosted lambda) still gets the old bare-array shape.
+// Decoding that as marked_read=true matches the old daemon's actual
+// behavior — every read moved the watermark — so this is not a guess, it's
+// what happened. Deliberately no version handshake: this is decode-only.
+func decodeInboxResponse(raw []byte) ([]threadRow, bool, error) {
+	var body struct {
+		Threads    []threadRow `json:"threads"`
+		MarkedRead bool        `json:"marked_read"`
+	}
+	if err := json.Unmarshal(raw, &body); err == nil {
+		return body.Threads, body.MarkedRead, nil
+	}
+	var legacy []threadRow
+	if err := json.Unmarshal(raw, &legacy); err != nil {
+		return nil, false, err
+	}
+	return legacy, true, nil
 }
 
 // callData sends one op to the daemon and returns its Data as JSON, or an error
@@ -526,14 +559,31 @@ func cmdTasks(args []string, out io.Writer) error {
 }
 
 // printThreads fetches an alias's inbox and prints it; if tasksOnly, only
-// kind=task threads are shown.
+// kind=task threads are shown. The caller's tmux/harness identity is sent as
+// proof (spec 2026-08-21 §3.2): the daemon only moves alias's read watermark
+// for a caller who can prove it IS that session, sourced exactly like every
+// other mint/proof site (tmuxenv.CaptureEnv for the tuple, harnessenv.FromEnv
+// for the harness UUID; no caller_pane_id — ownership is session-granular,
+// not pane-granular). Reading someone else's alias (an operator checking on
+// another agent, `muster inbox` run outside any session) still works — it
+// comes back as a harmless peek, threads shown, nothing marked read — and a
+// trailing notice says so, or an operator has no way to tell a peek from a
+// real drain of their own mail.
 func printThreads(out io.Writer, alias string, tasksOnly bool) error {
-	raw, err := callData("get_inbox", map[string]any{"alias": alias})
+	c := tmuxenv.CaptureEnv()
+	h := harnessenv.FromEnv()
+	raw, err := callData("get_inbox", map[string]any{
+		"alias":                     alias,
+		"caller_socket_path":        c.SocketPath,
+		"caller_session_id":         c.SessionID,
+		"caller_session_created":    c.SessionCreated,
+		"caller_harness_session_id": h.SessionID,
+	})
 	if err != nil {
 		return err
 	}
-	var threads []threadRow
-	if err := json.Unmarshal(raw, &threads); err != nil {
+	threads, markedRead, err := decodeInboxResponse(raw)
+	if err != nil {
 		return err
 	}
 	// Only FROM, LAST-FROM, and a to_kind=agent TO target are aliases — a
@@ -567,7 +617,14 @@ func printThreads(out io.Writer, alias string, tasksOnly bool) error {
 			return err
 		}
 	}
-	return tw.Flush()
+	if err := tw.Flush(); err != nil {
+		return err
+	}
+	if !markedRead {
+		_, err := fmt.Fprintf(out, "peek only: '%s' is not this pane's alias — unread state unchanged\n", dispAlias(alias))
+		return err
+	}
+	return nil
 }
 
 // newNudgeFlagsWithVals declares nudge's flags and returns typed access to

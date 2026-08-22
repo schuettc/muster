@@ -90,19 +90,22 @@ func registerPanelessArgs(alias, role, model string, h harnessenv.Capture, ifAbs
 	return map[string]any{
 		"alias": alias, "role": role, "model_type": model,
 		"session_name": "", "session_id": h.SessionID, "session_created": 0,
-		"harness_session_id": h.SessionID,
-		"socket_path":        "", "pane_id": "",
+		"harness_session_id": h.SessionID, "transcript_path": h.TranscriptPath,
+		"socket_path": "", "pane_id": "",
 		"project": h.Project(), "label": "", "label_manual": false,
 		"if_absent": ifAbsent,
 	}
 }
 
-// harnessOwnedRows returns every roster row belonging to harness session
-// uuid — handshake-registered tmux rows (harness_session_id) and paneless
-// rows (tuple ("", uuid)) alike, tombstones included so resume can revive.
-// Empty on any daemon failure.
-func harnessOwnedRows(uuid string) []agentRow {
-	if uuid == "" {
+// conversationRows returns every roster row belonging to the conversation h
+// describes — tombstones included so resume can revive. A row is matched
+// first by transcript_path (the stable anchor: the same conversation file
+// survives a resume even when the harness mints a brand-new harness session
+// id each time), else by the older harness_session_id link —
+// handshake-registered tmux rows (harness_session_id) and paneless rows
+// (tuple ("", uuid)) alike. Empty on any daemon failure or an unresolvable h.
+func conversationRows(h harnessenv.Capture) []agentRow {
+	if h.TranscriptPath == "" && h.SessionID == "" {
 		return nil
 	}
 	raw, err := callData("list_agents", nil)
@@ -115,7 +118,9 @@ func harnessOwnedRows(uuid string) []agentRow {
 	}
 	var mine []agentRow
 	for _, ag := range rows {
-		if ag.HarnessSessionID == uuid || (ag.SocketPath == "" && ag.SessionID == uuid) {
+		if h.TranscriptPath != "" && ag.TranscriptPath == h.TranscriptPath {
+			mine = append(mine, ag)
+		} else if h.SessionID != "" && (ag.HarnessSessionID == h.SessionID || (ag.SocketPath == "" && ag.SessionID == h.SessionID)) {
 			mine = append(mine, ag)
 		}
 	}
@@ -146,16 +151,24 @@ func firstUnsuperseded(owned []agentRow) (agentRow, bool) {
 // + unread) so callers that want to surface it can; callers that don't care
 // may call this as a bare statement — Go permits discarding a value-returning
 // function's result.
-func reviveRow(ag agentRow, model string) registerAck {
+func reviveRow(ag agentRow, h harnessenv.Capture, model string) registerAck {
 	if model == "" {
 		model = ag.ModelType
+	}
+	harnessID := ag.HarnessSessionID
+	if h.SessionID != "" {
+		harnessID = h.SessionID
+	}
+	transcriptPath := ag.TranscriptPath
+	if h.TranscriptPath != "" {
+		transcriptPath = h.TranscriptPath
 	}
 	raw, _ := callData("register_agent", map[string]any{
 		"alias": ag.Alias, "role": ag.Role, "model_type": model,
 		"session_name": ag.SessionName, "session_id": ag.SessionID,
 		"session_created":    ag.SessionCreated,
-		"harness_session_id": ag.HarnessSessionID,
-		"socket_path":        ag.SocketPath, "pane_id": ag.PaneID,
+		"harness_session_id": harnessID, "transcript_path": transcriptPath,
+		"socket_path": ag.SocketPath, "pane_id": ag.PaneID,
 		"project": ag.Project, "label": ag.Label, "label_manual": ag.LabelManual,
 	})
 	return decodeRegisterAck(raw)
@@ -166,16 +179,20 @@ func reviveRow(ag agentRow, model string) registerAck {
 // (they belong to the conversation), while the tuple is the CURRENT
 // capture's (the conversation moved). Contrast reviveRow, which echoes the
 // stored tuple back for an in-place revival.
-func reclaimRow(ag agentRow, c tmuxenv.Capture, harnessID, model string) registerAck {
+func reclaimRow(ag agentRow, c tmuxenv.Capture, h harnessenv.Capture, model string) registerAck {
 	if model == "" {
 		model = ag.ModelType
+	}
+	transcriptPath := ag.TranscriptPath
+	if h.TranscriptPath != "" {
+		transcriptPath = h.TranscriptPath
 	}
 	raw, _ := callData("register_agent", map[string]any{
 		"alias": ag.Alias, "role": ag.Role, "model_type": model,
 		"session_name": c.SessionName, "session_id": c.SessionID,
 		"session_created":    c.SessionCreated,
-		"harness_session_id": harnessID,
-		"socket_path":        c.SocketPath, "pane_id": c.PaneID,
+		"harness_session_id": h.SessionID, "transcript_path": transcriptPath,
+		"socket_path": c.SocketPath, "pane_id": c.PaneID,
 		"project": c.Project, "label": ag.Label, "label_manual": ag.LabelManual,
 	})
 	return decodeRegisterAck(raw)

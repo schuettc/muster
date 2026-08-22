@@ -292,7 +292,43 @@ func (d *Daemon) handleRegisterAgent(a map[string]any) proto.Response {
 		DeviceID:         str(a, "device_id"),
 		DeviceName:       str(a, "device_name"),
 		HarnessSessionID: str(a, "harness_session_id"),
+		TranscriptPath:   str(a, "transcript_path"),
 		Project:          str(a, "project"), Label: str(a, "label"), LabelManual: boolArg(a, "label_manual"),
+	}
+
+	if conv, found, err := d.s.FindConversation(newAgent.DeviceID, newAgent.TranscriptPath, newAgent.SocketPath, newAgent.SessionID, newAgent.SessionCreated, newAgent.PaneID); err != nil {
+		return fail(err)
+	} else if found && conv.Alias != alias {
+		// One conversation, one row (spec 2026-08-21 §3.2): the caller IS
+		// the conversation this row already describes — move the tuple onto
+		// it, never insert a sibling. RegisterAgent below writes the
+		// coalesced harness id and transcript path directly; no separate
+		// StampHarness call is needed.
+		moved := conv
+		moved.SocketPath, moved.SessionID, moved.SessionCreated, moved.PaneID = newAgent.SocketPath, newAgent.SessionID, newAgent.SessionCreated, newAgent.PaneID
+		moved.SessionName, moved.Project, moved.DeviceID, moved.DeviceName = newAgent.SessionName, newAgent.Project, newAgent.DeviceID, newAgent.DeviceName
+		moved.HarnessSessionID, moved.TranscriptPath = coalesce(newAgent.HarnessSessionID, conv.HarnessSessionID), coalesce(newAgent.TranscriptPath, conv.TranscriptPath)
+		// Role/model come from the caller (the live process is the authority
+		// on what it's running now — a conversation can change model between
+		// sessions), falling back to the adopted row's when the caller sent
+		// none. Label/label_manual/read-state stay conversation-owned via the
+		// `moved := conv` copy above — deliberately not overridden here.
+		moved.Role, moved.ModelType = coalesce(newAgent.Role, conv.Role), coalesce(newAgent.ModelType, conv.ModelType)
+		if err := d.s.RegisterAgent(moved); err != nil {
+			return fail(err)
+		}
+		// Ghost reaping (see the identical call+comment below): must run
+		// BEFORE badge reconciliation so a sibling left on the NEW tuple
+		// under a stale (recycled tmux session id) session_created doesn't
+		// get counted into the badge push.
+		if _, err := d.s.DepartStaleSiblings(moved.DeviceID, moved.SocketPath, moved.SessionID, moved.SessionCreated, moved.Alias); err != nil {
+			return fail(err)
+		}
+		d.reconcileBadge(conv.SocketPath, conv.SessionID, conv.SessionCreated)
+		d.reconcileBadge(moved.SocketPath, moved.SessionID, moved.SessionCreated)
+		unread, _ := d.s.UnreadCount(conv.Alias)
+		d.logEvent(store.Event{Kind: "register", Agent: conv.Alias, Detail: "adopted (asked for " + alias + ")"})
+		return ok(map[string]any{"outcome": "adopted", "alias": conv.Alias, "unread": unread})
 	}
 
 	var mu *sync.Mutex
@@ -360,7 +396,86 @@ func (d *Daemon) handleRegisterAgent(a map[string]any) proto.Response {
 	if err != nil {
 		unread = 0
 	}
-	return ok(map[string]any{"outcome": outcome, "unread": unread})
+	return ok(map[string]any{"outcome": outcome, "alias": alias, "unread": unread})
+}
+
+// coalesce returns a if non-empty, else b.
+func coalesce(a, b string) string {
+	if a != "" {
+		return a
+	}
+	return b
+}
+
+// callerOwns decides whether a get_inbox caller may move alias's read
+// watermark (spec 2026-08-21 §3.2): alias is in the lineage of the caller's
+// proven tmux tuple, or — paneless — its row carries the caller's harness
+// UUID. No proof, or a zero session_created, owns nothing.
+//
+// Ownership is deliberately SESSION-granular, not pane-granular: there is no
+// caller_pane_id here, and there should never be one. SessionAliasLineage
+// keys on (device, socket, session_id, session_created) — a tuple, not a
+// pane — matching how the rest of the bus already treats a session as one
+// actor identity (SessionUnread sums every alias on the tuple as a single
+// badge; the tmux badge itself is a session-level option). A sibling pane in
+// the same tmux session sharing that tuple already shares the badge, so it
+// sharing the read watermark too is consistent, not a leak.
+func (d *Daemon) callerOwns(alias string, a map[string]any) (bool, error) {
+	if hid := str(a, "caller_harness_session_id"); hid != "" {
+		if ag, found, err := d.s.GetAgent(alias); err != nil {
+			return false, err
+		} else if found && ag.HarnessSessionID == hid {
+			return true, nil
+		}
+	}
+	sock, sess := str(a, "caller_socket_path"), str(a, "caller_session_id")
+	if sess == "" {
+		return false, nil
+	}
+	aliases, err := d.s.SessionAliasLineage(str(a, "caller_device_id"), sock, sess, i64(a, "caller_session_created"))
+	if err != nil {
+		return false, err
+	}
+	for _, x := range aliases {
+		if x == alias {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// callerIdentityDetail names the caller of an op from the SAME proof
+// callerOwns checks (Finding 5): a peek event needs to record WHO peeked, not
+// just which alias got peeked, or a sweep across many inboxes reads as every
+// peeked alias's own activity with no trace of the sweeper. Tolerant by
+// design — this is a logging convenience, never an auth decision, so any
+// resolution failure just falls back to a coarser identity rather than an
+// error:
+//
+//  1. the caller's live alias, when its (socket, session) tuple's lineage
+//     resolves to a non-departed row — the same lineage callerOwns walks;
+//  2. else the raw (socket, session) tuple it proved, so there is still
+//     SOMETHING to look at;
+//  3. else the harness session UUID, for a paneless caller with no tuple;
+//  4. else "unknown", when the caller sent no proof at all.
+func (d *Daemon) callerIdentityDetail(a map[string]any) string {
+	sock, sess := str(a, "caller_socket_path"), str(a, "caller_session_id")
+	if sess != "" {
+		if aliases, err := d.s.SessionAliasLineage(str(a, "caller_device_id"), sock, sess, i64(a, "caller_session_created")); err == nil {
+			for _, x := range aliases {
+				if ag, found, err := d.s.GetAgent(x); err == nil && found && !ag.Departed {
+					return x
+				}
+			}
+		}
+	}
+	if sock != "" || sess != "" {
+		return sock + "/" + sess
+	}
+	if hid := str(a, "caller_harness_session_id"); hid != "" {
+		return "harness:" + hid
+	}
+	return "unknown"
 }
 
 // setSessionBadge is the ONE canonical {recompute, push} sequence for a
@@ -869,6 +984,25 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 		if err != nil {
 			return fail(err)
 		}
+		// The watermark only moves for a caller who can prove it owns alias
+		// (spec 2026-08-05 §3.2). Anyone else gets the same threads back as a
+		// peek — no MarkRead, no badge touch — journaled so a sweep across
+		// aliases the caller doesn't own is visible after the fact.
+		owned, err := d.callerOwns(alias, a)
+		if err != nil {
+			return fail(err)
+		}
+		if !owned {
+			// Finding 5: Agent here is the PEEKED alias (kept for the
+			// existing per-alias event filter), so the caller who actually
+			// did the peeking has to live somewhere else on the row or the
+			// artifact never names the sweeper — a station poll of seven
+			// inboxes would otherwise look like seven agents just acting.
+			// Detail carries that identity: the caller's resolved alias when
+			// its proof resolves to a live row, else its raw tuple.
+			d.logEvent(store.Event{Kind: "peek", Agent: alias, Detail: d.callerIdentityDetail(a)})
+			return ok(map[string]any{"threads": threads, "marked_read": false})
+		}
 		// A read that didn't persist must not report success (spec §3): if
 		// MarkRead fails, the op fails outright — no read event, badge
 		// untouched.
@@ -884,7 +1018,7 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 			}
 		}
 		d.logEvent(store.Event{Kind: "read", Agent: alias, Detail: detail})
-		return ok(threads)
+		return ok(map[string]any{"threads": threads, "marked_read": true})
 	case "session_aliases":
 		// socket_path may be empty: a paneless session's tuple is ("",
 		// harness session UUID) — see internal/harnessenv. Only a missing
@@ -1052,7 +1186,7 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 		}
 		return ok(map[string]any{"updated": n})
 	case "stamp_harness_session":
-		if err := d.s.SetHarnessSessionID(str(a, "alias"), str(a, "harness_session_id")); err != nil {
+		if err := d.s.StampHarness(str(a, "alias"), str(a, "harness_session_id"), str(a, "transcript_path")); err != nil {
 			return fail(err)
 		}
 		return ok(nil)
@@ -1082,6 +1216,16 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 		// session", reported so a caller can say "you are now X — N
 		// unread" in one round trip.
 		from, to := str(a, "from"), str(a, "to")
+		// reclaimed distinguishes two very different becomes for the CLI's
+		// human-facing message (task 10): claiming a name nobody has ever
+		// held (reclaimed:false) versus becoming a name that once belonged to
+		// someone else and was deregistered (reclaimed:true). store.Become
+		// itself treats a departed `to` as silently reusable (DELETE + clone
+		// INSERT), so this must be decided from a read taken BEFORE the call.
+		reclaimed := false
+		if existing, found, err := d.s.GetAgent(to); err == nil && found && existing.Departed {
+			reclaimed = true
+		}
 		if err := d.s.Become(from, to); err != nil {
 			switch {
 			case errors.Is(err, store.ErrBecomeFromMissing):
@@ -1092,7 +1236,12 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 				// "become: " doubled into "become: become: ..." on the CLI.
 				return fail(fmt.Errorf("no such alias %q to become from; register first", from))
 			case errors.Is(err, store.ErrBecomeToExists):
-				return fail(fmt.Errorf("alias %q already has history; pick another name, or purge it with `muster gc --purge-agents`", to))
+				// A DEPARTED target is reclaimed rather than refused now
+				// (store.Become), so this error can only mean a LIVE session
+				// holds the name — and the old advice to purge it was both
+				// useless and dangerous here: `gc --purge-agents` deletes
+				// departed or tmux-dead rows, never a live one.
+				return fail(fmt.Errorf("alias %q is held by a live session; pick another name, or have that session release it first", to))
 			}
 			return fail(err)
 		}
@@ -1105,7 +1254,7 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 			// ErrBecomeToExists for a claim that already went through. Degrade
 			// best-effort exactly like the unread lookup below already does:
 			// skip the badge reconcile and report unread:0 instead of failing.
-			return ok(map[string]any{"from": from, "to": to, "unread": 0})
+			return ok(map[string]any{"from": from, "to": to, "unread": 0, "reclaimed": reclaimed})
 		}
 		d.reconcileBadge(ag.SocketPath, ag.SessionID, ag.SessionCreated)
 		// The device comes from the CLAIMED ROW, not from d.deviceID: a
@@ -1126,7 +1275,7 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 		if err != nil {
 			unread = 0 // best-effort: the claim already succeeded
 		}
-		return ok(map[string]any{"from": from, "to": to, "unread": unread})
+		return ok(map[string]any{"from": from, "to": to, "unread": unread, "reclaimed": reclaimed})
 	default:
 		return proto.Response{Error: "unknown op: " + req.Op}
 	}

@@ -327,9 +327,12 @@ export MUSTER_POLL_INTERVAL=2s
 ### 4a — cross-device delivery and wake
 
 **Check the badge BEFORE you read the inbox.** `muster inbox` marks the thread
-read, which clears the badge — so an inbox-then-badge ordering destroys the
-evidence and reports a wake failure that did not happen. Assert the badge
-first, then read to confirm delivery:
+read (and clears the badge) only when run from a pane that owns the alias —
+run it from anywhere else and it is a peek that changes nothing, which would
+mask the very wake behavior this step is testing. So run it from the
+recipient's own pane, and check the badge first: an inbox-then-badge ordering
+destroys the evidence and reports a wake failure that did not happen. Assert
+the badge first, then read to confirm delivery:
 
 ```bash
 # on device A

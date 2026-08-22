@@ -3,8 +3,11 @@ package mcpserver
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/schuettc/muster/internal/harnessenv"
+	"github.com/schuettc/muster/internal/tmuxenv"
 )
 
 // SendMessageIn is the input to send_message.
@@ -44,6 +47,13 @@ type GetInboxIn struct {
 // GetInboxOut is the output of get_inbox.
 type GetInboxOut struct {
 	Threads []ThreadView `json:"threads" jsonschema:"threads that concern the agent: addressed to it, its role, broadcast, or originated by it"`
+	// MarkedRead mirrors the daemon's marked_read (spec 2026-08-21 §3.2):
+	// true when the caller proved ownership of alias and its read watermark
+	// moved; false when this was a harmless peek that changed nothing.
+	MarkedRead bool `json:"marked_read" jsonschema:"true if this read moved alias's read watermark (you proved you are this session); false if it was a peek that changed nothing"`
+	// Detail carries the peek notice when MarkedRead is false — see
+	// getInboxHandler.
+	Detail string `json:"detail,omitempty" jsonschema:"present only on a peek: explains that alias's unread state was not changed by this read"`
 }
 
 // GetThreadIn is the input to get_thread.
@@ -93,15 +103,58 @@ func replyHandler(_ context.Context, _ *mcp.CallToolRequest, in ReplyIn) (*mcp.C
 }
 
 func getInboxHandler(_ context.Context, _ *mcp.CallToolRequest, in GetInboxIn) (*mcp.CallToolResult, GetInboxOut, error) {
-	raw, err := callDaemon("get_inbox", map[string]any{"alias": in.Alias})
+	// The caller's tmux/harness identity is the proof the daemon's
+	// callerOwns check needs (spec 2026-08-21 §3.2) to move alias's read
+	// watermark — sourced exactly like register_agent's own mint sites
+	// (tmuxenv.CaptureEnv for the tuple, harnessenv.FromEnv for the harness
+	// UUID). No caller_device_id: the register path never sends one either
+	// (it is stamped server-side only for a fixed set of session-scoped ops
+	// in remote mode — see daemon.deviceOps), so a local client mirrors that
+	// by omission. No caller_pane_id: ownership here is session-granular, not
+	// pane-granular (daemon commit 5a79d0e).
+	c := tmuxenv.CaptureEnv()
+	h := harnessenv.FromEnv()
+	raw, err := callDaemon("get_inbox", map[string]any{
+		"alias":                     in.Alias,
+		"caller_socket_path":        c.SocketPath,
+		"caller_session_id":         c.SessionID,
+		"caller_session_created":    c.SessionCreated,
+		"caller_harness_session_id": h.SessionID,
+	})
 	if err != nil {
 		return nil, GetInboxOut{}, err
 	}
-	var threads []ThreadView
-	if err := json.Unmarshal(raw, &threads); err != nil {
+	threads, markedRead, err := decodeInboxResponse(raw)
+	if err != nil {
 		return nil, GetInboxOut{}, err
 	}
-	return nil, GetInboxOut{Threads: threads}, nil
+	result := GetInboxOut{Threads: threads, MarkedRead: markedRead}
+	if !markedRead {
+		result.Detail = fmt.Sprintf("peek only — '%s' is not this session's; its unread state is unchanged", in.Alias)
+	}
+	return nil, result, nil
+}
+
+// decodeInboxResponse decodes a get_inbox payload, tolerating BOTH shapes
+// (Finding 2): a 0.13.0+ daemon returns {threads, marked_read}, but a client
+// upgraded ahead of a still-running pre-0.13.0 daemon (or a device forwarding
+// to a not-yet-redeployed hosted lambda) still gets the old bare-array shape.
+// Decoding that as marked_read=true matches the old daemon's actual
+// behavior — every read moved the watermark — so this is not a guess, it's
+// what happened. Deliberately no version handshake: this is decode-only.
+func decodeInboxResponse(raw []byte) ([]ThreadView, bool, error) {
+	var body struct {
+		Threads    []ThreadView `json:"threads"`
+		MarkedRead bool         `json:"marked_read"`
+	}
+	if err := json.Unmarshal(raw, &body); err == nil {
+		return body.Threads, body.MarkedRead, nil
+	}
+	var legacy []ThreadView
+	if err := json.Unmarshal(raw, &legacy); err != nil {
+		return nil, false, err
+	}
+	return legacy, true, nil
 }
 
 func getThreadHandler(_ context.Context, _ *mcp.CallToolRequest, in GetThreadIn) (*mcp.CallToolResult, GetThreadOut, error) {

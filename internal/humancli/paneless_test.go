@@ -110,6 +110,33 @@ func TestHookSessionStartPanelessRegistersFromPayload(t *testing.T) {
 	}
 }
 
+// TestHookSessionStartPanelessSeedRegisterCarriesTranscriptPath covers
+// Finding 4: the very first paneless SEED registration (spec §3.3 requires
+// every seed register to pass transcript_path) must store the hook payload's
+// transcript_path, not just the revive/reclaim paths that already did. A
+// daemon-hosted conversation that later runs /login has no live tmux tuple to
+// fall back on, so a row that never got its transcript stamped at seed time
+// can never be matched again by conversationRows, and every later get_inbox
+// for it comes back an unowned peek.
+func TestHookSessionStartPanelessSeedRegisterCarriesTranscriptPath(t *testing.T) {
+	startTestDaemon(t)
+	t.Setenv("MUSTER_DEVICE_NAME", "testdev")
+	panelessEnv(t, "", "tp-dir")
+
+	payload := `{"session_id":"hs-tp-1","cwd":"/tmp/somewhere/tp-dir","transcript_path":"/home/op/.claude/projects/x/tp-1.jsonl"}`
+	var buf bytes.Buffer
+	if err := cmdHook([]string{"SessionStart", "claude"}, strings.NewReader(payload), &buf); err != nil {
+		t.Fatalf("SessionStart: %v", err)
+	}
+	agents := listAgentsForTest(t, "")
+	if len(agents) != 1 {
+		t.Fatalf("expected one paneless registration, got %+v", agents)
+	}
+	if got := agents[0].TranscriptPath; got != "/home/op/.claude/projects/x/tp-1.jsonl" {
+		t.Fatalf("TranscriptPath = %q, want the payload's transcript_path stamped at seed time", got)
+	}
+}
+
 func TestHookSessionStartPanelessSuffixesPastLiveTmuxOwner(t *testing.T) {
 	startTestDaemon(t)
 	t.Setenv("MUSTER_DEVICE_NAME", "testdev")
@@ -229,7 +256,7 @@ func TestHookSessionEndPanelessReapsOnlyOwnAliases(t *testing.T) {
 }
 
 // TestHookSessionEndPanelessSparesLiveOtherTuple is finding F2's core
-// scenario: the resume-coexistence race. harnessOwnedRows keys purely on the
+// scenario: the resume-coexistence race. conversationRows keys purely on the
 // harness session UUID with no tuple discrimination, so a dying paneless
 // SessionEnd that enumerates them could tombstone a DIFFERENT alias's row
 // that a concurrent resume has already reclaimed onto a brand-new, live tmux
