@@ -1108,7 +1108,11 @@ func stubAncestryWalkToPane(t *testing.T, paneID, sessionID, sessionName string,
 		t.Fatal(err)
 	}
 	tmuxenv.SocketDir = func() string { return dir }
-	sock := filepath.Join(dir, "proj-walk")
+	// CaptureFromAncestry canonicalizes the matched socket path (Finding 1),
+	// so the sock this helper hands back to the caller for registration must
+	// match what the walk will actually resolve to — exactly as production
+	// registration (also routed through tmuxenv) would produce.
+	sock := tmuxenv.CanonicalSocketPath(filepath.Join(dir, "proj-walk"))
 
 	tmuxenv.Run = func(args ...string) (string, error) {
 		for _, a := range args {

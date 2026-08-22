@@ -160,3 +160,41 @@ func TestCaptureFromAncestryMatchesPanePID(t *testing.T) {
 		t.Fatalf("no-match capture = %+v, want zero value (fail-safe)", c)
 	}
 }
+
+// TestCaptureFromAncestryCanonicalizesSocketPath: Finding 1. The ancestry walk
+// globs SocketDir() directly (unlike SocketFromEnv, which reads $TMUX), so it
+// must canonicalize the matched socket path itself or every ancestry-derived
+// row keeps writing the raw (possibly symlinked, e.g. macOS /tmp) path and
+// undoing NormalizeSocketPaths' one-time migration on the next SessionStart.
+func TestCaptureFromAncestryCanonicalizesSocketPath(t *testing.T) {
+	prevRun, prevAnc, prevDir := Run, AncestorPIDs, SocketDir
+	t.Cleanup(func() { Run, AncestorPIDs, SocketDir = prevRun, prevAnc, prevDir })
+
+	realDir := t.TempDir()
+	linked := filepath.Join(t.TempDir(), "tmux-link")
+	if err := os.Symlink(realDir, linked); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(realDir, "proj-muster"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	AncestorPIDs = func() []int { return []int{4242, 1} }
+	Run = func(args ...string) (string, error) {
+		if contains(args, "list-panes") {
+			return "4242\t%7\t$3\tmuster-2\t555", nil
+		}
+		return "", nil
+	}
+	SocketDir = func() string { return linked }
+
+	c := CaptureFromAncestry()
+	resolvedReal, err := filepath.EvalSymlinks(realDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantSock := filepath.Join(resolvedReal, "proj-muster")
+	if c.SocketPath != wantSock {
+		t.Fatalf("SocketPath = %q, want canonical %q (symlink not resolved)", c.SocketPath, wantSock)
+	}
+}

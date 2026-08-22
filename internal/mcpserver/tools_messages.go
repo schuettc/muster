@@ -124,18 +124,37 @@ func getInboxHandler(_ context.Context, _ *mcp.CallToolRequest, in GetInboxIn) (
 	if err != nil {
 		return nil, GetInboxOut{}, err
 	}
-	var out struct {
-		Threads    []ThreadView `json:"threads"`
-		MarkedRead bool         `json:"marked_read"`
-	}
-	if err := json.Unmarshal(raw, &out); err != nil {
+	threads, markedRead, err := decodeInboxResponse(raw)
+	if err != nil {
 		return nil, GetInboxOut{}, err
 	}
-	result := GetInboxOut{Threads: out.Threads, MarkedRead: out.MarkedRead}
-	if !out.MarkedRead {
+	result := GetInboxOut{Threads: threads, MarkedRead: markedRead}
+	if !markedRead {
 		result.Detail = fmt.Sprintf("peek only — '%s' is not this session's; its unread state is unchanged", in.Alias)
 	}
 	return nil, result, nil
+}
+
+// decodeInboxResponse decodes a get_inbox payload, tolerating BOTH shapes
+// (Finding 2): a 0.13.0+ daemon returns {threads, marked_read}, but a client
+// upgraded ahead of a still-running pre-0.13.0 daemon (or a device forwarding
+// to a not-yet-redeployed hosted lambda) still gets the old bare-array shape.
+// Decoding that as marked_read=true matches the old daemon's actual
+// behavior — every read moved the watermark — so this is not a guess, it's
+// what happened. Deliberately no version handshake: this is decode-only.
+func decodeInboxResponse(raw []byte) ([]ThreadView, bool, error) {
+	var body struct {
+		Threads    []ThreadView `json:"threads"`
+		MarkedRead bool         `json:"marked_read"`
+	}
+	if err := json.Unmarshal(raw, &body); err == nil {
+		return body.Threads, body.MarkedRead, nil
+	}
+	var legacy []ThreadView
+	if err := json.Unmarshal(raw, &legacy); err != nil {
+		return nil, false, err
+	}
+	return legacy, true, nil
 }
 
 func getThreadHandler(_ context.Context, _ *mcp.CallToolRequest, in GetThreadIn) (*mcp.CallToolResult, GetThreadOut, error) {

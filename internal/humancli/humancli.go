@@ -131,6 +131,28 @@ type threadRow struct {
 	Unread    int    `json:"unread"`
 }
 
+// decodeInboxResponse decodes a get_inbox payload, tolerating BOTH shapes
+// (Finding 2): a 0.13.0+ daemon returns {threads, marked_read}, but a client
+// upgraded ahead of a still-running pre-0.13.0 daemon (or a device forwarding
+// to a not-yet-redeployed hosted lambda) still gets the old bare-array shape.
+// Decoding that as marked_read=true matches the old daemon's actual
+// behavior — every read moved the watermark — so this is not a guess, it's
+// what happened. Deliberately no version handshake: this is decode-only.
+func decodeInboxResponse(raw []byte) ([]threadRow, bool, error) {
+	var body struct {
+		Threads    []threadRow `json:"threads"`
+		MarkedRead bool        `json:"marked_read"`
+	}
+	if err := json.Unmarshal(raw, &body); err == nil {
+		return body.Threads, body.MarkedRead, nil
+	}
+	var legacy []threadRow
+	if err := json.Unmarshal(raw, &legacy); err != nil {
+		return nil, false, err
+	}
+	return legacy, true, nil
+}
+
 // callData sends one op to the daemon and returns its Data as JSON, or an error
 // if the transport failed or the daemon reported !OK.
 func callData(op string, args map[string]any) (json.RawMessage, error) {
@@ -560,14 +582,10 @@ func printThreads(out io.Writer, alias string, tasksOnly bool) error {
 	if err != nil {
 		return err
 	}
-	var body struct {
-		Threads    []threadRow `json:"threads"`
-		MarkedRead bool        `json:"marked_read"`
-	}
-	if err := json.Unmarshal(raw, &body); err != nil {
+	threads, markedRead, err := decodeInboxResponse(raw)
+	if err != nil {
 		return err
 	}
-	threads := body.Threads
 	// Only FROM, LAST-FROM, and a to_kind=agent TO target are aliases — a
 	// to_kind=role/broadcast target is a role or project name, never an
 	// alias, and must not be run through the alias display map.
@@ -602,7 +620,7 @@ func printThreads(out io.Writer, alias string, tasksOnly bool) error {
 	if err := tw.Flush(); err != nil {
 		return err
 	}
-	if !body.MarkedRead {
+	if !markedRead {
 		_, err := fmt.Fprintf(out, "peek only: '%s' is not this pane's alias — unread state unchanged\n", dispAlias(alias))
 		return err
 	}
