@@ -3,8 +3,11 @@ package mcpserver
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/schuettc/muster/internal/harnessenv"
+	"github.com/schuettc/muster/internal/tmuxenv"
 )
 
 // SendMessageIn is the input to send_message.
@@ -44,6 +47,13 @@ type GetInboxIn struct {
 // GetInboxOut is the output of get_inbox.
 type GetInboxOut struct {
 	Threads []ThreadView `json:"threads" jsonschema:"threads that concern the agent: addressed to it, its role, broadcast, or originated by it"`
+	// MarkedRead mirrors the daemon's marked_read (spec 2026-08-21 §3.2):
+	// true when the caller proved ownership of alias and its read watermark
+	// moved; false when this was a harmless peek that changed nothing.
+	MarkedRead bool `json:"marked_read" jsonschema:"true if this read moved alias's read watermark (you proved you are this session); false if it was a peek that changed nothing"`
+	// Detail carries the peek notice when MarkedRead is false — see
+	// getInboxHandler.
+	Detail string `json:"detail,omitempty" jsonschema:"present only on a peek: explains that alias's unread state was not changed by this read"`
 }
 
 // GetThreadIn is the input to get_thread.
@@ -93,22 +103,39 @@ func replyHandler(_ context.Context, _ *mcp.CallToolRequest, in ReplyIn) (*mcp.C
 }
 
 func getInboxHandler(_ context.Context, _ *mcp.CallToolRequest, in GetInboxIn) (*mcp.CallToolResult, GetInboxOut, error) {
-	raw, err := callDaemon("get_inbox", map[string]any{"alias": in.Alias})
+	// The caller's tmux/harness identity is the proof the daemon's
+	// callerOwns check needs (spec 2026-08-21 §3.2) to move alias's read
+	// watermark — sourced exactly like register_agent's own mint sites
+	// (tmuxenv.CaptureEnv for the tuple, harnessenv.FromEnv for the harness
+	// UUID). No caller_device_id: the register path never sends one either
+	// (it is stamped server-side only for a fixed set of session-scoped ops
+	// in remote mode — see daemon.deviceOps), so a local client mirrors that
+	// by omission. No caller_pane_id: ownership here is session-granular, not
+	// pane-granular (daemon commit 5a79d0e).
+	c := tmuxenv.CaptureEnv()
+	h := harnessenv.FromEnv()
+	raw, err := callDaemon("get_inbox", map[string]any{
+		"alias":                     in.Alias,
+		"caller_socket_path":        c.SocketPath,
+		"caller_session_id":         c.SessionID,
+		"caller_session_created":    c.SessionCreated,
+		"caller_harness_session_id": h.SessionID,
+	})
 	if err != nil {
 		return nil, GetInboxOut{}, err
 	}
-	// get_inbox now returns {threads, marked_read} rather than a bare array
-	// (spec 2026-08-21 §3.2, task 7): the watermark only moves for a caller
-	// who proves ownership of alias via caller_* args, which this handler
-	// does not yet send — every MCP get_inbox is a peek until a later task
-	// wires the caller's tmux/harness identity through here.
 	var out struct {
-		Threads []ThreadView `json:"threads"`
+		Threads    []ThreadView `json:"threads"`
+		MarkedRead bool         `json:"marked_read"`
 	}
 	if err := json.Unmarshal(raw, &out); err != nil {
 		return nil, GetInboxOut{}, err
 	}
-	return nil, GetInboxOut{Threads: out.Threads}, nil
+	result := GetInboxOut{Threads: out.Threads, MarkedRead: out.MarkedRead}
+	if !out.MarkedRead {
+		result.Detail = fmt.Sprintf("peek only — '%s' is not this session's; its unread state is unchanged", in.Alias)
+	}
+	return nil, result, nil
 }
 
 func getThreadHandler(_ context.Context, _ *mcp.CallToolRequest, in GetThreadIn) (*mcp.CallToolResult, GetThreadOut, error) {

@@ -185,6 +185,51 @@ func TestRegisterAgentSameAliasStillUpserts(t *testing.T) {
 	}
 }
 
+// TestRegisterAgentAdoptedOutcomeExplainsTheNameSwap covers register_agent's
+// "adopted" outcome (daemon commit a0b35bd): the daemon recognized the caller
+// as a conversation it already knows by transcript/tuple and moved that
+// row's tuple onto this pane rather than inserting a sibling — under the
+// alias the CALLER asked for, not necessarily the one it got back. Without
+// this, a model asking to register "researcher" and being told nothing
+// wrong happened would have no idea its actual identity is some other alias
+// entirely (ack.Alias), and would go on addressing itself by a name no row
+// answers to.
+func TestRegisterAgentAdoptedOutcomeExplainsTheNameSwap(t *testing.T) {
+	t.Setenv("TMUX", "/tmp/sock,1,0")
+	t.Setenv("TMUX_PANE", "%6")
+	t.Setenv("MUSTER_DEVICE_NAME", "personal")
+	prev := tmuxenv.Run
+	tmuxenv.Run = func(_ ...string) (string, error) { return "$1", nil }
+	t.Cleanup(func() { tmuxenv.Run = prev })
+
+	prevDaemon := callDaemon
+	callDaemon = func(op string, _ map[string]any) (json.RawMessage, error) {
+		switch op {
+		case "list_agents":
+			return json.RawMessage(`[]`), nil // no existing row on THIS pane
+		case "register_agent":
+			return json.RawMessage(`{"outcome":"adopted","alias":"first","unread":0}`), nil
+		}
+		t.Fatalf("unexpected op %s", op)
+		return nil, nil
+	}
+	t.Cleanup(func() { callDaemon = prevDaemon })
+
+	_, out, err := registerAgentHandler(context.TODO(), nil, RegisterAgentIn{Alias: "second", ModelType: "claude"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !out.OK {
+		t.Fatalf("expected OK, got %+v", out)
+	}
+	if !strings.Contains(out.Detail, "already 'first' on this pane") {
+		t.Fatalf("detail must name the adopted alias, got %q", out.Detail)
+	}
+	if !strings.Contains(out.Detail, "become:true") {
+		t.Fatalf("detail must offer become:true as the way to claim the asked-for name, got %q", out.Detail)
+	}
+}
+
 // TestRegisterAgentBareAliasMatchesSeededRow covers the realistic already-
 // registered case the MCP mint path actually produces: the stored row's alias
 // is SEEDED ("personal-researcher"), but a model re-registering quotes the
