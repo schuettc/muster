@@ -80,7 +80,7 @@ func TestGetInboxKeepsTheFullFromAgent(t *testing.T) {
 		if op != "get_inbox" {
 			t.Fatalf("unexpected op %s", op)
 		}
-		return json.RawMessage(`[{"id":1,"kind":"message","from_agent":"` + fullAlias + `","to_kind":"agent","to_target":"peer","subject":"hi","last_from":"` + fullAlias + `"}]`), nil
+		return json.RawMessage(`{"threads":[{"id":1,"kind":"message","from_agent":"` + fullAlias + `","to_kind":"agent","to_target":"peer","subject":"hi","last_from":"` + fullAlias + `"}],"marked_read":false}`), nil
 	}
 	t.Cleanup(func() { callDaemon = prevDaemon })
 

@@ -203,7 +203,12 @@ func TestRegisterStationFailsOverOnLiveCollision(t *testing.T) {
 func TestRegisterStationTakesOverDeadCollision(t *testing.T) {
 	startStationTestDaemon(t)
 	caller := daemonCaller{}
-	registerDirect(t, caller, "station", "/dead", "$DEAD")
+	if _, err := caller.Call("register_agent", map[string]any{
+		"alias": "station", "role": "operator", "model_type": "station",
+		"socket_path": "/dead", "session_id": "$DEAD", "session_created": 100,
+	}); err != nil {
+		t.Fatal(err)
+	}
 	stubTmuxAlive(t, "", "") // nothing is alive, including /dead,$DEAD
 
 	// The dead row already has mail acknowledged against it (get_inbox --
@@ -213,7 +218,11 @@ func TestRegisterStationTakesOverDeadCollision(t *testing.T) {
 	if _, err := caller.Call("send_message", map[string]any{"from": "alpha-1", "to_kind": "agent", "to_target": "station", "body": "hi", "intent": "fyi"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := caller.Call("get_inbox", map[string]any{"alias": "station"}); err != nil {
+	// caller_* proves ownership of the dead row's own tuple (spec
+	// 2026-08-21 §3.2, task 7) so this get_inbox actually marks read.
+	if _, err := caller.Call("get_inbox", map[string]any{
+		"alias": "station", "caller_socket_path": "/dead", "caller_session_id": "$DEAD", "caller_session_created": 100,
+	}); err != nil {
 		t.Fatal(err)
 	}
 	before := getFullAgent(t, caller, "station")
@@ -257,7 +266,7 @@ func TestRegisterStationTakesOverDeadCollision(t *testing.T) {
 func TestRegisterMarkReadReRegisterPreservesWatermark(t *testing.T) {
 	startStationTestDaemon(t)
 	caller := daemonCaller{}
-	c := tmuxenv.Capture{SocketPath: "/s", SessionID: "$1", SessionName: "sess", PaneID: "%1"}
+	c := tmuxenv.Capture{SocketPath: "/s", SessionID: "$1", SessionName: "sess", PaneID: "%1", SessionCreated: 100}
 
 	if _, err := registerStation(caller, "station", c); err != nil {
 		t.Fatal(err)
@@ -266,7 +275,11 @@ func TestRegisterMarkReadReRegisterPreservesWatermark(t *testing.T) {
 	if _, err := caller.Call("send_message", map[string]any{"from": "alpha-1", "to_kind": "agent", "to_target": "station", "body": "hi", "intent": "fyi"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := caller.Call("get_inbox", map[string]any{"alias": "station"}); err != nil {
+	// caller_* proves ownership of station's own inbox read (spec
+	// 2026-08-21 §3.2, task 7) — without it get_inbox is a no-op peek.
+	if _, err := caller.Call("get_inbox", map[string]any{
+		"alias": "station", "caller_socket_path": c.SocketPath, "caller_session_id": c.SessionID, "caller_session_created": c.SessionCreated,
+	}); err != nil {
 		t.Fatal(err)
 	}
 	before := getFullAgent(t, caller, "station")
@@ -317,7 +330,7 @@ func TestRegisterMarkReadReRegisterPreservesWatermark(t *testing.T) {
 func TestReadStateSurvivesQuitAndRelaunch(t *testing.T) {
 	startStationTestDaemon(t)
 	caller := daemonCaller{}
-	c := tmuxenv.Capture{SocketPath: "/s", SessionID: "$1", SessionName: "sess", PaneID: "%1"}
+	c := tmuxenv.Capture{SocketPath: "/s", SessionID: "$1", SessionName: "sess", PaneID: "%1", SessionCreated: 100}
 
 	if _, err := registerStation(caller, "station", c); err != nil {
 		t.Fatal(err)
@@ -330,8 +343,10 @@ func TestReadStateSurvivesQuitAndRelaunch(t *testing.T) {
 	// Acknowledge the mail through a REAL station Model driven against the
 	// real daemon: 'm' opens the mailbox page, Enter on the unread row fires
 	// get_inbox for real (spec §5-LOCK's open-to-acknowledge path) — the
-	// exact op an operator's keypress triggers.
-	m := NewModel(caller, Options{Alias: "station"})
+	// exact op an operator's keypress triggers. Options carries the same
+	// tuple registerStation used, so that get_inbox proves ownership (spec
+	// 2026-08-21 §3.2, task 7) instead of becoming a peek.
+	m := NewModel(caller, Options{Alias: "station", SocketPath: c.SocketPath, SessionID: c.SessionID, SessionCreated: c.SessionCreated})
 	next, _ := m.Update(fetchAgentsCmd(caller)())
 	m = mustModel(t, next)
 	next, cmd := m.Update(fetchThreadsCmd(caller)())

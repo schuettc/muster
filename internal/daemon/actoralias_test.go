@@ -210,9 +210,13 @@ func TestGetInboxExpandsAShortLocalAlias(t *testing.T) {
 	if !resp.OK {
 		t.Fatalf("get_inbox with a short local alias: %+v", resp)
 	}
-	threads, ok := resp.Data.([]store.Thread)
+	m, ok := resp.Data.(map[string]any)
 	if !ok {
-		t.Fatalf("get_inbox data = %T, want []store.Thread", resp.Data)
+		t.Fatalf("get_inbox data = %T, want map[string]any", resp.Data)
+	}
+	threads, ok := m["threads"].([]store.Thread)
+	if !ok {
+		t.Fatalf("get_inbox threads = %T, want []store.Thread", m["threads"])
 	}
 	if len(threads) != 1 {
 		t.Fatalf("get_inbox returned %d thread(s), want 1 — a short alias must reach the seeded row's mail", len(threads))
@@ -260,9 +264,13 @@ func TestGetInboxDepartedAliasStillDrains(t *testing.T) {
 		if !resp.OK {
 			t.Fatalf("get_inbox %q on a departed row: %+v", alias, resp)
 		}
-		threads, ok := resp.Data.([]store.Thread)
+		m, ok := resp.Data.(map[string]any)
 		if !ok {
-			t.Fatalf("get_inbox data = %T, want []store.Thread", resp.Data)
+			t.Fatalf("get_inbox data = %T, want map[string]any", resp.Data)
+		}
+		threads, ok := m["threads"].([]store.Thread)
+		if !ok {
+			t.Fatalf("get_inbox threads = %T, want []store.Thread", m["threads"])
 		}
 		if len(threads) != 1 {
 			t.Fatalf("get_inbox %q returned %d thread(s), want 1", alias, len(threads))

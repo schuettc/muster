@@ -407,6 +407,34 @@ func coalesce(a, b string) string {
 	return b
 }
 
+// callerOwns decides whether a get_inbox caller may move alias's read
+// watermark (spec 2026-08-21 §3.2): alias is in the lineage of the caller's
+// proven tmux tuple, or — paneless — its row carries the caller's harness
+// UUID. No proof, or a zero session_created, owns nothing.
+func (d *Daemon) callerOwns(alias string, a map[string]any) (bool, error) {
+	if hid := str(a, "caller_harness_session_id"); hid != "" {
+		if ag, found, err := d.s.GetAgent(alias); err != nil {
+			return false, err
+		} else if found && ag.HarnessSessionID == hid {
+			return true, nil
+		}
+	}
+	sock, sess := str(a, "caller_socket_path"), str(a, "caller_session_id")
+	if sess == "" {
+		return false, nil
+	}
+	aliases, err := d.s.SessionAliasLineage(str(a, "caller_device_id"), sock, sess, i64(a, "caller_session_created"))
+	if err != nil {
+		return false, err
+	}
+	for _, x := range aliases {
+		if x == alias {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // setSessionBadge is the ONE canonical {recompute, push} sequence for a
 // session's tmux badge (spec §3): under the session's lock, recompute the
 // total unread via d.sessionUnread — the local store's SessionUnread in local
@@ -913,6 +941,18 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 		if err != nil {
 			return fail(err)
 		}
+		// The watermark only moves for a caller who can prove it owns alias
+		// (spec 2026-08-05 §3.2). Anyone else gets the same threads back as a
+		// peek — no MarkRead, no badge touch — journaled so a sweep across
+		// aliases the caller doesn't own is visible after the fact.
+		owned, err := d.callerOwns(alias, a)
+		if err != nil {
+			return fail(err)
+		}
+		if !owned {
+			d.logEvent(store.Event{Kind: "peek", Agent: alias})
+			return ok(map[string]any{"threads": threads, "marked_read": false})
+		}
 		// A read that didn't persist must not report success (spec §3): if
 		// MarkRead fails, the op fails outright — no read event, badge
 		// untouched.
@@ -928,7 +968,7 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 			}
 		}
 		d.logEvent(store.Event{Kind: "read", Agent: alias, Detail: detail})
-		return ok(threads)
+		return ok(map[string]any{"threads": threads, "marked_read": true})
 	case "session_aliases":
 		// socket_path may be empty: a paneless session's tuple is ("",
 		// harness session UUID) — see internal/harnessenv. Only a missing

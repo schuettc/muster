@@ -532,10 +532,17 @@ func printThreads(out io.Writer, alias string, tasksOnly bool) error {
 	if err != nil {
 		return err
 	}
-	var threads []threadRow
-	if err := json.Unmarshal(raw, &threads); err != nil {
+	// get_inbox now returns {threads, marked_read} rather than a bare array
+	// (spec 2026-08-21 §3.2, task 7): the CLI sends no caller_* proof, so
+	// this is always a peek — the read watermark does not move. Task 10
+	// covers surfacing marked_read to the operator.
+	var body struct {
+		Threads []threadRow `json:"threads"`
+	}
+	if err := json.Unmarshal(raw, &body); err != nil {
 		return err
 	}
+	threads := body.Threads
 	// Only FROM, LAST-FROM, and a to_kind=agent TO target are aliases — a
 	// to_kind=role/broadcast target is a role or project name, never an
 	// alias, and must not be run through the alias display map.

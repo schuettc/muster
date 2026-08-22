@@ -97,11 +97,18 @@ func getInboxHandler(_ context.Context, _ *mcp.CallToolRequest, in GetInboxIn) (
 	if err != nil {
 		return nil, GetInboxOut{}, err
 	}
-	var threads []ThreadView
-	if err := json.Unmarshal(raw, &threads); err != nil {
+	// get_inbox now returns {threads, marked_read} rather than a bare array
+	// (spec 2026-08-21 §3.2, task 7): the watermark only moves for a caller
+	// who proves ownership of alias via caller_* args, which this handler
+	// does not yet send — every MCP get_inbox is a peek until a later task
+	// wires the caller's tmux/harness identity through here.
+	var out struct {
+		Threads []ThreadView `json:"threads"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
 		return nil, GetInboxOut{}, err
 	}
-	return nil, GetInboxOut{Threads: threads}, nil
+	return nil, GetInboxOut{Threads: out.Threads}, nil
 }
 
 func getThreadHandler(_ context.Context, _ *mcp.CallToolRequest, in GetThreadIn) (*mcp.CallToolResult, GetThreadOut, error) {

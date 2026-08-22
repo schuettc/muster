@@ -13,10 +13,16 @@ func TestEventsCommandPrintsLog(t *testing.T) {
 	// A send to a session-less agent produces a "skipped" notify event only
 	// when a notifier is wired; with the nil-notifier test daemon the event
 	// log is fed by get_inbox reads.
-	if _, err := callData("register_agent", map[string]any{"alias": "api", "model_type": "claude"}); err != nil {
+	if _, err := callData("register_agent", map[string]any{
+		"alias": "api", "model_type": "claude", "socket_path": "/s", "session_id": "$1", "session_created": 100,
+	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := callData("get_inbox", map[string]any{"alias": "api"}); err != nil {
+	// caller_* proves ownership (spec 2026-08-21 §3.2, task 7) so this lands
+	// a "read" event, not a "peek" — the assertion below is on "read".
+	if _, err := callData("get_inbox", map[string]any{
+		"alias": "api", "caller_socket_path": "/s", "caller_session_id": "$1", "caller_session_created": 100,
+	}); err != nil {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer

@@ -268,9 +268,15 @@ func fetchThreadPageCmd(caller render.Caller, threadID, offset, limit int64, old
 // acknowledge exception) — never on focus, selection, or poll.
 type inboxAckMsg struct{ err error }
 
-func fetchInboxAckCmd(caller render.Caller, alias string) tea.Cmd {
+func fetchInboxAckCmd(caller render.Caller, alias, socketPath, sessionID string, sessionCreated int64) tea.Cmd {
 	return func() tea.Msg {
-		_, err := caller.Call("get_inbox", map[string]any{"alias": alias})
+		_, err := caller.Call("get_inbox", map[string]any{
+			"alias": alias,
+			// Proves ownership (spec 2026-08-21 §3.2, task 7): without this,
+			// get_inbox is a peek and never advances station's own read
+			// watermark.
+			"caller_socket_path": socketPath, "caller_session_id": sessionID, "caller_session_created": sessionCreated,
+		})
 		return inboxAckMsg{err: err}
 	}
 }
