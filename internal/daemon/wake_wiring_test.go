@@ -236,7 +236,9 @@ func TestGetInboxClearsFlag(t *testing.T) {
 	// §3), so it already emits one Clear($5) before get_inbox runs — assert
 	// the DELTA get_inbox contributes, not the raw total.
 	before := len(n.snap(&n.cleared))
-	call(t, sock, "get_inbox", map[string]any{"alias": "reviewer"})
+	call(t, sock, "get_inbox", map[string]any{
+		"alias": "reviewer", "caller_socket_path": "/s", "caller_session_id": "$5", "caller_session_created": 100,
+	})
 	got := n.snap(&n.cleared)
 	if len(got) != before+1 || got[len(got)-1] != "$5" {
 		t.Fatalf("get_inbox should clear reviewer's session $5, got %v (before=%d)", got, before)
@@ -263,7 +265,9 @@ func TestGetInboxMarksRead(t *testing.T) {
 	if n, err := s.UnreadCount("reviewer"); err != nil || n != 1 {
 		t.Fatalf("unread before get_inbox = %d (%v), want 1", n, err)
 	}
-	call(t, sock, "get_inbox", map[string]any{"alias": "reviewer"})
+	call(t, sock, "get_inbox", map[string]any{
+		"alias": "reviewer", "caller_socket_path": "/s", "caller_session_id": "$5", "caller_session_created": 100,
+	})
 	if got, err := s.UnreadCount("reviewer"); err != nil || got != 0 {
 		t.Fatalf("unread after get_inbox = %d (%v), want 0", got, err)
 	}
@@ -323,7 +327,9 @@ func TestEventsLogged(t *testing.T) {
 	sock := startWithNotifier(t, n)
 	call(t, sock, "register_agent", map[string]any{"alias": "api", "model_type": "claude", "socket_path": "/s", "session_id": "$2", "session_created": 100})
 	call(t, sock, "send_message", map[string]any{"from": "web", "to_kind": "agent", "to_target": "api", "subject": "req", "body": "x"})
-	call(t, sock, "get_inbox", map[string]any{"alias": "api"})
+	call(t, sock, "get_inbox", map[string]any{
+		"alias": "api", "caller_socket_path": "/s", "caller_session_id": "$2", "caller_session_created": 100,
+	})
 
 	resp := call(t, sock, "list_events", map[string]any{"backlog": true, "limit": 50})
 	var out struct {
@@ -464,7 +470,9 @@ func TestLit2Regression(t *testing.T) {
 	}
 
 	// Drain ONLY aliasA.
-	call(t, sock, "get_inbox", map[string]any{"alias": "aliasA"})
+	call(t, sock, "get_inbox", map[string]any{
+		"alias": "aliasA", "caller_socket_path": "/s", "caller_session_id": "$9", "caller_session_created": 100,
+	})
 
 	remainder, _, err := s.SessionUnread("", "/s", "$9", 100)
 	if err != nil {
@@ -523,7 +531,9 @@ func TestGetInboxFailsWhenMarkReadFails(t *testing.T) {
 	beforeNotified := len(n.snap(&n.notified))
 
 	fs.failMarkRead = true
-	resp := call(t, sock, "get_inbox", map[string]any{"alias": "reviewer"})
+	resp := call(t, sock, "get_inbox", map[string]any{
+		"alias": "reviewer", "caller_socket_path": "/s", "caller_session_id": "$5", "caller_session_created": 100,
+	})
 	if resp.OK {
 		t.Fatalf("get_inbox must fail when MarkRead fails, got %+v", resp)
 	}
@@ -607,7 +617,9 @@ func TestNotifyDrainInterleaving(t *testing.T) {
 
 	getInboxDone := make(chan struct{})
 	go func() {
-		call(t, sock, "get_inbox", map[string]any{"alias": "solo"})
+		call(t, sock, "get_inbox", map[string]any{
+			"alias": "solo", "caller_socket_path": "/s", "caller_session_id": "$9", "caller_session_created": 100,
+		})
 		close(getInboxDone)
 	}()
 	// Give get_inbox's Inbox+MarkRead (unlocked, fast local DB ops) time to

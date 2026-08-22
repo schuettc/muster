@@ -155,6 +155,15 @@ type Options struct {
 	Width    int           // total line budget (--width; 0 = default)
 	Alias    string        // this station's own registered alias
 	Nudger   nudger        // test seam for the 'n' nudge action; nil (default) uses nudge.TmuxNudger{} (real tmux)
+
+	// SocketPath/SessionID/SessionCreated are this station's own registered
+	// tmux tuple (from registerStation's Capture) — get_inbox's ownership
+	// check (spec 2026-08-21 §3.2, task 7) needs this proof so station's own
+	// open-to-acknowledge read (fetchInboxAckCmd) actually marks read
+	// instead of becoming a no-op peek.
+	SocketPath     string
+	SessionID      string
+	SessionCreated int64
 }
 
 // Model is the station Bubble Tea model. It owns the event journal cursor —
@@ -911,7 +920,7 @@ func (m Model) maybeAckThread(threadID int64) (Model, tea.Cmd) {
 		m.ackedThreads = map[int64]bool{}
 	}
 	m.ackedThreads[row.ID] = true
-	return m, fetchInboxAckCmd(m.caller, m.opts.Alias)
+	return m, fetchInboxAckCmd(m.caller, m.opts.Alias, m.opts.SocketPath, m.opts.SessionID, m.opts.SessionCreated)
 }
 
 // openReadFromList pushes the Read frame from the currently selected

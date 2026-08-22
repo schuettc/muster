@@ -212,7 +212,9 @@ func TestDeregisterPreservesReadWatermark(t *testing.T) {
 	if _, err := client.Call(sock, proto.Request{Op: "send_message", Args: map[string]any{"from": "peer", "to_kind": "agent", "to_target": "reader", "body": "hi"}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := client.Call(sock, proto.Request{Op: "get_inbox", Args: map[string]any{"alias": "reader"}}); err != nil {
+	if _, err := client.Call(sock, proto.Request{Op: "get_inbox", Args: map[string]any{
+		"alias": "reader", "caller_socket_path": "/s", "caller_session_id": "$1", "caller_session_created": 100,
+	}}); err != nil {
 		t.Fatal(err)
 	}
 	resp, err := client.Call(sock, proto.Request{Op: "get_agent", Args: map[string]any{"alias": "reader"}})

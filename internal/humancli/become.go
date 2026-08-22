@@ -117,7 +117,8 @@ func cmdBecome(args []string, out io.Writer) error {
 		return err
 	}
 	var res struct {
-		Unread int `json:"unread"`
+		Unread    int  `json:"unread"`
+		Reclaimed bool `json:"reclaimed"`
 	}
 	if err := json.Unmarshal(raw, &res); err != nil {
 		return err
@@ -133,6 +134,17 @@ func cmdBecome(args []string, out io.Writer) error {
 		syncAgentName(out, shown, c.SocketPath, c.SessionID)
 	}
 	_, err = fmt.Fprintf(out, "you are now '%s' (was '%s') — %d unread thread(s)\n", shown, dispAlias(fromAlias), res.Unread)
+	if err != nil {
+		return err
+	}
+	if res.Reclaimed {
+		// A departed name may be reclaimed; a live one is refused
+		// (ErrBecomeToExists, above). Say so explicitly — otherwise this
+		// reads as an ordinary rename, and the operator has no way to tell
+		// they just inherited a name (and whatever inbox/history rides along
+		// with it) that used to belong to someone else.
+		_, err = fmt.Fprintf(out, "note: '%s' reclaimed departed name — its prior history is now yours\n", shown)
+	}
 	return err
 }
 

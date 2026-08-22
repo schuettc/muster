@@ -102,7 +102,10 @@ func Run(args []string) error {
 		return fmt.Errorf("station: register: %w", err)
 	}
 
-	m := NewModel(caller, Options{Interval: *interval, Aliases: *aliases, Width: *width, Alias: registeredAlias})
+	m := NewModel(caller, Options{
+		Interval: *interval, Aliases: *aliases, Width: *width, Alias: registeredAlias,
+		SocketPath: c.SocketPath, SessionID: c.SessionID, SessionCreated: c.SessionCreated,
+	})
 	p := tea.NewProgram(m, tea.WithAltScreen())
 
 	// SIGINT/SIGTERM quit the program through the SAME path as pressing `q`

@@ -107,9 +107,34 @@ func registerAgentHandler(_ context.Context, _ *mcp.CallToolRequest, in Register
 	}
 	var ack struct {
 		Outcome string `json:"outcome"`
+		Alias   string `json:"alias"`
 		Unread  int    `json:"unread"`
 	}
 	_ = json.Unmarshal(raw, &ack)
+	if ack.Outcome == "adopted" {
+		// The daemon recognized this caller as a conversation it already
+		// knows (by transcript or tuple — spec 2026-08-21 §3.2, daemon commit
+		// a0b31bd) and moved THAT row onto this pane instead of inserting a
+		// sibling. ack.Alias is the row's real, EFFECTIVE alias — it can
+		// differ from what the caller asked for (alias) — so the caller must
+		// be told which name actually answers, or it will keep addressing
+		// itself by a name no row owns.
+		//
+		// Finding 3: when in.Become was already true, register_agent's own
+		// become branch above (paneRegistration ok && alias mismatch) is what
+		// normally handles a reclaim — this "adopted" outcome instead means
+		// the daemon resolved the row a DIFFERENT way (by transcript, not
+		// pane), so there is no live become to retry: telling the caller to
+		// "pass become:true" here would have it repeat exactly what it just
+		// did, forever. Say what happened and what would actually rename it.
+		var detail string
+		if in.Become {
+			detail = fmt.Sprintf("you are already '%s' on this pane — '%s' is now the adopted alias for this conversation; run 'muster label <name>' from this session to rename it", ack.Alias, ack.Alias)
+		} else {
+			detail = fmt.Sprintf("you are already '%s' on this pane — use that alias, or pass become:true to claim '%s' as this session's name", ack.Alias, alias)
+		}
+		return nil, OKOut{OK: true, Detail: detail}, nil
+	}
 	detail := "registered " + alias
 	if ack.Outcome == "revived" {
 		detail = fmt.Sprintf("reconnected as '%s' — revived a previous registration", alias)

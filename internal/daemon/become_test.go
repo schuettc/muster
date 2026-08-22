@@ -41,9 +41,48 @@ func TestBecomeOpClaimsAndReports(t *testing.T) {
 		t.Fatalf("no become journal event: %+v", ev.Data)
 	}
 
+	// "peer" is LIVE, so become must refuse — and the message must not
+	// advise purging, which cannot remove a live row (see the handler).
 	resp = call(t, sock, "become", map[string]any{"from": "alias-routing", "to": "peer"})
-	if resp.OK || !strings.Contains(resp.Error, "already has history") {
+	if resp.OK || !strings.Contains(resp.Error, "held by a live session") {
 		t.Fatalf("existing-to guard: %+v", resp)
+	}
+	if strings.Contains(resp.Error, "purge") {
+		t.Fatalf("refusal must not advise purging a live alias: %+v", resp)
+	}
+}
+
+// TestBecomeReportsReclaimed pins the `reclaimed` bool the CLI needs to tell
+// an operator apart two very different becomes: claiming a brand-new name
+// (reclaimed:false) versus reclaiming a name that once belonged to someone
+// else and was deregistered (reclaimed:true) — store.Become itself treats
+// both the same way (a tombstoned `to` is silently reused, DELETE + clone
+// INSERT), so the daemon must look BEFORE calling Become to tell them apart.
+func TestBecomeReportsReclaimed(t *testing.T) {
+	sock := startWithNotifier(t, &fakeNotifier{})
+	call(t, sock, "register_agent", map[string]any{"alias": "muster-2", "socket_path": "/s", "session_id": "$1", "session_created": 100})
+
+	// Fresh name: never registered before.
+	resp := call(t, sock, "become", map[string]any{"from": "muster-2", "to": "alias-routing"})
+	if !resp.OK {
+		t.Fatalf("become: %+v", resp)
+	}
+	data, _ := resp.Data.(map[string]any)
+	if reclaimed, _ := data["reclaimed"].(bool); reclaimed {
+		t.Fatalf("a never-before-seen name must report reclaimed:false, got %+v", data)
+	}
+
+	// Deregister the successor, register a fresh seed, then become the
+	// now-departed name: this IS a reclaim.
+	call(t, sock, "deregister_agent", map[string]any{"alias": "alias-routing"})
+	call(t, sock, "register_agent", map[string]any{"alias": "muster-3", "socket_path": "/s", "session_id": "$2", "session_created": 100})
+	resp = call(t, sock, "become", map[string]any{"from": "muster-3", "to": "alias-routing"})
+	if !resp.OK {
+		t.Fatalf("become (reclaim): %+v", resp)
+	}
+	data, _ = resp.Data.(map[string]any)
+	if reclaimed, _ := data["reclaimed"].(bool); !reclaimed {
+		t.Fatalf("becoming a departed name must report reclaimed:true, got %+v", data)
 	}
 }
 

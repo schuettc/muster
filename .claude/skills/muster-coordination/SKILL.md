@@ -27,6 +27,13 @@ unread. (Under Claude Code the SessionStart hook does this reclaim for you
 and tells you your alias and backlog; re-registering by name is the fallback
 every harness has.)
 
+Underneath the alias, the bus actually tracks *conversations* by transcript
+path — if you register under a name other than the one your transcript
+already owns a row for, the daemon adopts that existing row onto your
+current tuple instead of creating a second one; the response's `outcome`
+comes back `adopted` and carries the row's real alias, which may differ from
+the name you asked for.
+
 Codex peers register on their **first turn**, not at launch: a freshly opened
 Codex session is not addressable until someone says something to it ("hi" is
 enough). If a Codex peer you expect is missing from `list_agents`, that is the
@@ -104,6 +111,16 @@ address you by a name that means something.
   mid-session), the CLI is the same loop from your shell: `muster inbox <alias>`,
   `muster thread <id>`, `muster reply <id> "…" --from <alias>`. Never treat a dead
   MCP connection as a dead bus.
+- `muster inbox <alias>` (and `muster tasks <alias>`) only mark the alias's mail
+  read when run from a pane that owns it — ownership is scoped to the whole
+  tmux session (device, socket, session_id, session_created), so any pane in
+  that same session counts, but a different session or a different device
+  does not. From anywhere else the command still prints the same threads, but
+  changes nothing and prints a peek notice; every peek is journaled on the bus
+  side. There is no flag to force a read from an unowned pane — an operator
+  who needs to clear mail on an alias nobody currently owns runs `muster
+  inbox <alias>` from that alias's own pane, or has the conversation
+  re-register there first.
 
 ## Etiquette
 
