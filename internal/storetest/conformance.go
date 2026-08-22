@@ -131,6 +131,7 @@ var cases = []conformanceCase{
 	{"BecomeRefusesAnExistingTarget", testBecomeRefusesExistingTarget},
 	{"BecomeRefusesAMissingSource", testBecomeRefusesMissingSource},
 	{"BecomeIsAtomicOnRefusal", testBecomeAtomicOnRefusal},
+	{"BecomeReclaimsADepartedTarget", testBecomeReclaimsDeparted},
 	{"FindConversationByTranscript", testFindConversationTranscript},
 	{"FindConversationByPaneTuple", testFindConversationPane},
 	{"FindConversationTranscriptBeatsPane", testFindConversationPrecedence},
@@ -2322,10 +2323,10 @@ func testBecomeStampsSupersededBy(t *testing.T, s store.API) {
 	}
 }
 
-// testBecomeRefusesExistingTarget: `to` must not exist AT ALL. A live row is
-// someone else's identity; a tombstone is another conversation's history.
-// Merging identities is the confusion the feature exists to kill, so this is a
-// compare-and-swap, not a read-then-write.
+// testBecomeRefusesExistingTarget: `to` must not exist as a LIVE row. A live
+// row is someone else's identity, so merging into it is the confusion the
+// feature exists to kill; this is a compare-and-swap, not a read-then-write.
+// A departed target is a separate case — see testBecomeReclaimsDeparted.
 func testBecomeRefusesExistingTarget(t *testing.T, s store.API) {
 	mustRegister(t, s, store.Agent{Alias: "seed", SocketPath: "/s", SessionID: "$1"})
 	mustRegister(t, s, store.Agent{Alias: "taken", SocketPath: "/other", SessionID: "$2"})
@@ -2333,48 +2334,26 @@ func testBecomeRefusesExistingTarget(t *testing.T, s store.API) {
 	if err := s.Become("seed", "taken"); !errors.Is(err, store.ErrBecomeToExists) {
 		t.Fatalf("Become onto a live alias = %v, want ErrBecomeToExists", err)
 	}
-	// A tombstone is just as much of a refusal as a live row.
-	if err := s.DepartAgent("taken"); err != nil {
-		t.Fatalf("DepartAgent: %v", err)
-	}
-	if err := s.Become("seed", "taken"); !errors.Is(err, store.ErrBecomeToExists) {
-		t.Fatalf("Become onto a tombstone = %v, want ErrBecomeToExists", err)
-	}
 }
 
-func testBecomeRefusesMissingSource(t *testing.T, s store.API) {
-	if err := s.Become("ghost", "claimed"); !errors.Is(err, store.ErrBecomeFromMissing) {
-		t.Fatalf("Become from an unknown alias = %v, want ErrBecomeFromMissing", err)
+// testBecomeReclaimsDeparted: a departed target is nobody's live identity any
+// more, so a claim onto it must succeed — the reclaimed row becomes a clone
+// of the seed, and the seed retires pointing at it exactly like any other
+// become.
+func testBecomeReclaimsDeparted(t *testing.T, s store.API) {
+	mustRegister(t, s, store.Agent{Alias: "old-name", SocketPath: "/s", SessionID: "$1", Label: "stale"})
+	_ = s.DepartAgent("old-name")
+	mustRegister(t, s, store.Agent{Alias: "seed", SocketPath: "/s", SessionID: "$2", Label: "fresh", HarnessSessionID: "u2"})
+	if err := s.Become("seed", "old-name"); err != nil {
+		t.Fatalf("Become over a departed target must succeed: %v", err)
 	}
-	if _, ok, err := s.GetAgent("claimed"); err != nil || ok {
-		t.Fatalf("a refused claim must write nothing, got ok=%v (%v)", ok, err)
+	a, ok, _ := s.GetAgent("old-name")
+	if !ok || a.Departed || a.Label != "fresh" || a.HarnessSessionID != "u2" || a.SessionID != "$2" {
+		t.Fatalf("reclaimed row must be the clone of seed, got %+v", a)
 	}
-}
-
-// testBecomeAtomicOnRefusal: a refused claim leaves BOTH rows exactly as they
-// were. On a backend without a transaction, a clone that succeeded before the
-// retire failed would leave the seed live alongside its own successor.
-func testBecomeAtomicOnRefusal(t *testing.T, s store.API) {
-	mustRegister(t, s, store.Agent{Alias: "seed", SocketPath: "/s", SessionID: "$1", Project: "muster"})
-	mustRegister(t, s, store.Agent{Alias: "taken", SocketPath: "/other", SessionID: "$2", Project: "other"})
-
-	if err := s.Become("seed", "taken"); !errors.Is(err, store.ErrBecomeToExists) {
-		t.Fatalf("Become = %v, want ErrBecomeToExists", err)
-	}
-	seed, ok, err := s.GetAgent("seed")
-	if err != nil || !ok {
-		t.Fatalf("GetAgent(seed): %v (ok=%v)", err, ok)
-	}
-	if seed.Departed || seed.SupersededBy != "" {
-		t.Fatalf("a refused claim retired the seed anyway: departed=%v superseded_by=%q",
-			seed.Departed, seed.SupersededBy)
-	}
-	taken, _, err := s.GetAgent("taken")
-	if err != nil {
-		t.Fatalf("GetAgent(taken): %v", err)
-	}
-	if taken.Project != "other" || taken.SocketPath != "/other" {
-		t.Fatalf("a refused claim overwrote the existing alias: %+v", taken)
+	seed, _, _ := s.GetAgent("seed")
+	if !seed.Departed || seed.SupersededBy != "old-name" {
+		t.Fatalf("seed must be retired → old-name, got %+v", seed)
 	}
 }
 
@@ -2428,6 +2407,42 @@ func testFindConversationZeroCreated(t *testing.T, s store.API) {
 	}
 	if _, ok, _ := s.FindConversation("d", "", "/s", "$1", 5, ""); ok {
 		t.Fatal("empty pane id never matches")
+	}
+}
+
+func testBecomeRefusesMissingSource(t *testing.T, s store.API) {
+	if err := s.Become("ghost", "claimed"); !errors.Is(err, store.ErrBecomeFromMissing) {
+		t.Fatalf("Become from an unknown alias = %v, want ErrBecomeFromMissing", err)
+	}
+	if _, ok, err := s.GetAgent("claimed"); err != nil || ok {
+		t.Fatalf("a refused claim must write nothing, got ok=%v (%v)", ok, err)
+	}
+}
+
+// testBecomeAtomicOnRefusal: a refused claim leaves BOTH rows exactly as they
+// were. On a backend without a transaction, a clone that succeeded before the
+// retire failed would leave the seed live alongside its own successor.
+func testBecomeAtomicOnRefusal(t *testing.T, s store.API) {
+	mustRegister(t, s, store.Agent{Alias: "seed", SocketPath: "/s", SessionID: "$1", Project: "muster"})
+	mustRegister(t, s, store.Agent{Alias: "taken", SocketPath: "/other", SessionID: "$2", Project: "other"})
+
+	if err := s.Become("seed", "taken"); !errors.Is(err, store.ErrBecomeToExists) {
+		t.Fatalf("Become = %v, want ErrBecomeToExists", err)
+	}
+	seed, ok, err := s.GetAgent("seed")
+	if err != nil || !ok {
+		t.Fatalf("GetAgent(seed): %v (ok=%v)", err, ok)
+	}
+	if seed.Departed || seed.SupersededBy != "" {
+		t.Fatalf("a refused claim retired the seed anyway: departed=%v superseded_by=%q",
+			seed.Departed, seed.SupersededBy)
+	}
+	taken, _, err := s.GetAgent("taken")
+	if err != nil {
+		t.Fatalf("GetAgent(taken): %v", err)
+	}
+	if taken.Project != "other" || taken.SocketPath != "/other" {
+		t.Fatalf("a refused claim overwrote the existing alias: %+v", taken)
 	}
 }
 

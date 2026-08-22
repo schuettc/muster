@@ -318,13 +318,29 @@ func (s *Store) StampHarness(alias, harnessSessionID, transcriptPath string) err
 //
 // # This is a compare-and-swap, not a read-then-write
 //
-// `to` must not exist AT ALL: a live row is someone else's identity and a
-// tombstone is another conversation's history, and merging identities is the
-// exact confusion the feature exists to kill. Checking with a GetItem and then
-// writing would leave a window in which two sessions both observe `to` absent
-// and both claim it — the second silently obliterating the first. The guard is
-// therefore attribute_not_exists(pk) ON THE WRITE ITSELF, which DynamoDB
-// evaluates atomically with it.
+// `to` must not be a LIVE row: a live row is someone else's identity, and
+// merging identities is the exact confusion the feature exists to kill.
+// Checking with a GetItem and then writing would leave a window in which two
+// sessions both observe `to` absent and both claim it — the second silently
+// obliterating the first. The guard is therefore attribute_not_exists(pk) ON
+// THE WRITE ITSELF, which DynamoDB evaluates atomically with it.
+//
+// # A departed `to` is reclaimable
+//
+// Unlike a live row, a tombstone is nobody's live identity any more (spec
+// 2026-08-21 §4) — Become may reclaim it. DynamoDB forbids two operations on
+// the same key inside one TransactWriteItems, so the reclaim cannot be folded
+// into the transaction below as a Delete alongside the clone's Put on the same
+// pk; it is instead a SEPARATE conditional DeleteItem (condition: departed =
+// true) run BEFORE that transaction, leaving the transaction itself, and its
+// attribute_not_exists(pk) Put condition, completely unchanged. If the delete
+// fails its condition (to is absent or live), Become proceeds anyway: the
+// unchanged Put condition below reports the correct outcome either way — it
+// succeeds if to was truly absent, and fails into ErrBecomeToExists if a live
+// registration is racing this call. A race between OUR delete and the
+// transaction (something re-registers to as live in between) can therefore
+// only ever fail the Put, which the existing ErrBecomeToExists mapping below
+// already reports — never a silent merge.
 //
 // # Both writes are one transaction
 //
@@ -357,6 +373,24 @@ func (s *Store) Become(from, to string) error {
 	}
 	if raw == nil {
 		return store.ErrBecomeFromMissing
+	}
+
+	// Reclaim: a departed `to` is deleted ahead of the transaction below (see
+	// the doc comment's "A departed `to` is reclaimable" section for why this
+	// cannot be folded into that transaction). Best-effort by design — a
+	// condition failure here (to absent, or to live) is not itself an error;
+	// the Put's own attribute_not_exists(pk) condition is what actually
+	// decides the outcome.
+	_, err = s.c.DeleteItem(ctx, &dynamodb.DeleteItemInput{
+		TableName:           aws.String(s.table),
+		Key:                 agentKey(to),
+		ConditionExpression: aws.String("departed = :true"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":true": attrBool(true),
+		},
+	})
+	if err != nil && !isConditionFailed(err) {
+		return fmt.Errorf("dynamostore: reclaim %q for become %q -> %q: %w", to, from, to, err)
 	}
 
 	now := clock.NowMillis()

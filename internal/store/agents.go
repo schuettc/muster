@@ -303,18 +303,24 @@ var (
 // become-claim-your-name): inserts to as a CLONE of from — tuple, DEVICE,
 // harness link, project, label, role, model, and the READ WATERMARK, without which
 // the claimed identity would see all of history as unread — then retires
-// from as a tombstone AND stamps from.superseded_by = to. to must not exist
-// at all: a live row is someone else's identity and a tombstone is some
-// other conversation's history; merging identities is exactly the confusion
-// this feature exists to kill. from may already be departed (a claim after
-// gc swept the seed). The clone's INSERT deliberately omits superseded_by
-// (it defaults to ”) — the successor starts unsuperseded even if from was
-// itself a superseded row (a chained become A→B→C leaves B's superseded_by
-// pointing at C, never inherited backward onto C). superseded_by is the
-// ground truth hookSessionStartResume uses to keep a retired seed from
-// resurrecting on resume, in place of inferring retirement from tuple
-// coincidence. One transaction: a crash mid-become never leaves both rows
-// live.
+// from as a tombstone AND stamps from.superseded_by = to. to must not be a
+// LIVE row: a live row is someone else's identity, and merging into it is
+// exactly the confusion this feature exists to kill. A DEPARTED to, by
+// contrast, is nobody's live identity any more (spec 2026-08-21 §4:
+// reclaimable names) — the claim may reclaim it, hard-deleting the tombstone
+// and replacing it with the clone in the same transaction; nothing in
+// SessionAliasLineage's walk can reach a name that changed ownership out from
+// under it (Become's SEED always points forward via superseded_by, never a
+// TARGET the way this delete does), so no waiting mail is orphaned by the
+// reclaim. from may already be departed (a claim after gc swept the seed).
+// The clone's INSERT deliberately omits superseded_by (it defaults to ”) —
+// the successor starts unsuperseded even if from was itself a superseded row
+// (a chained become A→B→C leaves B's superseded_by pointing at C, never
+// inherited backward onto C). superseded_by is the ground truth
+// hookSessionStartResume uses to keep a retired seed from resurrecting on
+// resume, in place of inferring retirement from tuple coincidence. One
+// transaction: a crash mid-become never leaves both rows live, and never
+// leaves a reclaimed target half-deleted.
 //
 // device_id is part of the cloned tuple, not an afterthought: the successor
 // must land on the SAME device as the seed, because the session tuple that
@@ -328,12 +334,22 @@ func (s *Store) Become(from, to string) error {
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	var n int
-	if err := tx.QueryRow(`SELECT COUNT(*) FROM agents WHERE alias=?`, to).Scan(&n); err != nil {
+	var departed bool
+	err = tx.QueryRow(`SELECT departed FROM agents WHERE alias=?`, to).Scan(&departed)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		// to does not exist at all: proceed, exactly as before.
+	case err != nil:
 		return err
-	}
-	if n > 0 {
+	case !departed:
 		return ErrBecomeToExists
+	default:
+		// to is a tombstone: reclaim it. The DELETE and the clone INSERT
+		// below run in the same transaction as the retire of from, so a
+		// crash between them cannot leave to half-gone.
+		if _, err := tx.Exec(`DELETE FROM agents WHERE alias=?`, to); err != nil {
+			return err
+		}
 	}
 	now := clock.NowMillis()
 	res, err := tx.Exec(`

@@ -358,11 +358,16 @@ func TestBecomeGuards(t *testing.T) {
 	if err := s.Become("a", "b"); !errors.Is(err, ErrBecomeToExists) {
 		t.Fatalf("live to: got %v", err)
 	}
+	// A departed TO is reclaimable (spec 2026-08-21 §4): nobody's live
+	// identity owns it any more, so the claim replaces the tombstone with a
+	// clone of "a" instead of refusing.
 	_ = s.DepartAgent("b")
-	if err := s.Become("a", "b"); !errors.Is(err, ErrBecomeToExists) {
-		t.Fatalf("tombstoned to must ALSO refuse: got %v", err)
+	if err := s.Become("a", "b"); err != nil {
+		t.Fatalf("departed to should be reclaimable: %v", err)
 	}
 	// Departed FROM is fine: a session may claim after gc tombstoned its seed.
+	// "a" is already departed (Become just retired it onto "b"), so this
+	// exercises the same from-may-already-be-departed path either way.
 	_ = s.DepartAgent("a")
 	if err := s.Become("a", "c"); err != nil {
 		t.Fatalf("departed from should still clone: %v", err)
