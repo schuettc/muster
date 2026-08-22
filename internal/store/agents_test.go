@@ -294,8 +294,10 @@ func TestBecomeClonesIdentityAndRetiresSeed(t *testing.T) {
 // the seed's superseded_by must name the claimed alias, the CLONE must NOT
 // inherit it (a chained become's successor starts unsuperseded even though
 // its own seed was itself superseded), and re-registering the retired seed
-// must clear it (a revived/re-registered alias is no longer superseded — the
-// operator may have purged the successor and taken the name back).
+// must revive it while KEEPING superseded_by (a returning session on the
+// seed's old tuple is exactly the case become-lineage exists to route mail
+// through, not a signal that the claim never happened — see
+// TestRegisterKeepsSupersededBy in the conformance suite).
 func TestBecomeStampsSupersededBy(t *testing.T) {
 	s := newTestStore(t)
 	if err := s.RegisterAgent(Agent{Alias: "muster-2", SocketPath: "/s", SessionID: "$1"}); err != nil {
@@ -333,14 +335,14 @@ func TestBecomeStampsSupersededBy(t *testing.T) {
 		t.Fatalf("final clone must not inherit SupersededBy: %+v", end)
 	}
 
-	// Re-registering the retired seed clears it — a revived/re-registered
-	// alias is no longer superseded.
+	// Re-registering the retired seed revives it but keeps SupersededBy — a
+	// returning session must not forget its successor.
 	if err := s.RegisterAgent(Agent{Alias: "muster-2", SocketPath: "/s2", SessionID: "$9"}); err != nil {
 		t.Fatal(err)
 	}
 	revived, _, _ := s.GetAgent("muster-2")
-	if revived.SupersededBy != "" || revived.Departed {
-		t.Fatalf("re-register must clear SupersededBy and revive: %+v", revived)
+	if revived.SupersededBy != "alias-routing" || revived.Departed {
+		t.Fatalf("re-register must revive while keeping SupersededBy: %+v", revived)
 	}
 }
 

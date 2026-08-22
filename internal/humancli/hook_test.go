@@ -914,12 +914,26 @@ func TestHookSessionStartClaimsOverDepartedRow(t *testing.T) {
 	}
 }
 
-// TestHookStopDrainsWhenOnlyNamedOwnerIsDeparted covers finding 1's Stop half:
-// the session's only registered alias is a tombstone. A departed row must
-// neither grant nor deny ownership — hookStopOwnsAnyAlias must skip it
-// entirely, leaving sawNamedOwner false, so the gate falls through to true
-// (today's unconditional drain) rather than silently refusing forever.
-func TestHookStopDrainsWhenOnlyNamedOwnerIsDeparted(t *testing.T) {
+// TestHookStopSilentWhenOnlyOwnerIsAnUnclaimedTombstone: the session's only
+// registered alias was deregistered without ever being claimed onward via
+// Become. Per the one-conversation-one-identity spec (2026-08-21 §2, task 2:
+// store.SessionUnread / SessionAliasLineage's base case), such a row is
+// excluded from its tuple's lineage — it is indistinguishable from a PRIOR
+// conversation's leftover tombstone on a reused tuple, and nothing points
+// forward from it to claim its waiting mail. So session_unread correctly
+// reports 0 for this tuple and Stop prints nothing, rather than draining
+// mail addressed to an identity nobody live owns any more.
+//
+// This superseded an earlier test (TestHookStopDrainsWhenOnlyNamedOwnerIsDeparted)
+// that asserted the opposite — an unconditional drain — under the pre-task-2
+// semantics, where a bare departed row still counted toward session_unread.
+// hookStopOwnsAnyAlias's own "a tombstoned row neither grants nor denies
+// ownership" behavior is unchanged and still exercised whenever a departed
+// row DOES survive in scope (i.e. it has a successor — see
+// TestBecomeReclaimsDeparted-style chains in the store conformance suite);
+// this test instead covers the now-earlier `total <= 0` exit that fires
+// first when the only candidate row never chained forward.
+func TestHookStopSilentWhenOnlyOwnerIsAnUnclaimedTombstone(t *testing.T) {
 	startTestDaemon(t)
 	if _, err := callData("register_agent", map[string]any{
 		"alias": "stop-departed", "socket_path": "/tmp/sockStopDep", "session_id": "$5", "session_created": 100, "pane_id": "%1",
@@ -946,9 +960,12 @@ func TestHookStopDrainsWhenOnlyNamedOwnerIsDeparted(t *testing.T) {
 	tmuxenv.Run = hookRun(map[string]string{"@muster_inbox": "3", "#{session_id}": "$5", "#{session_created}": "100"})
 	t.Cleanup(func() { tmuxenv.Run = prev })
 
-	res := runHook(t)
-	if !strings.Contains(res.Reason, "alias 'stop-departed'") {
-		t.Fatalf("reason missing owner alias: %q", res.Reason)
+	var buf bytes.Buffer
+	if err := cmdHook([]string{"Stop"}, strings.NewReader(`not json`), &buf); err != nil {
+		t.Fatal(err)
+	}
+	if buf.Len() != 0 {
+		t.Fatalf("expected no output — an unclaimed tombstone's mail is orphaned, not drained, got %q", buf.String())
 	}
 }
 

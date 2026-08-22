@@ -12,10 +12,12 @@ import (
 // departed is always reset to 0 by both the insert and the conflict update, so
 // re-registering a previously-departed alias (a returning session) revives it
 // cleanly — read-state (last_read_entry_id/last_read_at) is untouched by
-// either branch, so it survives the roundtrip intact. superseded_by is always
-// reset to ” too: a revived/re-registered alias is no longer superseded by
-// whatever claimed it before (e.g. the operator purged the successor and
-// re-registered the old name) — see Store.Become and hookSessionStartResume.
+// either branch, so it survives the roundtrip intact. superseded_by is left
+// alone on conflict (only the INSERT branch defaults it to ”): a re-register
+// of a claimed-away alias — the seed's session resuming on its old tuple — is
+// exactly the case become-lineage exists to route mail through, not a signal
+// that the claim never happened, so re-registering must not forget the
+// successor. See Store.Become and SessionAliasLineage.
 func (s *Store) RegisterAgent(a Agent) error {
 	now := clock.NowMillis()
 	_, err := s.db.Exec(`
@@ -37,7 +39,6 @@ ON CONFLICT(alias) DO UPDATE SET
     label=excluded.label,
     label_manual=excluded.label_manual,
     departed=0,
-    superseded_by='',
     last_seen=excluded.last_seen`,
 		a.Alias, a.Role, a.ModelType, a.SocketPath, a.PaneID, a.SessionName, a.SessionID, a.SessionCreated, a.DeviceID,
 		a.DeviceName, a.HarnessSessionID, a.TranscriptPath, a.Project, a.Label, a.LabelManual, now, now)
@@ -386,12 +387,23 @@ FROM agents WHERE alias=?`, to, now, now, from)
 // NOTE the ?1=” exemption is on socketPath, NOT deviceID: a paneless
 // registration still belongs to exactly one machine, so the device filter is
 // unconditional while the incarnation filter is not.
+//
+// The base case also excludes a departed row with no successor
+// (superseded_by = ”): such a row is either this tuple's own alias that was
+// deregistered without ever being claimed onward (its mail is orphaned — no
+// live identity owns it any more), or, on a reused tuple, a PRIOR
+// conversation's tombstone that happens to share it — and the two are
+// indistinguishable from the row alone, so both are excluded alike. A
+// departed row that WAS claimed via Become stays fully in scope (it enters
+// through the recursive step, unfiltered): that is the live successor's own
+// lineage, not somebody else's leftover.
 func (s *Store) SessionUnread(deviceID, socketPath, sessionID string, sessionCreated int64) (total, action int, err error) {
 	err = s.db.QueryRow(`
 WITH RECURSIVE sess AS (
   SELECT alias, last_read_entry_id, superseded_by FROM agents
   WHERE device_id = ?3 AND socket_path = ?1 AND session_id = ?2 AND ?2 != ''
     AND (?1 = '' OR (session_created = ?4 AND ?4 != 0))
+    AND (departed = 0 OR superseded_by != '')
   UNION
   SELECT a.alias, a.last_read_entry_id, a.superseded_by
   FROM agents a JOIN sess ON a.superseded_by = sess.alias
@@ -411,13 +423,17 @@ WHERE EXISTS (SELECT 1 FROM entries e
 
 // SessionAliasLineage returns every alias belonging to a session's
 // supersession lineage — the exact same WITH RECURSIVE walk SessionUnread
-// runs (see its doc comment for the "mail follows the name" rule and the
-// cycle-termination argument), projected down to just the alias column. It
-// backs the daemon's session_aliases op, which includes departed aliases ON
-// PURPOSE (their unread mail still needs draining) — lineage rows are
-// additive to that, never a filter: a become-retired seed on a long-dead
-// tuple belongs in the list precisely because it is departed, not despite
-// it. Result is sorted and deduplicated; an empty sessionID matches no
+// runs (see its doc comment for the "mail follows the name" rule, the
+// tombstone-with-no-successor exclusion, and the cycle-termination
+// argument), projected down to just the alias column. It backs the daemon's
+// session_aliases op, which includes a departed alias ON PURPOSE once it is
+// IN the walk (their unread mail still needs draining) — a become-retired
+// seed on a long-dead tuple belongs in the list precisely because it is
+// departed, not despite it. What it does not include is a departed row that
+// was never claimed onward: nothing points forward from it, and (per
+// SessionUnread's doc comment) it is indistinguishable from a prior
+// conversation's leftover tombstone on a reused tuple. Result is sorted and
+// deduplicated; an empty sessionID matches no
 // agents (mirrors SessionUnread's empty-tuple guard) and returns an empty
 // slice.
 //
@@ -434,6 +450,7 @@ WITH RECURSIVE sess AS (
   SELECT alias, superseded_by FROM agents
   WHERE device_id = ?3 AND socket_path = ?1 AND session_id = ?2 AND ?2 != ''
     AND (?1 = '' OR (session_created = ?4 AND ?4 != 0))
+    AND (departed = 0 OR superseded_by != '')
   UNION
   SELECT a.alias, a.superseded_by
   FROM agents a JOIN sess ON a.superseded_by = sess.alias

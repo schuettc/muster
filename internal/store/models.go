@@ -82,12 +82,13 @@ type Agent struct {
 	Departed bool `json:"departed"`
 	// SupersededBy is non-empty on a departed row that was claimed away via
 	// Become: it names the alias that now carries this identity forward.
-	// RegisterAgent's upsert always resets it to "" (a revived/re-registered
-	// alias is no longer superseded — e.g. the operator purged the successor
-	// and re-registered the old name), and Become's clone does NOT copy it
-	// onto the new alias (the successor starts unsuperseded). Resume reclaim
-	// (hookSessionStartResume) uses this as ground truth to skip resurrecting a
-	// retired seed, rather than inferring it from tuple coincidence.
+	// RegisterAgent's upsert only defaults it to "" on a brand-new row — a
+	// re-register of a claimed-away alias (the seed's session resuming on its
+	// old tuple) leaves it alone, so the returning session does not forget
+	// its successor. Become's clone does NOT copy it onto the new alias (the
+	// successor starts unsuperseded). Resume reclaim (hookSessionStartResume)
+	// uses this as ground truth to skip resurrecting a retired seed, rather
+	// than inferring it from tuple coincidence.
 	SupersededBy string `json:"superseded_by"`
 }
 

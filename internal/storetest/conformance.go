@@ -33,6 +33,7 @@ package storetest
 import (
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -122,7 +123,8 @@ var cases = []conformanceCase{
 	{"StampHarnessEmptyArgLeavesFieldAlone", testStampHarnessPartial},
 	{"StampHarnessUnknownAliasIsNoOp", testStampHarnessUnknown},
 	{"RegisterPersistsTranscriptPath", testRegisterTranscriptPath},
-	{"RegisterResetsSupersededBy", testRegisterResetsSupersededBy},
+	{"RegisterKeepsSupersededBy", testRegisterKeepsSupersededBy},
+	{"LineageExcludesTombstonesOfOtherConversations", testLineageExcludesForeignTombstones},
 	{"BecomeClonesIdentityAndRetiresSeed", testBecomeClonesAndRetires},
 	{"BecomeCarriesTheReadWatermark", testBecomeCarriesWatermark},
 	{"BecomeStampsSupersededBy", testBecomeStampsSupersededBy},
@@ -2153,24 +2155,47 @@ func testRegisterTranscriptPath(t *testing.T, s store.API) {
 	}
 }
 
-// testRegisterResetsSupersededBy: re-registering a claimed-away alias clears
-// its supersession pointer — the operator purged the successor and took the old
-// name back, so it is nobody's seed any more.
-func testRegisterResetsSupersededBy(t *testing.T, s store.API) {
+// testRegisterKeepsSupersededBy: re-registering a claimed-away alias must NOT
+// forget its supersession pointer — a returning session on the old tuple is
+// exactly the case become-lineage exists to route mail through, not a signal
+// that the claim never happened.
+func testRegisterKeepsSupersededBy(t *testing.T, s store.API) {
 	mustRegister(t, s, store.Agent{Alias: "seed", SocketPath: "/s", SessionID: "$1"})
 	if err := s.Become("seed", "claimed"); err != nil {
 		t.Fatalf("Become: %v", err)
 	}
 	mustRegister(t, s, store.Agent{Alias: "seed", SocketPath: "/s", SessionID: "$1"})
-	a, ok, err := s.GetAgent("seed")
-	if err != nil || !ok {
-		t.Fatalf("GetAgent: %v (ok=%v)", err, ok)
-	}
-	if a.SupersededBy != "" {
-		t.Fatalf("re-registered alias still superseded by %q", a.SupersededBy)
+	a, _, _ := s.GetAgent("seed")
+	if a.SupersededBy != "claimed" {
+		t.Fatalf("re-register must not forget the successor: got %q", a.SupersededBy)
 	}
 	if a.Departed {
-		t.Fatal("re-registering must revive the tombstone")
+		t.Fatal("re-registering still revives the tombstone")
+	}
+}
+
+// testLineageExcludesForeignTombstones: a previous conversation's tombstone
+// sitting on the same tuple with no successor must never be pulled into a
+// live conversation's lineage walk — only rows that are either live or
+// chained through a successor belong to somebody's identity.
+func testLineageExcludesForeignTombstones(t *testing.T, s store.API) {
+	// A previous conversation's tombstone on the same tuple (no successor)…
+	mustRegister(t, s, store.Agent{Alias: "old-conv", SocketPath: "/s", SessionID: "$1", SessionCreated: 5, PaneID: "%1"})
+	if err := s.DepartAgent("old-conv"); err != nil {
+		t.Fatal(err)
+	}
+	// …and the live conversation with a become-chain seed.
+	mustRegister(t, s, store.Agent{Alias: "seed", SocketPath: "/s", SessionID: "$1", SessionCreated: 5, PaneID: "%1"})
+	if err := s.Become("seed", "me"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.SessionAliasLineage("", "/s", "$1", 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"me", "seed"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("lineage = %v, want %v (old-conv is another conversation's tombstone)", got, want)
 	}
 }
 

@@ -74,29 +74,28 @@ func (s *Store) nextID(ctx context.Context, name string) (int64, error) {
 // registered_at is stamped only on first sight, departed is always reset to
 // false so a returning session revives its tombstone, and read state
 // (last_read_entry_id / last_read_at) is never touched by either branch so it
-// survives the round trip.
+// survives the round trip. superseded_by is left alone here — DynamoDB's
+// UpdateItem only ever SETs the attributes named in this map, so simply
+// omitting it from the set leaves an existing pointer untouched, exactly
+// mirroring the SQLite ON CONFLICT no longer resetting it: a re-register on
+// the seed's old tuple must not forget the successor. See Become.
 func (s *Store) RegisterAgent(a store.Agent) error {
 	ctx := backgroundCtx()
 	now := clock.NowMillis()
 
 	set := map[string]types.AttributeValue{
-		"alias":           attrS(a.Alias),
-		"role":            attrS(a.Role),
-		"model_type":      attrS(a.ModelType),
-		"socket_path":     attrS(a.SocketPath),
-		"pane_id":         attrS(a.PaneID),
-		"session_name":    attrS(a.SessionName),
-		"session_id":      attrS(a.SessionID),
-		"session_created": attrN(a.SessionCreated),
-		"device_id":       attrS(a.DeviceID),
-		"device_name":     attrS(a.DeviceName),
-		// superseded_by is reset to "" on every register, exactly like
-		// departed: a revived or re-registered alias is no longer superseded by
-		// whatever claimed it before (the operator may have purged the
-		// successor and re-registered the old name). See Become.
+		"alias":              attrS(a.Alias),
+		"role":               attrS(a.Role),
+		"model_type":         attrS(a.ModelType),
+		"socket_path":        attrS(a.SocketPath),
+		"pane_id":            attrS(a.PaneID),
+		"session_name":       attrS(a.SessionName),
+		"session_id":         attrS(a.SessionID),
+		"session_created":    attrN(a.SessionCreated),
+		"device_id":          attrS(a.DeviceID),
+		"device_name":        attrS(a.DeviceName),
 		"harness_session_id": attrS(a.HarnessSessionID),
 		"transcript_path":    attrS(a.TranscriptPath),
-		"superseded_by":      attrS(""),
 		"project":            attrS(a.Project),
 		"label":              attrS(a.Label),
 		"label_manual":       attrBool(a.LabelManual),
@@ -497,7 +496,14 @@ func (s *Store) sessionLineage(ctx context.Context, deviceID, socketPath, sessio
 		}
 		// Re-confirm the tuple against the fresh item: the index copy may
 		// have been written before the alias moved to a different session.
+		// A departed row with no successor is another conversation's
+		// tombstone on this tuple, not this conversation's identity — it
+		// only belongs in the walk if some later alias points back at it
+		// (picked up by the recursive step below), never as a base-case seed.
 		if !found || !sameSession(a, deviceID, socketPath, sessionID, sessionCreated) {
+			continue
+		}
+		if a.Departed && a.SupersededBy == "" {
 			continue
 		}
 		inSet[a.Alias] = true
