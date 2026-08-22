@@ -40,6 +40,46 @@ func TestBecomeClaimsSingleAliasSession(t *testing.T) {
 	}
 }
 
+// TestBecomeReclaimMessage covers become's `reclaimed` bool (daemon addition,
+// task 10): claiming a name that once belonged to someone else and was
+// deregistered must say so explicitly — "you are now X" alone reads as an
+// ordinary rename, and an operator has no way to tell they just inherited a
+// departed identity (and whatever inbox/history rides along with it) unless
+// told.
+func TestBecomeReclaimMessage(t *testing.T) {
+	startTestDaemon(t)
+	t.Setenv("MUSTER_DEVICE_NAME", "testdev")
+	t.Setenv("TMUX", "/tmp/sock,1,0")
+	t.Setenv("TMUX_PANE", "%1")
+	prev := tmuxenv.Run
+	tmuxenv.Run = hookRun(map[string]string{
+		"#{session_id}": "$1", "#{session_name}": "muster-2", "#{session_created}": "111",
+	})
+	t.Cleanup(func() { tmuxenv.Run = prev })
+	if _, err := callData("register_agent", map[string]any{
+		"alias": "muster-2", "socket_path": "/tmp/sock", "session_id": "$1", "session_created": 111,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// A prior holder of "alias-routing", now gone.
+	if _, err := callData("register_agent", map[string]any{
+		"alias": "testdev-alias-routing", "socket_path": "/other-sock", "session_id": "$OLD", "session_created": 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := callData("deregister_agent", map[string]any{"alias": "testdev-alias-routing"}); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	if err := Dispatch([]string{"become", "alias-routing"}, &buf); err != nil {
+		t.Fatalf("become: %v", err)
+	}
+	if !strings.Contains(buf.String(), "reclaimed departed name") {
+		t.Fatalf("expected a reclaim notice, got %q", buf.String())
+	}
+}
+
 // TestBecomeRequiresFromWhenSplit: two live aliases on one session — never
 // guess which identity is being claimed over.
 func TestBecomeRequiresFromWhenSplit(t *testing.T) {

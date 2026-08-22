@@ -227,6 +227,59 @@ func TestInboxTableShowsLastFromAndUnread(t *testing.T) {
 	}
 }
 
+// TestInboxPeekPrintsNotice covers the regression this task closes: a CLI
+// `muster inbox` reading an alias that is not THIS process's own tmux
+// session (no caller proof matches) must get the threads back as a harmless
+// peek — no watermark move — and be told so, or an operator has no way to
+// tell a peek from a real drain of their own mail.
+func TestInboxPeekPrintsNotice(t *testing.T) {
+	startTestDaemon(t)
+	// No $TMUX set: this process's capture proves nothing, so the daemon's
+	// callerOwns check cannot attribute the read to any session — exactly the
+	// case a peek exists for.
+	if _, err := callData("register_agent", map[string]any{
+		"alias": "x", "socket_path": "/other-sock", "session_id": "$OTHER", "session_created": 100,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	if err := Dispatch([]string{"inbox", "x"}, &buf); err != nil {
+		t.Fatalf("inbox: %v", err)
+	}
+	if !strings.HasSuffix(strings.TrimRight(buf.String(), "\n"), "peek only: 'x' is not this pane's alias — unread state unchanged") {
+		t.Fatalf("expected trailing peek notice, got:\n%s", buf.String())
+	}
+}
+
+// TestInboxOwnedPrintsNoNotice is the other half: reading an alias that IS
+// this process's own tmux session (caller proof matches) must move the
+// watermark and print no peek notice.
+func TestInboxOwnedPrintsNoNotice(t *testing.T) {
+	startTestDaemon(t)
+	t.Setenv("TMUX", "/tmp/sock,1,0")
+	t.Setenv("TMUX_PANE", "%1")
+	prev := tmuxenv.Run
+	tmuxenv.Run = func(args ...string) (string, error) {
+		if args[len(args)-1] == "#{session_created}" {
+			return "100", nil
+		}
+		return "$1", nil
+	}
+	t.Cleanup(func() { tmuxenv.Run = prev })
+	if _, err := callData("register_agent", map[string]any{
+		"alias": "mine", "socket_path": "/tmp/sock", "session_id": "$1", "session_created": 100,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	if err := Dispatch([]string{"inbox", "mine"}, &buf); err != nil {
+		t.Fatalf("inbox: %v", err)
+	}
+	if strings.Contains(buf.String(), "peek only") {
+		t.Fatalf("owned read must not print a peek notice, got:\n%s", buf.String())
+	}
+}
+
 // TestSendFromExpandsLocalFirst is send's twin of
 // TestDeregisterExpandsExplicitArgLocalFirst / TestBecomeFromExpandsLocalFirst:
 // the roster holds BOTH a local seeded row ("personal-backend") and a

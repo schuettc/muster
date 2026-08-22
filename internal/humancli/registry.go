@@ -159,9 +159,17 @@ every device on the bus.`,
 			Name:     "inbox",
 			Synopsis: "inbox <alias|label|proj:label>",
 			Summary:  "Show an agent's threads.",
-			Help:     `Prints every thread in the target agent's inbox: id, kind, from, to, status, who spoke last, unread count, and subject.`,
-			Group:    GroupWatch,
-			Run:      cmdInbox,
+			Help: `Prints every thread in the target agent's inbox: id, kind, from, to, status, who
+spoke last, unread count, and subject. The read watermark only moves for the
+alias THIS tmux session (or paneless harness session) actually owns — proven
+the same way every other identity op proves it, from your tmux/harness
+capture, never taken on trust from the name you typed. Reading any other
+alias — an operator checking on another agent, a bare invocation outside any
+session — still shows the threads, but as a peek: nothing is marked read, and
+a trailing notice says so. Every peek is journaled, so a sweep across aliases
+you don't own is visible in 'muster events' after the fact.`,
+			Group: GroupWatch,
+			Run:   cmdInbox,
 		},
 		{
 			Name:     "tasks",
@@ -248,7 +256,10 @@ When a live Claude Code or Cursor agent is registered in this session, also
 types /rename <name> into its pane so the harness session name follows the
 claim. --no-inject skips that typing — for callers whose name ALREADY came
 from the harness side (e.g. the statusline promoting a name that originated
-from a /rename), where re-typing it would loop text into a live pane.`,
+from a /rename), where re-typing it would loop text into a live pane.
+A departed name may be reclaimed; a live one is refused (pick another name,
+or purge it first with 'muster gc --purge-agents'). Reclaiming prints an
+extra note — you inherit whatever inbox/history that name already carries.`,
 			Group:    GroupIdentity,
 			NewFlags: newBecomeFlags,
 			Run:      cmdBecome,

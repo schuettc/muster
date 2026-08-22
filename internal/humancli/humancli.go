@@ -14,6 +14,7 @@ import (
 
 	"github.com/schuettc/muster/internal/client"
 	"github.com/schuettc/muster/internal/device"
+	"github.com/schuettc/muster/internal/harnessenv"
 	"github.com/schuettc/muster/internal/nudge"
 	"github.com/schuettc/muster/internal/paths"
 	"github.com/schuettc/muster/internal/proto"
@@ -536,18 +537,32 @@ func cmdTasks(args []string, out io.Writer) error {
 }
 
 // printThreads fetches an alias's inbox and prints it; if tasksOnly, only
-// kind=task threads are shown.
+// kind=task threads are shown. The caller's tmux/harness identity is sent as
+// proof (spec 2026-08-21 §3.2): the daemon only moves alias's read watermark
+// for a caller who can prove it IS that session, sourced exactly like every
+// other mint/proof site (tmuxenv.CaptureEnv for the tuple, harnessenv.FromEnv
+// for the harness UUID; no caller_pane_id — ownership is session-granular,
+// not pane-granular). Reading someone else's alias (an operator checking on
+// another agent, `muster inbox` run outside any session) still works — it
+// comes back as a harmless peek, threads shown, nothing marked read — and a
+// trailing notice says so, or an operator has no way to tell a peek from a
+// real drain of their own mail.
 func printThreads(out io.Writer, alias string, tasksOnly bool) error {
-	raw, err := callData("get_inbox", map[string]any{"alias": alias})
+	c := tmuxenv.CaptureEnv()
+	h := harnessenv.FromEnv()
+	raw, err := callData("get_inbox", map[string]any{
+		"alias":                     alias,
+		"caller_socket_path":        c.SocketPath,
+		"caller_session_id":         c.SessionID,
+		"caller_session_created":    c.SessionCreated,
+		"caller_harness_session_id": h.SessionID,
+	})
 	if err != nil {
 		return err
 	}
-	// get_inbox now returns {threads, marked_read} rather than a bare array
-	// (spec 2026-08-21 §3.2, task 7): the CLI sends no caller_* proof, so
-	// this is always a peek — the read watermark does not move. Task 10
-	// covers surfacing marked_read to the operator.
 	var body struct {
-		Threads []threadRow `json:"threads"`
+		Threads    []threadRow `json:"threads"`
+		MarkedRead bool        `json:"marked_read"`
 	}
 	if err := json.Unmarshal(raw, &body); err != nil {
 		return err
@@ -584,7 +599,14 @@ func printThreads(out io.Writer, alias string, tasksOnly bool) error {
 			return err
 		}
 	}
-	return tw.Flush()
+	if err := tw.Flush(); err != nil {
+		return err
+	}
+	if !body.MarkedRead {
+		_, err := fmt.Fprintf(out, "peek only: '%s' is not this pane's alias — unread state unchanged\n", dispAlias(alias))
+		return err
+	}
+	return nil
 }
 
 // newNudgeFlagsWithVals declares nudge's flags and returns typed access to

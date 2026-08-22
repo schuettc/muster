@@ -1175,6 +1175,16 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 		// session", reported so a caller can say "you are now X — N
 		// unread" in one round trip.
 		from, to := str(a, "from"), str(a, "to")
+		// reclaimed distinguishes two very different becomes for the CLI's
+		// human-facing message (task 10): claiming a name nobody has ever
+		// held (reclaimed:false) versus becoming a name that once belonged to
+		// someone else and was deregistered (reclaimed:true). store.Become
+		// itself treats a departed `to` as silently reusable (DELETE + clone
+		// INSERT), so this must be decided from a read taken BEFORE the call.
+		reclaimed := false
+		if existing, found, err := d.s.GetAgent(to); err == nil && found && existing.Departed {
+			reclaimed = true
+		}
 		if err := d.s.Become(from, to); err != nil {
 			switch {
 			case errors.Is(err, store.ErrBecomeFromMissing):
@@ -1198,7 +1208,7 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 			// ErrBecomeToExists for a claim that already went through. Degrade
 			// best-effort exactly like the unread lookup below already does:
 			// skip the badge reconcile and report unread:0 instead of failing.
-			return ok(map[string]any{"from": from, "to": to, "unread": 0})
+			return ok(map[string]any{"from": from, "to": to, "unread": 0, "reclaimed": reclaimed})
 		}
 		d.reconcileBadge(ag.SocketPath, ag.SessionID, ag.SessionCreated)
 		// The device comes from the CLAIMED ROW, not from d.deviceID: a
@@ -1219,7 +1229,7 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 		if err != nil {
 			unread = 0 // best-effort: the claim already succeeded
 		}
-		return ok(map[string]any{"from": from, "to": to, "unread": unread})
+		return ok(map[string]any{"from": from, "to": to, "unread": unread, "reclaimed": reclaimed})
 	default:
 		return proto.Response{Error: "unknown op: " + req.Op}
 	}
