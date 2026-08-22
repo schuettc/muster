@@ -199,6 +199,58 @@ func TestRemoteModeOverwritesACallerSuppliedDeviceID(t *testing.T) {
 	}
 }
 
+// TestRemoteModeStampsCallerDeviceIDOnGetInbox pins the fix for a hole in
+// get_inbox's ownership proof on a hosted bus: register_agent IS in
+// deviceOps, so every row upstream carries a real device_id, but neither the
+// MCP server nor the CLI ever learns one to put on get_inbox's caller_* proof
+// (see stampDevice's own doc comment — "the MCP server and the CLI never
+// learn one"). Without this stamp, callerOwns's SessionAliasLineage lookup is
+// always asked with caller_device_id="" against rows whose real device_id is
+// non-empty, so its device-scoped base case matches nothing — every
+// same-session get_inbox on a hosted bus would silently degrade to a peek,
+// and no agent could ever clear its own badge. Only the device's own daemon
+// (this one) knows its device id, so it must stamp it on the way upstream,
+// exactly like register_agent's device_id/device_name.
+func TestRemoteModeStampsCallerDeviceIDOnGetInbox(t *testing.T) {
+	up := &fakeUpstream{resp: proto.Response{OK: true}}
+	sock := startRemote(t, up, nil)
+
+	if _, err := client.Call(sock, proto.Request{Op: "get_inbox", Args: map[string]any{
+		"alias": "a1", "caller_socket_path": "/tmp/tmux-501/default", "caller_session_id": "$1",
+	}}); err != nil {
+		t.Fatalf("client.Call: %v", err)
+	}
+	reqs := up.snap()
+	if len(reqs) == 0 || reqs[0].Op != "get_inbox" {
+		t.Fatalf("upstream saw %+v", reqs)
+	}
+	if got := reqs[0].Args["caller_device_id"]; got != "dev-1" {
+		t.Fatalf("caller_device_id = %v, want dev-1", got)
+	}
+}
+
+// TestRemoteModeOverwritesACallerSuppliedCallerDeviceID: the caller_device_id
+// stamp is authoritative, not a default — a client-supplied value (accidental
+// or a forged claim to be on another machine) must never be believed, exactly
+// like device_id on register_agent.
+func TestRemoteModeOverwritesACallerSuppliedCallerDeviceID(t *testing.T) {
+	up := &fakeUpstream{resp: proto.Response{OK: true}}
+	sock := startRemote(t, up, nil)
+
+	if _, err := client.Call(sock, proto.Request{Op: "get_inbox", Args: map[string]any{
+		"alias": "a1", "caller_device_id": "someone-elses-laptop",
+	}}); err != nil {
+		t.Fatalf("client.Call: %v", err)
+	}
+	reqs := up.snap()
+	if len(reqs) != 1 {
+		t.Fatalf("upstream saw %+v, want one get_inbox", reqs)
+	}
+	if got := reqs[0].Args["caller_device_id"]; got != "dev-1" {
+		t.Fatalf("caller_device_id = %v, want dev-1 — a caller-supplied id was trusted", got)
+	}
+}
+
 // TestStampDeviceDoesNotMutateTheCallersArgs: forward is handed a request that
 // came off the wire, and stamping must copy rather than write into it.
 func TestStampDeviceDoesNotMutateTheCallersArgs(t *testing.T) {
@@ -211,6 +263,21 @@ func TestStampDeviceDoesNotMutateTheCallersArgs(t *testing.T) {
 	}
 	if _, found := args["device_id"]; found {
 		t.Fatalf("stampDevice wrote into the caller's map: %+v", args)
+	}
+}
+
+// TestStampCallerDeviceDoesNotMutateTheCallersArgs mirrors
+// TestStampDeviceDoesNotMutateTheCallersArgs for stampCallerDevice.
+func TestStampCallerDeviceDoesNotMutateTheCallersArgs(t *testing.T) {
+	d := &Daemon{deviceID: "dev-1"}
+	args := map[string]any{"alias": "a1"}
+	req := proto.Request{Op: "get_inbox", Args: args}
+	stamped := d.stampCallerDevice(req)
+	if stamped.Args["caller_device_id"] != "dev-1" {
+		t.Fatalf("stamped args = %+v", stamped.Args)
+	}
+	if _, found := args["caller_device_id"]; found {
+		t.Fatalf("stampCallerDevice wrote into the caller's map: %+v", args)
 	}
 }
 
