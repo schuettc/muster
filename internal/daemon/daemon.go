@@ -292,7 +292,31 @@ func (d *Daemon) handleRegisterAgent(a map[string]any) proto.Response {
 		DeviceID:         str(a, "device_id"),
 		DeviceName:       str(a, "device_name"),
 		HarnessSessionID: str(a, "harness_session_id"),
+		TranscriptPath:   str(a, "transcript_path"),
 		Project:          str(a, "project"), Label: str(a, "label"), LabelManual: boolArg(a, "label_manual"),
+	}
+
+	if conv, found, err := d.s.FindConversation(newAgent.DeviceID, newAgent.TranscriptPath, newAgent.SocketPath, newAgent.SessionID, newAgent.SessionCreated, newAgent.PaneID); err != nil {
+		return fail(err)
+	} else if found && conv.Alias != alias {
+		// One conversation, one row (spec 2026-08-21 §3.2): the caller IS
+		// the conversation this row already describes — re-stamp the
+		// harness link and move the tuple, never insert a sibling.
+		if err := d.s.StampHarness(conv.Alias, newAgent.HarnessSessionID, newAgent.TranscriptPath); err != nil {
+			return fail(err)
+		}
+		moved := conv
+		moved.SocketPath, moved.SessionID, moved.SessionCreated, moved.PaneID = newAgent.SocketPath, newAgent.SessionID, newAgent.SessionCreated, newAgent.PaneID
+		moved.SessionName, moved.Project, moved.DeviceID, moved.DeviceName = newAgent.SessionName, newAgent.Project, newAgent.DeviceID, newAgent.DeviceName
+		moved.HarnessSessionID, moved.TranscriptPath = coalesce(newAgent.HarnessSessionID, conv.HarnessSessionID), coalesce(newAgent.TranscriptPath, conv.TranscriptPath)
+		if err := d.s.RegisterAgent(moved); err != nil {
+			return fail(err)
+		}
+		d.reconcileBadge(conv.SocketPath, conv.SessionID, conv.SessionCreated)
+		d.reconcileBadge(moved.SocketPath, moved.SessionID, moved.SessionCreated)
+		unread, _ := d.s.UnreadCount(conv.Alias)
+		d.logEvent(store.Event{Kind: "register", Agent: conv.Alias, Detail: "adopted (asked for " + alias + ")"})
+		return ok(map[string]any{"outcome": "adopted", "alias": conv.Alias, "unread": unread})
 	}
 
 	var mu *sync.Mutex
@@ -360,7 +384,15 @@ func (d *Daemon) handleRegisterAgent(a map[string]any) proto.Response {
 	if err != nil {
 		unread = 0
 	}
-	return ok(map[string]any{"outcome": outcome, "unread": unread})
+	return ok(map[string]any{"outcome": outcome, "alias": alias, "unread": unread})
+}
+
+// coalesce returns a if non-empty, else b.
+func coalesce(a, b string) string {
+	if a != "" {
+		return a
+	}
+	return b
 }
 
 // setSessionBadge is the ONE canonical {recompute, push} sequence for a
