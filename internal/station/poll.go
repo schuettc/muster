@@ -315,6 +315,15 @@ func fetchLastActiveCmd(caller render.Caller, alias string, gen int64) tea.Cmd {
 			return lastActiveMsg{alias: alias, gen: gen, err: err}
 		}
 		for _, e := range page.Events {
+			// A "peek" event's Agent is the PEEKED alias, not the caller who
+			// did the peeking (Finding 5) — an unowned get_inbox read moves
+			// no watermark and is not that alias's own activity, so treating
+			// it as one would show an idle agent as just-active on every
+			// sweep of its inbox by someone else (an operator, a station
+			// poll, another agent checking in).
+			if e.Kind == "peek" {
+				continue
+			}
 			if e.Agent == alias {
 				return lastActiveMsg{alias: alias, ts: e.TS, gen: gen}
 			}

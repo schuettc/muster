@@ -69,6 +69,34 @@ func TestGetInboxUnownedIsAPeek(t *testing.T) {
 	}
 }
 
+// TestGetInboxPeekJournalsCallerIdentity covers Finding 5: the peek event's
+// Agent field stays the PEEKED alias (station's per-alias event filter needs
+// that), so the caller who actually did the peeking must live in Detail, or
+// the artifact never names the sweeper — a sweep of many inboxes would be
+// indistinguishable from each peeked alias's own activity.
+func TestGetInboxPeekJournalsCallerIdentity(t *testing.T) {
+	sock, s := startWithNotifierAndStore(t, &fakeNotifier{})
+	call(t, sock, "register_agent", map[string]any{"alias": "me", "socket_path": "/s", "session_id": "$1", "session_created": 5, "pane_id": "%1"})
+	call(t, sock, "register_agent", map[string]any{"alias": "peer", "socket_path": "/s", "session_id": "$2", "session_created": 5, "pane_id": "%2"})
+
+	resp := call(t, sock, "get_inbox", map[string]any{
+		"alias": "me", "caller_socket_path": "/s", "caller_session_id": "$2", "caller_session_created": 5,
+	})
+	if !resp.OK {
+		t.Fatalf("get_inbox: %+v", resp)
+	}
+	evs, err := s.Events(store.EventQuery{Backlog: true, Limit: 100})
+	if err != nil || len(evs) == 0 {
+		t.Fatalf("Events: %v %v", evs, err)
+	}
+	if evs[0].Kind != "peek" || evs[0].Agent != "me" {
+		t.Fatalf("peek event must keep Agent=peeked alias, got %+v", evs[0])
+	}
+	if evs[0].Detail != "peer" {
+		t.Fatalf("peek Detail must name the caller's resolved alias, got %q", evs[0].Detail)
+	}
+}
+
 // TestGetInboxChainSeedIsOwned: a become-retired seed row is still the
 // caller's to drain — session lineage includes a departed row that is part
 // of a become-chain.

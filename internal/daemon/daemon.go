@@ -444,6 +444,40 @@ func (d *Daemon) callerOwns(alias string, a map[string]any) (bool, error) {
 	return false, nil
 }
 
+// callerIdentityDetail names the caller of an op from the SAME proof
+// callerOwns checks (Finding 5): a peek event needs to record WHO peeked, not
+// just which alias got peeked, or a sweep across many inboxes reads as every
+// peeked alias's own activity with no trace of the sweeper. Tolerant by
+// design — this is a logging convenience, never an auth decision, so any
+// resolution failure just falls back to a coarser identity rather than an
+// error:
+//
+//  1. the caller's live alias, when its (socket, session) tuple's lineage
+//     resolves to a non-departed row — the same lineage callerOwns walks;
+//  2. else the raw (socket, session) tuple it proved, so there is still
+//     SOMETHING to look at;
+//  3. else the harness session UUID, for a paneless caller with no tuple;
+//  4. else "unknown", when the caller sent no proof at all.
+func (d *Daemon) callerIdentityDetail(a map[string]any) string {
+	sock, sess := str(a, "caller_socket_path"), str(a, "caller_session_id")
+	if sess != "" {
+		if aliases, err := d.s.SessionAliasLineage(str(a, "caller_device_id"), sock, sess, i64(a, "caller_session_created")); err == nil {
+			for _, x := range aliases {
+				if ag, found, err := d.s.GetAgent(x); err == nil && found && !ag.Departed {
+					return x
+				}
+			}
+		}
+	}
+	if sock != "" || sess != "" {
+		return sock + "/" + sess
+	}
+	if hid := str(a, "caller_harness_session_id"); hid != "" {
+		return "harness:" + hid
+	}
+	return "unknown"
+}
+
 // setSessionBadge is the ONE canonical {recompute, push} sequence for a
 // session's tmux badge (spec §3): under the session's lock, recompute the
 // total unread via d.sessionUnread — the local store's SessionUnread in local
@@ -959,7 +993,14 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 			return fail(err)
 		}
 		if !owned {
-			d.logEvent(store.Event{Kind: "peek", Agent: alias})
+			// Finding 5: Agent here is the PEEKED alias (kept for the
+			// existing per-alias event filter), so the caller who actually
+			// did the peeking has to live somewhere else on the row or the
+			// artifact never names the sweeper — a station poll of seven
+			// inboxes would otherwise look like seven agents just acting.
+			// Detail carries that identity: the caller's resolved alias when
+			// its proof resolves to a live row, else its raw tuple.
+			d.logEvent(store.Event{Kind: "peek", Agent: alias, Detail: d.callerIdentityDetail(a)})
 			return ok(map[string]any{"threads": threads, "marked_read": false})
 		}
 		// A read that didn't persist must not report success (spec §3): if

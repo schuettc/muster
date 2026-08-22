@@ -90,8 +90,8 @@ func registerPanelessArgs(alias, role, model string, h harnessenv.Capture, ifAbs
 	return map[string]any{
 		"alias": alias, "role": role, "model_type": model,
 		"session_name": "", "session_id": h.SessionID, "session_created": 0,
-		"harness_session_id": h.SessionID,
-		"socket_path":        "", "pane_id": "",
+		"harness_session_id": h.SessionID, "transcript_path": h.TranscriptPath,
+		"socket_path": "", "pane_id": "",
 		"project": h.Project(), "label": "", "label_manual": false,
 		"if_absent": ifAbsent,
 	}

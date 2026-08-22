@@ -230,6 +230,52 @@ func TestRegisterAgentAdoptedOutcomeExplainsTheNameSwap(t *testing.T) {
 	}
 }
 
+// TestRegisterAgentAdoptedOutcomeWithBecomeDoesNotLoopAdvice covers Finding 3:
+// when the caller already passed become:true and the daemon still comes back
+// "adopted" (it resolved the row by transcript/tuple, not through a live
+// become — there is nothing left to retry), the reply must NOT tell the
+// caller to "pass become:true" again — it just did, and a model retrying the
+// exact same call forever is the failure mode. It should instead say what
+// happened and name the real path (muster label) to rename the row.
+func TestRegisterAgentAdoptedOutcomeWithBecomeDoesNotLoopAdvice(t *testing.T) {
+	t.Setenv("TMUX", "/tmp/sock,1,0")
+	t.Setenv("TMUX_PANE", "%6")
+	t.Setenv("MUSTER_DEVICE_NAME", "personal")
+	prev := tmuxenv.Run
+	tmuxenv.Run = func(_ ...string) (string, error) { return "$1", nil }
+	t.Cleanup(func() { tmuxenv.Run = prev })
+
+	prevDaemon := callDaemon
+	callDaemon = func(op string, _ map[string]any) (json.RawMessage, error) {
+		switch op {
+		case "list_agents":
+			return json.RawMessage(`[]`), nil // no existing row on THIS pane
+		case "register_agent":
+			return json.RawMessage(`{"outcome":"adopted","alias":"first","unread":0}`), nil
+		}
+		t.Fatalf("unexpected op %s", op)
+		return nil, nil
+	}
+	t.Cleanup(func() { callDaemon = prevDaemon })
+
+	_, out, err := registerAgentHandler(context.TODO(), nil, RegisterAgentIn{Alias: "second", ModelType: "claude", Become: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !out.OK {
+		t.Fatalf("expected OK, got %+v", out)
+	}
+	if !strings.Contains(out.Detail, "first") {
+		t.Fatalf("detail must name the adopted alias, got %q", out.Detail)
+	}
+	if strings.Contains(out.Detail, "become:true") {
+		t.Fatalf("detail must not advise become:true when the caller already passed it, got %q", out.Detail)
+	}
+	if !strings.Contains(out.Detail, "muster label") {
+		t.Fatalf("detail must say what would actually rename it, got %q", out.Detail)
+	}
+}
+
 // TestRegisterAgentBareAliasMatchesSeededRow covers the realistic already-
 // registered case the MCP mint path actually produces: the stored row's alias
 // is SEEDED ("personal-researcher"), but a model re-registering quotes the
