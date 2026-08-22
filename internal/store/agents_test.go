@@ -224,26 +224,26 @@ func TestSessionUnreadLineageCycleGuard(t *testing.T) {
 	_ = action
 }
 
-// TestSetHarnessSessionID covers the hook-repair path of the durable-alias
-// spec: an alias registered without a harness link (e.g. via the MCP tool in
-// an env with no harness UUID) gets one stamped later by the Stop hook.
-func TestSetHarnessSessionID(t *testing.T) {
+// TestStampHarness covers the hook-repair path of the durable-alias spec: an
+// alias registered without a harness link (e.g. via the MCP tool in an env
+// with no harness UUID) gets one stamped later by the Stop hook.
+func TestStampHarness(t *testing.T) {
 	s := newTestStore(t)
 	if err := s.RegisterAgent(Agent{Alias: "backend"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SetHarnessSessionID("backend", "uuid-1"); err != nil {
+	if err := s.StampHarness("backend", "uuid-1", "/t/a.jsonl"); err != nil {
 		t.Fatal(err)
 	}
 	ag, ok, err := s.GetAgent("backend")
 	if err != nil || !ok {
 		t.Fatalf("get: %v %v", ok, err)
 	}
-	if ag.HarnessSessionID != "uuid-1" {
-		t.Fatalf("harness_session_id = %q, want uuid-1", ag.HarnessSessionID)
+	if ag.HarnessSessionID != "uuid-1" || ag.TranscriptPath != "/t/a.jsonl" {
+		t.Fatalf("harness_session_id = %q transcript_path = %q, want uuid-1 /t/a.jsonl", ag.HarnessSessionID, ag.TranscriptPath)
 	}
 	// Unknown alias is a no-op, mirroring TouchAgent's contract.
-	if err := s.SetHarnessSessionID("ghost", "uuid-2"); err != nil {
+	if err := s.StampHarness("ghost", "uuid-2", "/t/x.jsonl"); err != nil {
 		t.Fatal(err)
 	}
 }

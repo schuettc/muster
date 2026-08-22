@@ -108,7 +108,7 @@ type API interface {
 	UnreadCount(alias string) (int, error)
 	SessionUnread(deviceID, socketPath, sessionID string, sessionCreated int64) (total, action int, err error)
 	SessionAliasLineage(deviceID, socketPath, sessionID string, sessionCreated int64) ([]string, error)
-	SetHarnessSessionID(alias, id string) error
+	StampHarness(alias, harnessSessionID, transcriptPath string) error
 	// Become claims a new name for an existing identity: it clones from onto
 	// to and retires from, stamping from.superseded_by = to. It is a
 	// compare-and-swap, not a read-then-write — the to-must-not-exist guard

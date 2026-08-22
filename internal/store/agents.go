@@ -19,8 +19,8 @@ import (
 func (s *Store) RegisterAgent(a Agent) error {
 	now := clock.NowMillis()
 	_, err := s.db.Exec(`
-INSERT INTO agents (alias, role, model_type, socket_path, pane_id, session_name, session_id, session_created, device_id, device_name, harness_session_id, project, label, label_manual, departed, superseded_by, registered_at, last_seen)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, '', ?, ?)
+INSERT INTO agents (alias, role, model_type, socket_path, pane_id, session_name, session_id, session_created, device_id, device_name, harness_session_id, transcript_path, project, label, label_manual, departed, superseded_by, registered_at, last_seen)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, '', ?, ?)
 ON CONFLICT(alias) DO UPDATE SET
     role=excluded.role,
     model_type=excluded.model_type,
@@ -32,6 +32,7 @@ ON CONFLICT(alias) DO UPDATE SET
     device_id=excluded.device_id,
     device_name=excluded.device_name,
     harness_session_id=excluded.harness_session_id,
+    transcript_path=excluded.transcript_path,
     project=excluded.project,
     label=excluded.label,
     label_manual=excluded.label_manual,
@@ -39,7 +40,7 @@ ON CONFLICT(alias) DO UPDATE SET
     superseded_by='',
     last_seen=excluded.last_seen`,
 		a.Alias, a.Role, a.ModelType, a.SocketPath, a.PaneID, a.SessionName, a.SessionID, a.SessionCreated, a.DeviceID,
-		a.DeviceName, a.HarnessSessionID, a.Project, a.Label, a.LabelManual, now, now)
+		a.DeviceName, a.HarnessSessionID, a.TranscriptPath, a.Project, a.Label, a.LabelManual, now, now)
 	return err
 }
 
@@ -47,7 +48,7 @@ ON CONFLICT(alias) DO UPDATE SET
 // agents included: their rows are history, not gone (see DepartAgent).
 func (s *Store) ListAgents() ([]Agent, error) {
 	rows, err := s.db.Query(`
-SELECT alias, role, model_type, socket_path, pane_id, session_name, session_id, session_created, device_id, device_name, harness_session_id, project, label, label_manual, registered_at, last_seen, last_read_entry_id, departed, superseded_by
+SELECT alias, role, model_type, socket_path, pane_id, session_name, session_id, session_created, device_id, device_name, harness_session_id, transcript_path, project, label, label_manual, registered_at, last_seen, last_read_entry_id, departed, superseded_by
 FROM agents ORDER BY alias`)
 	if err != nil {
 		return nil, err
@@ -56,7 +57,7 @@ FROM agents ORDER BY alias`)
 	var out []Agent
 	for rows.Next() {
 		var a Agent
-		if err := rows.Scan(&a.Alias, &a.Role, &a.ModelType, &a.SocketPath, &a.PaneID, &a.SessionName, &a.SessionID, &a.SessionCreated, &a.DeviceID, &a.DeviceName, &a.HarnessSessionID, &a.Project, &a.Label, &a.LabelManual, &a.RegisteredAt, &a.LastSeen, &a.LastReadEntryID, &a.Departed, &a.SupersededBy); err != nil {
+		if err := rows.Scan(&a.Alias, &a.Role, &a.ModelType, &a.SocketPath, &a.PaneID, &a.SessionName, &a.SessionID, &a.SessionCreated, &a.DeviceID, &a.DeviceName, &a.HarnessSessionID, &a.TranscriptPath, &a.Project, &a.Label, &a.LabelManual, &a.RegisteredAt, &a.LastSeen, &a.LastReadEntryID, &a.Departed, &a.SupersededBy); err != nil {
 			return nil, err
 		}
 		out = append(out, a)
@@ -70,9 +71,9 @@ FROM agents ORDER BY alias`)
 func (s *Store) GetAgent(alias string) (Agent, bool, error) {
 	var a Agent
 	err := s.db.QueryRow(`
-SELECT alias, role, model_type, socket_path, pane_id, session_name, session_id, session_created, device_id, device_name, harness_session_id, project, label, label_manual, registered_at, last_seen, last_read_entry_id, departed, superseded_by
+SELECT alias, role, model_type, socket_path, pane_id, session_name, session_id, session_created, device_id, device_name, harness_session_id, transcript_path, project, label, label_manual, registered_at, last_seen, last_read_entry_id, departed, superseded_by
 FROM agents WHERE alias=?`, alias).
-		Scan(&a.Alias, &a.Role, &a.ModelType, &a.SocketPath, &a.PaneID, &a.SessionName, &a.SessionID, &a.SessionCreated, &a.DeviceID, &a.DeviceName, &a.HarnessSessionID, &a.Project, &a.Label, &a.LabelManual, &a.RegisteredAt, &a.LastSeen, &a.LastReadEntryID, &a.Departed, &a.SupersededBy)
+		Scan(&a.Alias, &a.Role, &a.ModelType, &a.SocketPath, &a.PaneID, &a.SessionName, &a.SessionID, &a.SessionCreated, &a.DeviceID, &a.DeviceName, &a.HarnessSessionID, &a.TranscriptPath, &a.Project, &a.Label, &a.LabelManual, &a.RegisteredAt, &a.LastSeen, &a.LastReadEntryID, &a.Departed, &a.SupersededBy)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Agent{}, false, nil
 	}
@@ -88,14 +89,15 @@ func (s *Store) TouchAgent(alias string) error {
 	return err
 }
 
-// SetHarnessSessionID stamps the harness session UUID onto an existing row —
-// the repair half of the durable-alias spec: an alias registered without a
-// harness link (an MCP register in an env carrying no harness UUID) gets one
-// attached later by a hook that DOES see the UUID (every hook payload carries
-// it). Identity, tuple, and read-state are untouched; unknown alias is a
-// no-op, mirroring TouchAgent's contract.
-func (s *Store) SetHarnessSessionID(alias, id string) error {
-	_, err := s.db.Exec(`UPDATE agents SET harness_session_id=? WHERE alias=?`, id, alias)
+// StampHarness attaches the harness link to an existing row: the session
+// UUID and the transcript path, each only when non-empty — a hook that
+// knows one but not the other must not erase what another hook stamped.
+// Identity, tuple, and read-state are untouched; unknown alias is a no-op.
+func (s *Store) StampHarness(alias, harnessSessionID, transcriptPath string) error {
+	_, err := s.db.Exec(`UPDATE agents SET
+    harness_session_id = CASE WHEN ?2 = '' THEN harness_session_id ELSE ?2 END,
+    transcript_path    = CASE WHEN ?3 = '' THEN transcript_path    ELSE ?3 END
+WHERE alias = ?1`, alias, harnessSessionID, transcriptPath)
 	return err
 }
 
@@ -304,8 +306,8 @@ func (s *Store) Become(from, to string) error {
 	}
 	now := clock.NowMillis()
 	res, err := tx.Exec(`
-INSERT INTO agents (alias, role, model_type, socket_path, pane_id, session_name, session_id, session_created, device_id, device_name, harness_session_id, project, label, label_manual, departed, registered_at, last_seen, last_read_entry_id, last_read_at)
-SELECT ?, role, model_type, socket_path, pane_id, session_name, session_id, session_created, device_id, device_name, harness_session_id, project, label, label_manual, 0, ?, ?, last_read_entry_id, last_read_at
+INSERT INTO agents (alias, role, model_type, socket_path, pane_id, session_name, session_id, session_created, device_id, device_name, harness_session_id, transcript_path, project, label, label_manual, departed, registered_at, last_seen, last_read_entry_id, last_read_at)
+SELECT ?, role, model_type, socket_path, pane_id, session_name, session_id, session_created, device_id, device_name, harness_session_id, transcript_path, project, label, label_manual, 0, ?, ?, last_read_entry_id, last_read_at
 FROM agents WHERE alias=?`, to, now, now, from)
 	if err != nil {
 		return err

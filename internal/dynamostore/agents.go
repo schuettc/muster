@@ -95,6 +95,7 @@ func (s *Store) RegisterAgent(a store.Agent) error {
 		// whatever claimed it before (the operator may have purged the
 		// successor and re-registered the old name). See Become.
 		"harness_session_id": attrS(a.HarnessSessionID),
+		"transcript_path":    attrS(a.TranscriptPath),
 		"superseded_by":      attrS(""),
 		"project":            attrS(a.Project),
 		"label":              attrS(a.Label),
@@ -219,30 +220,44 @@ func (s *Store) DepartAgent(alias string) error {
 	return nil
 }
 
-// SetHarnessSessionID stamps the harness session UUID onto an EXISTING row —
-// the repair half of the durable-alias spec. Identity, tuple, and read state
-// are untouched; unknown alias is a no-op, mirroring TouchAgent's contract.
+// StampHarness attaches the harness link to an EXISTING row: the session
+// UUID and the transcript path, each only when non-empty — a hook that
+// knows one but not the other must not erase what another hook stamped.
+// Identity, tuple, and read state are untouched; both empty is a no-op that
+// skips the round trip entirely; unknown alias is a no-op, mirroring
+// TouchAgent's contract.
 //
 // attribute_exists(pk) is load-bearing for the same reason it is on TouchAgent:
 // UpdateItem is an upsert, so without it, stamping an unknown alias would
-// CREATE a phantom row carrying nothing but a harness UUID — where the SQLite
+// CREATE a phantom row carrying nothing but a harness link — where the SQLite
 // UPDATE simply matches no rows. That phantom would then be a roster member
 // with an empty tuple, which is exactly the shape SessionUnread's empty-tuple
 // guard exists to keep out.
-func (s *Store) SetHarnessSessionID(alias, id string) error {
+func (s *Store) StampHarness(alias, harnessSessionID, transcriptPath string) error {
+	set := map[string]types.AttributeValue{}
+	if harnessSessionID != "" {
+		set["harness_session_id"] = attrS(harnessSessionID)
+	}
+	if transcriptPath != "" {
+		set["transcript_path"] = attrS(transcriptPath)
+	}
+	if len(set) == 0 {
+		return nil
+	}
+	expr, names, values := setExpr(set)
 	_, err := s.c.UpdateItem(backgroundCtx(), &dynamodb.UpdateItemInput{
 		TableName:                 aws.String(s.table),
 		Key:                       agentKey(alias),
-		UpdateExpression:          aws.String("SET #harness_session_id = :harness_session_id"),
+		UpdateExpression:          aws.String(expr),
 		ConditionExpression:       aws.String("attribute_exists(pk)"),
-		ExpressionAttributeNames:  map[string]string{"#harness_session_id": "harness_session_id"},
-		ExpressionAttributeValues: map[string]types.AttributeValue{":harness_session_id": attrS(id)},
+		ExpressionAttributeNames:  names,
+		ExpressionAttributeValues: values,
 	})
 	if err != nil {
 		if isConditionFailed(err) {
 			return nil // unknown alias: no-op, matching the SQLite contract
 		}
-		return fmt.Errorf("dynamostore: set harness session id on %q: %w", alias, err)
+		return fmt.Errorf("dynamostore: stamp harness on %q: %w", alias, err)
 	}
 	return nil
 }
@@ -538,7 +553,7 @@ func (s *Store) DeleteAgent(alias string) error {
 // address, and the tuple alone is not device-unique in a shared roster.
 //
 // attribute_exists(pk) is load-bearing here for the same reason it is on
-// TouchAgent and SetHarnessSessionID, and more so: membership comes from
+// TouchAgent and StampHarness, and more so: membership comes from
 // roster(), a GSI, so a purge_agent that already removed the base item can
 // still be lagging in the index. Without the condition this upsert would
 // RECREATE the deleted alias as a phantom base item holding only label and
@@ -729,6 +744,7 @@ func itemToAgent(item map[string]types.AttributeValue) store.Agent {
 		DeviceID:         strAttr(item, "device_id"),
 		DeviceName:       strAttr(item, "device_name"),
 		HarnessSessionID: strAttr(item, "harness_session_id"),
+		TranscriptPath:   strAttr(item, "transcript_path"),
 		Project:          strAttr(item, "project"),
 		Label:            strAttr(item, "label"),
 		LabelManual:      boolAttr(item, "label_manual"),

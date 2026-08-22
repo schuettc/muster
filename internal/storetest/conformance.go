@@ -118,8 +118,10 @@ var cases = []conformanceCase{
 	{"SessionUnreadExemptsThePanelessTupleFromIncarnation", testSessionUnreadPanelessIgnoresIncarnation},
 
 	// Identity: harness link, become, and supersession lineage.
-	{"SetHarnessSessionIDStampsExistingRow", testSetHarnessSessionID},
-	{"SetHarnessSessionIDUnknownAliasIsNoOp", testSetHarnessSessionIDUnknown},
+	{"StampHarnessStampsBothFields", testStampHarness},
+	{"StampHarnessEmptyArgLeavesFieldAlone", testStampHarnessPartial},
+	{"StampHarnessUnknownAliasIsNoOp", testStampHarnessUnknown},
+	{"RegisterPersistsTranscriptPath", testRegisterTranscriptPath},
 	{"RegisterResetsSupersededBy", testRegisterResetsSupersededBy},
 	{"BecomeClonesIdentityAndRetiresSeed", testBecomeClonesAndRetires},
 	{"BecomeCarriesTheReadWatermark", testBecomeCarriesWatermark},
@@ -2083,17 +2085,17 @@ func testSessionUnreadPaneless(t *testing.T, s store.API) {
 	}
 }
 
-func testSetHarnessSessionID(t *testing.T, s store.API) {
+func testStampHarness(t *testing.T, s store.API) {
 	mustRegister(t, s, store.Agent{Alias: "backend", SocketPath: "/s", SessionID: "$1"})
-	if err := s.SetHarnessSessionID("backend", "uuid-1"); err != nil {
-		t.Fatalf("SetHarnessSessionID: %v", err)
+	if err := s.StampHarness("backend", "uuid-1", "/t/a.jsonl"); err != nil {
+		t.Fatalf("StampHarness: %v", err)
 	}
 	a, ok, err := s.GetAgent("backend")
 	if err != nil || !ok {
 		t.Fatalf("GetAgent: %v (ok=%v)", err, ok)
 	}
-	if a.HarnessSessionID != "uuid-1" {
-		t.Fatalf("harness_session_id = %q, want %q", a.HarnessSessionID, "uuid-1")
+	if a.HarnessSessionID != "uuid-1" || a.TranscriptPath != "/t/a.jsonl" {
+		t.Fatalf("got harness=%q transcript=%q", a.HarnessSessionID, a.TranscriptPath)
 	}
 	// Identity, tuple and read state are untouched by the stamp.
 	if a.SocketPath != "/s" || a.SessionID != "$1" {
@@ -2101,13 +2103,31 @@ func testSetHarnessSessionID(t *testing.T, s store.API) {
 	}
 }
 
-// testSetHarnessSessionIDUnknown is the phantom-row guard. A backend whose
+func testStampHarnessPartial(t *testing.T, s store.API) {
+	mustRegister(t, s, store.Agent{Alias: "backend", SocketPath: "/s", SessionID: "$1", HarnessSessionID: "uuid-0", TranscriptPath: "/t/a.jsonl"})
+	if err := s.StampHarness("backend", "uuid-1", ""); err != nil {
+		t.Fatalf("StampHarness: %v", err)
+	}
+	a, _, _ := s.GetAgent("backend")
+	if a.HarnessSessionID != "uuid-1" || a.TranscriptPath != "/t/a.jsonl" {
+		t.Fatalf("empty transcript arg must not clear it: harness=%q transcript=%q", a.HarnessSessionID, a.TranscriptPath)
+	}
+	if err := s.StampHarness("backend", "", "/t/b.jsonl"); err != nil {
+		t.Fatalf("StampHarness: %v", err)
+	}
+	a, _, _ = s.GetAgent("backend")
+	if a.HarnessSessionID != "uuid-1" || a.TranscriptPath != "/t/b.jsonl" {
+		t.Fatalf("empty harness arg must not clear it: harness=%q transcript=%q", a.HarnessSessionID, a.TranscriptPath)
+	}
+}
+
+// testStampHarnessUnknown is the phantom-row guard. A backend whose
 // update is an upsert (DynamoDB's UpdateItem is) will CREATE a row for an
 // alias that was never registered, where the SQLite UPDATE matches nothing.
 // The phantom is a roster member with an empty tuple and no identity.
-func testSetHarnessSessionIDUnknown(t *testing.T, s store.API) {
-	if err := s.SetHarnessSessionID("ghost", "uuid-2"); err != nil {
-		t.Fatalf("SetHarnessSessionID on an unknown alias must be a no-op, got %v", err)
+func testStampHarnessUnknown(t *testing.T, s store.API) {
+	if err := s.StampHarness("ghost", "uuid-2", "/t/x.jsonl"); err != nil {
+		t.Fatalf("StampHarness on an unknown alias must be a no-op, got %v", err)
 	}
 	if _, ok, err := s.GetAgent("ghost"); err != nil || ok {
 		t.Fatalf("stamping an unknown alias created a phantom row (ok=%v, err=%v)", ok, err)
@@ -2118,6 +2138,18 @@ func testSetHarnessSessionIDUnknown(t *testing.T, s store.API) {
 	}
 	if len(agents) != 0 {
 		t.Fatalf("roster gained %d phantom row(s): %+v", len(agents), agents)
+	}
+}
+
+func testRegisterTranscriptPath(t *testing.T, s store.API) {
+	mustRegister(t, s, store.Agent{Alias: "a", SocketPath: "/s", SessionID: "$1", TranscriptPath: "/t/a.jsonl"})
+	a, _, _ := s.GetAgent("a")
+	if a.TranscriptPath != "/t/a.jsonl" {
+		t.Fatalf("transcript_path not persisted: %q", a.TranscriptPath)
+	}
+	all, _ := s.ListAgents()
+	if all[0].TranscriptPath != "/t/a.jsonl" {
+		t.Fatal("ListAgents must carry transcript_path")
 	}
 }
 

@@ -53,11 +53,16 @@ type Agent struct {
 	// daemon-hosted harnesses — can still find their rows; paneless
 	// registrations carry it too. "" = unknown (pre-handshake rows).
 	HarnessSessionID string `json:"harness_session_id"`
-	Project          string `json:"project"`
-	Label            string `json:"label"`
-	LabelManual      bool   `json:"label_manual"`
-	RegisteredAt     int64  `json:"registered_at"`
-	LastSeen         int64  `json:"last_seen"`
+	// TranscriptPath is the harness conversation's transcript file — the
+	// strongest identity key (spec 2026-08-21 §2): Claude Code never changes
+	// it for a conversation, while the harness session ID can change under
+	// /login. '' when the harness provides none (Codex, paneless).
+	TranscriptPath string `json:"transcript_path"`
+	Project        string `json:"project"`
+	Label          string `json:"label"`
+	LabelManual    bool   `json:"label_manual"`
+	RegisteredAt   int64  `json:"registered_at"`
+	LastSeen       int64  `json:"last_seen"`
 	// LastReadEntryID is the entry-ID read watermark (see MarkRead/UnreadCount
 	// in agents.go): the highest entries.id visible the last time this
 	// agent's inbox was read. Supersedes the wall-clock last_read_at for

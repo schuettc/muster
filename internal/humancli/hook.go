@@ -750,7 +750,7 @@ func stampHarnessLinks(aliases []string, h harnessenv.Capture, socketPath, sessi
 			continue // a sibling pane's alias: not mine to stamp
 		}
 		_, _ = callData("stamp_harness_session", map[string]any{
-			"alias": alias, "harness_session_id": h.SessionID,
+			"alias": alias, "harness_session_id": h.SessionID, "transcript_path": h.TranscriptPath,
 		})
 	}
 }

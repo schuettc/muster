@@ -1052,7 +1052,7 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 		}
 		return ok(map[string]any{"updated": n})
 	case "stamp_harness_session":
-		if err := d.s.SetHarnessSessionID(str(a, "alias"), str(a, "harness_session_id")); err != nil {
+		if err := d.s.StampHarness(str(a, "alias"), str(a, "harness_session_id"), str(a, "transcript_path")); err != nil {
 			return fail(err)
 		}
 		return ok(nil)
