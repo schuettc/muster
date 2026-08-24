@@ -17,7 +17,7 @@ var wantCommandNames = []string{
 	"send", "nudge", "reply",
 	"agents", "inbox", "tasks", "thread", "events", "watch", "station",
 	"register", "become", "deregister", "label", "whereami", "device", "gc",
-	"serve", "mcp", "lambda", "hook", "debug",
+	"serve", "mcp", "channel", "lambda", "hook", "debug",
 }
 
 // mainOwnedCommands are the Registry names cmd/muster's main() dispatches
@@ -25,7 +25,7 @@ var wantCommandNames = []string{
 // (daemon startup, MCP stdio framing, a one-off raw daemon call, the Lambda
 // runtime behind a build tag) this package deliberately doesn't do. Every
 // other Registry command must have a non-nil Run.
-var mainOwnedCommands = map[string]bool{"serve": true, "mcp": true, "lambda": true, "debug": true}
+var mainOwnedCommands = map[string]bool{"serve": true, "mcp": true, "channel": true, "lambda": true, "debug": true}
 
 func TestRegistryCompleteness(t *testing.T) {
 	got := append([]string(nil), commandNames()...)
