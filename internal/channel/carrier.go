@@ -81,7 +81,6 @@ type Carrier struct {
 	cursor   int64
 	lastPush time.Time
 	lastErr  string
-	started  bool
 }
 
 func (c *Carrier) errw() io.Writer {
@@ -129,7 +128,6 @@ func (c *Carrier) maxEventID() (int64, error) {
 func (c *Carrier) Start() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.started = true
 	if c.Ident.paneless() {
 		c.lastErr = "no tmux pane (channel started outside tmux); idle"
 		_, _ = fmt.Fprintln(c.errw(), "[muster channel]", c.lastErr)
@@ -186,6 +184,12 @@ func (c *Carrier) Tick() error {
 	}
 	seen := map[int64]bool{}
 	var batch []Event
+	// head advances to the largest max_id any per-alias query reports. With
+	// several aliases there is a narrow race: an event for an already-queried
+	// alias can land before a later alias's query raises max_id past it, and
+	// that event is then never pushed. Accepted: multi-alias sessions are
+	// rare, the 📬 badge and Stop-hook drain still deliver the mail, and the
+	// alternative (advancing past pushed ids only) re-pushes duplicates.
 	head := c.cursor
 	for _, a := range aliases {
 		raw, err := c.Call("list_events", map[string]any{"agent": a, "after_id": c.cursor})
