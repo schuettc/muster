@@ -132,7 +132,7 @@ func (c *Carrier) Start() error {
 	c.started = true
 	if c.Ident.paneless() {
 		c.lastErr = "no tmux pane (channel started outside tmux); idle"
-		fmt.Fprintln(c.errw(), "[muster channel]", c.lastErr)
+		_, _ = fmt.Fprintln(c.errw(), "[muster channel]", c.lastErr)
 		return nil
 	}
 	head, err := c.maxEventID()
@@ -225,7 +225,7 @@ func (c *Carrier) Tick() error {
 func (c *Carrier) push(content string, meta map[string]string) {
 	if err := c.Notify(content, meta); err != nil {
 		c.lastErr = "push failed: " + err.Error()
-		fmt.Fprintln(c.errw(), "[muster channel]", c.lastErr)
+		_, _ = fmt.Fprintln(c.errw(), "[muster channel]", c.lastErr)
 		return
 	}
 	c.lastPush = time.Now()
@@ -247,11 +247,11 @@ func (c *Carrier) Run(ctx context.Context) {
 		sleep = time.Sleep
 	}
 	if err := c.Start(); err != nil {
-		fmt.Fprintln(c.errw(), "[muster channel] start:", err)
+		_, _ = fmt.Fprintln(c.errw(), "[muster channel] start:", err)
 	}
 	for ctx.Err() == nil {
 		if err := c.Tick(); err != nil {
-			fmt.Fprintln(c.errw(), "[muster channel] tick:", err)
+			_, _ = fmt.Fprintln(c.errw(), "[muster channel] tick:", err)
 		}
 		sleep(interval)
 	}

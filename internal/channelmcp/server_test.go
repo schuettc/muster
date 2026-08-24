@@ -78,7 +78,7 @@ func TestToolsListAndCall(t *testing.T) {
 	h := Handler{
 		Name: "muster-channel", Version: "0.0.1",
 		Tools: []Tool{{Name: "muster_channel_status", Description: "d", InputSchema: json.RawMessage(`{"type":"object"}`)}},
-		Call: func(name string, args json.RawMessage) (string, error) {
+		Call: func(name string, _ json.RawMessage) (string, error) {
 			called = name
 			return "attached", nil
 		},

@@ -27,10 +27,10 @@ const channelInstructions = `This channel is muster, the local coordination bus.
 // runChannel serves a claude/channel MCP server on stdio for the session that
 // launched it and runs the carrier beside it. stdout is the protocol.
 func runChannel() {
-	cap := tmuxenv.CaptureEnv()
+	capture := tmuxenv.CaptureEnv()
 	carrier := &channel.Carrier{
 		Call:     channel.DaemonClient(paths.SocketPath()),
-		Ident:    channel.Identity{SocketPath: cap.SocketPath, SessionID: cap.SessionID, PaneID: cap.PaneID, SessionCreated: cap.SessionCreated},
+		Ident:    channel.Identity{SocketPath: capture.SocketPath, SessionID: capture.SessionID, PaneID: capture.PaneID, SessionCreated: capture.SessionCreated},
 		Interval: channelInterval(),
 	}
 	srv := channelmcp.New(channelmcp.Handler{
@@ -52,9 +52,10 @@ func runChannel() {
 	carrier.Notify = srv.Notify
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer cancel()
 	go carrier.Run(ctx)
-	if err := srv.Run(os.Stdin, os.Stdout); err != nil {
+	err := srv.Run(os.Stdin, os.Stdout)
+	cancel()
+	if err != nil {
 		fmt.Fprintln(os.Stderr, "muster: channel:", err)
 		os.Exit(1)
 	}
