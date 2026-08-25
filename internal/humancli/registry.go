@@ -371,6 +371,10 @@ protocol channel — all diagnostics go to stderr.`,
 Register it once per harness beside 'muster mcp':
 
     claude mcp add muster-channel -s user -- muster channel
+    claude --dangerously-load-development-channels server:muster-channel
+
+Claude Code loads a server as a channel only when named at launch; without
+the flag the pushes are dropped silently and the hook fallbacks deliver.
 
 It tails the bus journal for this tmux session's aliases and pushes a compact
 envelope (who, intent, thread, subject) into the session the moment mail

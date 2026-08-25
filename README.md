@@ -42,6 +42,7 @@ curl -fsSL https://muster.tools/install.sh | sh
 # 2. register the MCP server with each agent
 claude mcp add muster -s user -- muster mcp     # Claude Code
 claude mcp add muster-channel -s user -- muster channel   # optional: push delivery (Claude Code channels)
+#    then launch with: claude --dangerously-load-development-channels server:muster-channel
 codex mcp add muster -- muster mcp              # Codex
 # Cursor Agent: add the mcp.json block shown below, then:
 agent mcp enable muster
@@ -87,6 +88,8 @@ codex mcp add muster -- muster mcp
 ## Channel mode
 
 `muster channel` is an MCP **channel** carrier (Claude Code's `claude/channel` convention; pi via its `pi-channels` extension). Registered beside `muster mcp`, it tails the bus journal for the session's aliases and pushes a compact envelope — intent, sender, thread, subject, never the body — into the session the moment mail lands. An idle agent wakes and answers with `get_thread`/`reply`; nobody types. The 📬 badge, the Stop-hook drain and `muster nudge` are unchanged fallbacks. `MUSTER_CHANNEL_INTERVAL` (default `1s`) tunes the poll cadence; `muster_channel_status` (the carrier's one tool) reports what it is attached to.
+
+Channel servers are not ordinary MCP servers: Claude Code loads one as a channel only when the session is launched naming it — `claude --dangerously-load-development-channels server:muster-channel` for a user-config entry (a packaged plugin form, `--channels plugin:…`, is a follow-up). Without the flag the server runs and its pushes are dropped silently; the badge and Stop-hook drain still deliver the mail. Measured on the first live trial: an idle session woke and replied seven seconds after `muster send`.
 
 ```bash
 agent mcp enable muster
