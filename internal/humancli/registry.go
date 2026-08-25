@@ -364,6 +364,30 @@ protocol channel — all diagnostics go to stderr.`,
 			Group: GroupPlumbing,
 		},
 		{
+			Name:     "channel",
+			Synopsis: "channel",
+			Summary:  "Run the MCP channel carrier that pushes new mail into this session.",
+			Help: `A claude/channel MCP server over stdio for the session that launched it.
+Register it once per harness beside 'muster mcp':
+
+    claude mcp add muster-channel -s user -- muster channel
+    claude --dangerously-load-development-channels server:muster-channel
+
+Claude Code loads a server as a channel only when named at launch; without
+the flag the pushes are dropped silently and the hook fallbacks deliver.
+
+It tails the bus journal for this tmux session's aliases and pushes a compact
+envelope (who, intent, thread, subject) into the session the moment mail
+lands — waking an idle agent without anyone typing. Bodies stay in the bus:
+the agent answers with get_thread / get_inbox / reply as before. The 📬 badge,
+the Stop-hook drain and 'muster nudge' keep working unchanged as fallbacks.
+
+MUSTER_CHANNEL_INTERVAL tunes the poll cadence (Go duration, default 1s,
+floor 250ms). stdout is the MCP protocol — diagnostics go to stderr. One tool,
+muster_channel_status, reports what the channel is attached to.`,
+			Group: GroupPlumbing,
+		},
+		{
 			Name:     "lambda",
 			Synopsis: "lambda",
 			Summary:  "Serve the hosted bus from an AWS Lambda behind an HTTP API.",

@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/schuettc/muster/internal/channel"
 	"github.com/schuettc/muster/internal/client"
 	"github.com/schuettc/muster/internal/daemon"
 	"github.com/schuettc/muster/internal/device"
@@ -61,6 +62,12 @@ func main() {
 			return
 		}
 		os.Exit(runLambda())
+	case "channel":
+		if wantsHelp(os.Args[2:]) {
+			_ = humancli.HelpFor("channel", os.Stdout)
+			return
+		}
+		runChannel()
 	default:
 		// humancli.Dispatch owns the CLI subcommand list (including
 		// help/version) and errors on an unknown one — routing everything
@@ -80,7 +87,7 @@ func main() {
 }
 
 // wantsHelp reports whether the first token after a subcommand name is a
-// help flag. serve/mcp/debug/lambda are owned by main() (not humancli.Dispatch),
+// help flag. serve/mcp/channel/debug/lambda are owned by main() (not humancli.Dispatch),
 // so their -h/--help handling lives here rather than behind flag.ErrHelp
 // interception the way the humancli-dispatched commands do it.
 func wantsHelp(args []string) bool {
@@ -125,6 +132,30 @@ func pollInterval() time.Duration {
 		fmt.Fprintf(os.Stderr, "muster: ignoring %s=%q (want a positive Go duration like 10s), using %s\n",
 			PollIntervalEnv, raw, daemon.DefaultPollInterval)
 		return daemon.DefaultPollInterval
+	}
+	return d
+}
+
+// ChannelIntervalEnv tunes how often `muster channel` polls the journal for
+// new mail addressed to its session (a Go duration, e.g. "500ms"). Bounds
+// only how late a push can be; the floor is channel.MinInterval. Unparseable
+// or non-positive values fall back to the default with a warning.
+const ChannelIntervalEnv = "MUSTER_CHANNEL_INTERVAL"
+
+// channelInterval reads ChannelIntervalEnv, defaulting to channel.DefaultInterval.
+func channelInterval() time.Duration {
+	raw := os.Getenv(ChannelIntervalEnv)
+	if raw == "" {
+		return channel.DefaultInterval
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d <= 0 {
+		fmt.Fprintf(os.Stderr, "muster: ignoring %s=%q (want a positive Go duration like 500ms), using %s\n",
+			ChannelIntervalEnv, raw, channel.DefaultInterval)
+		return channel.DefaultInterval
+	}
+	if d < channel.MinInterval {
+		return channel.MinInterval
 	}
 	return d
 }
