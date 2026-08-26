@@ -5,7 +5,8 @@
 // when the operator launched from a pane, so tmuxenv.CaptureEnv comes back
 // empty. Identity then comes from what the harness DOES provide: every hook's
 // stdin payload carries session_id and cwd, and the process environment
-// carries $CLAUDE_CODE_SESSION_ID and a working directory. Like tmuxenv,
+// carries $CLAUDE_CODE_SESSION_ID (or, for harness-neutral runtimes such as
+// pi, $AGENT_SESSION_ID) and a working directory. Like tmuxenv,
 // this package is the single canonical capture path for that identity —
 // callers must not read those variables directly.
 package harnessenv
@@ -39,10 +40,18 @@ type Capture struct {
 }
 
 // FromEnv captures identity from the process environment: the harness
-// session UUID and the working directory.
+// session UUID and the working directory. Claude Code exports its UUID as
+// CLAUDE_CODE_SESSION_ID; harness-neutral runtimes (pi, via its harness
+// extension) export AGENT_SESSION_ID instead and must never set the Claude
+// variable, because downstream this package's answer is what decides whether
+// a paneless session IS a Claude session. Claude's wins when both are set.
 func FromEnv() Capture {
 	cwd, _ := os.Getwd()
-	return Capture{SessionID: os.Getenv("CLAUDE_CODE_SESSION_ID"), CWD: cwd}
+	id := os.Getenv("CLAUDE_CODE_SESSION_ID")
+	if id == "" {
+		id = os.Getenv("AGENT_SESSION_ID")
+	}
+	return Capture{SessionID: id, CWD: cwd}
 }
 
 // FromHookPayload captures identity from a hook's stdin payload (Claude Code
