@@ -59,9 +59,9 @@ func (n TmuxNudger) sleep(d time.Duration) {
 // TypeLine types text into the pane and optionally submits it — the general
 // form of Nudge, for callers with their own line to deliver (e.g. `muster
 // label`'s /rename sync). Submit semantics are per-model, identical to Nudge:
-// claude accepts an immediate Enter; codex and cursor need pasteSubmitDelay
-// first; unknown model types are typed-only (submitted=false) so the caller
-// can tell the operator to press Enter.
+// claude accepts an immediate Enter; codex, cursor and pi need
+// pasteSubmitDelay first; unknown model types are typed-only
+// (submitted=false) so the caller can tell the operator to press Enter.
 func (n TmuxNudger) TypeLine(socketPath, paneID, modelType, text string, submit bool) (bool, error) {
 	if socketPath == "" || paneID == "" {
 		return false, fmt.Errorf("agent has no tmux pane (not registered from inside tmux)")
@@ -75,7 +75,7 @@ func (n TmuxNudger) TypeLine(socketPath, paneID, modelType, text string, submit 
 	switch modelType {
 	case "claude":
 		// Immediate Enter submits.
-	case "codex", "cursor":
+	case "codex", "cursor", "pi":
 		n.sleep(pasteSubmitDelay) // let the TUI finish processing the paste before Enter
 	default:
 		return false, nil // unknown submit behavior → typed-only

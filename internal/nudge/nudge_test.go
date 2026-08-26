@@ -54,6 +54,10 @@ func TestNudgeCursorTypesAndSubmitsAfterDelay(t *testing.T) {
 	testNudgePasteSubmitHarness(t, "cursor")
 }
 
+func TestNudgePiPastesThenSubmitsAfterDelay(t *testing.T) {
+	testNudgePasteSubmitHarness(t, "pi")
+}
+
 func testNudgePasteSubmitHarness(t *testing.T, model string) {
 	t.Helper()
 	calls, run := recorder()

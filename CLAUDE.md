@@ -63,7 +63,8 @@ only once the PR is open.
   `wake.Notifier`. Keep `internal/daemon` and `internal/store` tmux-agnostic.
 - **Wake is split.** `internal/wake` *notifies* (sets the `@muster_inbox` tmux
   option; never types into a pane). `internal/nudge` is the **only** send-keys path.
-  The daemon never types.
+  The daemon never types. `internal/channel` is the third wake path: it pushes an
+  envelope into the session over MCP (`muster channel`) — like `wake`, it never types.
 
 ## The naming contract
 
@@ -117,6 +118,8 @@ register_agent resolves against that identity before ever inserting a row: a con
 client · `internal/daemon` the daemon · `internal/store` the `store.API` interface
 + its SQLite implementation · `internal/mcpserver` MCP tools · `internal/humancli`
 operator CLI · `internal/wake` notify · `internal/nudge` send-keys ·
+`internal/channelmcp` stdlib claude/channel MCP server · `internal/channel` the
+channel carrier (journal tail → push) ·
 `internal/tmuxenv` tmux capture/liveness/label · `internal/harnessenv` paneless
 harness-session capture (tmuxenv's counterpart) · `internal/paths` socket+db paths ·
 `internal/clock` injectable time · `internal/mustertest` shared test helpers.
