@@ -170,3 +170,24 @@ func TestIsTeammateFailOpenAndBounded(t *testing.T) {
 		t.Fatal("teamName beyond line 30 must not match (bounded scan)")
 	}
 }
+
+// A harness-neutral runtime (pi) exports AGENT_SESSION_ID and never the
+// Claude variable; FromEnv must accept it so `muster register` and every
+// CLI identity path work for pi, not only the hook-payload path.
+func TestFromEnvAcceptsAgentSessionID(t *testing.T) {
+	t.Setenv("CLAUDE_CODE_SESSION_ID", "")
+	t.Setenv("AGENT_SESSION_ID", "pi-uuid")
+	if got := FromEnv().SessionID; got != "pi-uuid" {
+		t.Fatalf("SessionID = %q, want pi-uuid", got)
+	}
+}
+
+// When both are present the Claude variable wins — existing behavior for
+// Claude sessions is untouched by the fallback.
+func TestFromEnvClaudeVariableWins(t *testing.T) {
+	t.Setenv("CLAUDE_CODE_SESSION_ID", "claude-uuid")
+	t.Setenv("AGENT_SESSION_ID", "pi-uuid")
+	if got := FromEnv().SessionID; got != "claude-uuid" {
+		t.Fatalf("SessionID = %q, want claude-uuid", got)
+	}
+}
