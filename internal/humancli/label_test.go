@@ -440,8 +440,8 @@ func TestLabelNoInjectSkipsRename(t *testing.T) {
 }
 
 // TestLabelRenamesLivePiPane: a pi session is renamed from the bus by typing
-// pi's NATIVE `/name` — not `/rename`, which the pi harness extension maps
-// onto `muster become` and would loop straight back here. Delayed submit,
+// pi's NATIVE `/name`; the pi harness extension reacts to the resulting
+// session_info_changed event with `become --no-inject`, so nothing loops. Delayed submit,
 // same as Cursor: the paste and the Enter are distinct tmux calls.
 func TestLabelRenamesLivePiPane(t *testing.T) {
 	startCLITestDaemon(t)

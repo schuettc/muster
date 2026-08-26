@@ -183,9 +183,9 @@ func syncAgentName(out io.Writer, name, socket, sessionID string) {
 // renameCommand is the slash command that sets a harness's own session
 // title, with its trailing space, or "" for a harness that has none (codex)
 // or that muster does not know — those panes are never typed into. pi gets
-// its NATIVE `/name`, not `/rename`: the pi harness extension's `/rename`
-// calls `muster become`, and `become` is what types this line, so typing
-// `/rename` at a pi pane would loop become → /rename → become.
+// its NATIVE `/name`. pi's harness extension has no rename command of its
+// own — it reacts to pi's `session_info_changed` event and calls
+// `become --no-inject`, so typing `/name` here propagates without looping.
 func renameCommand(modelType string) string {
 	switch modelType {
 	case "claude", "cursor":
