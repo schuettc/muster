@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/schuettc/muster/internal/nudge"
 	"github.com/schuettc/muster/internal/tmuxenv"
@@ -160,7 +161,7 @@ func syncAgentName(out io.Writer, name, socket, sessionID string) {
 		return err
 	}}
 	for _, ag := range rows {
-		if ag.Departed || (ag.ModelType != "claude" && ag.ModelType != "cursor") || ag.SocketPath != socket ||
+		if ag.Departed || renameCommand(ag.ModelType) == "" || ag.SocketPath != socket ||
 			ag.SessionID != sessionID || ag.PaneID == "" {
 			continue
 		}
@@ -170,11 +171,27 @@ func syncAgentName(out io.Writer, name, socket, sessionID string) {
 		if !tmuxenv.IsSessionAlive(socket, ag.SessionID, ag.SessionCreated) {
 			continue
 		}
-		if _, err := typer.TypeLine(socket, ag.PaneID, ag.ModelType, "/rename "+name, true); err != nil {
-			_, _ = fmt.Fprintf(out, "warning: %s session rename failed (%v); run /rename %s in %s yourself\n", ag.ModelType, err, name, ag.ModelType)
+		if _, err := typer.TypeLine(socket, ag.PaneID, ag.ModelType, renameCommand(ag.ModelType)+name, true); err != nil {
+			_, _ = fmt.Fprintf(out, "warning: %s session rename failed (%v); run %s %s in %s yourself\n", ag.ModelType, err, strings.TrimSpace(renameCommand(ag.ModelType)), name, ag.ModelType)
 			return
 		}
 		_, _ = fmt.Fprintf(out, "renamed %s session to match (pane %s)\n", ag.ModelType, ag.PaneID)
 		return // one live supported harness per session; first match wins
 	}
+}
+
+// renameCommand is the slash command that sets a harness's own session
+// title, with its trailing space, or "" for a harness that has none (codex)
+// or that muster does not know — those panes are never typed into. pi gets
+// its NATIVE `/name`. pi's harness extension has no rename command of its
+// own — it reacts to pi's `session_info_changed` event and calls
+// `become --no-inject`, so typing `/name` here propagates without looping.
+func renameCommand(modelType string) string {
+	switch modelType {
+	case "claude", "cursor":
+		return "/rename "
+	case "pi":
+		return "/name "
+	}
+	return ""
 }

@@ -438,3 +438,62 @@ func TestLabelNoInjectSkipsRename(t *testing.T) {
 		}
 	}
 }
+
+// TestLabelRenamesLivePiPane: a pi session is renamed from the bus by typing
+// pi's NATIVE `/name`; the pi harness extension reacts to the resulting
+// session_info_changed event with `become --no-inject`, so nothing loops. Delayed submit,
+// same as Cursor: the paste and the Enter are distinct tmux calls.
+func TestLabelRenamesLivePiPane(t *testing.T) {
+	startCLITestDaemon(t)
+	t.Setenv("TMUX", "/tmp/sock,1,0")
+	if _, err := callData("register_agent", map[string]any{
+		"alias": "worker", "socket_path": "/tmp/sock", "session_id": "$1",
+		"pane_id": "%5", "model_type": "pi", "session_created": 1700000000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var sent [][]string
+	prev := tmuxenv.Run
+	tmuxenv.Run = func(args ...string) (string, error) {
+		last := args[len(args)-1]
+		switch last {
+		case "#{session_id}":
+			return "$1", nil
+		case "#{pane_id}":
+			return "%5", nil
+		case "#{session_created}":
+			return "1700000000", nil
+		}
+		if len(args) > 2 && args[2] == "send-keys" {
+			sent = append(sent, append([]string(nil), args...))
+		}
+		return "", nil
+	}
+	t.Cleanup(func() { tmuxenv.Run = prev })
+
+	var buf bytes.Buffer
+	if err := cmdLabel([]string{"standard 2000"}, &buf); err != nil {
+		t.Fatalf("label: %v", err)
+	}
+	if len(sent) != 2 {
+		t.Fatalf("expected /name type + delayed Enter submit, got %v", sent)
+	}
+	if got := sent[0][len(sent[0])-1]; got != "/name standard 2000" {
+		t.Fatalf("typed %q, want %q — pi must get its native /name, never /rename", got, "/name standard 2000")
+	}
+	if sent[1][len(sent[1])-1] != "Enter" {
+		t.Fatalf("expected delayed Enter submit, got %v", sent[1])
+	}
+	if !strings.Contains(buf.String(), "renamed pi session") {
+		t.Fatalf("expected pi rename confirmation in output, got %q", buf.String())
+	}
+}
+
+func TestRenameCommandTable(t *testing.T) {
+	for model, want := range map[string]string{"claude": "/rename ", "cursor": "/rename ", "pi": "/name ", "codex": "", "": "", "station": ""} {
+		if got := renameCommand(model); got != want {
+			t.Errorf("renameCommand(%q) = %q, want %q", model, got, want)
+		}
+	}
+}
