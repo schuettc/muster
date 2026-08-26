@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 
 	"github.com/schuettc/muster/internal/channel"
@@ -15,18 +16,46 @@ import (
 	"github.com/schuettc/muster/internal/version"
 )
 
-// channelInstructions is the handshake text: the whole protocol, taught once.
+// channelInstructions is the durable core, taught once at handshake: what
+// the channel is and how a push is shaped. Everything specific to a kind of
+// event travels WITH that event, after the separator, so the rule sits next
+// to the action it governs instead of thousands of tokens back.
 const channelInstructions = `This channel is muster, the local coordination bus. A <channel source="muster-channel"> message means mail arrived on the bus for THIS session.
-- It names the intent, sender, thread id and subject. The body is not included.
-- action-requested or reply-requested: call get_thread with the thread id, do what it asks, then answer with the muster reply tool.
-- fyi: read it with get_thread; no reply is needed.
-- A push naming several items, or a "N unread" summary: call get_inbox and work through each thread.
+- Each push is an envelope line (intent, sender, thread id, subject — never the body), then a line containing only "---", then guidance for that push. Follow the guidance; it names the tool to call.
+- The body lives in the bus: get_thread <id> reads one thread, get_inbox lists everything unread, reply answers.
 - Act autonomously. Do not ask the user whether to check mail; reading it is the point.
 - muster_channel_status reports which aliases this channel pushes for and why it might be idle.`
 
+// ChannelMaxListedEnv caps how many threads a batch push still lists on its
+// envelope line; above it the push collapses to a count and the strictest
+// intent. Non-numeric or non-positive values fall back to the default.
+const ChannelMaxListedEnv = "MUSTER_CHANNEL_MAX_LISTED"
+
+// channelMaxListed reads ChannelMaxListedEnv, defaulting to channel.MaxListed.
+func channelMaxListed() int {
+	raw := os.Getenv(ChannelMaxListedEnv)
+	if raw == "" {
+		return channel.MaxListed
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n <= 0 {
+		fmt.Fprintf(os.Stderr, "muster: ignoring %s=%q (want a positive integer), using %d\n", ChannelMaxListedEnv, raw, channel.MaxListed)
+		return channel.MaxListed
+	}
+	return n
+}
+
 // runChannel serves a claude/channel MCP server on stdio for the session that
 // launched it and runs the carrier beside it. stdout is the protocol.
+//
+// Shutdown has two triggers and both must end the process: the client
+// closing stdin (srv.Run returns), or SIGINT/SIGTERM. signal.NotifyContext
+// suppresses the signal's default action, so if the server loop were the
+// only thing we waited on, a harness that sends SIGTERM while still holding
+// our pipes would leave a process that never exits — measured by the
+// pi-channels client, which had to SIGKILL after a grace period.
 func runChannel() {
+	channel.MaxListed = channelMaxListed()
 	capture := tmuxenv.CaptureEnv()
 	carrier := &channel.Carrier{
 		Call:     channel.DaemonClient(paths.SocketPath()),
@@ -53,10 +82,17 @@ func runChannel() {
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	go carrier.Run(ctx)
-	err := srv.Run(os.Stdin, os.Stdout)
-	cancel()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "muster: channel:", err)
-		os.Exit(1)
+	done := make(chan error, 1)
+	go func() { done <- srv.Run(os.Stdin, os.Stdout) }()
+	select {
+	case <-ctx.Done():
+		// Signalled while the client still holds our pipes: exit now.
+		cancel()
+	case err := <-done:
+		cancel()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "muster: channel:", err)
+			os.Exit(1)
+		}
 	}
 }

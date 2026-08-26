@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -154,8 +153,7 @@ func (c *Carrier) Start() error {
 		return fmt.Errorf("decode session_unread: %w", err)
 	}
 	if unread.Total > 0 {
-		c.push(fmt.Sprintf("muster: %d unread message(s) waiting — call get_inbox.", unread.Total),
-			map[string]string{"kind": "summary", "count": strconv.Itoa(unread.Total)})
+		c.push(Summary(unread.Total))
 	}
 	return nil
 }

@@ -383,7 +383,9 @@ the agent answers with get_thread / get_inbox / reply as before. The 📬 badge,
 the Stop-hook drain and 'muster nudge' keep working unchanged as fallbacks.
 
 MUSTER_CHANNEL_INTERVAL tunes the poll cadence (Go duration, default 1s,
-floor 250ms). stdout is the MCP protocol — diagnostics go to stderr. One tool,
+floor 250ms); MUSTER_CHANNEL_MAX_LISTED (default 5) caps how many threads a
+batch push lists before collapsing to a count. A push is an envelope line,
+a "---" line, then guidance for that event. stdout is the MCP protocol — diagnostics go to stderr. One tool,
 muster_channel_status, reports what the channel is attached to.`,
 			Group: GroupPlumbing,
 		},
