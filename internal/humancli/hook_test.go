@@ -1016,6 +1016,10 @@ func TestHookSessionEndUnresolvableIdentityNeverDialsDaemon(t *testing.T) {
 	// identity (the paneless tuple) and dialing would be correct — this test
 	// is specifically about the no-identity-at-all branch.
 	t.Setenv("CLAUDE_CODE_SESSION_ID", "")
+	// Same pin for the harness-neutral spelling harnessenv accepts since the
+	// AGENT_SESSION_ID fallback landed: a dev machine running `go test` inside
+	// a pi session leaks it in, and with it SessionEnd has a paneless identity.
+	t.Setenv("AGENT_SESSION_ID", "")
 	// Pin the ancestry-walk fallback away too (finding F2 routes SessionEnd
 	// through hookCapture, which tries this walk when $TMUX is empty): on a
 	// dev machine `go test` itself commonly runs inside a real tmux pane,
