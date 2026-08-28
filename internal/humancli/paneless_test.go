@@ -40,6 +40,10 @@ func panelessEnv(t *testing.T, uuid, dirName string) string {
 	t.Setenv("TMUX_PANE", "")
 	t.Setenv("MUSTER_ALIAS", "")
 	t.Setenv("CLAUDE_CODE_SESSION_ID", uuid)
+	// The harness-neutral spelling must be pinned too: a dev machine running
+	// `go test` inside a pi session leaks AGENT_SESSION_ID, and harnessenv
+	// falls back to it whenever the Claude spelling is empty.
+	t.Setenv("AGENT_SESSION_ID", "")
 	pinAncestryWalkAway(t)
 	dir := filepath.Join(t.TempDir(), dirName)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -80,7 +84,8 @@ func TestRegisterPanelessWithoutAnyIdentityStillErrors(t *testing.T) {
 	t.Setenv("TMUX_PANE", "")
 	t.Setenv("MUSTER_ALIAS", "")
 	t.Setenv("CLAUDE_CODE_SESSION_ID", "")
-	t.Chdir("/") // basename "/" derives no alias
+	t.Setenv("AGENT_SESSION_ID", "") // see panelessEnv: pi leaks this into dev runs
+	t.Chdir("/")                     // basename "/" derives no alias
 	var buf bytes.Buffer
 	err := cmdRegister(nil, &buf)
 	if err == nil || !strings.Contains(err.Error(), "cannot determine alias") {

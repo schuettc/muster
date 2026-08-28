@@ -83,6 +83,12 @@ func strictest(events []Event) string {
 	return best
 }
 
+// drainSuffix closes every per-event rule: get_thread and reply never move
+// the read watermark or touch the tmux badge (only an owned get_inbox does,
+// via the daemon's setSessionBadge), so a channel-handled thread would leave
+// the operator's 📬 lit forever without this final drain.
+const drainSuffix = " Finish by calling get_inbox for your alias — that marks the mail read and clears the inbox badge."
+
 // guidance is the rule that travels with ONE event: what this push obliges
 // the agent to do, stated next to the action it governs rather than in a
 // handshake blob the agent read thousands of tokens ago.
@@ -90,19 +96,19 @@ func guidance(e Event) string {
 	id := e.ThreadID
 	if e.Kind == "reply" {
 		if e.Intent == "fyi" {
-			return fmt.Sprintf("A closing reply on your thread: read it with get_thread %d; no reply needed.", id)
+			return fmt.Sprintf("A closing reply on your thread: read it with get_thread %d; no reply needed.", id) + drainSuffix
 		}
-		return fmt.Sprintf("Someone replied on your thread: call get_thread %d and reply only if the sender still needs something from you; close out with fyi so nobody is woken.", id)
+		return fmt.Sprintf("Someone replied on your thread: call get_thread %d and reply only if the sender still needs something from you; close out with fyi so nobody is woken.", id) + drainSuffix
 	}
 	switch e.Intent {
 	case "action-requested":
-		return fmt.Sprintf("This thread asks you to do something: call get_thread %d, do what it asks, then answer with reply. Act autonomously — do not ask the user whether to check mail.", id)
+		return fmt.Sprintf("This thread asks you to do something: call get_thread %d, do what it asks, then answer with reply. Act autonomously — do not ask the user whether to check mail.", id) + drainSuffix
 	case "reply-requested":
-		return fmt.Sprintf("The sender needs an answer: call get_thread %d, then reply with it. Act autonomously.", id)
+		return fmt.Sprintf("The sender needs an answer: call get_thread %d, then reply with it. Act autonomously.", id) + drainSuffix
 	case "fyi":
-		return fmt.Sprintf("Informational only: read it with get_thread %d; do not reply — a reply would wake the sender.", id)
+		return fmt.Sprintf("Informational only: read it with get_thread %d; do not reply — a reply would wake the sender.", id) + drainSuffix
 	}
-	return fmt.Sprintf("Call get_thread %d, act on it, then reply.", id)
+	return fmt.Sprintf("Call get_thread %d, act on it, then reply.", id) + drainSuffix
 }
 
 // batchGuidance is the rule for a summary line that stands for many events.
