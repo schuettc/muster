@@ -33,6 +33,16 @@ func cmdHook(args []string, stdin io.Reader, out io.Writer) error {
 	if len(args) < 1 {
 		return fmt.Errorf("usage: muster hook <SessionStart|SessionEnd|Stop> [model]")
 	}
+	// A harness that spawns a nested Claude Code (or other hooked harness)
+	// as a subprocess sets this in the child's env: the child inherits
+	// $TMUX and the pane's process ancestry, so without the guard its
+	// hooks reclaim and then tombstone the hosting pane's bus row on
+	// every request (caught live 2026-08-27: pi-claude-bridge children
+	// left a pi session permanently departed). Env scrubbing alone cannot
+	// stop this — hookCapture falls back to an ancestry walk.
+	if os.Getenv("MUSTER_HOOK_DISABLE") != "" {
+		return nil
+	}
 	model := "claude"
 	if len(args) > 1 && args[1] != "" {
 		model = args[1]

@@ -27,6 +27,26 @@ func TestHookStopLoopGuard(t *testing.T) {
 	}
 }
 
+// TestHookDisableEnvGuard pins the nested-harness guard: a host harness
+// that spawns a hooked child (e.g. pi-claude-bridge spawning Claude Code)
+// sets MUSTER_HOOK_DISABLE in the child's env, and every hook event must
+// then be a silent no-op — the child inherits $TMUX and the pane ancestry,
+// so anything short of a hard gate lets it reclaim and tombstone the
+// hosting pane's bus row.
+func TestHookDisableEnvGuard(t *testing.T) {
+	t.Setenv("MUSTER_HOOK_DISABLE", "1")
+	t.Setenv("TMUX", "/tmp/sock,1,0")
+	for _, event := range []string{"SessionStart", "SessionEnd", "Stop"} {
+		var buf bytes.Buffer
+		if err := cmdHook([]string{event}, strings.NewReader(`{"session_id":"x"}`), &buf); err != nil {
+			t.Fatalf("hook %s with guard set: %v", event, err)
+		}
+		if buf.Len() != 0 {
+			t.Fatalf("hook %s with guard set: expected no output, got %q", event, buf.String())
+		}
+	}
+}
+
 func TestHookStopCursorLoopGuard(t *testing.T) {
 	t.Setenv("TMUX", "/tmp/sock,1,0")
 	for _, input := range []string{
