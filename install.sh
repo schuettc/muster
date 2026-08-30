@@ -1,22 +1,30 @@
 #!/bin/sh
-# muster installer — downloads the latest release binaries for this machine,
-# verifies their checksums, and installs them to ~/.local/bin (override with
-# MUSTER_INSTALL_DIR). Usage:
+# muster installer — downloads the latest release for this machine from
+# muster.tools, verifies its checksum FAIL-CLOSED, and installs to
+# ~/.local/bin (override with MUSTER_INSTALL_DIR). Usage:
 #
 #   curl -fsSL https://muster.tools/install.sh | sh
 #
+# Binaries are served from the muster.tools domain, not GitHub: the URL scheme
+# is the family contract —
+#   https://muster.tools/dl/muster/<version>/muster_<os>_<arch>.tar.gz(.sha256)
+#   https://muster.tools/dl/muster/latest   (plain-text version pointer)
+# GitHub releases still exist as an invisible durable backing store; this
+# script never touches them.
+#
+# Pin an exact version with MUSTER_VERSION=0.15.1 (skips the latest pointer).
+# Versions are bare semver with no leading v (the family download contract);
+# a leading v is tolerated and stripped.
 # muster-deploy, which stands up the optional hosted backend in your own AWS
-# account, is NOT installed by default. It is needed on one machine, once, and
-# only if you want a bus spanning several devices — and it links the AWS SDK,
-# which the muster binary deliberately does not. Ask for it explicitly:
+# account, is NOT installed by default — it links the AWS SDK the muster binary
+# deliberately omits. Ask for it explicitly:
 #
 #   curl -fsSL https://muster.tools/install.sh | sh -s -- --with-deploy
 #
 set -eu
 
-repo="schuettc/muster"
+host="${MUSTER_DL_HOST:-https://muster.tools}"
 install_dir="${MUSTER_INSTALL_DIR:-$HOME/.local/bin}"
-base="https://github.com/$repo/releases/latest/download"
 with_deploy=0
 
 fail() { printf 'muster install: %s\n' "$*" >&2; exit 1; }
@@ -27,6 +35,8 @@ for arg in "$@"; do
     -h|--help)
       printf 'usage: install.sh [--with-deploy]\n'
       printf '  --with-deploy  also install muster-deploy (hosted backend installer)\n'
+      printf '  MUSTER_VERSION=X.Y.Z pins an exact version.\n'
+      printf '  MUSTER_INSTALL_DIR overrides the install directory.\n'
       exit 0 ;;
     *) fail "unknown option '$arg' (see --help)" ;;
   esac
@@ -48,10 +58,21 @@ case "$arch" in
   *) fail "unsupported architecture '$arch' (need amd64 or arm64)" ;;
 esac
 
+# Resolve the version: honor an explicit pin, else read the short-TTL latest
+# pointer off the domain.
+version="${MUSTER_VERSION:-}"
+if [ -z "$version" ]; then
+  version="$(curl -fsSL "$host/dl/muster/latest")" || fail "could not read latest pointer at $host/dl/muster/latest"
+  version="$(printf '%s' "$version" | tr -d ' \t\r\n')"
+  [ -n "$version" ] || fail "latest pointer was empty"
+fi
+# The download contract keys paths on bare semver; tolerate a pinned leading v.
+version="${version#v}"
+
+base="$host/dl/muster/$version"
+
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
-
-curl -fsSL "$base/checksums.txt" -o "$tmp/checksums.txt" || fail "download failed: checksums.txt"
 
 # sha256 the given file, using whichever tool this OS ships (shasum on macOS,
 # sha256sum on Linux).
@@ -63,17 +84,20 @@ sha256_of() {
   fi
 }
 
-# fetch_binary <binary-name> — download that binary's tarball for this
-# platform, verify it against checksums.txt, and install the binary.
+# fetch_binary <binary-name> — download that binary's tarball and its sha256
+# sidecar for this platform, verify FAIL-CLOSED, and install the binary.
 fetch_binary() {
   name="$1"
   asset="${name}_${os}_${arch}.tar.gz"
+  url="$base/$asset"
 
-  printf 'downloading %s …\n' "$asset"
-  curl -fsSL "$base/$asset" -o "$tmp/$asset" || fail "download failed: $base/$asset"
+  printf 'downloading %s (%s) …\n' "$asset" "$version"
+  curl -fsSL "$url"        -o "$tmp/$asset"        || fail "download failed: $url"
+  curl -fsSL "$url.sha256" -o "$tmp/$asset.sha256" || fail "download failed: $url.sha256"
 
-  expected="$(grep " $asset\$" "$tmp/checksums.txt" | cut -d' ' -f1)"
-  [ -n "$expected" ] || fail "no checksum found for $asset"
+  # The sidecar is `shasum -a 256` output (`<hex>  <name>`); take the hex.
+  expected="$(cut -d' ' -f1 < "$tmp/$asset.sha256")"
+  [ -n "$expected" ] || fail "empty checksum for $asset"
   actual="$(sha256_of "$tmp/$asset")"
   [ "$actual" = "$expected" ] || fail "checksum mismatch for $asset (expected $expected, got $actual)"
 

@@ -33,6 +33,11 @@ on:
 
 permissions:
   contents: write
+  # OIDC: the Publish step assumes the tools-ops Release role to PutObject to
+  # the muster.tools Downloads bucket. The trust condition is this repo's
+  # `release` environment (declared below), not a ref — so it works with the
+  # release-on-push-to-main VERSION model with no tag gymnastics.
+  id-token: write
 
 jobs:
   release:
@@ -227,6 +232,50 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload "${{ steps.rel.outputs.tag }}" dist/*.tar.gz dist/*.zip dist/checksums.txt --clobber --repo "$GITHUB_REPOSITORY"
+
+      # --- Publish to the muster.tools download domain -------------------------
+      # GitHub above is now the invisible durable backing store; install.sh
+      # pulls from muster.tools/dl. Immutable long-TTL for the versioned binary
+      # paths; the latest pointer is short-TTL and invalidated on write so it is
+      # never stale. The Release role can ONLY PutObject to Downloads and
+      # CreateInvalidation on the muster.tools distribution — no other access.
+      - name: Configure AWS credentials (downloads)
+        if: steps.rel.outputs.skip == 'false'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.MUSTER_RELEASE_ROLE_ARN }}
+          aws-region: us-east-1
+      - name: Publish binaries to muster.tools/dl
+        if: steps.rel.outputs.skip == 'false'
+        env:
+          BUCKET: ${{ secrets.MUSTER_DOWNLOADS_BUCKET }}
+          TAG: ${{ steps.rel.outputs.tag }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"   # bare semver; the family download contract keys paths on it
+          for f in dist/muster_*.tar.gz dist/muster-deploy_*.tar.gz; do
+            base="$(basename "$f")"
+            # shasum two-space format, naming the bare asset (not the dist/ path).
+            shasum -a 256 "$f" | awk -v n="$base" '{print $1"  "n}' > "$f.sha256"
+            aws s3 cp "$f"          "s3://$BUCKET/dl/muster/$version/$base"        --cache-control 'public,max-age=31536000,immutable'
+            aws s3 cp "$f.sha256"   "s3://$BUCKET/dl/muster/$version/$base.sha256" --cache-control 'public,max-age=31536000,immutable' --content-type text/plain
+          done
+      - name: Update latest pointer + invalidate
+        # Only a real, non-prerelease release moves `latest`. A workflow_dispatch
+        # asset-rebuild of an old tag (create=false) and an -rc pre-release
+        # (prerelease=true) both publish their versioned paths above but must
+        # never regress or hijack the pointer — mirrors GitHub's "pre-release
+        # never becomes Latest".
+        if: steps.rel.outputs.skip == 'false' && steps.rel.outputs.create == 'true' && steps.rel.outputs.prerelease == 'false'
+        env:
+          BUCKET: ${{ secrets.MUSTER_DOWNLOADS_BUCKET }}
+          TAG: ${{ steps.rel.outputs.tag }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          printf '%s' "$version" | aws s3 cp - "s3://$BUCKET/dl/muster/latest" \
+            --content-type text/plain --cache-control 'public,max-age=60,must-revalidate'
+          aws cloudfront create-invalidation --distribution-id ENNIY7RSDS2NI --paths '/dl/muster/latest'
 
       - name: Destroy the signing material
         # always(), because a failed build must not leave a usable Developer ID
