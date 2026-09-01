@@ -890,15 +890,18 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 			}
 			toTarget = resolved
 		}
+		standing := boolArg(a, "standing")
 		if toKind == "broadcast" {
 			if err := d.validateBroadcastTarget(toTarget); err != nil {
 				return fail(err)
 			}
+		} else if standing {
+			return fail(fmt.Errorf("standing is broadcast-only"))
 		}
 		id, err := d.s.CreateThread(store.Thread{
 			Kind: "message", FromAgent: from, ToKind: toKind,
 			ToTarget: toTarget, Subject: str(a, "subject"), Ref: str(a, "ref"),
-			Intent: str(a, "intent"), OriginProject: d.senderProject(from),
+			Intent: str(a, "intent"), Standing: standing, OriginProject: d.senderProject(from),
 		}, str(a, "body"))
 		if err != nil {
 			return fail(err)
