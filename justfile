@@ -6,7 +6,8 @@ set shell := ["bash", "-uc"]
 # build`, `just verify`, and a release build report the same thing.
 version := `cat VERSION`
 commit := `git rev-parse --short HEAD 2>/dev/null || echo none`
-ldflags := "-X github.com/schuettc/muster/internal/version.version=" + version + " -X github.com/schuettc/muster/internal/version.commit=" + commit
+date := `date -u +%Y-%m-%d`
+ldflags := "-X github.com/schuettc/muster/internal/version.version=" + version + " -X github.com/schuettc/muster/internal/version.commit=" + commit + " -X github.com/schuettc/muster/internal/version.date=" + date
 
 # Format code.
 fmt:
