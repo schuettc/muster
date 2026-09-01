@@ -122,9 +122,17 @@ type Thread struct {
 	// not the seeded live watermark, decides its unread state). Only
 	// meaningful for to_kind='broadcast'; CreateThread rejects standing on
 	// any other target. A plain (non-standing) broadcast is live-only.
-	Standing  bool  `json:"standing"`
-	CreatedAt int64 `json:"created_at"`
-	UpdatedAt int64 `json:"updated_at"`
+	Standing bool `json:"standing"`
+	// StandingKey is the identity of a keyed standing ORDER within its project
+	// (empty on an ad-hoc append-only standing broadcast). StandingRetracted
+	// marks an order superseded (by a newer set under the same project+key) or
+	// explicitly retracted; a retracted order is filtered from the standing
+	// unread branch so it greets no future session. Both broadcast-only. See
+	// SetStandingOrder/RetractStandingOrder/ListStandingOrders.
+	StandingKey       string `json:"standing_key"`
+	StandingRetracted bool   `json:"standing_retracted"`
+	CreatedAt         int64  `json:"created_at"`
+	UpdatedAt         int64  `json:"updated_at"`
 	// OriginProject is the SENDER's registered project at thread-creation
 	// time (iteration-4 orphan-thread fix): the daemon resolves the sender's
 	// agent record when it calls CreateThread and stamps its Project here —
@@ -151,6 +159,17 @@ type Thread struct {
 	// drilling into get_thread. Threads()/GetThread/CreateThread leave it
 	// zero.
 	Unread int `json:"unread"`
+}
+
+// StandingOrder is one live (non-retracted) keyed standing order for a
+// project, as returned by ListStandingOrders — the audit/verify view the
+// onboarding skill reads. Body is the order's text (its thread's first entry).
+type StandingOrder struct {
+	Key       string `json:"key"`
+	Body      string `json:"body"`
+	From      string `json:"from"`
+	ThreadID  int64  `json:"thread_id"`
+	CreatedAt int64  `json:"created_at"`
 }
 
 // Entry is one append-only message within a thread.

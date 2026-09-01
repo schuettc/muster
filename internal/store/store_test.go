@@ -68,6 +68,8 @@ func TestSchemaHasStandingColumns(t *testing.T) {
 	for _, c := range []struct{ table, col string }{
 		{"agents", "last_read_standing_entry_id"},
 		{"threads", "standing"},
+		{"threads", "standing_key"},
+		{"threads", "standing_retracted"},
 	} {
 		var n int
 		if err := s.DB().QueryRow(
