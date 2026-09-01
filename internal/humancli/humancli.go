@@ -341,7 +341,7 @@ func validateIntent(intent string) error {
 // sendFlagVals holds cmdSend's parsed flag pointers.
 type sendFlagVals struct {
 	from, subject, ref, intent, project *string
-	role, broadcast                     *bool
+	role, broadcast, standing           *bool
 }
 
 // newSendFlagsWithVals declares send's flags and returns both the FlagSet
@@ -358,6 +358,7 @@ func newSendFlagsWithVals() (*flag.FlagSet, sendFlagVals) {
 	v.role = fs.Bool("role", false, "treat target as a role")
 	v.broadcast = fs.Bool("broadcast", false, "send to everyone")
 	v.project = fs.String("project", "", "with --broadcast: send only to this project's agents")
+	v.standing = fs.Bool("standing", false, "with --broadcast: also reach sessions that start later, until they read it (standing orders)")
 	v.intent = fs.String("intent", "", "message intent: fyi, reply-requested, or action-requested")
 	return fs, v
 }
@@ -387,6 +388,9 @@ func cmdSend(args []string, out io.Writer) error {
 	if *v.project != "" && !*v.broadcast {
 		return fmt.Errorf("--project requires --broadcast")
 	}
+	if *v.standing && !*v.broadcast {
+		return fmt.Errorf("--standing requires --broadcast")
+	}
 	toKind, toTarget := "agent", ""
 	switch {
 	case *v.broadcast:
@@ -397,7 +401,7 @@ func cmdSend(args []string, out io.Writer) error {
 	var body string
 	if *v.broadcast {
 		if len(rest) < 1 {
-			return fmt.Errorf("usage: muster send --broadcast [--project <p>] <body> [--intent fyi|reply-requested|action-requested]")
+			return fmt.Errorf("usage: muster send --broadcast [--project <p>] [--standing] <body> [--intent fyi|reply-requested|action-requested]")
 		}
 		toTarget = *v.project
 		body = strings.Join(rest, " ")
@@ -424,6 +428,7 @@ func cmdSend(args []string, out io.Writer) error {
 	raw, err := callData("send_message", map[string]any{
 		"from": fromAlias, "to_kind": toKind, "to_target": toTarget,
 		"subject": *v.subject, "ref": *v.ref, "body": body, "intent": *v.intent,
+		"standing": *v.standing,
 	})
 	if err != nil {
 		return err
@@ -440,7 +445,7 @@ func cmdSend(args []string, out io.Writer) error {
 
 // sendBoolFlags are cmdSend's flags that take no value, needed so
 // splitFlagsAndPositional knows not to consume the following token as a value.
-var sendBoolFlags = map[string]bool{"role": true, "broadcast": true}
+var sendBoolFlags = map[string]bool{"role": true, "broadcast": true, "standing": true}
 
 // splitFlagsAndPositional separates args into flag.FlagSet-parseable tokens
 // and positional arguments, regardless of whether flags appear before or

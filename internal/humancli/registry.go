@@ -91,7 +91,7 @@ func init() {
 	Registry = []Command{
 		{
 			Name:     "send",
-			Synopsis: `send <target> "body" [--from <alias>] [--subject <s>] [--ref <r>] [--role] [--broadcast [--project <p>]] [--intent fyi|reply-requested|action-requested]`,
+			Synopsis: `send <target> "body" [--from <alias>] [--subject <s>] [--ref <r>] [--role] [--broadcast [--project <p>] [--standing]] [--intent fyi|reply-requested|action-requested]`,
 			Summary:  "Send a message to an agent, role, or everyone.",
 			Help: `target is an alias, a label, or a "project:label" pair, resolved the same
 way for every muster surface (send, nudge, inbox, tasks). --role treats
@@ -99,9 +99,12 @@ target as a role name instead of an agent; --broadcast ignores target and
 sends to every registered agent (target is then omitted: 'muster send
 --broadcast "body"'). With --project, the broadcast reaches only agents
 registered under that exact project (the daemon rejects unknown projects and
-lists the known ones). --intent tags the message for the recipient's
-inbox/hook rendering: fyi (default, no action implied), reply-requested, or
-action-requested.`,
+lists the known ones). A plain broadcast is live-only: it reaches sessions
+live now and is invisible to sessions that start later. --standing (broadcast
+only) also reaches sessions that start later, once, until they read it — use
+it for durable standing orders, not transient holds. --intent tags the
+message for the recipient's inbox/hook rendering: fyi (default, no action
+implied), reply-requested, or action-requested.`,
 			Group:    GroupTalk,
 			NewFlags: newSendFlags,
 			Run:      cmdSend,
