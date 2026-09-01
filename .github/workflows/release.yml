@@ -141,7 +141,8 @@ jobs:
           tag="${{ steps.rel.outputs.tag }}"
           version="${tag#v}"
           commit="$(git rev-parse --short HEAD)"
-          ldflags="-s -w -X github.com/schuettc/muster/internal/version.version=${version} -X github.com/schuettc/muster/internal/version.commit=${commit}"
+          date="$(date -u +%Y-%m-%d)"
+          ldflags="-s -w -X github.com/schuettc/muster/internal/version.version=${version} -X github.com/schuettc/muster/internal/version.commit=${commit} -X github.com/schuettc/muster/internal/version.date=${date}"
           # Sign every darwin binary as it is built. --options runtime is the
           # hardened runtime, which notarization requires; without it the
           # submission is rejected rather than merely unsigned.

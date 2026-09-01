@@ -419,6 +419,19 @@ session: every internal error is swallowed.`,
 			Run:   func(args []string, out io.Writer) error { return cmdHook(args, os.Stdin, out) },
 		},
 		{
+			Name:     "update",
+			Synopsis: "update",
+			Summary:  "Update muster to the latest release.",
+			Help: `Self-updates the running muster binary in place from the family download
+standard (muster.tools/dl): fetches the latest published release for this
+OS/arch, verifies its checksum, and atomically replaces this executable.
+Prints "muster is already the latest" and does nothing when the running
+version is current. Shared with the rest of the .tools family via
+tools-common, so every family binary self-updates the same way.`,
+			Group: GroupPlumbing,
+			Run:   cmdUpdate,
+		},
+		{
 			Name:     "debug",
 			Synopsis: "debug <op> [key=value ...]",
 			Summary:  "Send a raw op to the daemon (dev tool).",
