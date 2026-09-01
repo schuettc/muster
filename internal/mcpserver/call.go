@@ -179,6 +179,7 @@ type ThreadView struct {
 	Subject    string `json:"subject" jsonschema:"the thread subject"`
 	Ref        string `json:"ref" jsonschema:"a pointer to the work (repo/branch/endpoint/file)"`
 	Status     string `json:"status" jsonschema:"task status, empty for messages"`
+	Standing   bool   `json:"standing,omitempty" jsonschema:"true if this is a standing broadcast (also delivered to sessions that start later, until read)"`
 	CreatedAt  int64  `json:"created_at" jsonschema:"creation time (unix ms)"`
 	UpdatedAt  int64  `json:"updated_at" jsonschema:"last-update time (unix ms)"`
 	LastFrom   string `json:"last_from" jsonschema:"who wrote the thread's most recent entry"`
