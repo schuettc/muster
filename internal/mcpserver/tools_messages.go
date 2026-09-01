@@ -19,6 +19,7 @@ type SendMessageIn struct {
 	Ref      string `json:"ref,omitempty" jsonschema:"optional pointer to the work (repo/branch/endpoint/file)"`
 	Body     string `json:"body" jsonschema:"the message body"`
 	Intent   string `json:"intent,omitempty" jsonschema:"fyi | reply-requested | action-requested; mark FYIs so recipients' drains stay cheap — an FYI doesn't demand a reply. Leave empty when the message's urgency is unspecified."`
+	Standing bool   `json:"standing,omitempty" jsonschema:"broadcast-only: a plain broadcast reaches only sessions live now; set standing=true to ALSO reach sessions that start later, once, until they read it. Use for durable standing orders (e.g. 'read CONTRACT.md before editing'), NOT for transient holds — those should stay live-only so they evaporate for future sessions."`
 }
 
 // ThreadIDOut is the output of send_message and task_create.
@@ -74,6 +75,7 @@ func sendMessageHandler(_ context.Context, _ *mcp.CallToolRequest, in SendMessag
 	raw, err := callDaemon("send_message", map[string]any{
 		"from": in.From, "to_kind": in.ToKind, "to_target": in.ToTarget,
 		"subject": in.Subject, "ref": in.Ref, "body": in.Body, "intent": in.Intent,
+		"standing": in.Standing,
 	})
 	if err != nil {
 		return nil, ThreadIDOut{}, err
@@ -172,7 +174,7 @@ func getThreadHandler(_ context.Context, _ *mcp.CallToolRequest, in GetThreadIn)
 // registerMessageTools registers send_message, reply, get_inbox, and
 // get_thread on srv.
 func registerMessageTools(srv *mcp.Server) {
-	mcp.AddTool(srv, &mcp.Tool{Name: "send_message", Description: "Send a message to another agent (to_kind=agent), a role (to_kind=role), or many agents at once (to_kind=broadcast). A broadcast with empty to_target reaches every agent on the bus; set to_target to a project name to reach only that project's agents. Set intent to fyi/reply-requested/action-requested so the recipient's inbox and drain reflect what you actually need back."}, sendMessageHandler)
+	mcp.AddTool(srv, &mcp.Tool{Name: "send_message", Description: "Send a message to another agent (to_kind=agent), a role (to_kind=role), or many agents at once (to_kind=broadcast). A broadcast with empty to_target reaches every agent on the bus; set to_target to a project name to reach only that project's agents. A plain broadcast is live-only (reaches sessions live now, invisible to sessions that start later); set standing=true to also reach future sessions once, until read — for durable standing orders, not transient holds. Set intent to fyi/reply-requested/action-requested so the recipient's inbox and drain reflect what you actually need back."}, sendMessageHandler)
 	mcp.AddTool(srv, &mcp.Tool{Name: "reply", Description: "Append a reply to an existing thread (message or task). Reply only when the sender needs something from you; never reply just to acknowledge an ack or a closure — the last word is free. For a closing note that needs nothing back, set fyi=true so the entry lands without waking anyone."}, replyHandler)
 	mcp.AddTool(srv, &mcp.Tool{Name: "get_inbox", Description: "Read the threads that concern an agent — addressed to it (directly, by role, or broadcast) or originated by it, so replies on threads it started show up here — newest first. Rows carry last_from and an unread count — unread > 0 means entries you have not seen; read those threads with get_thread before reporting their state."}, getInboxHandler)
 	mcp.AddTool(srv, &mcp.Tool{Name: "get_thread", Description: "Fetch a single thread and all its entries in order."}, getThreadHandler)

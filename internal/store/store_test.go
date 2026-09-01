@@ -63,6 +63,24 @@ func TestOpenMigrationIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestSchemaHasStandingColumns(t *testing.T) {
+	s := newTestStore(t)
+	for _, c := range []struct{ table, col string }{
+		{"agents", "last_read_standing_entry_id"},
+		{"threads", "standing"},
+	} {
+		var n int
+		if err := s.DB().QueryRow(
+			`SELECT count(*) FROM pragma_table_info(?) WHERE name=?`, c.table, c.col,
+		).Scan(&n); err != nil {
+			t.Fatalf("pragma %s: %v", c.table, err)
+		}
+		if n != 1 {
+			t.Fatalf("%s.%s missing (found %d)", c.table, c.col, n)
+		}
+	}
+}
+
 func TestMigrateNormalizesSocketPaths(t *testing.T) {
 	home := t.TempDir()
 	if r, err := filepath.EvalSymlinks(home); err == nil {

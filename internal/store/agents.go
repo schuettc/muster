@@ -21,8 +21,8 @@ import (
 func (s *Store) RegisterAgent(a Agent) error {
 	now := clock.NowMillis()
 	_, err := s.db.Exec(`
-INSERT INTO agents (alias, role, model_type, socket_path, pane_id, session_name, session_id, session_created, device_id, device_name, harness_session_id, transcript_path, project, label, label_manual, departed, superseded_by, registered_at, last_seen)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, '', ?, ?)
+INSERT INTO agents (alias, role, model_type, socket_path, pane_id, session_name, session_id, session_created, device_id, device_name, harness_session_id, transcript_path, project, label, label_manual, departed, superseded_by, registered_at, last_seen, last_read_entry_id)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, '', ?, ?, (SELECT COALESCE(MAX(id), 0) FROM entries))
 ON CONFLICT(alias) DO UPDATE SET
     role=excluded.role,
     model_type=excluded.model_type,
@@ -49,7 +49,7 @@ ON CONFLICT(alias) DO UPDATE SET
 // agents included: their rows are history, not gone (see DepartAgent).
 func (s *Store) ListAgents() ([]Agent, error) {
 	rows, err := s.db.Query(`
-SELECT alias, role, model_type, socket_path, pane_id, session_name, session_id, session_created, device_id, device_name, harness_session_id, transcript_path, project, label, label_manual, registered_at, last_seen, last_read_entry_id, departed, superseded_by
+SELECT alias, role, model_type, socket_path, pane_id, session_name, session_id, session_created, device_id, device_name, harness_session_id, transcript_path, project, label, label_manual, registered_at, last_seen, last_read_entry_id, last_read_standing_entry_id, departed, superseded_by
 FROM agents ORDER BY alias`)
 	if err != nil {
 		return nil, err
@@ -58,7 +58,7 @@ FROM agents ORDER BY alias`)
 	var out []Agent
 	for rows.Next() {
 		var a Agent
-		if err := rows.Scan(&a.Alias, &a.Role, &a.ModelType, &a.SocketPath, &a.PaneID, &a.SessionName, &a.SessionID, &a.SessionCreated, &a.DeviceID, &a.DeviceName, &a.HarnessSessionID, &a.TranscriptPath, &a.Project, &a.Label, &a.LabelManual, &a.RegisteredAt, &a.LastSeen, &a.LastReadEntryID, &a.Departed, &a.SupersededBy); err != nil {
+		if err := rows.Scan(&a.Alias, &a.Role, &a.ModelType, &a.SocketPath, &a.PaneID, &a.SessionName, &a.SessionID, &a.SessionCreated, &a.DeviceID, &a.DeviceName, &a.HarnessSessionID, &a.TranscriptPath, &a.Project, &a.Label, &a.LabelManual, &a.RegisteredAt, &a.LastSeen, &a.LastReadEntryID, &a.LastReadStandingEntryID, &a.Departed, &a.SupersededBy); err != nil {
 			return nil, err
 		}
 		out = append(out, a)
@@ -75,7 +75,7 @@ func (s *Store) GetAgent(alias string) (Agent, bool, error) {
 
 // agentColumns is the exact column list every single-row agent scan uses —
 // GetAgent and FindConversation alike — so the two can never drift apart.
-const agentColumns = `alias, role, model_type, socket_path, pane_id, session_name, session_id, session_created, device_id, device_name, harness_session_id, transcript_path, project, label, label_manual, registered_at, last_seen, last_read_entry_id, departed, superseded_by`
+const agentColumns = `alias, role, model_type, socket_path, pane_id, session_name, session_id, session_created, device_id, device_name, harness_session_id, transcript_path, project, label, label_manual, registered_at, last_seen, last_read_entry_id, last_read_standing_entry_id, departed, superseded_by`
 
 // scanOneAgent runs a `SELECT <agentColumns> FROM agents ` + where query with
 // args and scans the single resulting row. ok is false (not an error) when
@@ -84,7 +84,7 @@ const agentColumns = `alias, role, model_type, socket_path, pane_id, session_nam
 func (s *Store) scanOneAgent(where string, args ...any) (Agent, bool, error) {
 	var a Agent
 	err := s.db.QueryRow(`SELECT `+agentColumns+` FROM agents `+where, args...).
-		Scan(&a.Alias, &a.Role, &a.ModelType, &a.SocketPath, &a.PaneID, &a.SessionName, &a.SessionID, &a.SessionCreated, &a.DeviceID, &a.DeviceName, &a.HarnessSessionID, &a.TranscriptPath, &a.Project, &a.Label, &a.LabelManual, &a.RegisteredAt, &a.LastSeen, &a.LastReadEntryID, &a.Departed, &a.SupersededBy)
+		Scan(&a.Alias, &a.Role, &a.ModelType, &a.SocketPath, &a.PaneID, &a.SessionName, &a.SessionID, &a.SessionCreated, &a.DeviceID, &a.DeviceName, &a.HarnessSessionID, &a.TranscriptPath, &a.Project, &a.Label, &a.LabelManual, &a.RegisteredAt, &a.LastSeen, &a.LastReadEntryID, &a.LastReadStandingEntryID, &a.Departed, &a.SupersededBy)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Agent{}, false, nil
 	}
@@ -262,9 +262,10 @@ SELECT COUNT(*) FROM threads
 WHERE `+threadConcerns+`
   AND EXISTS (SELECT 1 FROM entries e
               WHERE e.thread_id = threads.id
-                AND e.id > COALESCE((SELECT last_read_entry_id FROM agents WHERE alias=?), 0)
+                AND ((threads.standing = 1 AND e.id > COALESCE((SELECT last_read_standing_entry_id FROM agents WHERE alias=?), 0))
+                  OR (threads.standing = 0 AND e.id > COALESCE((SELECT last_read_entry_id FROM agents WHERE alias=?), 0)))
                 AND e.from_agent != ?)`,
-		alias, alias, alias, alias, alias, alias).Scan(&n)
+		alias, alias, alias, alias, alias, alias, alias).Scan(&n)
 	return n, err
 }
 
@@ -286,7 +287,7 @@ func (s *Store) MarkRead(alias string) error {
 	if err := tx.QueryRow(`SELECT COALESCE(MAX(id), 0) FROM entries`).Scan(&maxID); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(`UPDATE agents SET last_read_entry_id=?, last_read_at=? WHERE alias=?`, maxID, now, alias); err != nil {
+	if _, err := tx.Exec(`UPDATE agents SET last_read_entry_id=?, last_read_standing_entry_id=?, last_read_at=? WHERE alias=?`, maxID, maxID, now, alias); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -353,8 +354,8 @@ func (s *Store) Become(from, to string) error {
 	}
 	now := clock.NowMillis()
 	res, err := tx.Exec(`
-INSERT INTO agents (alias, role, model_type, socket_path, pane_id, session_name, session_id, session_created, device_id, device_name, harness_session_id, transcript_path, project, label, label_manual, departed, registered_at, last_seen, last_read_entry_id, last_read_at)
-SELECT ?, role, model_type, socket_path, pane_id, session_name, session_id, session_created, device_id, device_name, harness_session_id, transcript_path, project, label, label_manual, 0, ?, ?, last_read_entry_id, last_read_at
+INSERT INTO agents (alias, role, model_type, socket_path, pane_id, session_name, session_id, session_created, device_id, device_name, harness_session_id, transcript_path, project, label, label_manual, departed, registered_at, last_seen, last_read_entry_id, last_read_standing_entry_id, last_read_at)
+SELECT ?, role, model_type, socket_path, pane_id, session_name, session_id, session_created, device_id, device_name, harness_session_id, transcript_path, project, label, label_manual, 0, ?, ?, last_read_entry_id, last_read_standing_entry_id, last_read_at
 FROM agents WHERE alias=?`, to, now, now, from)
 	if err != nil {
 		return err
@@ -446,12 +447,12 @@ FROM agents WHERE alias=?`, to, now, now, from)
 func (s *Store) SessionUnread(deviceID, socketPath, sessionID string, sessionCreated int64) (total, action int, err error) {
 	err = s.db.QueryRow(`
 WITH RECURSIVE sess AS (
-  SELECT alias, last_read_entry_id, superseded_by FROM agents
+  SELECT alias, last_read_entry_id, last_read_standing_entry_id, superseded_by FROM agents
   WHERE device_id = ?3 AND socket_path = ?1 AND session_id = ?2 AND ?2 != ''
     AND (?1 = '' OR (session_created = ?4 AND ?4 != 0))
     AND (departed = 0 OR superseded_by != '')
   UNION
-  SELECT a.alias, a.last_read_entry_id, a.superseded_by
+  SELECT a.alias, a.last_read_entry_id, a.last_read_standing_entry_id, a.superseded_by
   FROM agents a JOIN sess ON a.superseded_by = sess.alias
 )
 SELECT
@@ -461,7 +462,8 @@ FROM threads
 JOIN sess ON `+threadConcernsJoin+`
 WHERE EXISTS (SELECT 1 FROM entries e
               WHERE e.thread_id = threads.id
-                AND e.id > sess.last_read_entry_id
+                AND ((threads.standing = 1 AND e.id > sess.last_read_standing_entry_id)
+                  OR (threads.standing = 0 AND e.id > sess.last_read_entry_id))
                 AND e.from_agent NOT IN (SELECT alias FROM sess))`,
 		socketPath, sessionID, deviceID, sessionCreated).Scan(&total, &action)
 	return total, action, err
