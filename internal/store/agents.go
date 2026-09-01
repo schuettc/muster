@@ -262,7 +262,7 @@ SELECT COUNT(*) FROM threads
 WHERE `+threadConcerns+`
   AND EXISTS (SELECT 1 FROM entries e
               WHERE e.thread_id = threads.id
-                AND ((threads.standing = 1 AND e.id > COALESCE((SELECT last_read_standing_entry_id FROM agents WHERE alias=?), 0))
+                AND ((threads.standing = 1 AND threads.standing_retracted = 0 AND e.id > COALESCE((SELECT last_read_standing_entry_id FROM agents WHERE alias=?), 0))
                   OR (threads.standing = 0 AND e.id > COALESCE((SELECT last_read_entry_id FROM agents WHERE alias=?), 0)))
                 AND e.from_agent != ?)`,
 		alias, alias, alias, alias, alias, alias, alias).Scan(&n)
@@ -462,7 +462,7 @@ FROM threads
 JOIN sess ON `+threadConcernsJoin+`
 WHERE EXISTS (SELECT 1 FROM entries e
               WHERE e.thread_id = threads.id
-                AND ((threads.standing = 1 AND e.id > sess.last_read_standing_entry_id)
+                AND ((threads.standing = 1 AND threads.standing_retracted = 0 AND e.id > sess.last_read_standing_entry_id)
                   OR (threads.standing = 0 AND e.id > sess.last_read_entry_id))
                 AND e.from_agent NOT IN (SELECT alias FROM sess))`,
 		socketPath, sessionID, deviceID, sessionCreated).Scan(&total, &action)
