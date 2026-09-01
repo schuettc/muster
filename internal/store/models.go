@@ -68,6 +68,14 @@ type Agent struct {
 	// agent's inbox was read. Supersedes the wall-clock last_read_at for
 	// unread math; last_read_at is retained internally for display only.
 	LastReadEntryID int64 `json:"last_read_entry_id"`
+	// LastReadStandingEntryID is the entry-ID read watermark for STANDING
+	// broadcasts only. Unlike LastReadEntryID it is NOT seeded on first
+	// register (it stays 0), so a brand-new session sees every standing
+	// broadcast once regardless of when it was sent; MarkRead advances it
+	// alongside LastReadEntryID, so a standing order badges a session once
+	// then goes quiet. See RegisterAgent's seed and the standing branch in
+	// the unread predicate (Inbox/UnreadCount/SessionUnread).
+	LastReadStandingEntryID int64 `json:"last_read_standing_entry_id"`
 	// Departed is true once this agent has been deregistered (see
 	// Store.DepartAgent) — a tombstone, not a delete: identity, project,
 	// label, and read-state (LastReadEntryID/last_read_at) all survive.
@@ -108,9 +116,15 @@ type Thread struct {
 	// effectiveIntent in threads.go), never the raw stored value: one
 	// vocabulary everywhere a Thread is read, so an old task row (stored
 	// intent "") reads as action-requested consistently across all three.
-	Intent    string `json:"intent"`
-	CreatedAt int64  `json:"created_at"`
-	UpdatedAt int64  `json:"updated_at"`
+	Intent string `json:"intent"`
+	// Standing marks a broadcast that is replayed to sessions which register
+	// AFTER it was sent, once, until they read it (the standing watermark,
+	// not the seeded live watermark, decides its unread state). Only
+	// meaningful for to_kind='broadcast'; CreateThread rejects standing on
+	// any other target. A plain (non-standing) broadcast is live-only.
+	Standing  bool  `json:"standing"`
+	CreatedAt int64 `json:"created_at"`
+	UpdatedAt int64 `json:"updated_at"`
 	// OriginProject is the SENDER's registered project at thread-creation
 	// time (iteration-4 orphan-thread fix): the daemon resolves the sender's
 	// agent record when it calls CreateThread and stamps its Project here —
