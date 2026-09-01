@@ -107,6 +107,7 @@ func threadMetaItem(t store.Thread, threadID, firstEntryID, now int64) map[strin
 		"ref":            attrS(t.Ref),
 		"status":         attrS(t.Status),
 		"intent":         attrS(t.Intent), // RAW; effectiveIntent applies on read
+		"standing":       attrBool(t.Standing),
 		"created_at":     attrN(now),
 		"updated_at":     attrN(now),
 		"origin_project": attrS(t.OriginProject),
@@ -165,6 +166,7 @@ func itemToThread(item map[string]types.AttributeValue) store.Thread {
 		Ref:           strAttr(item, "ref"),
 		Status:        strAttr(item, "status"),
 		Intent:        effectiveIntent(kind, strAttr(item, "intent")),
+		Standing:      boolAttr(item, "standing"),
 		CreatedAt:     numAttr(item, "created_at"),
 		UpdatedAt:     numAttr(item, "updated_at"),
 		OriginProject: strAttr(item, "origin_project"),
@@ -232,6 +234,9 @@ func (s *Store) queryAll(ctx context.Context, in *dynamodb.QueryInput) ([]map[st
 func (s *Store) CreateThread(t store.Thread, firstBody string) (int64, error) {
 	if !validIntent(t.Intent) {
 		return 0, fmt.Errorf("invalid intent %q", t.Intent)
+	}
+	if t.Standing && t.ToKind != "broadcast" {
+		return 0, fmt.Errorf("standing is broadcast-only, not %q", t.ToKind)
 	}
 	ctx := backgroundCtx()
 	now := clock.NowMillis()
@@ -690,15 +695,45 @@ func (s *Store) entriesAfter(ctx context.Context, parts []string, after int64) (
 //
 // Threads with no qualifying entry are absent from the result, so its length
 // is UnreadCount's answer.
-func unreadByThread(entries []store.Entry, concerning map[int64]bool, exclude map[string]bool, after int64) map[int64]int {
+func unreadByThread(entries []store.Entry, concerning, standing map[int64]bool, exclude map[string]bool, liveAfter, standingAfter int64) map[int64]int {
 	out := make(map[int64]int)
 	for _, e := range entries {
-		if e.ID <= after || !concerning[e.ThreadID] || exclude[e.FromAgent] {
+		if !concerning[e.ThreadID] || exclude[e.FromAgent] {
+			continue
+		}
+		after := liveAfter
+		if standing[e.ThreadID] {
+			after = standingAfter
+		}
+		if e.ID <= after {
 			continue
 		}
 		out[e.ThreadID]++
 	}
 	return out
+}
+
+// standingSet is the subset of thread ids marked standing, from the same
+// metadata items concerns() returned — so the unread branch can pick the
+// standing watermark for a standing broadcast and the live one for the rest.
+func standingSet(threads map[int64]map[string]types.AttributeValue) map[int64]bool {
+	out := make(map[int64]bool)
+	for id, item := range threads {
+		if boolAttr(item, "standing") {
+			out[id] = true
+		}
+	}
+	return out
+}
+
+// unreadFloor is the lower of the two watermarks: entriesAfter must fetch from
+// here so a standing entry below the live watermark but above the (un-seeded,
+// lower) standing watermark is still considered.
+func unreadFloor(a store.Agent) int64 {
+	if a.LastReadStandingEntryID < a.LastReadEntryID {
+		return a.LastReadStandingEntryID
+	}
+	return a.LastReadEntryID
 }
 
 // unreadFor gathers everything Inbox and UnreadCount need, so the two cannot
@@ -722,11 +757,11 @@ func (s *Store) unreadFor(ctx context.Context, alias string) (map[int64]map[stri
 	if err != nil {
 		return nil, nil, err
 	}
-	entries, err := s.entriesAfter(ctx, parts, agent.LastReadEntryID)
+	entries, err := s.entriesAfter(ctx, parts, unreadFloor(agent))
 	if err != nil {
 		return nil, nil, err
 	}
-	return threads, unreadByThread(entries, idSet(threads), map[string]bool{alias: true}, agent.LastReadEntryID), nil
+	return threads, unreadByThread(entries, idSet(threads), standingSet(threads), map[string]bool{alias: true}, agent.LastReadEntryID, agent.LastReadStandingEntryID), nil
 }
 
 func idSet(threads map[int64]map[string]types.AttributeValue) map[int64]bool {
@@ -823,11 +858,12 @@ func (s *Store) MarkRead(alias string) error {
 		TableName: aws.String(s.table),
 		Key:       agentKey(alias),
 		UpdateExpression: aws.String(
-			"SET #last_read_entry_id = :id, #last_read_at = :now"),
+			"SET #last_read_entry_id = :id, #last_read_standing_entry_id = :id, #last_read_at = :now"),
 		ConditionExpression: aws.String("attribute_exists(pk)"),
 		ExpressionAttributeNames: map[string]string{
-			"#last_read_entry_id": "last_read_entry_id",
-			"#last_read_at":       "last_read_at",
+			"#last_read_entry_id":          "last_read_entry_id",
+			"#last_read_standing_entry_id": "last_read_standing_entry_id",
+			"#last_read_at":                "last_read_at",
 		},
 		ExpressionAttributeValues: map[string]types.AttributeValue{
 			":id":  attrN(watermark),
@@ -928,11 +964,11 @@ func (s *Store) SessionUnread(deviceID, socketPath, sessionID string, sessionCre
 		if err != nil {
 			return 0, 0, err
 		}
-		entries, err := s.entriesAfter(ctx, parts, a.LastReadEntryID)
+		entries, err := s.entriesAfter(ctx, parts, unreadFloor(a))
 		if err != nil {
 			return 0, 0, err
 		}
-		for id := range unreadByThread(entries, idSet(threads), aliases, a.LastReadEntryID) {
+		for id := range unreadByThread(entries, idSet(threads), standingSet(threads), aliases, a.LastReadEntryID, a.LastReadStandingEntryID) {
 			unread[id] = threads[id]
 		}
 	}

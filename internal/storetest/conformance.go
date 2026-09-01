@@ -106,6 +106,13 @@ var cases = []conformanceCase{
 	{"ScopedBroadcastReachesItsProjectOnly", testScopedBroadcastProjectOnly},
 	{"ScopedBroadcastConcernsADepartedAgentsProject", testScopedBroadcastDeparted},
 
+	// Standing vs live broadcast.
+	{"NewSessionSkipsPlainBroadcastBacklog", testNewSessionSkipsBacklog},
+	{"NewSessionSeesStandingBroadcastOnceThenQuiet", testNewSessionStandingOnce},
+	{"StandingBroadcastRoundTrips", testStandingRoundTrips},
+	{"StandingBroadcastComposesWithProjectScope", testStandingScoped},
+	{"StandingRejectedOnNonBroadcastTarget", testStandingRejectedNonBroadcast},
+
 	// Session-scoped unread.
 	{"SessionUnreadCountsDistinctThreads", testSessionUnreadDistinct},
 	{"SessionUnreadExcludesSiblingAuthors", testSessionUnreadSiblingAuthors},
@@ -1237,6 +1244,75 @@ func testScopedBroadcastDeparted(t *testing.T, s store.API) {
 	}
 	if len(in) != 1 {
 		t.Fatalf("departed ghost's inbox = %d threads, want 1", len(in))
+	}
+}
+
+// testNewSessionSkipsBacklog: a plain broadcast sent BEFORE an alias first
+// registers must not land as unread on it — a new session starts caught-up.
+func testNewSessionSkipsBacklog(t *testing.T, s store.API) {
+	mustThread(t, s, store.Thread{Kind: "message", FromAgent: "sender", ToKind: "broadcast"}, "old hold")
+	mustRegister(t, s, store.Agent{Alias: "newbie"})
+	if n, err := s.UnreadCount("newbie"); err != nil || n != 0 {
+		t.Fatalf("plain broadcast backlog leaked: unread=%d (%v), want 0", n, err)
+	}
+	// A plain broadcast sent AFTER register is still live for it.
+	mustThread(t, s, store.Thread{Kind: "message", FromAgent: "sender", ToKind: "broadcast"}, "live hold")
+	if n, err := s.UnreadCount("newbie"); err != nil || n != 1 {
+		t.Fatalf("live broadcast after register: unread=%d (%v), want 1", n, err)
+	}
+}
+
+// testNewSessionStandingOnce: a standing broadcast sent BEFORE an alias first
+// registers reaches it once; MarkRead quiets it; a later standing broadcast
+// reappears.
+func testNewSessionStandingOnce(t *testing.T, s store.API) {
+	mustThread(t, s, store.Thread{Kind: "message", FromAgent: "sender", ToKind: "broadcast", Standing: true}, "standing order")
+	mustRegister(t, s, store.Agent{Alias: "newbie"})
+	if n, err := s.UnreadCount("newbie"); err != nil || n != 1 {
+		t.Fatalf("standing broadcast should reach new session: unread=%d (%v), want 1", n, err)
+	}
+	if err := s.MarkRead("newbie"); err != nil {
+		t.Fatalf("MarkRead: %v", err)
+	}
+	if n, err := s.UnreadCount("newbie"); err != nil || n != 0 {
+		t.Fatalf("standing should be quiet after MarkRead: unread=%d (%v), want 0", n, err)
+	}
+	mustThread(t, s, store.Thread{Kind: "message", FromAgent: "sender", ToKind: "broadcast", Standing: true}, "second standing order")
+	if n, err := s.UnreadCount("newbie"); err != nil || n != 1 {
+		t.Fatalf("later standing broadcast should reappear: unread=%d (%v), want 1", n, err)
+	}
+}
+
+// testStandingRoundTrips: the standing flag survives write and read.
+func testStandingRoundTrips(t *testing.T, s store.API) {
+	id := mustThread(t, s, store.Thread{Kind: "message", FromAgent: "sender", ToKind: "broadcast", Standing: true}, "b")
+	th, _, err := s.GetThread(id)
+	if err != nil {
+		t.Fatalf("GetThread: %v", err)
+	}
+	if !th.Standing {
+		t.Fatal("GetThread lost Standing")
+	}
+}
+
+// testStandingScoped: a standing scoped broadcast reaches a new same-project
+// session and never an other-project one.
+func testStandingScoped(t *testing.T, s store.API) {
+	mustThread(t, s, store.Thread{Kind: "message", FromAgent: "sender", ToKind: "broadcast", ToTarget: "web", Standing: true}, "web only")
+	mustRegister(t, s, store.Agent{Alias: "in-web", Project: "web"})
+	mustRegister(t, s, store.Agent{Alias: "in-api", Project: "api"})
+	if n, err := s.UnreadCount("in-web"); err != nil || n != 1 {
+		t.Fatalf("same-project new session should see scoped standing: unread=%d (%v), want 1", n, err)
+	}
+	if n, err := s.UnreadCount("in-api"); err != nil || n != 0 {
+		t.Fatalf("other-project session must not see scoped standing: unread=%d (%v), want 0", n, err)
+	}
+}
+
+// testStandingRejectedNonBroadcast: standing is broadcast-only.
+func testStandingRejectedNonBroadcast(t *testing.T, s store.API) {
+	if _, err := s.CreateThread(store.Thread{Kind: "message", FromAgent: "sender", ToKind: "agent", ToTarget: "x", Standing: true}, "b"); err == nil {
+		t.Fatal("standing on a non-broadcast target must be rejected")
 	}
 }
 
