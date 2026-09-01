@@ -809,6 +809,16 @@ func (d *Daemon) logEvent(e store.Event) { _ = d.s.AppendEvent(e) }
 // or a lookup error) — an unregistered sender's thread simply carries no
 // origin project, exactly like every other best-effort roster lookup in this
 // file (e.g. register/deregister's own discarded GetAgent error).
+// standingKeyOrDefault applies the default standing-order key when the caller
+// omits one: standing orders are near-always the project's single set of
+// invariants, so an empty key means `invariants`.
+func standingKeyOrDefault(key string) string {
+	if key == "" {
+		return "invariants"
+	}
+	return key
+}
+
 func (d *Daemon) senderProject(alias string) string {
 	ag, found, err := d.s.GetAgent(alias)
 	if err != nil || !found {
@@ -935,6 +945,39 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 		d.logEvent(store.Event{Kind: "task", Agent: from, Target: targetOf(toKind, toTarget), ThreadID: id, Detail: str(a, "subject")})
 		d.notifyForThread(id, from)
 		return ok(map[string]any{"thread_id": id})
+	case "standing_set":
+		from := str(a, "from")
+		project := str(a, "project")
+		key := standingKeyOrDefault(str(a, "key"))
+		if err := d.validateBroadcastTarget(project); err != nil {
+			return fail(err)
+		}
+		id, err := d.s.SetStandingOrder(project, key, from, str(a, "body"))
+		if err != nil {
+			return fail(err)
+		}
+		d.logEvent(store.Event{Kind: "send", Agent: from, Target: targetOf("broadcast", project), ThreadID: id, Detail: "standing order: " + key})
+		d.notifyForThread(id, from)
+		return ok(map[string]any{"thread_id": id})
+	case "standing_retract":
+		from := str(a, "from")
+		project := str(a, "project")
+		key := standingKeyOrDefault(str(a, "key"))
+		if err := d.validateBroadcastTarget(project); err != nil {
+			return fail(err)
+		}
+		changed, err := d.s.RetractStandingOrder(project, key)
+		if err != nil {
+			return fail(err)
+		}
+		d.logEvent(store.Event{Kind: "standing", Agent: from, Target: targetOf("broadcast", project), Detail: "retract standing order: " + key})
+		return ok(map[string]any{"changed": changed})
+	case "standing_list":
+		orders, err := d.s.ListStandingOrders(str(a, "project"))
+		if err != nil {
+			return fail(err)
+		}
+		return ok(map[string]any{"orders": orders})
 	case "task_claim":
 		// `by` is an actor alias and lands verbatim in entries.from_agent —
 		// expanded and existence-checked BEFORE the write, never after (see
