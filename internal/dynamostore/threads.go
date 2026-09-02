@@ -906,6 +906,33 @@ func (s *Store) Inbox(alias string) ([]store.Thread, error) {
 	return out, nil
 }
 
+// StatusCounts returns every registered alias's side-effect-free (unread,
+// action_required) counts — the DynamoDB mirror of the SQLite method. Pure
+// read: no MarkRead, no journaled peek. Reuses unreadFor per alias so the
+// counts match get_inbox exactly.
+func (s *Store) StatusCounts() ([]store.AliasStatus, error) {
+	ctx := backgroundCtx()
+	agents, err := s.ListAgents()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]store.AliasStatus, 0, len(agents))
+	for _, a := range agents {
+		threads, unread, err := s.unreadFor(ctx, a.Alias)
+		if err != nil {
+			return nil, err
+		}
+		action := 0
+		for id := range unread {
+			if effectiveIntent(strAttr(threads[id], "kind"), strAttr(threads[id], "intent")) == store.IntentAction {
+				action++
+			}
+		}
+		out = append(out, store.AliasStatus{Alias: a.Alias, Unread: len(unread), ActionRequired: action})
+	}
+	return out, nil
+}
+
 // UnreadCount returns how many threads concerning alias contain an entry newer
 // than its watermark written by someone else — the same predicate Inbox
 // annotates each row with, reached through the same code path.

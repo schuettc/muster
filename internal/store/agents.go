@@ -247,6 +247,48 @@ func (s *Store) DeleteAgent(alias string) error {
 	return err
 }
 
+// StatusCounts returns every registered alias's side-effect-free inbox counts
+// (unread + action_required), for a picker/attention column that polls on a
+// cadence. It moves NO watermark and journals NO peek — a pure read, which is
+// exactly why a poller uses it instead of get_inbox. Departed aliases are
+// included (their mail still waits), matching ListAgents. The per-alias count
+// reuses the canonical unread predicate (standing/retracted-aware), so it can
+// never disagree with UnreadCount/get_inbox about what is unread.
+func (s *Store) StatusCounts() ([]AliasStatus, error) {
+	agents, err := s.ListAgents()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]AliasStatus, 0, len(agents))
+	for _, a := range agents {
+		unread, action, err := s.unreadAndAction(a.Alias)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, AliasStatus{Alias: a.Alias, Unread: unread, ActionRequired: action})
+	}
+	return out, nil
+}
+
+// unreadAndAction is UnreadCount plus the action-requested subset in one query:
+// the count of threads concerning alias with an unread entry, and how many of
+// those have effective intent action-requested. Same predicate as UnreadCount
+// (they must never drift), read-only.
+func (s *Store) unreadAndAction(alias string) (unread, action int, err error) {
+	err = s.db.QueryRow(`
+SELECT COUNT(*),
+       COUNT(CASE WHEN `+effectiveIntent+` = 'action-requested' THEN 1 END)
+FROM threads
+WHERE `+threadConcerns+`
+  AND EXISTS (SELECT 1 FROM entries e
+              WHERE e.thread_id = threads.id
+                AND ((threads.standing = 1 AND threads.standing_retracted = 0 AND e.id > COALESCE((SELECT last_read_standing_entry_id FROM agents WHERE alias=?), 0))
+                  OR (threads.standing = 0 AND e.id > COALESCE((SELECT last_read_entry_id FROM agents WHERE alias=?), 0)))
+                AND e.from_agent != ?)`,
+		alias, alias, alias, alias, alias, alias, alias).Scan(&unread, &action)
+	return unread, action, err
+}
+
 // UnreadCount returns how many threads concerning alias (threadConcerns —
 // matching Inbox exactly) contain an entry with id greater than the agent's
 // entry-ID read watermark (last_read_entry_id) that was written by someone

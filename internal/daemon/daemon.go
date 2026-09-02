@@ -890,6 +890,12 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 			return fail(err)
 		}
 		return ok(agents)
+	case "status":
+		status, err := d.s.StatusCounts()
+		if err != nil {
+			return fail(err)
+		}
+		return ok(map[string]any{"agents": status})
 	case "send_message":
 		from := str(a, "from")
 		toKind, toTarget := str(a, "to_kind"), str(a, "to_target")

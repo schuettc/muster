@@ -113,6 +113,10 @@ type API interface {
 	Inbox(alias string) ([]Thread, error)
 	MarkRead(alias string) error
 	UnreadCount(alias string) (int, error)
+	// StatusCounts returns every alias's side-effect-free (unread,
+	// action_required) counts — a pure read for a polling picker; see the
+	// method comment on Store.
+	StatusCounts() ([]AliasStatus, error)
 	SessionUnread(deviceID, socketPath, sessionID string, sessionCreated int64) (total, action int, err error)
 	SessionAliasLineage(deviceID, socketPath, sessionID string, sessionCreated int64) ([]string, error)
 	// FindConversation answers "which live row IS this conversation" (spec

@@ -320,7 +320,7 @@ func TestGetInboxIsIdempotencyProtected(t *testing.T) {
 var readOps = map[string]bool{
 	"list_agents": true, "session_aliases": true, "session_unread": true,
 	"get_thread": true, "list_threads": true, "kv_get": true,
-	"standing_list": true,
+	"standing_list": true, "status": true,
 	// device_poll reads a watermark and answers with it; the watermark lives
 	// on the POLLING DEVICE (the daemon's own loop variable), never in the
 	// store, so two identical polls are indistinguishable to the bus.
