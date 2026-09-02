@@ -96,6 +96,7 @@ var cases = []conformanceCase{
 	{"UnreadCountRespectsWatermark", testUnreadWatermark},
 	{"BroadcastCountsAsUnread", testBroadcastUnread},
 	{"MarkReadUnknownAliasIsNoOp", testMarkReadUnknown},
+	{"StatusCountsPerAliasSideEffectFree", testStatusCounts},
 	{"InboxMatchesAgentRoleBroadcastAndOriginated", testInboxArms},
 	{"InboxIncludesOriginatedThreadsForUnregisteredAlias", testInboxOriginatedUnregistered},
 	{"UnreadCountOriginatorSeesPeerReply", testUnreadOriginatorSeesReply},
@@ -990,6 +991,44 @@ func testBroadcastUnread(t *testing.T, s store.API) {
 	}
 	if n != 1 {
 		t.Fatalf("broadcast unread = %d, want 1", n)
+	}
+}
+
+// testStatusCounts: StatusCounts reports per-alias unread + action_required
+// for every registered alias, and is side-effect-free — it moves no watermark,
+// so an agent's own unread is unchanged after the call.
+func testStatusCounts(t *testing.T, s store.API) {
+	mustRegister(t, s, store.Agent{Alias: "a"})
+	mustRegister(t, s, store.Agent{Alias: "b"})
+	// two unread for a: one action-requested, one fyi.
+	mustThread(t, s, store.Thread{Kind: "message", FromAgent: "sender", ToKind: "agent", ToTarget: "a", Intent: "action-requested"}, "do this")
+	mustThread(t, s, store.Thread{Kind: "message", FromAgent: "sender", ToKind: "agent", ToTarget: "a", Intent: "fyi"}, "note")
+
+	byAlias := func() map[string]store.AliasStatus {
+		st, err := s.StatusCounts()
+		if err != nil {
+			t.Fatalf("StatusCounts: %v", err)
+		}
+		m := map[string]store.AliasStatus{}
+		for _, r := range st {
+			m[r.Alias] = r
+		}
+		return m
+	}
+	m := byAlias()
+	if m["a"].Unread != 2 || m["a"].ActionRequired != 1 {
+		t.Fatalf("a status = %+v, want unread 2 / action 1", m["a"])
+	}
+	if m["b"].Unread != 0 || m["b"].ActionRequired != 0 {
+		t.Fatalf("b status = %+v, want 0/0", m["b"])
+	}
+	// Side-effect-free: a's own unread is unchanged after StatusCounts (no
+	// watermark moved), and a second call agrees.
+	if n, _ := s.UnreadCount("a"); n != 2 {
+		t.Fatalf("StatusCounts must not move a's watermark: UnreadCount=%d, want 2", n)
+	}
+	if m2 := byAlias(); m2["a"].Unread != 2 || m2["a"].ActionRequired != 1 {
+		t.Fatalf("second StatusCounts disagreed: %+v", m2["a"])
 	}
 }
 

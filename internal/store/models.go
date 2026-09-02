@@ -176,6 +176,17 @@ type StandingOrder struct {
 	CreatedAt int64  `json:"created_at"`
 }
 
+// AliasStatus is one alias's side-effect-free inbox counts, as returned by
+// StatusCounts: the unread message/task count and the subset whose effective
+// intent is action-requested. It is a pure read — no watermark moves — so a
+// picker can poll it on a cadence. Field names are the stable wire contract
+// (proj's ✉ column reads them verbatim; see muster thread 354).
+type AliasStatus struct {
+	Alias          string `json:"alias"`
+	Unread         int    `json:"unread"`
+	ActionRequired int    `json:"action_required"`
+}
+
 // Entry is one append-only message within a thread.
 type Entry struct {
 	ID           int64  `json:"id"`

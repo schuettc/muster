@@ -166,6 +166,23 @@ form is the audit/verify seam.`,
 			Run:      cmdStanding,
 		},
 		{
+			Name:     "status",
+			Synopsis: "status [--json] [--alias <alias>]",
+			Summary:  "Side-effect-free per-alias inbox counts (unread, action_required).",
+			Help: `Prints every registered alias's unread count and the subset whose intent is
+action-requested. It is a PURE READ — it moves no read watermark and journals
+no peek — so a picker or attention column can poll it on a cadence without
+disturbing anyone's inbox state (unlike 'inbox', which marks read for the
+owning session).
+
+--json emits a top-level JSON array of {alias, unread, action_required}; the
+default is a plain 'unread action alias' table. --alias restricts to one
+alias. Departed aliases are included — their mail still waits.`,
+			Group:    GroupWatch,
+			NewFlags: newStatusFlags,
+			Run:      cmdStatus,
+		},
+		{
 			Name:     "agents",
 			Synopsis: "agents",
 			Summary:  "List registered agents, grouped by project, with live status.",
