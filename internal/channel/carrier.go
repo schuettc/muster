@@ -211,6 +211,15 @@ func (c *Carrier) Tick() error {
 				continue
 			}
 			seen[e.ID] = true
+			// Wake discipline: only ACTIVELY push events that warrant an
+			// interrupt. The rest are carried by the mailbox badge + the
+			// next-turn Stop-hook drain (the cursor still advances past them
+			// below, so they are never re-examined). This is what keeps a
+			// broadcast from waking every session at once and an ack from
+			// re-waking the whole audience.
+			if !shouldPush(e, mine) {
+				continue
+			}
 			batch = append(batch, e)
 		}
 	}

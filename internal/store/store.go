@@ -60,6 +60,7 @@ func migrate(db *sql.DB) error {
 		`ALTER TABLE threads ADD COLUMN standing INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE threads ADD COLUMN standing_key TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE threads ADD COLUMN standing_retracted INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE threads ADD COLUMN wake INTEGER NOT NULL DEFAULT 0`,
 	}
 	for _, ddl := range alters {
 		if _, err := db.Exec(ddl); err != nil && !strings.Contains(err.Error(), "duplicate column name") {

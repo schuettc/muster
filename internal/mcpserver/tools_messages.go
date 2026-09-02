@@ -20,6 +20,7 @@ type SendMessageIn struct {
 	Body     string `json:"body" jsonschema:"the message body"`
 	Intent   string `json:"intent,omitempty" jsonschema:"fyi | reply-requested | action-requested; mark FYIs so recipients' drains stay cheap — an FYI doesn't demand a reply. Leave empty when the message's urgency is unspecified."`
 	Standing bool   `json:"standing,omitempty" jsonschema:"broadcast-only: a plain broadcast reaches only sessions live now; set standing=true to ALSO reach sessions that start later, once, until they read it. Use for durable standing orders (e.g. 'read CONTRACT.md before editing'), NOT for transient holds — those should stay live-only so they evaporate for future sessions."`
+	Wake     bool   `json:"wake,omitempty" jsonschema:"BREAK-GLASS, broadcast-only, use sparingly: a broadcast normally lands politely (badge only, picked up on each recipient's next turn) to avoid waking every session at once. Set wake=true to actively INTERRUPT every recipient now. Only for genuinely urgent, must-act-now announcements."`
 }
 
 // ThreadIDOut is the output of send_message and task_create.
@@ -75,7 +76,7 @@ func sendMessageHandler(_ context.Context, _ *mcp.CallToolRequest, in SendMessag
 	raw, err := callDaemon("send_message", map[string]any{
 		"from": in.From, "to_kind": in.ToKind, "to_target": in.ToTarget,
 		"subject": in.Subject, "ref": in.Ref, "body": in.Body, "intent": in.Intent,
-		"standing": in.Standing,
+		"standing": in.Standing, "wake": in.Wake,
 	})
 	if err != nil {
 		return nil, ThreadIDOut{}, err

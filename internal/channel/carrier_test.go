@@ -95,7 +95,7 @@ func TestTickPushesNewMailAndAdvancesCursor(t *testing.T) {
 	if err := c.Start(); err != nil {
 		t.Fatal(err)
 	}
-	f.events = append(f.events, Event{ID: 1, Kind: "send", Agent: "lead", Target: "agent:worker", ThreadID: 7, Subject: "hi", Intent: "action-requested"})
+	f.events = append(f.events, Event{ID: 1, Kind: "send", Agent: "lead", Target: "agent:worker", ToKind: "agent", ThreadID: 7, Subject: "hi", Intent: "action-requested"})
 	if err := c.Tick(); err != nil {
 		t.Fatal(err)
 	}
@@ -116,10 +116,10 @@ func TestTickIgnoresSelfAuthoredAndNonMailKinds(t *testing.T) {
 	c := newCarrier(f, p)
 	_ = c.Start()
 	f.events = []Event{
-		{ID: 1, Kind: "send", Agent: "worker", Target: "agent:lead", ThreadID: 1},    // I sent it
-		{ID: 2, Kind: "read", Agent: "worker", Target: "", ThreadID: 1},              // not mail
-		{ID: 3, Kind: "notify", Agent: "", Target: "agent:worker", ThreadID: 1},      // wake-layer noise
-		{ID: 4, Kind: "reply", Agent: "lead", Target: "", ThreadID: 1, Subject: "s"}, // mail
+		{ID: 1, Kind: "send", Agent: "worker", Target: "agent:lead", ToKind: "agent", ThreadID: 1},    // I sent it
+		{ID: 2, Kind: "read", Agent: "worker", Target: "", ThreadID: 1},                               // not mail
+		{ID: 3, Kind: "notify", Agent: "", Target: "agent:worker", ThreadID: 1},                       // wake-layer noise
+		{ID: 4, Kind: "reply", Agent: "lead", Target: "", ToKind: "agent", ThreadID: 1, Subject: "s"}, // mail
 	}
 	_ = c.Tick()
 	if len(p.got) != 1 || !strings.HasPrefix(p.got[0], "muster: reply from lead") {
@@ -133,8 +133,8 @@ func TestTickCoalescesAcrossAliasesWithoutDuplicates(t *testing.T) {
 	c := newCarrier(f, p)
 	_ = c.Start()
 	f.events = []Event{
-		{ID: 1, Kind: "send", Agent: "lead", Target: "agent:worker", ThreadID: 1, Subject: "a"},
-		{ID: 2, Kind: "send", Agent: "lead", Target: "agent:backend", ThreadID: 2, Subject: "b"},
+		{ID: 1, Kind: "send", Agent: "lead", Target: "agent:worker", ToKind: "agent", ThreadID: 1, Subject: "a"},
+		{ID: 2, Kind: "send", Agent: "lead", Target: "agent:backend", ToKind: "agent", ThreadID: 2, Subject: "b"},
 	}
 	_ = c.Tick()
 	if len(p.got) != 1 || !strings.HasPrefix(p.got[0], "muster: 2 new") {
@@ -149,7 +149,7 @@ func TestNoRegistrationIdlesWithoutError(t *testing.T) {
 	if err := c.Start(); err != nil {
 		t.Fatal(err)
 	}
-	f.events = []Event{{ID: 1, Kind: "send", Agent: "lead", Target: "agent:worker", ThreadID: 1}}
+	f.events = []Event{{ID: 1, Kind: "send", Agent: "lead", Target: "agent:worker", ToKind: "agent", ThreadID: 1}}
 	if err := c.Tick(); err != nil {
 		t.Fatal(err)
 	}
