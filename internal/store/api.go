@@ -98,6 +98,13 @@ type API interface {
 	SetSessionLabel(deviceID, socketPath, sessionID string, sessionCreated int64, label string, manual bool) (int64, error)
 	DeleteAgent(alias string) error
 	CreateThread(t Thread, firstBody string) (int64, error)
+	// SetStandingOrder create-or-replaces the standing order identified by
+	// (project, key) idempotently; RetractStandingOrder retracts it
+	// (idempotent, reports whether a row changed); ListStandingOrders returns
+	// the live keyed orders for a project. See the standing-orders spec.
+	SetStandingOrder(project, key, from, body string) (int64, error)
+	RetractStandingOrder(project, key string) (bool, error)
+	ListStandingOrders(project string) ([]StandingOrder, error)
 	AppendEntry(threadID int64, fromAgent, body, statusChange string) (int64, error)
 	ClaimTask(threadID int64, byAgent string) error
 	TransitionTask(threadID int64, byAgent, newStatus, note string) error

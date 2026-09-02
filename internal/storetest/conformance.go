@@ -113,6 +113,16 @@ var cases = []conformanceCase{
 	{"StandingBroadcastComposesWithProjectScope", testStandingScoped},
 	{"StandingRejectedOnNonBroadcastTarget", testStandingRejectedNonBroadcast},
 
+	// Standing orders (keyed, retractable).
+	{"StandingOrderSetIsListableAndGreetsNewSession", testStandingOrderSetListGreet},
+	{"StandingOrderSetReplacesByKey", testStandingOrderReplace},
+	{"StandingOrderSetReGreetsAnAlreadyReadSession", testStandingOrderReGreets},
+	{"StandingOrderRetractStopsGreetingAndDropsFromList", testStandingOrderRetract},
+	{"StandingOrderRetractSparesAnAlreadyReadSession", testStandingOrderRetractSparesRead},
+	{"StandingOrderSetRejectsEmptyKey", testStandingOrderEmptyKey},
+	{"StandingOrderListIgnoresAdHocStandingBroadcast", testStandingOrderListIgnoresAdHoc},
+	{"StandingOrderScopedToItsProject", testStandingOrderScoped},
+
 	// Session-scoped unread.
 	{"SessionUnreadCountsDistinctThreads", testSessionUnreadDistinct},
 	{"SessionUnreadExcludesSiblingAuthors", testSessionUnreadSiblingAuthors},
@@ -1313,6 +1323,143 @@ func testStandingScoped(t *testing.T, s store.API) {
 func testStandingRejectedNonBroadcast(t *testing.T, s store.API) {
 	if _, err := s.CreateThread(store.Thread{Kind: "message", FromAgent: "sender", ToKind: "agent", ToTarget: "x", Standing: true}, "b"); err == nil {
 		t.Fatal("standing on a non-broadcast target must be rejected")
+	}
+}
+
+func testStandingOrderSetListGreet(t *testing.T, s store.API) {
+	if _, err := s.SetStandingOrder("web", "invariants", "author", "rebase before push"); err != nil {
+		t.Fatalf("SetStandingOrder: %v", err)
+	}
+	orders, err := s.ListStandingOrders("web")
+	if err != nil || len(orders) != 1 || orders[0].Key != "invariants" || orders[0].Body != "rebase before push" {
+		t.Fatalf("list = %+v (%v), want one invariants order", orders, err)
+	}
+	mustRegister(t, s, store.Agent{Alias: "newbie", Project: "web"})
+	if n, err := s.UnreadCount("newbie"); err != nil || n != 1 {
+		t.Fatalf("new session should be greeted: unread=%d (%v), want 1", n, err)
+	}
+}
+
+func testStandingOrderReplace(t *testing.T, s store.API) {
+	if _, err := s.SetStandingOrder("web", "invariants", "author", "v1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SetStandingOrder("web", "invariants", "author", "v2"); err != nil {
+		t.Fatal(err)
+	}
+	orders, _ := s.ListStandingOrders("web")
+	if len(orders) != 1 || orders[0].Body != "v2" {
+		t.Fatalf("replace should leave one order (v2), got %+v", orders)
+	}
+	mustRegister(t, s, store.Agent{Alias: "newbie", Project: "web"})
+	if n, _ := s.UnreadCount("newbie"); n != 1 {
+		t.Fatalf("new session should see only the current order: unread=%d, want 1", n)
+	}
+}
+
+// testStandingOrderReGreets: replacing an order under a key must re-greet a
+// session that already read the prior order — a mid-flight invariant fix
+// reaches RUNNING sessions, not only future ones. set creates a new standing
+// entry (id above the retracted one), so the read session's standing watermark
+// now sits below it and the updated order surfaces as unread — and ONLY the
+// updated order (the retracted prior is filtered).
+func testStandingOrderReGreets(t *testing.T, s store.API) {
+	if _, err := s.SetStandingOrder("web", "invariants", "author", "v1"); err != nil {
+		t.Fatal(err)
+	}
+	mustRegister(t, s, store.Agent{Alias: "running", Project: "web"})
+	if err := s.MarkRead("running"); err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := s.UnreadCount("running"); n != 0 {
+		t.Fatalf("after reading v1, unread should be 0, got %d", n)
+	}
+	if _, err := s.SetStandingOrder("web", "invariants", "author", "v2"); err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := s.UnreadCount("running"); n != 1 {
+		t.Fatalf("a replacement order must re-greet an already-read running session: unread=%d, want 1", n)
+	}
+	// And it surfaces the NEW order only: the running session's inbox shows the
+	// v2 order unread and the retracted v1 not unread.
+	in, err := s.Inbox("running")
+	if err != nil {
+		t.Fatal(err)
+	}
+	unreadBodies := map[string]bool{}
+	for _, th := range in {
+		if th.Unread > 0 {
+			_, entries, _ := s.GetThread(th.ID)
+			if len(entries) > 0 {
+				unreadBodies[entries[0].Body] = true
+			}
+		}
+	}
+	if len(unreadBodies) != 1 || !unreadBodies["v2"] {
+		t.Fatalf("running session must see only the v2 order unread, got %v", unreadBodies)
+	}
+}
+
+func testStandingOrderRetract(t *testing.T, s store.API) {
+	if _, err := s.SetStandingOrder("web", "invariants", "author", "rules"); err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := s.RetractStandingOrder("web", "invariants"); err != nil || !changed {
+		t.Fatalf("retract should change a row: changed=%v err=%v", changed, err)
+	}
+	if orders, _ := s.ListStandingOrders("web"); len(orders) != 0 {
+		t.Fatalf("retracted order must drop from list, got %+v", orders)
+	}
+	mustRegister(t, s, store.Agent{Alias: "newbie", Project: "web"})
+	if n, _ := s.UnreadCount("newbie"); n != 0 {
+		t.Fatalf("retracted order must not greet a new session: unread=%d, want 0", n)
+	}
+	if changed, _ := s.RetractStandingOrder("web", "invariants"); changed {
+		t.Fatal("second retract must be a no-op")
+	}
+}
+
+func testStandingOrderRetractSparesRead(t *testing.T, s store.API) {
+	if _, err := s.SetStandingOrder("web", "invariants", "author", "rules"); err != nil {
+		t.Fatal(err)
+	}
+	mustRegister(t, s, store.Agent{Alias: "seen", Project: "web"})
+	if err := s.MarkRead("seen"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RetractStandingOrder("web", "invariants"); err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := s.UnreadCount("seen"); n != 0 {
+		t.Fatalf("retract must not resurface for a session that read it: unread=%d, want 0", n)
+	}
+}
+
+func testStandingOrderEmptyKey(t *testing.T, s store.API) {
+	if _, err := s.SetStandingOrder("web", "", "author", "x"); err == nil {
+		t.Fatal("empty key must be rejected")
+	}
+}
+
+func testStandingOrderListIgnoresAdHoc(t *testing.T, s store.API) {
+	if _, err := s.CreateThread(store.Thread{Kind: "message", FromAgent: "a", ToKind: "broadcast", ToTarget: "web", Standing: true}, "ad-hoc"); err != nil {
+		t.Fatal(err)
+	}
+	if orders, _ := s.ListStandingOrders("web"); len(orders) != 0 {
+		t.Fatalf("ad-hoc standing broadcast must not be listed, got %+v", orders)
+	}
+}
+
+func testStandingOrderScoped(t *testing.T, s store.API) {
+	if _, err := s.SetStandingOrder("web", "invariants", "author", "web rules"); err != nil {
+		t.Fatal(err)
+	}
+	mustRegister(t, s, store.Agent{Alias: "in-api", Project: "api"})
+	if n, _ := s.UnreadCount("in-api"); n != 0 {
+		t.Fatalf("other-project session must not see a scoped order: unread=%d, want 0", n)
+	}
+	if orders, _ := s.ListStandingOrders("api"); len(orders) != 0 {
+		t.Fatalf("api has no orders, got %+v", orders)
 	}
 }
 
