@@ -46,9 +46,9 @@ func (s *Store) CreateThread(t Thread, firstBody string) (int64, error) {
 	defer func() { _ = tx.Rollback() }()
 
 	res, err := tx.Exec(`
-INSERT INTO threads (kind, from_agent, to_kind, to_target, subject, ref, status, intent, standing, created_at, updated_at, origin_project)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		t.Kind, t.FromAgent, t.ToKind, t.ToTarget, t.Subject, t.Ref, nullable(t.Status), t.Intent, t.Standing, now, now, t.OriginProject)
+INSERT INTO threads (kind, from_agent, to_kind, to_target, subject, ref, status, intent, standing, wake, created_at, updated_at, origin_project)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		t.Kind, t.FromAgent, t.ToKind, t.ToTarget, t.Subject, t.Ref, nullable(t.Status), t.Intent, t.Standing, t.Wake, now, now, t.OriginProject)
 	if err != nil {
 		return 0, err
 	}

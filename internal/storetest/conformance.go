@@ -194,6 +194,7 @@ var cases = []conformanceCase{
 
 	// Journal.
 	{"AppendEventRoundTripsEveryField", testEventRoundTrip},
+	{"EventsJoinThreadToKindOriginAndWake", testEventJoinsThreadWakeOrigin},
 	{"MaxEventIDOnAnEmptyJournal", testMaxEventIDEmpty},
 	{"EventsBacklogIsNewestFirst", testEventsBacklog},
 	{"EventsFilterByAgent", testEventsByAgent},
@@ -2114,6 +2115,48 @@ func testEventRoundTrip(t *testing.T, s store.API) {
 	}
 	if e.ID == 0 || e.TS == 0 {
 		t.Fatalf("id and ts must be stamped, got %+v", e)
+	}
+}
+
+// testEventJoinsThreadWakeOrigin: Events joins the event's thread for the
+// carrier's wake decision — ToKind, Origin (thread from_agent), and Wake
+// (broadcast break-glass) — and leaves them zero for a thread-less event.
+func testEventJoinsThreadWakeOrigin(t *testing.T, s store.API) {
+	id := mustThread(t, s, store.Thread{Kind: "message", FromAgent: "opener", ToKind: "broadcast", ToTarget: "web", Wake: true}, "hi")
+	if err := s.AppendEvent(store.Event{Kind: "send", Agent: "opener", Target: "broadcast:web", ThreadID: id}); err != nil {
+		t.Fatalf("AppendEvent send: %v", err)
+	}
+	if err := s.AppendEvent(store.Event{Kind: "reply", Agent: "peer", ThreadID: id}); err != nil {
+		t.Fatalf("AppendEvent reply: %v", err)
+	}
+	if err := s.AppendEvent(store.Event{Kind: "nudge", Agent: "x", Target: "y"}); err != nil {
+		t.Fatalf("AppendEvent nudge: %v", err)
+	}
+	evs, err := s.Events(store.EventQuery{Backlog: true, Limit: 10})
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	var sawSend, sawReply, sawNudge bool
+	for _, e := range evs {
+		switch e.Kind {
+		case "send", "reply":
+			if e.ToKind != "broadcast" || e.Origin != "opener" || !e.Wake {
+				t.Fatalf("%s event join = to_kind=%q origin=%q wake=%v, want broadcast/opener/true", e.Kind, e.ToKind, e.Origin, e.Wake)
+			}
+			if e.Kind == "send" {
+				sawSend = true
+			} else {
+				sawReply = true
+			}
+		case "nudge":
+			if e.ToKind != "" || e.Origin != "" || e.Wake {
+				t.Fatalf("thread-less event must zero the join, got to_kind=%q origin=%q wake=%v", e.ToKind, e.Origin, e.Wake)
+			}
+			sawNudge = true
+		}
+	}
+	if !sawSend || !sawReply || !sawNudge {
+		t.Fatalf("missing events: send=%v reply=%v nudge=%v", sawSend, sawReply, sawNudge)
 	}
 }
 

@@ -131,8 +131,12 @@ type Thread struct {
 	// SetStandingOrder/RetractStandingOrder/ListStandingOrders.
 	StandingKey       string `json:"standing_key"`
 	StandingRetracted bool   `json:"standing_retracted"`
-	CreatedAt         int64  `json:"created_at"`
-	UpdatedAt         int64  `json:"updated_at"`
+	// Wake is the break-glass tag on a broadcast: true = actively push
+	// (interrupt) every recipient now, overriding the polite next-turn default.
+	// Explicit-only. See the wake-discipline design.
+	Wake      bool  `json:"wake"`
+	CreatedAt int64 `json:"created_at"`
+	UpdatedAt int64 `json:"updated_at"`
 	// OriginProject is the SENDER's registered project at thread-creation
 	// time (iteration-4 orphan-thread fix): the daemon resolves the sender's
 	// agent record when it calls CreateThread and stamps its Project here —
@@ -202,6 +206,15 @@ type Event struct {
 	// threads.go), joined at query time exactly like Subject (empty for
 	// thread-less events). Never stored on the row.
 	Intent string `json:"intent"`
+	// ToKind, Origin, and Wake are joined from the event's thread at query time
+	// (all zero for thread-less events), never stored on the row — the fields
+	// the channel carrier's shouldPush needs: ToKind (the thread's to_kind)
+	// tells a direct thread from a fan-out, Origin (the thread's from_agent)
+	// identifies a reply going back to the opener, and Wake is the broadcast
+	// break-glass tag. See the wake-discipline design.
+	ToKind string `json:"to_kind"`
+	Origin string `json:"origin"`
+	Wake   bool   `json:"wake"`
 }
 
 // KVPair is a shared blackboard fact.

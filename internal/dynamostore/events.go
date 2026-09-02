@@ -361,6 +361,9 @@ func (s *Store) annotateEventThreads(ctx context.Context, evs []store.Event) err
 		}
 		evs[i].Subject = strAttr(item, "subject")
 		evs[i].Intent = effectiveIntent(strAttr(item, "kind"), strAttr(item, "intent"))
+		evs[i].ToKind = strAttr(item, "to_kind")
+		evs[i].Origin = strAttr(item, "from_agent")
+		evs[i].Wake = boolAttr(item, "wake")
 	}
 	return nil
 }
