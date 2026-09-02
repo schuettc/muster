@@ -22,6 +22,38 @@ type Event struct {
 	Detail   string `json:"detail"`
 	Subject  string `json:"subject"`
 	Intent   string `json:"intent"`
+	// ToKind, Origin, and Wake are joined from the event's thread by the
+	// daemon (all zero for thread-less events) and drive shouldPush: ToKind is
+	// the thread's to_kind (agent/role/broadcast), Origin its from_agent (the
+	// opener), Wake the broadcast break-glass tag.
+	ToKind string `json:"to_kind"`
+	Origin string `json:"origin"`
+	Wake   bool   `json:"wake"`
+}
+
+// shouldPush decides whether an event that concerns this session should be
+// ACTIVELY pushed (interrupt the session now) or left for the mailbox badge +
+// next-turn Stop-hook drain. mine is the session's alias set. The badge always
+// fires regardless; this only governs the interrupt. See the wake-discipline
+// design:
+//   - a broadcast opener tagged break-glass (wake) pushes to everyone;
+//   - a direct thread (to_kind=agent) pushes — it's addressed to a participant,
+//     one recipient, no herd — unless it is fyi;
+//   - a broadcast/role thread pushes ONLY a reply back to its opener (mine
+//     holds the origin), and only when not fyi; its opener fan-out and any
+//     reply to the audience stay polite (next turn).
+func shouldPush(e Event, mine map[string]bool) bool {
+	if e.Kind == "send" && e.Wake {
+		return true
+	}
+	var directed bool
+	switch e.ToKind {
+	case "agent":
+		directed = true // a direct thread concerns me only as a participant
+	case "broadcast", "role":
+		directed = e.Kind == "reply" && mine[e.Origin]
+	}
+	return directed && e.Intent != "fyi"
 }
 
 // MaxListed is the largest batch that still lists every thread on the
