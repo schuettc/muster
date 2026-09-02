@@ -116,6 +116,7 @@ var cases = []conformanceCase{
 	// Standing orders (keyed, retractable).
 	{"StandingOrderSetIsListableAndGreetsNewSession", testStandingOrderSetListGreet},
 	{"StandingOrderSetReplacesByKey", testStandingOrderReplace},
+	{"StandingOrderSetReGreetsAnAlreadyReadSession", testStandingOrderReGreets},
 	{"StandingOrderRetractStopsGreetingAndDropsFromList", testStandingOrderRetract},
 	{"StandingOrderRetractSparesAnAlreadyReadSession", testStandingOrderRetractSparesRead},
 	{"StandingOrderSetRejectsEmptyKey", testStandingOrderEmptyKey},
@@ -1353,6 +1354,49 @@ func testStandingOrderReplace(t *testing.T, s store.API) {
 	mustRegister(t, s, store.Agent{Alias: "newbie", Project: "web"})
 	if n, _ := s.UnreadCount("newbie"); n != 1 {
 		t.Fatalf("new session should see only the current order: unread=%d, want 1", n)
+	}
+}
+
+// testStandingOrderReGreets: replacing an order under a key must re-greet a
+// session that already read the prior order — a mid-flight invariant fix
+// reaches RUNNING sessions, not only future ones. set creates a new standing
+// entry (id above the retracted one), so the read session's standing watermark
+// now sits below it and the updated order surfaces as unread — and ONLY the
+// updated order (the retracted prior is filtered).
+func testStandingOrderReGreets(t *testing.T, s store.API) {
+	if _, err := s.SetStandingOrder("web", "invariants", "author", "v1"); err != nil {
+		t.Fatal(err)
+	}
+	mustRegister(t, s, store.Agent{Alias: "running", Project: "web"})
+	if err := s.MarkRead("running"); err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := s.UnreadCount("running"); n != 0 {
+		t.Fatalf("after reading v1, unread should be 0, got %d", n)
+	}
+	if _, err := s.SetStandingOrder("web", "invariants", "author", "v2"); err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := s.UnreadCount("running"); n != 1 {
+		t.Fatalf("a replacement order must re-greet an already-read running session: unread=%d, want 1", n)
+	}
+	// And it surfaces the NEW order only: the running session's inbox shows the
+	// v2 order unread and the retracted v1 not unread.
+	in, err := s.Inbox("running")
+	if err != nil {
+		t.Fatal(err)
+	}
+	unreadBodies := map[string]bool{}
+	for _, th := range in {
+		if th.Unread > 0 {
+			_, entries, _ := s.GetThread(th.ID)
+			if len(entries) > 0 {
+				unreadBodies[entries[0].Body] = true
+			}
+		}
+	}
+	if len(unreadBodies) != 1 || !unreadBodies["v2"] {
+		t.Fatalf("running session must see only the v2 order unread, got %v", unreadBodies)
 	}
 }
 

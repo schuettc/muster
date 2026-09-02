@@ -93,6 +93,15 @@ defaults above — no backfill.
 - **`set` is idempotent by `(project, key)`**, in one transaction: retract the
   prior live order under that key (if any), then create the replacement standing
   broadcast. Convergent on re-run; a text change replaces rather than stacks.
+- **`set` RE-GREETS already-registered sessions with the updated order**, not
+  only future ones — the property that makes this a "current invariants"
+  convention rather than a set-once greeting. The replacement is a new standing
+  entry with an id above the retracted one, so a session that already read the
+  prior order has its standing watermark below the new id and the updated order
+  surfaces as unread on its next inbox check — and only the updated order (the
+  retracted prior is filtered). This is what lets a project fix a WRONG
+  invariant mid-flight and have every running session get the correction.
+  (Asserted by `StandingOrderSetReGreetsAnAlreadyReadSession` on both stores.)
 - **`retract` is idempotent**: retracting an absent or already-retracted order is
   a no-op success, so an onboarding/audit skill can retract without first checking.
 - **`list`** returns the live (non-retracted) standing orders for a project —
