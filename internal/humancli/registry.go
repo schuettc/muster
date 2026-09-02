@@ -139,6 +139,29 @@ when a session has no muster MCP connection.`,
 			Run:      cmdReply,
 		},
 		{
+			Name:     "standing",
+			Synopsis: `standing <project> [--json] | standing set <project> [--key <k>] "body" [--from <alias>] | standing retract <project> [--key <k>]`,
+			Summary:  "Manage a project's durable standing orders (its invariants).",
+			Help: `A standing order is a project's durable instruction that every session should
+read on start (e.g. its invariants / golden rules). Unlike an ad-hoc
+'send --broadcast --standing' it is KEYED and REPLACEABLE, so it stays a single
+current statement rather than a growing pile.
+
+  standing <project> [--json]              list the project's live orders
+  standing set <project> [--key k] "body"  create or REPLACE the order under a key
+  standing retract <project> [--key k]     retract it
+
+--key defaults to 'invariants' (the project's single set of rules). set is
+idempotent by (project, key) and RE-GREETS every session with the updated text —
+running sessions and future ones alike — until each reads it, so a mid-flight
+correction reaches everyone. retract stops it greeting new sessions and drops it
+from the list; a session that already read it is unaffected. --json on the list
+form is the audit/verify seam.`,
+			Group:    GroupTalk,
+			NewFlags: newStandingFlags,
+			Run:      cmdStanding,
+		},
+		{
 			Name:     "agents",
 			Synopsis: "agents",
 			Summary:  "List registered agents, grouped by project, with live status.",
