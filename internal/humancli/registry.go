@@ -91,7 +91,7 @@ func init() {
 	Registry = []Command{
 		{
 			Name:     "send",
-			Synopsis: `send <target> "body" [--from <alias>] [--subject <s>] [--ref <r>] [--role] [--broadcast [--project <p>] [--standing]] [--intent fyi|reply-requested|action-requested]`,
+			Synopsis: `send <target> "body" [--from <alias>] [--subject <s>] [--ref <r>] [--role] [--broadcast [--project <p>] [--standing] [--wake]] [--intent fyi|reply-requested|action-requested]`,
 			Summary:  "Send a message to an agent, role, or everyone.",
 			Help: `target is an alias, a label, or a "project:label" pair, resolved the same
 way for every muster surface (send, nudge, inbox, tasks). --role treats
@@ -102,9 +102,13 @@ registered under that exact project (the daemon rejects unknown projects and
 lists the known ones). A plain broadcast is live-only: it reaches sessions
 live now and is invisible to sessions that start later. --standing (broadcast
 only) also reaches sessions that start later, once, until they read it — use
-it for durable standing orders, not transient holds. --intent tags the
-message for the recipient's inbox/hook rendering: fyi (default, no action
-implied), reply-requested, or action-requested.`,
+it for durable standing orders, not transient holds. A broadcast lands
+politely by default — it sets each recipient's mailbox badge and is picked up
+on their next turn, never interrupting them all at once. --wake is break-glass
+(broadcast only): actively interrupt every recipient now; use sparingly, for
+genuinely urgent announcements. --intent tags the message for the recipient's
+inbox/hook rendering: fyi (default, no action implied), reply-requested, or
+action-requested.`,
 			Group:    GroupTalk,
 			NewFlags: newSendFlags,
 			Run:      cmdSend,

@@ -911,7 +911,8 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 		id, err := d.s.CreateThread(store.Thread{
 			Kind: "message", FromAgent: from, ToKind: toKind,
 			ToTarget: toTarget, Subject: str(a, "subject"), Ref: str(a, "ref"),
-			Intent: str(a, "intent"), Standing: standing, OriginProject: d.senderProject(from),
+			Intent: str(a, "intent"), Standing: standing, Wake: boolArg(a, "wake"),
+			OriginProject: d.senderProject(from),
 		}, str(a, "body"))
 		if err != nil {
 			return fail(err)

@@ -341,7 +341,7 @@ func validateIntent(intent string) error {
 // sendFlagVals holds cmdSend's parsed flag pointers.
 type sendFlagVals struct {
 	from, subject, ref, intent, project *string
-	role, broadcast, standing           *bool
+	role, broadcast, standing, wake     *bool
 }
 
 // newSendFlagsWithVals declares send's flags and returns both the FlagSet
@@ -359,6 +359,7 @@ func newSendFlagsWithVals() (*flag.FlagSet, sendFlagVals) {
 	v.broadcast = fs.Bool("broadcast", false, "send to everyone")
 	v.project = fs.String("project", "", "with --broadcast: send only to this project's agents")
 	v.standing = fs.Bool("standing", false, "with --broadcast: also reach sessions that start later, until they read it (standing orders)")
+	v.wake = fs.Bool("wake", false, "with --broadcast: BREAK-GLASS — actively interrupt every recipient now instead of the polite next-turn default (use sparingly)")
 	v.intent = fs.String("intent", "", "message intent: fyi, reply-requested, or action-requested")
 	return fs, v
 }
@@ -390,6 +391,9 @@ func cmdSend(args []string, out io.Writer) error {
 	}
 	if *v.standing && !*v.broadcast {
 		return fmt.Errorf("--standing requires --broadcast")
+	}
+	if *v.wake && !*v.broadcast {
+		return fmt.Errorf("--wake requires --broadcast (a direct message already delivers promptly)")
 	}
 	toKind, toTarget := "agent", ""
 	switch {
@@ -428,7 +432,7 @@ func cmdSend(args []string, out io.Writer) error {
 	raw, err := callData("send_message", map[string]any{
 		"from": fromAlias, "to_kind": toKind, "to_target": toTarget,
 		"subject": *v.subject, "ref": *v.ref, "body": body, "intent": *v.intent,
-		"standing": *v.standing,
+		"standing": *v.standing, "wake": *v.wake,
 	})
 	if err != nil {
 		return err
@@ -445,7 +449,7 @@ func cmdSend(args []string, out io.Writer) error {
 
 // sendBoolFlags are cmdSend's flags that take no value, needed so
 // splitFlagsAndPositional knows not to consume the following token as a value.
-var sendBoolFlags = map[string]bool{"role": true, "broadcast": true, "standing": true}
+var sendBoolFlags = map[string]bool{"role": true, "broadcast": true, "standing": true, "wake": true}
 
 // splitFlagsAndPositional separates args into flag.FlagSet-parseable tokens
 // and positional arguments, regardless of whether flags appear before or

@@ -76,6 +76,27 @@ func TestSendBroadcastStandingFlag(t *testing.T) {
 	}
 }
 
+func TestSendBroadcastWakeFlag(t *testing.T) {
+	s := startTestDaemon(t)
+	var buf bytes.Buffer
+	if err := cmdSend([]string{"--broadcast", "--wake", "deploy", "now", "--from", "tester"}, &buf); err != nil {
+		t.Fatalf("wake broadcast send: %v", err)
+	}
+	ths, err := s.Threads(10)
+	if err != nil || len(ths) != 1 || !ths[0].Wake {
+		t.Fatalf("want a wake broadcast, got %+v (%v)", ths, err)
+	}
+}
+
+func TestSendWakeWithoutBroadcastErrors(t *testing.T) {
+	startTestDaemon(t)
+	var buf bytes.Buffer
+	err := cmdSend([]string{"--wake", "web:label", "hello"}, &buf)
+	if err == nil || !strings.Contains(err.Error(), "--wake requires --broadcast") {
+		t.Fatalf("want '--wake requires --broadcast' error, got %v", err)
+	}
+}
+
 func TestSendStandingWithoutBroadcastErrors(t *testing.T) {
 	startTestDaemon(t)
 	var buf bytes.Buffer
