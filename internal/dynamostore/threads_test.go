@@ -98,7 +98,7 @@ func TestUnreadByThread(t *testing.T) {
 		{ID: 9, ThreadID: 12, FromAgent: "peer"}, // thread does not concern me
 		{ID: 4, ThreadID: 11, FromAgent: "peer"}, // exactly at watermark, excluded
 	}
-	got := unreadByThread(entries, concerning, map[string]bool{"me": true}, 4)
+	got := unreadByThread(entries, concerning, nil, map[string]bool{"me": true}, 4, 4)
 	want := map[int64]int{10: 1, 11: 2}
 	if len(got) != len(want) {
 		t.Fatalf("unreadByThread = %v, want %v", got, want)
@@ -110,6 +110,25 @@ func TestUnreadByThread(t *testing.T) {
 	}
 }
 
+// TestUnreadByThreadStandingUsesStandingWatermark: a standing thread's entries
+// are judged against the standing watermark, not the live one, so a new
+// session (live watermark high, standing watermark 0) still sees the standing
+// backlog while skipping the live one.
+func TestUnreadByThreadStandingUsesStandingWatermark(t *testing.T) {
+	concerning := map[int64]bool{10: true, 11: true}
+	standing := map[int64]bool{11: true}
+	entries := []store.Entry{
+		{ID: 3, ThreadID: 10, FromAgent: "peer"},  // live, below live watermark -> skipped
+		{ID: 3, ThreadID: 11, FromAgent: "peer"},  // standing, above standing watermark -> counts
+		{ID: 12, ThreadID: 10, FromAgent: "peer"}, // live, above live watermark -> counts
+	}
+	got := unreadByThread(entries, concerning, standing, map[string]bool{"me": true}, 5, 0)
+	want := map[int64]int{10: 1, 11: 1}
+	if len(got) != len(want) || got[10] != 1 || got[11] != 1 {
+		t.Fatalf("unreadByThread = %v, want %v", got, want)
+	}
+}
+
 // TestUnreadByThreadExcludesEverySessionAlias covers SessionUnread's actor
 // exclusion: a session's own writes under EITHER alias never make its own
 // threads unread.
@@ -118,7 +137,7 @@ func TestUnreadByThreadExcludesEverySessionAlias(t *testing.T) {
 		{ID: 2, ThreadID: 1, FromAgent: "a1"},
 		{ID: 3, ThreadID: 1, FromAgent: "a2"},
 	}
-	got := unreadByThread(entries, map[int64]bool{1: true}, map[string]bool{"a1": true, "a2": true}, 0)
+	got := unreadByThread(entries, map[int64]bool{1: true}, nil, map[string]bool{"a1": true, "a2": true}, 0, 0)
 	if len(got) != 0 {
 		t.Fatalf("unreadByThread = %v, want empty — sibling aliases are one actor", got)
 	}

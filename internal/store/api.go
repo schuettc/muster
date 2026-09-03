@@ -98,6 +98,13 @@ type API interface {
 	SetSessionLabel(deviceID, socketPath, sessionID string, sessionCreated int64, label string, manual bool) (int64, error)
 	DeleteAgent(alias string) error
 	CreateThread(t Thread, firstBody string) (int64, error)
+	// SetStandingOrder create-or-replaces the standing order identified by
+	// (project, key) idempotently; RetractStandingOrder retracts it
+	// (idempotent, reports whether a row changed); ListStandingOrders returns
+	// the live keyed orders for a project. See the standing-orders spec.
+	SetStandingOrder(project, key, from, body string) (int64, error)
+	RetractStandingOrder(project, key string) (bool, error)
+	ListStandingOrders(project string) ([]StandingOrder, error)
 	AppendEntry(threadID int64, fromAgent, body, statusChange string) (int64, error)
 	ClaimTask(threadID int64, byAgent string) error
 	TransitionTask(threadID int64, byAgent, newStatus, note string) error
@@ -106,6 +113,10 @@ type API interface {
 	Inbox(alias string) ([]Thread, error)
 	MarkRead(alias string) error
 	UnreadCount(alias string) (int, error)
+	// StatusCounts returns every alias's side-effect-free (unread,
+	// action_required) counts — a pure read for a polling picker; see the
+	// method comment on Store.
+	StatusCounts() ([]AliasStatus, error)
 	SessionUnread(deviceID, socketPath, sessionID string, sessionCreated int64) (total, action int, err error)
 	SessionAliasLineage(deviceID, socketPath, sessionID string, sessionCreated int64) ([]string, error)
 	// FindConversation answers "which live row IS this conversation" (spec

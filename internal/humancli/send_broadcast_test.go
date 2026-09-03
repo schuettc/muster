@@ -61,6 +61,51 @@ func TestSendBroadcastUnquotedBodyStaysGlobal(t *testing.T) {
 	}
 }
 
+func TestSendBroadcastStandingFlag(t *testing.T) {
+	s := startTestDaemon(t)
+	var buf bytes.Buffer
+	if err := cmdSend([]string{"--broadcast", "--standing", "read", "CONTRACT.md", "--from", "tester"}, &buf); err != nil {
+		t.Fatalf("standing broadcast send: %v", err)
+	}
+	ths, err := s.Threads(10)
+	if err != nil || len(ths) != 1 {
+		t.Fatalf("threads: %v (%d)", err, len(ths))
+	}
+	if ths[0].ToKind != "broadcast" || ths[0].ToTarget != "" || !ths[0].Standing {
+		t.Fatalf("want standing global broadcast, got kind=%s target=%q standing=%v", ths[0].ToKind, ths[0].ToTarget, ths[0].Standing)
+	}
+}
+
+func TestSendBroadcastWakeFlag(t *testing.T) {
+	s := startTestDaemon(t)
+	var buf bytes.Buffer
+	if err := cmdSend([]string{"--broadcast", "--wake", "deploy", "now", "--from", "tester"}, &buf); err != nil {
+		t.Fatalf("wake broadcast send: %v", err)
+	}
+	ths, err := s.Threads(10)
+	if err != nil || len(ths) != 1 || !ths[0].Wake {
+		t.Fatalf("want a wake broadcast, got %+v (%v)", ths, err)
+	}
+}
+
+func TestSendWakeWithoutBroadcastErrors(t *testing.T) {
+	startTestDaemon(t)
+	var buf bytes.Buffer
+	err := cmdSend([]string{"--wake", "web:label", "hello"}, &buf)
+	if err == nil || !strings.Contains(err.Error(), "--wake requires --broadcast") {
+		t.Fatalf("want '--wake requires --broadcast' error, got %v", err)
+	}
+}
+
+func TestSendStandingWithoutBroadcastErrors(t *testing.T) {
+	startTestDaemon(t)
+	var buf bytes.Buffer
+	err := cmdSend([]string{"--standing", "web:label", "hello"}, &buf)
+	if err == nil || !strings.Contains(err.Error(), "--standing requires --broadcast") {
+		t.Fatalf("want '--standing requires --broadcast' error, got %v", err)
+	}
+}
+
 func TestSendBroadcastUnknownProjectSurfacesDaemonError(t *testing.T) {
 	startTestDaemon(t)
 	if _, err := callData("register_agent", map[string]any{"alias": "w1", "project": "web", "model_type": "claude"}); err != nil {

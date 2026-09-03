@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS agents (
     label_manual  INTEGER NOT NULL DEFAULT 0,
     last_read_at  INTEGER NOT NULL DEFAULT 0,
     last_read_entry_id INTEGER NOT NULL DEFAULT 0,
+    last_read_standing_entry_id INTEGER NOT NULL DEFAULT 0, -- read watermark for STANDING broadcasts only; NOT seeded on register (stays 0) so a new session sees standing orders once; advanced by MarkRead alongside last_read_entry_id
     departed      INTEGER NOT NULL DEFAULT 0, -- 1 = deregistered (tombstoned): identity/project/label/read-state all preserved; see store.migrate and Store.DepartAgent
     superseded_by TEXT NOT NULL DEFAULT '', -- non-empty on a departed row claimed away via Become: names the alias that now carries this identity forward, so resume reclaim never resurrects a retired seed (see Store.Become, hookSessionStartResume). Cleared on re-register (RegisterAgent's upsert): a revived/re-registered alias is no longer superseded.
     registered_at INTEGER NOT NULL,
@@ -30,6 +31,10 @@ CREATE TABLE IF NOT EXISTS threads (
     ref        TEXT NOT NULL DEFAULT '',
     status     TEXT,                          -- NULL for messages
     intent     TEXT NOT NULL DEFAULT '',       -- '' | fyi | reply-requested | action-requested
+    standing   INTEGER NOT NULL DEFAULT 0,      -- 1 = broadcast replayed to sessions registering after send (until read); broadcast-only. Plain broadcast is live-only.
+    standing_key       TEXT NOT NULL DEFAULT '', -- identity of a keyed standing ORDER within its project (empty = ad-hoc append-only standing broadcast); see muster standing set/retract/list
+    standing_retracted INTEGER NOT NULL DEFAULT 0, -- 1 = this standing order was retracted or superseded by a newer set under the same (to_target, standing_key); filtered from the standing unread branch so it greets no future session
+    wake       INTEGER NOT NULL DEFAULT 0,      -- break-glass: 1 = a broadcast that actively pushes (interrupts) every recipient now, not the polite next-turn default; explicit-only (see wake-discipline design)
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
     origin_project TEXT NOT NULL DEFAULT ''    -- sender's registered project at creation time ('' = unregistered sender); see store.migrate's backfill for pre-existing rows

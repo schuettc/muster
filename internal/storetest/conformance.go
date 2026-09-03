@@ -96,6 +96,7 @@ var cases = []conformanceCase{
 	{"UnreadCountRespectsWatermark", testUnreadWatermark},
 	{"BroadcastCountsAsUnread", testBroadcastUnread},
 	{"MarkReadUnknownAliasIsNoOp", testMarkReadUnknown},
+	{"StatusCountsPerAliasSideEffectFree", testStatusCounts},
 	{"InboxMatchesAgentRoleBroadcastAndOriginated", testInboxArms},
 	{"InboxIncludesOriginatedThreadsForUnregisteredAlias", testInboxOriginatedUnregistered},
 	{"UnreadCountOriginatorSeesPeerReply", testUnreadOriginatorSeesReply},
@@ -105,6 +106,23 @@ var cases = []conformanceCase{
 	{"InboxOrdersMostRecentlyUpdatedFirst", testInboxOrder},
 	{"ScopedBroadcastReachesItsProjectOnly", testScopedBroadcastProjectOnly},
 	{"ScopedBroadcastConcernsADepartedAgentsProject", testScopedBroadcastDeparted},
+
+	// Standing vs live broadcast.
+	{"NewSessionSkipsPlainBroadcastBacklog", testNewSessionSkipsBacklog},
+	{"NewSessionSeesStandingBroadcastOnceThenQuiet", testNewSessionStandingOnce},
+	{"StandingBroadcastRoundTrips", testStandingRoundTrips},
+	{"StandingBroadcastComposesWithProjectScope", testStandingScoped},
+	{"StandingRejectedOnNonBroadcastTarget", testStandingRejectedNonBroadcast},
+
+	// Standing orders (keyed, retractable).
+	{"StandingOrderSetIsListableAndGreetsNewSession", testStandingOrderSetListGreet},
+	{"StandingOrderSetReplacesByKey", testStandingOrderReplace},
+	{"StandingOrderSetReGreetsAnAlreadyReadSession", testStandingOrderReGreets},
+	{"StandingOrderRetractStopsGreetingAndDropsFromList", testStandingOrderRetract},
+	{"StandingOrderRetractSparesAnAlreadyReadSession", testStandingOrderRetractSparesRead},
+	{"StandingOrderSetRejectsEmptyKey", testStandingOrderEmptyKey},
+	{"StandingOrderListIgnoresAdHocStandingBroadcast", testStandingOrderListIgnoresAdHoc},
+	{"StandingOrderScopedToItsProject", testStandingOrderScoped},
 
 	// Session-scoped unread.
 	{"SessionUnreadCountsDistinctThreads", testSessionUnreadDistinct},
@@ -177,6 +195,7 @@ var cases = []conformanceCase{
 
 	// Journal.
 	{"AppendEventRoundTripsEveryField", testEventRoundTrip},
+	{"EventsJoinThreadToKindOriginAndWake", testEventJoinsThreadWakeOrigin},
 	{"MaxEventIDOnAnEmptyJournal", testMaxEventIDEmpty},
 	{"EventsBacklogIsNewestFirst", testEventsBacklog},
 	{"EventsFilterByAgent", testEventsByAgent},
@@ -975,6 +994,44 @@ func testBroadcastUnread(t *testing.T, s store.API) {
 	}
 }
 
+// testStatusCounts: StatusCounts reports per-alias unread + action_required
+// for every registered alias, and is side-effect-free — it moves no watermark,
+// so an agent's own unread is unchanged after the call.
+func testStatusCounts(t *testing.T, s store.API) {
+	mustRegister(t, s, store.Agent{Alias: "a"})
+	mustRegister(t, s, store.Agent{Alias: "b"})
+	// two unread for a: one action-requested, one fyi.
+	mustThread(t, s, store.Thread{Kind: "message", FromAgent: "sender", ToKind: "agent", ToTarget: "a", Intent: "action-requested"}, "do this")
+	mustThread(t, s, store.Thread{Kind: "message", FromAgent: "sender", ToKind: "agent", ToTarget: "a", Intent: "fyi"}, "note")
+
+	byAlias := func() map[string]store.AliasStatus {
+		st, err := s.StatusCounts()
+		if err != nil {
+			t.Fatalf("StatusCounts: %v", err)
+		}
+		m := map[string]store.AliasStatus{}
+		for _, r := range st {
+			m[r.Alias] = r
+		}
+		return m
+	}
+	m := byAlias()
+	if m["a"].Unread != 2 || m["a"].ActionRequired != 1 {
+		t.Fatalf("a status = %+v, want unread 2 / action 1", m["a"])
+	}
+	if m["b"].Unread != 0 || m["b"].ActionRequired != 0 {
+		t.Fatalf("b status = %+v, want 0/0", m["b"])
+	}
+	// Side-effect-free: a's own unread is unchanged after StatusCounts (no
+	// watermark moved), and a second call agrees.
+	if n, _ := s.UnreadCount("a"); n != 2 {
+		t.Fatalf("StatusCounts must not move a's watermark: UnreadCount=%d, want 2", n)
+	}
+	if m2 := byAlias(); m2["a"].Unread != 2 || m2["a"].ActionRequired != 1 {
+		t.Fatalf("second StatusCounts disagreed: %+v", m2["a"])
+	}
+}
+
 func testMarkReadUnknown(t *testing.T, s store.API) {
 	if err := s.MarkRead("nobody"); err != nil {
 		t.Fatalf("MarkRead on an unknown alias: %v", err)
@@ -1237,6 +1294,212 @@ func testScopedBroadcastDeparted(t *testing.T, s store.API) {
 	}
 	if len(in) != 1 {
 		t.Fatalf("departed ghost's inbox = %d threads, want 1", len(in))
+	}
+}
+
+// testNewSessionSkipsBacklog: a plain broadcast sent BEFORE an alias first
+// registers must not land as unread on it — a new session starts caught-up.
+func testNewSessionSkipsBacklog(t *testing.T, s store.API) {
+	mustThread(t, s, store.Thread{Kind: "message", FromAgent: "sender", ToKind: "broadcast"}, "old hold")
+	mustRegister(t, s, store.Agent{Alias: "newbie"})
+	if n, err := s.UnreadCount("newbie"); err != nil || n != 0 {
+		t.Fatalf("plain broadcast backlog leaked: unread=%d (%v), want 0", n, err)
+	}
+	// A plain broadcast sent AFTER register is still live for it.
+	mustThread(t, s, store.Thread{Kind: "message", FromAgent: "sender", ToKind: "broadcast"}, "live hold")
+	if n, err := s.UnreadCount("newbie"); err != nil || n != 1 {
+		t.Fatalf("live broadcast after register: unread=%d (%v), want 1", n, err)
+	}
+}
+
+// testNewSessionStandingOnce: a standing broadcast sent BEFORE an alias first
+// registers reaches it once; MarkRead quiets it; a later standing broadcast
+// reappears.
+func testNewSessionStandingOnce(t *testing.T, s store.API) {
+	mustThread(t, s, store.Thread{Kind: "message", FromAgent: "sender", ToKind: "broadcast", Standing: true}, "standing order")
+	mustRegister(t, s, store.Agent{Alias: "newbie"})
+	if n, err := s.UnreadCount("newbie"); err != nil || n != 1 {
+		t.Fatalf("standing broadcast should reach new session: unread=%d (%v), want 1", n, err)
+	}
+	if err := s.MarkRead("newbie"); err != nil {
+		t.Fatalf("MarkRead: %v", err)
+	}
+	if n, err := s.UnreadCount("newbie"); err != nil || n != 0 {
+		t.Fatalf("standing should be quiet after MarkRead: unread=%d (%v), want 0", n, err)
+	}
+	mustThread(t, s, store.Thread{Kind: "message", FromAgent: "sender", ToKind: "broadcast", Standing: true}, "second standing order")
+	if n, err := s.UnreadCount("newbie"); err != nil || n != 1 {
+		t.Fatalf("later standing broadcast should reappear: unread=%d (%v), want 1", n, err)
+	}
+}
+
+// testStandingRoundTrips: the standing flag survives write and read.
+func testStandingRoundTrips(t *testing.T, s store.API) {
+	id := mustThread(t, s, store.Thread{Kind: "message", FromAgent: "sender", ToKind: "broadcast", Standing: true}, "b")
+	th, _, err := s.GetThread(id)
+	if err != nil {
+		t.Fatalf("GetThread: %v", err)
+	}
+	if !th.Standing {
+		t.Fatal("GetThread lost Standing")
+	}
+}
+
+// testStandingScoped: a standing scoped broadcast reaches a new same-project
+// session and never an other-project one.
+func testStandingScoped(t *testing.T, s store.API) {
+	mustThread(t, s, store.Thread{Kind: "message", FromAgent: "sender", ToKind: "broadcast", ToTarget: "web", Standing: true}, "web only")
+	mustRegister(t, s, store.Agent{Alias: "in-web", Project: "web"})
+	mustRegister(t, s, store.Agent{Alias: "in-api", Project: "api"})
+	if n, err := s.UnreadCount("in-web"); err != nil || n != 1 {
+		t.Fatalf("same-project new session should see scoped standing: unread=%d (%v), want 1", n, err)
+	}
+	if n, err := s.UnreadCount("in-api"); err != nil || n != 0 {
+		t.Fatalf("other-project session must not see scoped standing: unread=%d (%v), want 0", n, err)
+	}
+}
+
+// testStandingRejectedNonBroadcast: standing is broadcast-only.
+func testStandingRejectedNonBroadcast(t *testing.T, s store.API) {
+	if _, err := s.CreateThread(store.Thread{Kind: "message", FromAgent: "sender", ToKind: "agent", ToTarget: "x", Standing: true}, "b"); err == nil {
+		t.Fatal("standing on a non-broadcast target must be rejected")
+	}
+}
+
+func testStandingOrderSetListGreet(t *testing.T, s store.API) {
+	if _, err := s.SetStandingOrder("web", "invariants", "author", "rebase before push"); err != nil {
+		t.Fatalf("SetStandingOrder: %v", err)
+	}
+	orders, err := s.ListStandingOrders("web")
+	if err != nil || len(orders) != 1 || orders[0].Key != "invariants" || orders[0].Body != "rebase before push" {
+		t.Fatalf("list = %+v (%v), want one invariants order", orders, err)
+	}
+	mustRegister(t, s, store.Agent{Alias: "newbie", Project: "web"})
+	if n, err := s.UnreadCount("newbie"); err != nil || n != 1 {
+		t.Fatalf("new session should be greeted: unread=%d (%v), want 1", n, err)
+	}
+}
+
+func testStandingOrderReplace(t *testing.T, s store.API) {
+	if _, err := s.SetStandingOrder("web", "invariants", "author", "v1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SetStandingOrder("web", "invariants", "author", "v2"); err != nil {
+		t.Fatal(err)
+	}
+	orders, _ := s.ListStandingOrders("web")
+	if len(orders) != 1 || orders[0].Body != "v2" {
+		t.Fatalf("replace should leave one order (v2), got %+v", orders)
+	}
+	mustRegister(t, s, store.Agent{Alias: "newbie", Project: "web"})
+	if n, _ := s.UnreadCount("newbie"); n != 1 {
+		t.Fatalf("new session should see only the current order: unread=%d, want 1", n)
+	}
+}
+
+// testStandingOrderReGreets: replacing an order under a key must re-greet a
+// session that already read the prior order — a mid-flight invariant fix
+// reaches RUNNING sessions, not only future ones. set creates a new standing
+// entry (id above the retracted one), so the read session's standing watermark
+// now sits below it and the updated order surfaces as unread — and ONLY the
+// updated order (the retracted prior is filtered).
+func testStandingOrderReGreets(t *testing.T, s store.API) {
+	if _, err := s.SetStandingOrder("web", "invariants", "author", "v1"); err != nil {
+		t.Fatal(err)
+	}
+	mustRegister(t, s, store.Agent{Alias: "running", Project: "web"})
+	if err := s.MarkRead("running"); err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := s.UnreadCount("running"); n != 0 {
+		t.Fatalf("after reading v1, unread should be 0, got %d", n)
+	}
+	if _, err := s.SetStandingOrder("web", "invariants", "author", "v2"); err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := s.UnreadCount("running"); n != 1 {
+		t.Fatalf("a replacement order must re-greet an already-read running session: unread=%d, want 1", n)
+	}
+	// And it surfaces the NEW order only: the running session's inbox shows the
+	// v2 order unread and the retracted v1 not unread.
+	in, err := s.Inbox("running")
+	if err != nil {
+		t.Fatal(err)
+	}
+	unreadBodies := map[string]bool{}
+	for _, th := range in {
+		if th.Unread > 0 {
+			_, entries, _ := s.GetThread(th.ID)
+			if len(entries) > 0 {
+				unreadBodies[entries[0].Body] = true
+			}
+		}
+	}
+	if len(unreadBodies) != 1 || !unreadBodies["v2"] {
+		t.Fatalf("running session must see only the v2 order unread, got %v", unreadBodies)
+	}
+}
+
+func testStandingOrderRetract(t *testing.T, s store.API) {
+	if _, err := s.SetStandingOrder("web", "invariants", "author", "rules"); err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := s.RetractStandingOrder("web", "invariants"); err != nil || !changed {
+		t.Fatalf("retract should change a row: changed=%v err=%v", changed, err)
+	}
+	if orders, _ := s.ListStandingOrders("web"); len(orders) != 0 {
+		t.Fatalf("retracted order must drop from list, got %+v", orders)
+	}
+	mustRegister(t, s, store.Agent{Alias: "newbie", Project: "web"})
+	if n, _ := s.UnreadCount("newbie"); n != 0 {
+		t.Fatalf("retracted order must not greet a new session: unread=%d, want 0", n)
+	}
+	if changed, _ := s.RetractStandingOrder("web", "invariants"); changed {
+		t.Fatal("second retract must be a no-op")
+	}
+}
+
+func testStandingOrderRetractSparesRead(t *testing.T, s store.API) {
+	if _, err := s.SetStandingOrder("web", "invariants", "author", "rules"); err != nil {
+		t.Fatal(err)
+	}
+	mustRegister(t, s, store.Agent{Alias: "seen", Project: "web"})
+	if err := s.MarkRead("seen"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RetractStandingOrder("web", "invariants"); err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := s.UnreadCount("seen"); n != 0 {
+		t.Fatalf("retract must not resurface for a session that read it: unread=%d, want 0", n)
+	}
+}
+
+func testStandingOrderEmptyKey(t *testing.T, s store.API) {
+	if _, err := s.SetStandingOrder("web", "", "author", "x"); err == nil {
+		t.Fatal("empty key must be rejected")
+	}
+}
+
+func testStandingOrderListIgnoresAdHoc(t *testing.T, s store.API) {
+	if _, err := s.CreateThread(store.Thread{Kind: "message", FromAgent: "a", ToKind: "broadcast", ToTarget: "web", Standing: true}, "ad-hoc"); err != nil {
+		t.Fatal(err)
+	}
+	if orders, _ := s.ListStandingOrders("web"); len(orders) != 0 {
+		t.Fatalf("ad-hoc standing broadcast must not be listed, got %+v", orders)
+	}
+}
+
+func testStandingOrderScoped(t *testing.T, s store.API) {
+	if _, err := s.SetStandingOrder("web", "invariants", "author", "web rules"); err != nil {
+		t.Fatal(err)
+	}
+	mustRegister(t, s, store.Agent{Alias: "in-api", Project: "api"})
+	if n, _ := s.UnreadCount("in-api"); n != 0 {
+		t.Fatalf("other-project session must not see a scoped order: unread=%d, want 0", n)
+	}
+	if orders, _ := s.ListStandingOrders("api"); len(orders) != 0 {
+		t.Fatalf("api has no orders, got %+v", orders)
 	}
 }
 
@@ -1891,6 +2154,48 @@ func testEventRoundTrip(t *testing.T, s store.API) {
 	}
 	if e.ID == 0 || e.TS == 0 {
 		t.Fatalf("id and ts must be stamped, got %+v", e)
+	}
+}
+
+// testEventJoinsThreadWakeOrigin: Events joins the event's thread for the
+// carrier's wake decision — ToKind, Origin (thread from_agent), and Wake
+// (broadcast break-glass) — and leaves them zero for a thread-less event.
+func testEventJoinsThreadWakeOrigin(t *testing.T, s store.API) {
+	id := mustThread(t, s, store.Thread{Kind: "message", FromAgent: "opener", ToKind: "broadcast", ToTarget: "web", Wake: true}, "hi")
+	if err := s.AppendEvent(store.Event{Kind: "send", Agent: "opener", Target: "broadcast:web", ThreadID: id}); err != nil {
+		t.Fatalf("AppendEvent send: %v", err)
+	}
+	if err := s.AppendEvent(store.Event{Kind: "reply", Agent: "peer", ThreadID: id}); err != nil {
+		t.Fatalf("AppendEvent reply: %v", err)
+	}
+	if err := s.AppendEvent(store.Event{Kind: "nudge", Agent: "x", Target: "y"}); err != nil {
+		t.Fatalf("AppendEvent nudge: %v", err)
+	}
+	evs, err := s.Events(store.EventQuery{Backlog: true, Limit: 10})
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	var sawSend, sawReply, sawNudge bool
+	for _, e := range evs {
+		switch e.Kind {
+		case "send", "reply":
+			if e.ToKind != "broadcast" || e.Origin != "opener" || !e.Wake {
+				t.Fatalf("%s event join = to_kind=%q origin=%q wake=%v, want broadcast/opener/true", e.Kind, e.ToKind, e.Origin, e.Wake)
+			}
+			if e.Kind == "send" {
+				sawSend = true
+			} else {
+				sawReply = true
+			}
+		case "nudge":
+			if e.ToKind != "" || e.Origin != "" || e.Wake {
+				t.Fatalf("thread-less event must zero the join, got to_kind=%q origin=%q wake=%v", e.ToKind, e.Origin, e.Wake)
+			}
+			sawNudge = true
+		}
+	}
+	if !sawSend || !sawReply || !sawNudge {
+		t.Fatalf("missing events: send=%v reply=%v nudge=%v", sawSend, sawReply, sawNudge)
 	}
 }
 

@@ -96,28 +96,32 @@ func threadKey(id int64) map[string]types.AttributeValue {
 // there would be up to 500 round trips per poll.
 func threadMetaItem(t store.Thread, threadID, firstEntryID, now int64) map[string]types.AttributeValue {
 	return map[string]types.AttributeValue{
-		"pk":             attrS(pkThread(threadID)),
-		"sk":             attrN(metaSK),
-		"id":             attrN(threadID),
-		"kind":           attrS(t.Kind),
-		"from_agent":     attrS(t.FromAgent),
-		"to_kind":        attrS(t.ToKind),
-		"to_target":      attrS(t.ToTarget),
-		"subject":        attrS(t.Subject),
-		"ref":            attrS(t.Ref),
-		"status":         attrS(t.Status),
-		"intent":         attrS(t.Intent), // RAW; effectiveIntent applies on read
-		"created_at":     attrN(now),
-		"updated_at":     attrN(now),
-		"origin_project": attrS(t.OriginProject),
-		"entry_count":    attrN(1),
-		"last_entry_id":  attrN(firstEntryID),
-		"last_from":      attrS(t.FromAgent),
-		"last_at":        attrN(now),
-		"gsi1pk":         attrS(rcpt(t.ToKind, t.ToTarget)),
-		"gsi1sk":         attrN(metaSK),
-		"gsi2pk":         attrS(threadsPartition),
-		"gsi2sk":         attrN(threadID),
+		"pk":                 attrS(pkThread(threadID)),
+		"sk":                 attrN(metaSK),
+		"id":                 attrN(threadID),
+		"kind":               attrS(t.Kind),
+		"from_agent":         attrS(t.FromAgent),
+		"to_kind":            attrS(t.ToKind),
+		"to_target":          attrS(t.ToTarget),
+		"subject":            attrS(t.Subject),
+		"ref":                attrS(t.Ref),
+		"status":             attrS(t.Status),
+		"intent":             attrS(t.Intent), // RAW; effectiveIntent applies on read
+		"standing":           attrBool(t.Standing),
+		"standing_key":       attrS(t.StandingKey),
+		"standing_retracted": attrBool(t.StandingRetracted),
+		"wake":               attrBool(t.Wake),
+		"created_at":         attrN(now),
+		"updated_at":         attrN(now),
+		"origin_project":     attrS(t.OriginProject),
+		"entry_count":        attrN(1),
+		"last_entry_id":      attrN(firstEntryID),
+		"last_from":          attrS(t.FromAgent),
+		"last_at":            attrN(now),
+		"gsi1pk":             attrS(rcpt(t.ToKind, t.ToTarget)),
+		"gsi1sk":             attrN(metaSK),
+		"gsi2pk":             attrS(threadsPartition),
+		"gsi2sk":             attrN(threadID),
 	}
 }
 
@@ -156,18 +160,22 @@ func entryItem(threadID, entryID int64, fromAgent, body, statusChange string, no
 func itemToThread(item map[string]types.AttributeValue) store.Thread {
 	kind := strAttr(item, "kind")
 	return store.Thread{
-		ID:            numAttr(item, "id"),
-		Kind:          kind,
-		FromAgent:     strAttr(item, "from_agent"),
-		ToKind:        strAttr(item, "to_kind"),
-		ToTarget:      strAttr(item, "to_target"),
-		Subject:       strAttr(item, "subject"),
-		Ref:           strAttr(item, "ref"),
-		Status:        strAttr(item, "status"),
-		Intent:        effectiveIntent(kind, strAttr(item, "intent")),
-		CreatedAt:     numAttr(item, "created_at"),
-		UpdatedAt:     numAttr(item, "updated_at"),
-		OriginProject: strAttr(item, "origin_project"),
+		ID:                numAttr(item, "id"),
+		Kind:              kind,
+		FromAgent:         strAttr(item, "from_agent"),
+		ToKind:            strAttr(item, "to_kind"),
+		ToTarget:          strAttr(item, "to_target"),
+		Subject:           strAttr(item, "subject"),
+		Ref:               strAttr(item, "ref"),
+		Status:            strAttr(item, "status"),
+		Intent:            effectiveIntent(kind, strAttr(item, "intent")),
+		Standing:          boolAttr(item, "standing"),
+		StandingKey:       strAttr(item, "standing_key"),
+		StandingRetracted: boolAttr(item, "standing_retracted"),
+		Wake:              boolAttr(item, "wake"),
+		CreatedAt:         numAttr(item, "created_at"),
+		UpdatedAt:         numAttr(item, "updated_at"),
+		OriginProject:     strAttr(item, "origin_project"),
 	}
 }
 
@@ -232,6 +240,9 @@ func (s *Store) queryAll(ctx context.Context, in *dynamodb.QueryInput) ([]map[st
 func (s *Store) CreateThread(t store.Thread, firstBody string) (int64, error) {
 	if !validIntent(t.Intent) {
 		return 0, fmt.Errorf("invalid intent %q", t.Intent)
+	}
+	if t.Standing && t.ToKind != "broadcast" {
+		return 0, fmt.Errorf("standing is broadcast-only, not %q", t.ToKind)
 	}
 	ctx := backgroundCtx()
 	now := clock.NowMillis()
@@ -690,15 +701,147 @@ func (s *Store) entriesAfter(ctx context.Context, parts []string, after int64) (
 //
 // Threads with no qualifying entry are absent from the result, so its length
 // is UnreadCount's answer.
-func unreadByThread(entries []store.Entry, concerning map[int64]bool, exclude map[string]bool, after int64) map[int64]int {
+func unreadByThread(entries []store.Entry, concerning, standing map[int64]bool, exclude map[string]bool, liveAfter, standingAfter int64) map[int64]int {
 	out := make(map[int64]int)
 	for _, e := range entries {
-		if e.ID <= after || !concerning[e.ThreadID] || exclude[e.FromAgent] {
+		if !concerning[e.ThreadID] || exclude[e.FromAgent] {
+			continue
+		}
+		after := liveAfter
+		if standing[e.ThreadID] {
+			after = standingAfter
+		}
+		if e.ID <= after {
 			continue
 		}
 		out[e.ThreadID]++
 	}
 	return out
+}
+
+// standingSet is the subset of thread ids marked standing, from the same
+// metadata items concerns() returned — so the unread branch can pick the
+// standing watermark for a standing broadcast and the live one for the rest.
+func standingSet(threads map[int64]map[string]types.AttributeValue) map[int64]bool {
+	out := make(map[int64]bool)
+	for id, item := range threads {
+		// A retracted standing order is filtered from the standing branch so it
+		// greets no future session (matches the SQLite standing_retracted=0
+		// guard); such an entry then matches neither unread branch.
+		if boolAttr(item, "standing") && !boolAttr(item, "standing_retracted") {
+			out[id] = true
+		}
+	}
+	return out
+}
+
+// retractOrders marks every live standing order under (project, key) retracted
+// and returns how many changed. Shared by SetStandingOrder (supersede prior)
+// and RetractStandingOrder. There is normally 0 or 1.
+func (s *Store) retractOrders(ctx context.Context, project, key string) (int, error) {
+	items, err := s.queryAll(ctx, &dynamodb.QueryInput{
+		TableName:              aws.String(s.table),
+		IndexName:              aws.String(gsi1Name),
+		KeyConditionExpression: aws.String("gsi1pk = :pk AND gsi1sk = :meta"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":pk": attrS(rcpt("broadcast", project)), ":meta": attrN(metaSK),
+		},
+	})
+	if err != nil {
+		return 0, fmt.Errorf("dynamostore: standing orders for %q: %w", project, err)
+	}
+	n := 0
+	for _, item := range items {
+		if !boolAttr(item, "standing") || boolAttr(item, "standing_retracted") || strAttr(item, "standing_key") != key {
+			continue
+		}
+		id := numAttr(item, "id")
+		if _, err := s.c.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+			TableName:                 aws.String(s.table),
+			Key:                       map[string]types.AttributeValue{"pk": attrS(pkThread(id)), "sk": attrN(metaSK)},
+			UpdateExpression:          aws.String("SET #r = :true"),
+			ExpressionAttributeNames:  map[string]string{"#r": "standing_retracted"},
+			ExpressionAttributeValues: map[string]types.AttributeValue{":true": attrBool(true)},
+		}); err != nil {
+			return n, fmt.Errorf("dynamostore: retract standing order %d: %w", id, err)
+		}
+		n++
+	}
+	return n, nil
+}
+
+// SetStandingOrder create-or-replaces the standing order under (project, key):
+// retract any prior live order, then create a new standing broadcast carrying
+// body. Mirrors the SQLite store (see its doc comment).
+func (s *Store) SetStandingOrder(project, key, from, body string) (int64, error) {
+	if project == "" {
+		return 0, fmt.Errorf("standing order requires a project")
+	}
+	if key == "" {
+		return 0, fmt.Errorf("standing order requires a key")
+	}
+	ctx := backgroundCtx()
+	if _, err := s.retractOrders(ctx, project, key); err != nil {
+		return 0, err
+	}
+	origin := ""
+	if a, ok, err := s.agentByAlias(ctx, from); err == nil && ok {
+		origin = a.Project
+	}
+	return s.CreateThread(store.Thread{
+		Kind: "message", FromAgent: from, ToKind: "broadcast", ToTarget: project,
+		Standing: true, StandingKey: key, OriginProject: origin,
+	}, body)
+}
+
+// RetractStandingOrder retracts the live order under (project, key); idempotent.
+func (s *Store) RetractStandingOrder(project, key string) (bool, error) {
+	n, err := s.retractOrders(backgroundCtx(), project, key)
+	return n > 0, err
+}
+
+// ListStandingOrders returns the live keyed standing orders for a project,
+// sorted by key; ad-hoc un-keyed standing broadcasts are excluded.
+func (s *Store) ListStandingOrders(project string) ([]store.StandingOrder, error) {
+	ctx := backgroundCtx()
+	items, err := s.queryAll(ctx, &dynamodb.QueryInput{
+		TableName:              aws.String(s.table),
+		IndexName:              aws.String(gsi1Name),
+		KeyConditionExpression: aws.String("gsi1pk = :pk AND gsi1sk = :meta"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":pk": attrS(rcpt("broadcast", project)), ":meta": attrN(metaSK),
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("dynamostore: list standing orders for %q: %w", project, err)
+	}
+	out := []store.StandingOrder{}
+	for _, item := range items {
+		if !boolAttr(item, "standing") || boolAttr(item, "standing_retracted") || strAttr(item, "standing_key") == "" {
+			continue
+		}
+		id := numAttr(item, "id")
+		body := ""
+		if _, entries, err := s.GetThread(id); err == nil && len(entries) > 0 {
+			body = entries[0].Body
+		}
+		out = append(out, store.StandingOrder{
+			Key: strAttr(item, "standing_key"), From: strAttr(item, "from_agent"),
+			ThreadID: id, CreatedAt: numAttr(item, "created_at"), Body: body,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Key < out[j].Key })
+	return out, nil
+}
+
+// unreadFloor is the lower of the two watermarks: entriesAfter must fetch from
+// here so a standing entry below the live watermark but above the (un-seeded,
+// lower) standing watermark is still considered.
+func unreadFloor(a store.Agent) int64 {
+	if a.LastReadStandingEntryID < a.LastReadEntryID {
+		return a.LastReadStandingEntryID
+	}
+	return a.LastReadEntryID
 }
 
 // unreadFor gathers everything Inbox and UnreadCount need, so the two cannot
@@ -722,11 +865,11 @@ func (s *Store) unreadFor(ctx context.Context, alias string) (map[int64]map[stri
 	if err != nil {
 		return nil, nil, err
 	}
-	entries, err := s.entriesAfter(ctx, parts, agent.LastReadEntryID)
+	entries, err := s.entriesAfter(ctx, parts, unreadFloor(agent))
 	if err != nil {
 		return nil, nil, err
 	}
-	return threads, unreadByThread(entries, idSet(threads), map[string]bool{alias: true}, agent.LastReadEntryID), nil
+	return threads, unreadByThread(entries, idSet(threads), standingSet(threads), map[string]bool{alias: true}, agent.LastReadEntryID, agent.LastReadStandingEntryID), nil
 }
 
 func idSet(threads map[int64]map[string]types.AttributeValue) map[int64]bool {
@@ -760,6 +903,33 @@ func (s *Store) Inbox(alias string) ([]store.Thread, error) {
 		out = append(out, t)
 	}
 	sortThreadsRecent(out)
+	return out, nil
+}
+
+// StatusCounts returns every registered alias's side-effect-free (unread,
+// action_required) counts — the DynamoDB mirror of the SQLite method. Pure
+// read: no MarkRead, no journaled peek. Reuses unreadFor per alias so the
+// counts match get_inbox exactly.
+func (s *Store) StatusCounts() ([]store.AliasStatus, error) {
+	ctx := backgroundCtx()
+	agents, err := s.ListAgents()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]store.AliasStatus, 0, len(agents))
+	for _, a := range agents {
+		threads, unread, err := s.unreadFor(ctx, a.Alias)
+		if err != nil {
+			return nil, err
+		}
+		action := 0
+		for id := range unread {
+			if effectiveIntent(strAttr(threads[id], "kind"), strAttr(threads[id], "intent")) == store.IntentAction {
+				action++
+			}
+		}
+		out = append(out, store.AliasStatus{Alias: a.Alias, Unread: len(unread), ActionRequired: action})
+	}
 	return out, nil
 }
 
@@ -823,11 +993,12 @@ func (s *Store) MarkRead(alias string) error {
 		TableName: aws.String(s.table),
 		Key:       agentKey(alias),
 		UpdateExpression: aws.String(
-			"SET #last_read_entry_id = :id, #last_read_at = :now"),
+			"SET #last_read_entry_id = :id, #last_read_standing_entry_id = :id, #last_read_at = :now"),
 		ConditionExpression: aws.String("attribute_exists(pk)"),
 		ExpressionAttributeNames: map[string]string{
-			"#last_read_entry_id": "last_read_entry_id",
-			"#last_read_at":       "last_read_at",
+			"#last_read_entry_id":          "last_read_entry_id",
+			"#last_read_standing_entry_id": "last_read_standing_entry_id",
+			"#last_read_at":                "last_read_at",
 		},
 		ExpressionAttributeValues: map[string]types.AttributeValue{
 			":id":  attrN(watermark),
@@ -928,11 +1099,11 @@ func (s *Store) SessionUnread(deviceID, socketPath, sessionID string, sessionCre
 		if err != nil {
 			return 0, 0, err
 		}
-		entries, err := s.entriesAfter(ctx, parts, a.LastReadEntryID)
+		entries, err := s.entriesAfter(ctx, parts, unreadFloor(a))
 		if err != nil {
 			return 0, 0, err
 		}
-		for id := range unreadByThread(entries, idSet(threads), aliases, a.LastReadEntryID) {
+		for id := range unreadByThread(entries, idSet(threads), standingSet(threads), aliases, a.LastReadEntryID, a.LastReadStandingEntryID) {
 			unread[id] = threads[id]
 		}
 	}

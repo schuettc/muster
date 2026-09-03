@@ -53,6 +53,50 @@ func TestSendMessageAndInbox(t *testing.T) {
 	}
 }
 
+// TestSendStandingBroadcastSurfacesStandingOnRead: a standing broadcast is
+// accepted via the MCP tool, and get_thread reports Standing=true so an agent
+// can tell a standing order from a transient one.
+func TestSendStandingBroadcastSurfacesStandingOnRead(t *testing.T) {
+	startTestDaemon(t)
+	if _, err := callDaemon("register_agent", map[string]any{
+		"alias": "backend", "model_type": "claude",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, sendOut, err := sendMessageHandler(context.Background(), nil, SendMessageIn{
+		From: "backend", ToKind: "broadcast", Standing: true,
+		Subject: "order", Body: "read CONTRACT.md before editing",
+	})
+	if err != nil || sendOut.ThreadID == 0 {
+		t.Fatalf("standing broadcast: err=%v out=%+v", err, sendOut)
+	}
+	_, thr, err := getThreadHandler(context.Background(), nil, GetThreadIn(sendOut))
+	if err != nil {
+		t.Fatalf("get_thread: %v", err)
+	}
+	if !thr.Thread.Standing {
+		t.Fatalf("ThreadView should surface Standing=true, got %+v", thr.Thread)
+	}
+}
+
+// TestSendStandingRejectedOnDirectedMessage: standing is broadcast-only, and
+// the MCP tool surfaces the daemon's rejection.
+func TestSendStandingRejectedOnDirectedMessage(t *testing.T) {
+	startTestDaemon(t)
+	if _, err := callDaemon("register_agent", map[string]any{"alias": "backend", "model_type": "claude"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := callDaemon("register_agent", map[string]any{"alias": "consumer", "model_type": "claude"}); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := sendMessageHandler(context.Background(), nil, SendMessageIn{
+		From: "backend", ToKind: "agent", ToTarget: "consumer", Standing: true, Body: "x",
+	})
+	if err == nil {
+		t.Fatal("standing on a directed message must be rejected")
+	}
+}
+
 // TestGetInboxSendsCallerProof covers the regression this task closes: an
 // MCP get_inbox must send the caller's tmux/harness proof so the daemon's
 // callerOwns check (spec 2026-08-21 §3.2, daemon commit 7f17f35) can move the

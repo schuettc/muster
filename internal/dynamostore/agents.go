@@ -112,7 +112,24 @@ func (s *Store) RegisterAgent(a store.Agent) error {
 	names["#registered_at"] = "registered_at"
 	values[":registered_at"] = attrN(now)
 
-	_, err := s.c.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+	// last_read_entry_id is seeded on FIRST insert to the highest entry id
+	// currently concerning this alias, so a brand-new session starts
+	// caught-up (plain broadcast is live-only) — the SQLite backend seeds the
+	// global MAX(entries.id); here readableThrough gives the concern-scoped
+	// equivalent, which is behaviourally identical for unread. if_not_exists
+	// preserves a returning alias's watermark, matching the SQLite upsert's
+	// untouched read-state. last_read_standing_entry_id is deliberately NOT
+	// seeded (absent reads as 0), so standing broadcasts replay to new
+	// sessions once.
+	seed, err := s.readableThrough(ctx, a, 0)
+	if err != nil {
+		return fmt.Errorf("dynamostore: register agent %q: seed watermark: %w", a.Alias, err)
+	}
+	expr += ", #last_read_entry_id = if_not_exists(#last_read_entry_id, :seed_watermark)"
+	names["#last_read_entry_id"] = "last_read_entry_id"
+	values[":seed_watermark"] = attrN(seed)
+
+	_, err = s.c.UpdateItem(ctx, &dynamodb.UpdateItemInput{
 		TableName:                 aws.String(s.table),
 		Key:                       agentKey(a.Alias),
 		UpdateExpression:          aws.String(expr),
@@ -823,26 +840,27 @@ func agentKey(alias string) map[string]types.AttributeValue {
 
 func itemToAgent(item map[string]types.AttributeValue) store.Agent {
 	return store.Agent{
-		Alias:            strAttr(item, "alias"),
-		Role:             strAttr(item, "role"),
-		ModelType:        strAttr(item, "model_type"),
-		SocketPath:       strAttr(item, "socket_path"),
-		PaneID:           strAttr(item, "pane_id"),
-		SessionName:      strAttr(item, "session_name"),
-		SessionID:        strAttr(item, "session_id"),
-		SessionCreated:   numAttr(item, "session_created"),
-		DeviceID:         strAttr(item, "device_id"),
-		DeviceName:       strAttr(item, "device_name"),
-		HarnessSessionID: strAttr(item, "harness_session_id"),
-		TranscriptPath:   strAttr(item, "transcript_path"),
-		Project:          strAttr(item, "project"),
-		Label:            strAttr(item, "label"),
-		LabelManual:      boolAttr(item, "label_manual"),
-		RegisteredAt:     numAttr(item, "registered_at"),
-		LastSeen:         numAttr(item, "last_seen"),
-		LastReadEntryID:  numAttr(item, "last_read_entry_id"),
-		Departed:         boolAttr(item, "departed"),
-		SupersededBy:     strAttr(item, "superseded_by"),
+		Alias:                   strAttr(item, "alias"),
+		Role:                    strAttr(item, "role"),
+		ModelType:               strAttr(item, "model_type"),
+		SocketPath:              strAttr(item, "socket_path"),
+		PaneID:                  strAttr(item, "pane_id"),
+		SessionName:             strAttr(item, "session_name"),
+		SessionID:               strAttr(item, "session_id"),
+		SessionCreated:          numAttr(item, "session_created"),
+		DeviceID:                strAttr(item, "device_id"),
+		DeviceName:              strAttr(item, "device_name"),
+		HarnessSessionID:        strAttr(item, "harness_session_id"),
+		TranscriptPath:          strAttr(item, "transcript_path"),
+		Project:                 strAttr(item, "project"),
+		Label:                   strAttr(item, "label"),
+		LabelManual:             boolAttr(item, "label_manual"),
+		RegisteredAt:            numAttr(item, "registered_at"),
+		LastSeen:                numAttr(item, "last_seen"),
+		LastReadEntryID:         numAttr(item, "last_read_entry_id"),
+		LastReadStandingEntryID: numAttr(item, "last_read_standing_entry_id"),
+		Departed:                boolAttr(item, "departed"),
+		SupersededBy:            strAttr(item, "superseded_by"),
 	}
 }
 

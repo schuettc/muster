@@ -68,6 +68,14 @@ type Agent struct {
 	// agent's inbox was read. Supersedes the wall-clock last_read_at for
 	// unread math; last_read_at is retained internally for display only.
 	LastReadEntryID int64 `json:"last_read_entry_id"`
+	// LastReadStandingEntryID is the entry-ID read watermark for STANDING
+	// broadcasts only. Unlike LastReadEntryID it is NOT seeded on first
+	// register (it stays 0), so a brand-new session sees every standing
+	// broadcast once regardless of when it was sent; MarkRead advances it
+	// alongside LastReadEntryID, so a standing order badges a session once
+	// then goes quiet. See RegisterAgent's seed and the standing branch in
+	// the unread predicate (Inbox/UnreadCount/SessionUnread).
+	LastReadStandingEntryID int64 `json:"last_read_standing_entry_id"`
 	// Departed is true once this agent has been deregistered (see
 	// Store.DepartAgent) — a tombstone, not a delete: identity, project,
 	// label, and read-state (LastReadEntryID/last_read_at) all survive.
@@ -108,9 +116,27 @@ type Thread struct {
 	// effectiveIntent in threads.go), never the raw stored value: one
 	// vocabulary everywhere a Thread is read, so an old task row (stored
 	// intent "") reads as action-requested consistently across all three.
-	Intent    string `json:"intent"`
-	CreatedAt int64  `json:"created_at"`
-	UpdatedAt int64  `json:"updated_at"`
+	Intent string `json:"intent"`
+	// Standing marks a broadcast that is replayed to sessions which register
+	// AFTER it was sent, once, until they read it (the standing watermark,
+	// not the seeded live watermark, decides its unread state). Only
+	// meaningful for to_kind='broadcast'; CreateThread rejects standing on
+	// any other target. A plain (non-standing) broadcast is live-only.
+	Standing bool `json:"standing"`
+	// StandingKey is the identity of a keyed standing ORDER within its project
+	// (empty on an ad-hoc append-only standing broadcast). StandingRetracted
+	// marks an order superseded (by a newer set under the same project+key) or
+	// explicitly retracted; a retracted order is filtered from the standing
+	// unread branch so it greets no future session. Both broadcast-only. See
+	// SetStandingOrder/RetractStandingOrder/ListStandingOrders.
+	StandingKey       string `json:"standing_key"`
+	StandingRetracted bool   `json:"standing_retracted"`
+	// Wake is the break-glass tag on a broadcast: true = actively push
+	// (interrupt) every recipient now, overriding the polite next-turn default.
+	// Explicit-only. See the wake-discipline design.
+	Wake      bool  `json:"wake"`
+	CreatedAt int64 `json:"created_at"`
+	UpdatedAt int64 `json:"updated_at"`
 	// OriginProject is the SENDER's registered project at thread-creation
 	// time (iteration-4 orphan-thread fix): the daemon resolves the sender's
 	// agent record when it calls CreateThread and stamps its Project here —
@@ -137,6 +163,28 @@ type Thread struct {
 	// drilling into get_thread. Threads()/GetThread/CreateThread leave it
 	// zero.
 	Unread int `json:"unread"`
+}
+
+// StandingOrder is one live (non-retracted) keyed standing order for a
+// project, as returned by ListStandingOrders — the audit/verify view the
+// onboarding skill reads. Body is the order's text (its thread's first entry).
+type StandingOrder struct {
+	Key       string `json:"key"`
+	Body      string `json:"body"`
+	From      string `json:"from"`
+	ThreadID  int64  `json:"thread_id"`
+	CreatedAt int64  `json:"created_at"`
+}
+
+// AliasStatus is one alias's side-effect-free inbox counts, as returned by
+// StatusCounts: the unread message/task count and the subset whose effective
+// intent is action-requested. It is a pure read — no watermark moves — so a
+// picker can poll it on a cadence. Field names are the stable wire contract
+// (proj's ✉ column reads them verbatim; see muster thread 354).
+type AliasStatus struct {
+	Alias          string `json:"alias"`
+	Unread         int    `json:"unread"`
+	ActionRequired int    `json:"action_required"`
 }
 
 // Entry is one append-only message within a thread.
@@ -169,6 +217,15 @@ type Event struct {
 	// threads.go), joined at query time exactly like Subject (empty for
 	// thread-less events). Never stored on the row.
 	Intent string `json:"intent"`
+	// ToKind, Origin, and Wake are joined from the event's thread at query time
+	// (all zero for thread-less events), never stored on the row — the fields
+	// the channel carrier's shouldPush needs: ToKind (the thread's to_kind)
+	// tells a direct thread from a fan-out, Origin (the thread's from_agent)
+	// identifies a reply going back to the opener, and Wake is the broadcast
+	// break-glass tag. See the wake-discipline design.
+	ToKind string `json:"to_kind"`
+	Origin string `json:"origin"`
+	Wake   bool   `json:"wake"`
 }
 
 // KVPair is a shared blackboard fact.

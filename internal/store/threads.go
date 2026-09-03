@@ -35,6 +35,9 @@ func (s *Store) CreateThread(t Thread, firstBody string) (int64, error) {
 	if !validIntent(t.Intent) {
 		return 0, fmt.Errorf("invalid intent %q", t.Intent)
 	}
+	if t.Standing && t.ToKind != "broadcast" {
+		return 0, fmt.Errorf("standing is broadcast-only, not %q", t.ToKind)
+	}
 	now := clock.NowMillis()
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -43,9 +46,9 @@ func (s *Store) CreateThread(t Thread, firstBody string) (int64, error) {
 	defer func() { _ = tx.Rollback() }()
 
 	res, err := tx.Exec(`
-INSERT INTO threads (kind, from_agent, to_kind, to_target, subject, ref, status, intent, created_at, updated_at, origin_project)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		t.Kind, t.FromAgent, t.ToKind, t.ToTarget, t.Subject, t.Ref, nullable(t.Status), t.Intent, now, now, t.OriginProject)
+INSERT INTO threads (kind, from_agent, to_kind, to_target, subject, ref, status, intent, standing, wake, created_at, updated_at, origin_project)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		t.Kind, t.FromAgent, t.ToKind, t.ToTarget, t.Subject, t.Ref, nullable(t.Status), t.Intent, t.Standing, t.Wake, now, now, t.OriginProject)
 	if err != nil {
 		return 0, err
 	}
@@ -59,6 +62,91 @@ VALUES (?, ?, ?, ?, ?)`, id, t.FromAgent, firstBody, nil, now); err != nil {
 		return 0, err
 	}
 	return id, tx.Commit()
+}
+
+// SetStandingOrder creates or REPLACES the standing order identified by
+// (project, key): in one transaction it retracts any prior live order under
+// that key, then creates a new standing broadcast (standing=1, standing_key=key,
+// scoped to project) carrying body. Idempotent by identity — re-running with
+// new text replaces the prior order rather than stacking, so a new session
+// sees exactly one order per key. origin_project is stamped from the sender's
+// registered project, matching CreateThread. Returns the new thread id.
+func (s *Store) SetStandingOrder(project, key, from, body string) (int64, error) {
+	if project == "" {
+		return 0, fmt.Errorf("standing order requires a project")
+	}
+	if key == "" {
+		return 0, fmt.Errorf("standing order requires a key")
+	}
+	now := clock.NowMillis()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.Exec(`UPDATE threads SET standing_retracted=1, updated_at=?
+ WHERE to_kind='broadcast' AND standing=1 AND standing_retracted=0 AND to_target=? AND standing_key=?`,
+		now, project, key); err != nil {
+		return 0, err
+	}
+	res, err := tx.Exec(`INSERT INTO threads
+ (kind, from_agent, to_kind, to_target, subject, ref, status, intent, standing, standing_key, standing_retracted, created_at, updated_at, origin_project)
+ VALUES ('message', ?, 'broadcast', ?, '', '', NULL, '', 1, ?, 0, ?, ?, COALESCE((SELECT project FROM agents WHERE alias=?), ''))`,
+		from, project, key, now, now, from)
+	if err != nil {
+		return 0, err
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return 0, err
+	}
+	if _, err := tx.Exec(`INSERT INTO entries (thread_id, from_agent, body, status_change, created_at) VALUES (?, ?, ?, NULL, ?)`,
+		id, from, body, now); err != nil {
+		return 0, err
+	}
+	return id, tx.Commit()
+}
+
+// RetractStandingOrder retracts the live standing order under (project, key) so
+// it greets no future session and drops out of ListStandingOrders. Idempotent:
+// an absent or already-retracted order changes nothing and returns (false, nil).
+func (s *Store) RetractStandingOrder(project, key string) (bool, error) {
+	now := clock.NowMillis()
+	res, err := s.db.Exec(`UPDATE threads SET standing_retracted=1, updated_at=?
+ WHERE to_kind='broadcast' AND standing=1 AND standing_retracted=0 AND to_target=? AND standing_key=?`,
+		now, project, key)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
+}
+
+// ListStandingOrders returns the live (non-retracted) keyed standing orders for
+// a project, each with its body (the order's first entry), sorted by key — the
+// audit/verify view the onboarding skill reads. Ad-hoc un-keyed standing
+// broadcasts (standing_key=”) are never returned.
+func (s *Store) ListStandingOrders(project string) ([]StandingOrder, error) {
+	rows, err := s.db.Query(`
+SELECT t.standing_key, t.from_agent, t.id, t.created_at,
+       (SELECT body FROM entries WHERE thread_id = t.id ORDER BY id LIMIT 1) AS body
+FROM threads t
+WHERE t.to_kind='broadcast' AND t.standing=1 AND t.standing_key != '' AND t.standing_retracted=0 AND t.to_target=?
+ORDER BY t.standing_key`, project)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	out := []StandingOrder{}
+	for rows.Next() {
+		var o StandingOrder
+		if err := rows.Scan(&o.Key, &o.From, &o.ThreadID, &o.CreatedAt, &o.Body); err != nil {
+			return nil, err
+		}
+		out = append(out, o)
+	}
+	return out, rows.Err()
 }
 
 // AppendEntry adds an entry and advances the thread's updated_at.
@@ -97,7 +185,7 @@ VALUES (?, ?, ?, ?, ?)`, threadID, fromAgent, body, nullable(statusChange), now)
 func scanThread(row interface{ Scan(...any) error }) (Thread, error) {
 	var t Thread
 	var status sql.NullString
-	err := row.Scan(&t.ID, &t.Kind, &t.FromAgent, &t.ToKind, &t.ToTarget, &t.Subject, &t.Ref, &status, &t.Intent, &t.CreatedAt, &t.UpdatedAt, &t.OriginProject)
+	err := row.Scan(&t.ID, &t.Kind, &t.FromAgent, &t.ToKind, &t.ToTarget, &t.Subject, &t.Ref, &status, &t.Intent, &t.Standing, &t.Wake, &t.CreatedAt, &t.UpdatedAt, &t.OriginProject)
 	if status.Valid {
 		t.Status = status.String
 	}
@@ -111,7 +199,7 @@ func scanThread(row interface{ Scan(...any) error }) (Thread, error) {
 // they compute eff_intent inside their own "recent" CTE instead — but all
 // three agree on the same effectiveIntent fragment (models.go, spec §2
 // ledger note).
-const threadColsEffectiveIntent = `id, kind, from_agent, to_kind, to_target, subject, ref, status, ` + effectiveIntent + ` AS intent, created_at, updated_at, origin_project`
+const threadColsEffectiveIntent = `id, kind, from_agent, to_kind, to_target, subject, ref, status, ` + effectiveIntent + ` AS intent, standing, wake, created_at, updated_at, origin_project`
 
 // effectiveIntent is the ONE canonical SQL fragment for a thread's operative
 // intent (spec §2): a task is a request for action, including every
@@ -229,18 +317,19 @@ WITH recent AS (
 unread AS (
     SELECT e.thread_id, COUNT(*) AS n
     FROM entries e
-    WHERE e.thread_id IN (SELECT id FROM recent)
-      AND e.id > COALESCE((SELECT last_read_entry_id FROM agents WHERE alias=?), 0)
+    JOIN recent r ON r.id = e.thread_id
+    WHERE ((r.standing = 1 AND r.standing_retracted = 0 AND e.id > COALESCE((SELECT last_read_standing_entry_id FROM agents WHERE alias=?), 0))
+        OR (r.standing = 0 AND e.id > COALESCE((SELECT last_read_entry_id FROM agents WHERE alias=?), 0)))
       AND e.from_agent != ?
     GROUP BY e.thread_id
 )
 SELECT recent.id, recent.kind, recent.from_agent, recent.to_kind, recent.to_target,
-       recent.subject, recent.ref, recent.status, recent.eff_intent,
+       recent.subject, recent.ref, recent.status, recent.eff_intent, recent.standing, recent.wake,
        recent.created_at, recent.updated_at, recent.origin_project,
        le.from_agent, le.created_at, last.n, COALESCE(unread.n, 0)
 FROM recent`+threadLastEntryJoin+`
 LEFT JOIN unread ON unread.thread_id = recent.id
-ORDER BY recent.updated_at DESC`, alias, alias, alias, alias, alias, alias)
+ORDER BY recent.updated_at DESC`, alias, alias, alias, alias, alias, alias, alias)
 	if err != nil {
 		return nil, err
 	}
@@ -250,7 +339,7 @@ ORDER BY recent.updated_at DESC`, alias, alias, alias, alias, alias, alias)
 		var t Thread
 		var status sql.NullString
 		if err := rows.Scan(&t.ID, &t.Kind, &t.FromAgent, &t.ToKind, &t.ToTarget,
-			&t.Subject, &t.Ref, &status, &t.Intent,
+			&t.Subject, &t.Ref, &status, &t.Intent, &t.Standing, &t.Wake,
 			&t.CreatedAt, &t.UpdatedAt, &t.OriginProject,
 			&t.LastFrom, &t.LastAt, &t.EntryCount, &t.Unread); err != nil {
 			return nil, err
@@ -295,7 +384,7 @@ WITH recent AS (
     LIMIT ?
 ),`+threadLastEntryCTE+`
 SELECT recent.id, recent.kind, recent.from_agent, recent.to_kind, recent.to_target,
-       recent.subject, recent.ref, recent.status, recent.eff_intent,
+       recent.subject, recent.ref, recent.status, recent.eff_intent, recent.standing, recent.wake,
        recent.created_at, recent.updated_at, recent.origin_project,
        le.from_agent, le.created_at, last.n
 FROM recent`+threadLastEntryJoin+`
@@ -309,7 +398,7 @@ ORDER BY recent.updated_at DESC, recent.id DESC`, limit)
 		var t Thread
 		var status sql.NullString
 		if err := rows.Scan(&t.ID, &t.Kind, &t.FromAgent, &t.ToKind, &t.ToTarget,
-			&t.Subject, &t.Ref, &status, &t.Intent,
+			&t.Subject, &t.Ref, &status, &t.Intent, &t.Standing, &t.Wake,
 			&t.CreatedAt, &t.UpdatedAt, &t.OriginProject,
 			&t.LastFrom, &t.LastAt, &t.EntryCount); err != nil {
 			return nil, err

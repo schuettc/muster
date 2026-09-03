@@ -34,6 +34,7 @@ var writeOps = map[string]bool{
 	"register_agent": true, "deregister_agent": true, "purge_agent": true,
 	"send_message": true, "task_create": true, "reply": true,
 	"task_claim": true, "task_transition": true,
+	"standing_set": true, "standing_retract": true,
 	"kv_set": true, "log_event": true, "set_label": true,
 	"prune_events": true, "get_inbox": true,
 	// become is a CAS (it refuses an existing target), so it needs a key for
@@ -70,6 +71,11 @@ var badgeOps = map[string]bool{
 	"register_agent": true, "deregister_agent": true, "purge_agent": true,
 	"send_message": true, "task_create": true, "reply": true,
 	"task_claim": true, "task_transition": true, "get_inbox": true,
+	// standing_set calls notifyForThread (the project's live sessions get the
+	// order now, exactly like a scoped standing broadcast). standing_retract is
+	// absent on purpose: it reaches no badge sink — a live session's stale count
+	// recomputes on its next natural poll/get_inbox.
+	"standing_set": true,
 	// become calls reconcileBadge: the claimed identity inherits the seed's
 	// waiting mail, so the badge on its session has to be recomputed. Without
 	// this, a claim in remote mode would leave the badge showing the pre-claim

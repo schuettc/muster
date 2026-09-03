@@ -22,6 +22,7 @@ func Run(ctx context.Context) error {
 func registerAll(srv *mcp.Server) {
 	registerRegistryTools(srv)
 	registerMessageTools(srv)
+	registerStandingTools(srv)
 	registerTaskTools(srv)
 	registerKVTools(srv)
 }

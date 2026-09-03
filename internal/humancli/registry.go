@@ -91,7 +91,7 @@ func init() {
 	Registry = []Command{
 		{
 			Name:     "send",
-			Synopsis: `send <target> "body" [--from <alias>] [--subject <s>] [--ref <r>] [--role] [--broadcast [--project <p>]] [--intent fyi|reply-requested|action-requested]`,
+			Synopsis: `send <target> "body" [--from <alias>] [--subject <s>] [--ref <r>] [--role] [--broadcast [--project <p>] [--standing] [--wake]] [--intent fyi|reply-requested|action-requested]`,
 			Summary:  "Send a message to an agent, role, or everyone.",
 			Help: `target is an alias, a label, or a "project:label" pair, resolved the same
 way for every muster surface (send, nudge, inbox, tasks). --role treats
@@ -99,7 +99,14 @@ target as a role name instead of an agent; --broadcast ignores target and
 sends to every registered agent (target is then omitted: 'muster send
 --broadcast "body"'). With --project, the broadcast reaches only agents
 registered under that exact project (the daemon rejects unknown projects and
-lists the known ones). --intent tags the message for the recipient's
+lists the known ones). A plain broadcast is live-only: it reaches sessions
+live now and is invisible to sessions that start later. --standing (broadcast
+only) also reaches sessions that start later, once, until they read it — use
+it for durable standing orders, not transient holds. A broadcast lands
+politely by default — it sets each recipient's mailbox badge and is picked up
+on their next turn, never interrupting them all at once. --wake is break-glass
+(broadcast only): actively interrupt every recipient now; use sparingly, for
+genuinely urgent announcements. --intent tags the message for the recipient's
 inbox/hook rendering: fyi (default, no action implied), reply-requested, or
 action-requested.`,
 			Group:    GroupTalk,
@@ -134,6 +141,46 @@ when a session has no muster MCP connection.`,
 			Group:    GroupTalk,
 			NewFlags: newReplyFlags,
 			Run:      cmdReply,
+		},
+		{
+			Name:     "standing",
+			Synopsis: `standing <project> [--json] | standing set <project> [--key <k>] "body" [--from <alias>] | standing retract <project> [--key <k>]`,
+			Summary:  "Manage a project's durable standing orders (its invariants).",
+			Help: `A standing order is a project's durable instruction that every session should
+read on start (e.g. its invariants / golden rules). Unlike an ad-hoc
+'send --broadcast --standing' it is KEYED and REPLACEABLE, so it stays a single
+current statement rather than a growing pile.
+
+  standing <project> [--json]              list the project's live orders
+  standing set <project> [--key k] "body"  create or REPLACE the order under a key
+  standing retract <project> [--key k]     retract it
+
+--key defaults to 'invariants' (the project's single set of rules). set is
+idempotent by (project, key) and RE-GREETS every session with the updated text —
+running sessions and future ones alike — until each reads it, so a mid-flight
+correction reaches everyone. retract stops it greeting new sessions and drops it
+from the list; a session that already read it is unaffected. --json on the list
+form is the audit/verify seam.`,
+			Group:    GroupTalk,
+			NewFlags: newStandingFlags,
+			Run:      cmdStanding,
+		},
+		{
+			Name:     "status",
+			Synopsis: "status [--json] [--alias <alias>]",
+			Summary:  "Side-effect-free per-alias inbox counts (unread, action_required).",
+			Help: `Prints every registered alias's unread count and the subset whose intent is
+action-requested. It is a PURE READ — it moves no read watermark and journals
+no peek — so a picker or attention column can poll it on a cadence without
+disturbing anyone's inbox state (unlike 'inbox', which marks read for the
+owning session).
+
+--json emits a top-level JSON array of {alias, unread, action_required}; the
+default is a plain 'unread action alias' table. --alias restricts to one
+alias. Departed aliases are included — their mail still waits.`,
+			Group:    GroupWatch,
+			NewFlags: newStatusFlags,
+			Run:      cmdStatus,
 		},
 		{
 			Name:     "agents",
@@ -414,6 +461,19 @@ agent to drain it. model defaults to "claude" when omitted. Never blocks a
 session: every internal error is swallowed.`,
 			Group: GroupPlumbing,
 			Run:   func(args []string, out io.Writer) error { return cmdHook(args, os.Stdin, out) },
+		},
+		{
+			Name:     "update",
+			Synopsis: "update",
+			Summary:  "Update muster to the latest release.",
+			Help: `Self-updates the running muster binary in place from the family download
+standard (muster.tools/dl): fetches the latest published release for this
+OS/arch, verifies its checksum, and atomically replaces this executable.
+Prints "muster is already the latest" and does nothing when the running
+version is current. Shared with the rest of the .tools family via
+tools-common, so every family binary self-updates the same way.`,
+			Group: GroupPlumbing,
+			Run:   cmdUpdate,
 		},
 		{
 			Name:     "debug",

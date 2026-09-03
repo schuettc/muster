@@ -82,7 +82,8 @@ func (s *Store) Events(q EventQuery) ([]Event, error) {
 SELECT events.id, events.ts, events.kind, events.agent, events.target,
        events.thread_id, events.count, events.detail,
        COALESCE(threads.subject, ''),
-       `+effectiveIntent+` AS intent
+       `+effectiveIntent+` AS intent,
+       COALESCE(threads.to_kind, ''), COALESCE(threads.from_agent, ''), COALESCE(threads.wake, 0)
 FROM events LEFT JOIN threads ON threads.id = events.thread_id
 WHERE `+strings.Join(where, " AND ")+`
 ORDER BY `+order+` LIMIT ?`, args...)
@@ -93,7 +94,7 @@ ORDER BY `+order+` LIMIT ?`, args...)
 	var out []Event
 	for rows.Next() {
 		var e Event
-		if err := rows.Scan(&e.ID, &e.TS, &e.Kind, &e.Agent, &e.Target, &e.ThreadID, &e.Count, &e.Detail, &e.Subject, &e.Intent); err != nil {
+		if err := rows.Scan(&e.ID, &e.TS, &e.Kind, &e.Agent, &e.Target, &e.ThreadID, &e.Count, &e.Detail, &e.Subject, &e.Intent, &e.ToKind, &e.Origin, &e.Wake); err != nil {
 			return nil, err
 		}
 		out = append(out, e)
