@@ -102,7 +102,7 @@ func sendMessageHandler(_ context.Context, _ *mcp.CallToolRequest, in SendMessag
 			who = strings.Join(gate.Recipients, ", ")
 		}
 		return nil, ThreadIDOut{}, fmt.Errorf(
-			"broadcast NOT sent — confirm required. It would reach %d agent(s) in %s: %s. Re-send the identical broadcast with confirm=true to fan out.",
+			"broadcast not sent, confirm required: it would reach %d agent(s) in %s: %s — re-send the identical broadcast with confirm=true to fan out",
 			gate.RecipientCount, scope, who)
 	}
 	var out ThreadIDOut
