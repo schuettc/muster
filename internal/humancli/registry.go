@@ -91,7 +91,7 @@ func init() {
 	Registry = []Command{
 		{
 			Name:     "send",
-			Synopsis: `send <target> "body" [--from <alias>] [--subject <s>] [--ref <r>] [--role] [--broadcast [--project <p>] [--standing] [--wake]] [--intent fyi|reply-requested|action-requested]`,
+			Synopsis: `send <target> "body" [--from <alias>] [--subject <s>] [--ref <r>] [--role] [--broadcast [--project <p>] [--standing] [--wake] [--yes]] [--intent fyi|reply-requested|action-requested]`,
 			Summary:  "Send a message to an agent, role, or everyone.",
 			Help: `target is an alias, a label, or a "project:label" pair, resolved the same
 way for every muster surface (send, nudge, inbox, tasks). --role treats
@@ -104,9 +104,12 @@ live now and is invisible to sessions that start later. --standing (broadcast
 only) also reaches sessions that start later, once, until they read it — use
 it for durable standing orders, not transient holds. A broadcast lands
 politely by default — it sets each recipient's mailbox badge and is picked up
-on their next turn, never interrupting them all at once. --wake is break-glass
-(broadcast only): actively interrupt every recipient now; use sparingly, for
-genuinely urgent announcements. --intent tags the message for the recipient's
+on their next turn, never interrupting them all at once. A broadcast is also
+hard-gated: it prints its blast radius (how many agents, which ones) and asks
+to confirm before sending, so a reflexive broadcast can't storm every session;
+--yes skips the prompt (required when there's no terminal to prompt on).
+--wake is break-glass (broadcast only): actively interrupt every recipient
+now; use sparingly, for genuinely urgent announcements. --intent tags the message for the recipient's
 inbox/hook rendering: fyi (default, no action implied), reply-requested, or
 action-requested.`,
 			Group:    GroupTalk,

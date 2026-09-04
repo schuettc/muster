@@ -674,6 +674,17 @@ func (d *Daemon) pushAgentBadge(socketPath, sessionID string, aliases []string) 
 // notifyForThread flags every SESSION affected by activity on threadID — the
 // thread's originator plus its recipients (agent/role/broadcast), minus the
 // actor's entire session — coalescing sibling aliases of one (socket_path,
+//
+// initial says this is the thread's CREATION (send_message/task_create), the
+// one moment a role/broadcast is meant to reach its whole membership. Every
+// later touch — a reply, a task claim/transition — passes initial=false, and
+// on a role/broadcast thread wakes only the originator, never the whole group
+// again: a group of N members each replying once would otherwise fan out
+// N×(N-1) wakes (the reply storm). Peers still SEE each other's replies on
+// their next inbox check; they just aren't woken for them. A direct (agent)
+// thread is unaffected — its two participants always wake each other, which is
+// how a back-and-forth stays live.
+//
 // session_id) tuple into a single recompute/notify/journal (spec §3: no
 // duplicate lit rows for sibling aliases sharing a session). Agents with no
 // tmux identity (empty socket or session) can never carry a tmux badge, so
@@ -688,7 +699,7 @@ func (d *Daemon) pushAgentBadge(socketPath, sessionID string, aliases []string) 
 // notifier and this needs the device dimension every other session-scoped
 // surface now carries (store.API), or two machines' sessions coalesce into one
 // group and one of them silently never gets its badge.
-func (d *Daemon) notifyForThread(threadID int64, actor string) {
+func (d *Daemon) notifyForThread(threadID int64, actor string, initial bool) {
 	if d.n == nil {
 		return
 	}
@@ -705,19 +716,25 @@ func (d *Daemon) notifyForThread(threadID int64, actor string) {
 		byAlias[a.Alias] = a
 	}
 	recipients := map[string]struct{}{th.FromAgent: {}}
-	switch th.ToKind {
-	case "agent":
-		recipients[th.ToTarget] = struct{}{}
-	case "role":
-		for _, a := range agents {
-			if a.Role == th.ToTarget && th.ToTarget != "" {
-				recipients[a.Alias] = struct{}{}
+	// A follow-up on a role/broadcast thread wakes the originator only (the
+	// recipients map already holds th.FromAgent); the group expansion below is
+	// the creation-time fan-out and a direct thread's two-party wake, both of
+	// which still run.
+	if initial || th.ToKind == "agent" {
+		switch th.ToKind {
+		case "agent":
+			recipients[th.ToTarget] = struct{}{}
+		case "role":
+			for _, a := range agents {
+				if a.Role == th.ToTarget && th.ToTarget != "" {
+					recipients[a.Alias] = struct{}{}
+				}
 			}
-		}
-	case "broadcast":
-		for _, a := range agents {
-			if th.ToTarget == "" || a.Project == th.ToTarget {
-				recipients[a.Alias] = struct{}{}
+		case "broadcast":
+			for _, a := range agents {
+				if th.ToTarget == "" || a.Project == th.ToTarget {
+					recipients[a.Alias] = struct{}{}
+				}
 			}
 		}
 	}
@@ -859,6 +876,30 @@ func (d *Daemon) validateBroadcastTarget(project string) error {
 	return fmt.Errorf("no registered agents in project %q (known projects: %s)", project, strings.Join(names, ", "))
 }
 
+// broadcastRecipientAliases is the blast-radius preview behind the confirm
+// gate: the live (non-departed) agents a broadcast to project would fan out
+// to — empty project meaning the whole bus — minus the sender, alias-sorted
+// for a stable prompt. It mirrors notifyForThread's broadcast expansion, but
+// answers "who would this wake?" for a human or agent about to confirm,
+// rather than writing any badge.
+func (d *Daemon) broadcastRecipientAliases(project, sender string) []string {
+	agents, err := d.s.ListAgents()
+	if err != nil {
+		return nil
+	}
+	var aliases []string
+	for _, ag := range agents {
+		if ag.Departed || ag.Alias == sender {
+			continue
+		}
+		if project == "" || ag.Project == project {
+			aliases = append(aliases, ag.Alias)
+		}
+	}
+	sort.Strings(aliases)
+	return aliases
+}
+
 // targetOf renders a thread address as a journal target: 'broadcast' or
 // '<to_kind>:<to_target>'. toTarget is the (possibly daemon-resolved) target
 // actually stored on the thread, not necessarily the raw request arg — so a
@@ -911,6 +952,20 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 			if err := d.validateBroadcastTarget(toTarget); err != nil {
 				return fail(err)
 			}
+			// Hard gate against accidental fan-out: a broadcast is refused
+			// until the caller has SEEN its blast radius and re-sent with
+			// confirm=true. The first, unconfirmed call creates nothing and
+			// answers with the recipient roster so the caller (or the CLI
+			// prompt) knows exactly who a confirm would wake.
+			if !boolArg(a, "confirm") {
+				recipients := d.broadcastRecipientAliases(toTarget, from)
+				return ok(map[string]any{
+					"confirm_required": true,
+					"recipient_count":  len(recipients),
+					"recipients":       recipients,
+					"to_target":        toTarget,
+				})
+			}
 		} else if standing {
 			return fail(fmt.Errorf("standing is broadcast-only"))
 		}
@@ -924,7 +979,7 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 			return fail(err)
 		}
 		d.logEvent(store.Event{Kind: "send", Agent: from, Target: targetOf(toKind, toTarget), ThreadID: id, Detail: str(a, "subject")})
-		d.notifyForThread(id, from)
+		d.notifyForThread(id, from, true)
 		return ok(map[string]any{"thread_id": id})
 	case "task_create":
 		from := str(a, "from")
@@ -950,7 +1005,7 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 			return fail(err)
 		}
 		d.logEvent(store.Event{Kind: "task", Agent: from, Target: targetOf(toKind, toTarget), ThreadID: id, Detail: str(a, "subject")})
-		d.notifyForThread(id, from)
+		d.notifyForThread(id, from, true)
 		return ok(map[string]any{"thread_id": id})
 	case "standing_set":
 		from := str(a, "from")
@@ -964,7 +1019,7 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 			return fail(err)
 		}
 		d.logEvent(store.Event{Kind: "send", Agent: from, Target: targetOf("broadcast", project), ThreadID: id, Detail: "standing order: " + key})
-		d.notifyForThread(id, from)
+		d.notifyForThread(id, from, true)
 		return ok(map[string]any{"thread_id": id})
 	case "standing_retract":
 		from := str(a, "from")
@@ -997,7 +1052,7 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 			return fail(err)
 		}
 		d.logEvent(store.Event{Kind: "claim", Agent: by, ThreadID: i64(a, "thread_id")})
-		d.notifyForThread(i64(a, "thread_id"), by)
+		d.notifyForThread(i64(a, "thread_id"), by, false)
 		return ok(nil)
 	case "task_transition":
 		by, err := d.requireKnownAlias("by", str(a, "by"))
@@ -1008,7 +1063,7 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 			return fail(err)
 		}
 		d.logEvent(store.Event{Kind: "transition", Agent: by, ThreadID: i64(a, "thread_id"), Detail: str(a, "status")})
-		d.notifyForThread(i64(a, "thread_id"), by)
+		d.notifyForThread(i64(a, "thread_id"), by, false)
 		return ok(nil)
 	case "reply":
 		id, err := d.s.AppendEntry(i64(a, "thread_id"), str(a, "from"), str(a, "body"), "")
@@ -1022,7 +1077,7 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 		// breaks the ack-loop (each closing ack waking the peer into one more
 		// closing ack).
 		if !boolArg(a, "fyi") {
-			d.notifyForThread(i64(a, "thread_id"), str(a, "from"))
+			d.notifyForThread(i64(a, "thread_id"), str(a, "from"), false)
 		}
 		return ok(map[string]any{"entry_id": id})
 	case "get_inbox":

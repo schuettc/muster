@@ -85,7 +85,7 @@ func TestScopedBroadcastNotifiesOnlyProjectSessions(t *testing.T) {
 	call(t, sock, "register_agent", map[string]any{"alias": "api1", "project": "api", "socket_path": "/s", "session_id": "$3", "session_created": 100})
 
 	call(t, sock, "send_message", map[string]any{
-		"from": "web1", "to_kind": "broadcast", "to_target": "web", "subject": "s", "body": "x",
+		"from": "web1", "to_kind": "broadcast", "to_target": "web", "subject": "s", "body": "x", "confirm": true,
 	})
 	got := n.snap(&n.notified)
 	if len(got) != 1 || got[0] != "$2" {

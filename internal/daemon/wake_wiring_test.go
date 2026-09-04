@@ -423,7 +423,7 @@ func TestNotifyCoalescesSiblingAliases(t *testing.T) {
 	call(t, sock, "register_agent", map[string]any{"alias": "sess-name", "role": "peer", "model_type": "claude", "socket_path": "/s", "session_id": "$9", "session_created": 100})
 	call(t, sock, "register_agent", map[string]any{"alias": "chosen", "role": "peer", "model_type": "claude", "socket_path": "/s", "session_id": "$9", "session_created": 100})
 
-	call(t, sock, "send_message", map[string]any{"from": "operator", "to_kind": "broadcast", "subject": "s", "body": "b"})
+	call(t, sock, "send_message", map[string]any{"from": "operator", "to_kind": "broadcast", "subject": "s", "body": "b", "confirm": true})
 
 	notified := n.snap(&n.notified)
 	counts := countsSnap(n)
