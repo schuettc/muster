@@ -128,7 +128,7 @@ func TestNotifyBadgeIgnoresGhostIncarnationOrdering(t *testing.T) {
 		"alias": "peer", "socket_path": "/p", "session_id": "$2", "session_created": 300,
 	})
 
-	call(t, sock, "send_message", map[string]any{"from": "peer", "to_kind": "broadcast", "subject": "s", "body": "for everyone"})
+	call(t, sock, "send_message", map[string]any{"from": "peer", "to_kind": "broadcast", "subject": "s", "body": "for everyone", "confirm": true})
 
 	got := lastNotifierCallFor(n.snapLog(), "$1")
 	if got == nil || got.kind != "Notify" || got.count != 1 {

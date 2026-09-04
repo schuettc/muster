@@ -3,11 +3,13 @@
 package humancli
 
 import (
+	"bufio"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"os"
 	"sort"
 	"strings"
 	"text/tabwriter"
@@ -342,6 +344,7 @@ func validateIntent(intent string) error {
 type sendFlagVals struct {
 	from, subject, ref, intent, project *string
 	role, broadcast, standing, wake     *bool
+	yes                                 *bool
 }
 
 // newSendFlagsWithVals declares send's flags and returns both the FlagSet
@@ -361,6 +364,7 @@ func newSendFlagsWithVals() (*flag.FlagSet, sendFlagVals) {
 	v.standing = fs.Bool("standing", false, "with --broadcast: also reach sessions that start later, until they read it (standing orders)")
 	v.wake = fs.Bool("wake", false, "with --broadcast: BREAK-GLASS — actively interrupt every recipient now instead of the polite next-turn default (use sparingly)")
 	v.intent = fs.String("intent", "", "message intent: fyi, reply-requested, or action-requested")
+	v.yes = fs.Bool("yes", false, "with --broadcast: skip the blast-radius confirmation prompt (answer yes)")
 	return fs, v
 }
 
@@ -394,6 +398,9 @@ func cmdSend(args []string, out io.Writer) error {
 	}
 	if *v.wake && !*v.broadcast {
 		return fmt.Errorf("--wake requires --broadcast (a direct message already delivers promptly)")
+	}
+	if *v.yes && !*v.broadcast {
+		return fmt.Errorf("--yes requires --broadcast (only a broadcast asks to confirm its blast radius)")
 	}
 	toKind, toTarget := "agent", ""
 	switch {
@@ -429,27 +436,94 @@ func cmdSend(args []string, out io.Writer) error {
 	// either mis-attributes the thread to an unrelated foreign agent of that
 	// name or, with none, an unresolvable orphan FromAgent.
 	fromAlias := expandAlias(*v.from, rosterAliasExists())
-	raw, err := callData("send_message", map[string]any{
+	sendArgs := map[string]any{
 		"from": fromAlias, "to_kind": toKind, "to_target": toTarget,
 		"subject": *v.subject, "ref": *v.ref, "body": body, "intent": *v.intent,
-		"standing": *v.standing, "wake": *v.wake,
-	})
+		"standing": *v.standing, "wake": *v.wake, "confirm": *v.broadcast && *v.yes,
+	}
+	raw, err := callData("send_message", sendArgs)
 	if err != nil {
 		return err
 	}
 	var res struct {
-		ThreadID int64 `json:"thread_id"`
+		ThreadID        int64    `json:"thread_id"`
+		ConfirmRequired bool     `json:"confirm_required"`
+		RecipientCount  int      `json:"recipient_count"`
+		Recipients      []string `json:"recipients"`
+		ToTarget        string   `json:"to_target"`
 	}
 	if err := json.Unmarshal(raw, &res); err != nil {
 		return err
+	}
+	// The daemon refused the unconfirmed broadcast and handed back its blast
+	// radius. Show it, ask, and only re-send with confirm=true on a yes —
+	// unless there's no terminal to prompt on, where an explicit --yes is the
+	// only way through.
+	if res.ConfirmRequired {
+		if !sendInteractive() {
+			return fmt.Errorf("broadcast reaches %d agent(s) in %s — re-run with --yes to confirm (no terminal to prompt on)",
+				res.RecipientCount, broadcastScope(res.ToTarget))
+		}
+		who := "(none currently live)"
+		if len(res.Recipients) > 0 {
+			who = strings.Join(res.Recipients, ", ")
+		}
+		_, _ = fmt.Fprintf(out, "broadcast reaches %d agent(s) in %s: %s\nSend? [y/N] ",
+			res.RecipientCount, broadcastScope(res.ToTarget), who)
+		if !readAffirmative(sendConfirmIn) {
+			_, _ = fmt.Fprintln(out, "aborted.")
+			return nil
+		}
+		sendArgs["confirm"] = true
+		if raw, err = callData("send_message", sendArgs); err != nil {
+			return err
+		}
+		if err := json.Unmarshal(raw, &res); err != nil {
+			return err
+		}
 	}
 	_, err = fmt.Fprintf(out, "sent (thread %d)\n", res.ThreadID)
 	return err
 }
 
+// sendConfirmIn is where the broadcast confirmation prompt reads its answer
+// (os.Stdin in production; overridden in tests). sendInteractive reports
+// whether a prompt can even be shown — false under `go test` and in pipes, so
+// there a broadcast demands an explicit --yes rather than hanging on a read.
+var (
+	sendConfirmIn   io.Reader = os.Stdin
+	sendInteractive           = stdinIsTTY
+)
+
+func stdinIsTTY() bool {
+	fi, err := os.Stdin.Stat()
+	if err != nil {
+		return false
+	}
+	return fi.Mode()&os.ModeCharDevice != 0
+}
+
+func readAffirmative(r io.Reader) bool {
+	line, _ := bufio.NewReader(r).ReadString('\n')
+	switch strings.ToLower(strings.TrimSpace(line)) {
+	case "y", "yes":
+		return true
+	}
+	return false
+}
+
+// broadcastScope renders a broadcast's reach for a prompt or error: the whole
+// bus for an empty target, else the named project.
+func broadcastScope(project string) string {
+	if project == "" {
+		return "every agent on the bus"
+	}
+	return "project " + project
+}
+
 // sendBoolFlags are cmdSend's flags that take no value, needed so
 // splitFlagsAndPositional knows not to consume the following token as a value.
-var sendBoolFlags = map[string]bool{"role": true, "broadcast": true, "standing": true, "wake": true}
+var sendBoolFlags = map[string]bool{"role": true, "broadcast": true, "standing": true, "wake": true, "yes": true}
 
 // splitFlagsAndPositional separates args into flag.FlagSet-parseable tokens
 // and positional arguments, regardless of whether flags appear before or

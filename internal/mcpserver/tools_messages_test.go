@@ -65,7 +65,7 @@ func TestSendStandingBroadcastSurfacesStandingOnRead(t *testing.T) {
 	}
 	_, sendOut, err := sendMessageHandler(context.Background(), nil, SendMessageIn{
 		From: "backend", ToKind: "broadcast", Standing: true,
-		Subject: "order", Body: "read CONTRACT.md before editing",
+		Subject: "order", Body: "read CONTRACT.md before editing", Confirm: true,
 	})
 	if err != nil || sendOut.ThreadID == 0 {
 		t.Fatalf("standing broadcast: err=%v out=%+v", err, sendOut)

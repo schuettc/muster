@@ -12,7 +12,7 @@ func TestSendBroadcastProjectFlag(t *testing.T) {
 		t.Fatal(err)
 	}
 	var buf bytes.Buffer
-	if err := cmdSend([]string{"--broadcast", "--project", "web", "deploy", "landed", "--from", "tester"}, &buf); err != nil {
+	if err := cmdSend([]string{"--broadcast", "--yes", "--project", "web", "deploy", "landed", "--from", "tester"}, &buf); err != nil {
 		t.Fatalf("scoped broadcast send: %v", err)
 	}
 	ths, err := s.Threads(10)
@@ -45,7 +45,7 @@ func TestSendBroadcastUnquotedBodyStaysGlobal(t *testing.T) {
 		t.Fatal(err)
 	}
 	var buf bytes.Buffer
-	if err := cmdSend([]string{"--broadcast", "muster", "is", "broken", "--from", "tester"}, &buf); err != nil {
+	if err := cmdSend([]string{"--broadcast", "--yes", "muster", "is", "broken", "--from", "tester"}, &buf); err != nil {
 		t.Fatalf("global broadcast send: %v", err)
 	}
 	ths, err := s.Threads(10)
@@ -64,7 +64,7 @@ func TestSendBroadcastUnquotedBodyStaysGlobal(t *testing.T) {
 func TestSendBroadcastStandingFlag(t *testing.T) {
 	s := startTestDaemon(t)
 	var buf bytes.Buffer
-	if err := cmdSend([]string{"--broadcast", "--standing", "read", "CONTRACT.md", "--from", "tester"}, &buf); err != nil {
+	if err := cmdSend([]string{"--broadcast", "--yes", "--standing", "read", "CONTRACT.md", "--from", "tester"}, &buf); err != nil {
 		t.Fatalf("standing broadcast send: %v", err)
 	}
 	ths, err := s.Threads(10)
@@ -79,7 +79,7 @@ func TestSendBroadcastStandingFlag(t *testing.T) {
 func TestSendBroadcastWakeFlag(t *testing.T) {
 	s := startTestDaemon(t)
 	var buf bytes.Buffer
-	if err := cmdSend([]string{"--broadcast", "--wake", "deploy", "now", "--from", "tester"}, &buf); err != nil {
+	if err := cmdSend([]string{"--broadcast", "--yes", "--wake", "deploy", "now", "--from", "tester"}, &buf); err != nil {
 		t.Fatalf("wake broadcast send: %v", err)
 	}
 	ths, err := s.Threads(10)
@@ -115,5 +115,67 @@ func TestSendBroadcastUnknownProjectSurfacesDaemonError(t *testing.T) {
 	err := cmdSend([]string{"--broadcast", "--project", "wbe", "typo", "--from", "tester"}, &buf)
 	if err == nil || !strings.Contains(err.Error(), `no registered agents in project "wbe"`) {
 		t.Fatalf("daemon validation error must surface through the CLI, got %v", err)
+	}
+}
+
+func TestSendBroadcastPromptConfirms(t *testing.T) {
+	s := startTestDaemon(t)
+	if _, err := callData("register_agent", map[string]any{"alias": "w1", "project": "web", "model_type": "claude"}); err != nil {
+		t.Fatal(err)
+	}
+	oldInteractive, oldIn := sendInteractive, sendConfirmIn
+	sendInteractive = func() bool { return true }
+	sendConfirmIn = strings.NewReader("y\n")
+	defer func() { sendInteractive, sendConfirmIn = oldInteractive, oldIn }()
+
+	var buf bytes.Buffer
+	if err := cmdSend([]string{"--broadcast", "--project", "web", "hi", "--from", "tester"}, &buf); err != nil {
+		t.Fatalf("prompted broadcast: %v", err)
+	}
+	ths, err := s.Threads(10)
+	if err != nil || len(ths) != 1 {
+		t.Fatalf("a confirmed prompt must send exactly one thread: %v (%d)", err, len(ths))
+	}
+	if !strings.Contains(buf.String(), "reaches 1 agent") {
+		t.Fatalf("prompt should show the blast radius, got %q", buf.String())
+	}
+}
+
+func TestSendBroadcastPromptAborts(t *testing.T) {
+	s := startTestDaemon(t)
+	if _, err := callData("register_agent", map[string]any{"alias": "w1", "project": "web", "model_type": "claude"}); err != nil {
+		t.Fatal(err)
+	}
+	oldInteractive, oldIn := sendInteractive, sendConfirmIn
+	sendInteractive = func() bool { return true }
+	sendConfirmIn = strings.NewReader("n\n")
+	defer func() { sendInteractive, sendConfirmIn = oldInteractive, oldIn }()
+
+	var buf bytes.Buffer
+	if err := cmdSend([]string{"--broadcast", "--project", "web", "hi", "--from", "tester"}, &buf); err != nil {
+		t.Fatalf("a declined prompt is not an error: %v", err)
+	}
+	ths, err := s.Threads(10)
+	if err != nil || len(ths) != 0 {
+		t.Fatalf("a declined prompt must send nothing: %v (%d)", err, len(ths))
+	}
+	if !strings.Contains(buf.String(), "aborted") {
+		t.Fatalf("want an abort notice, got %q", buf.String())
+	}
+}
+
+func TestSendBroadcastNonInteractiveNeedsYes(t *testing.T) {
+	startTestDaemon(t)
+	if _, err := callData("register_agent", map[string]any{"alias": "w1", "project": "web", "model_type": "claude"}); err != nil {
+		t.Fatal(err)
+	}
+	old := sendInteractive
+	sendInteractive = func() bool { return false }
+	defer func() { sendInteractive = old }()
+
+	var buf bytes.Buffer
+	err := cmdSend([]string{"--broadcast", "--project", "web", "hi", "--from", "tester"}, &buf)
+	if err == nil || !strings.Contains(err.Error(), "--yes") {
+		t.Fatalf("a non-interactive broadcast without --yes must demand --yes, got %v", err)
 	}
 }
