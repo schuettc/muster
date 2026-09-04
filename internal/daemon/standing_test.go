@@ -14,7 +14,7 @@ func TestSendStandingBroadcastPersistsFlag(t *testing.T) {
 	call(t, sock, "register_agent", map[string]any{"alias": "web1", "project": "web", "socket_path": "/s", "session_id": "$1", "session_created": 100})
 
 	resp := call(t, sock, "send_message", map[string]any{
-		"from": "web1", "to_kind": "broadcast", "standing": true, "subject": "order", "body": "read CONTRACT.md",
+		"from": "web1", "to_kind": "broadcast", "standing": true, "subject": "order", "body": "read CONTRACT.md", "confirm": true,
 	})
 	if !resp.OK {
 		t.Fatalf("standing broadcast should succeed: %s", resp.Error)
