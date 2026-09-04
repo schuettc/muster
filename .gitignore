@@ -17,3 +17,6 @@ bus.db-wal
 
 # Local build output (release artifacts are built by CI)
 dist/
+
+# SDD design docs (plans/specs) — kept local, not committed
+docs/superpowers/
