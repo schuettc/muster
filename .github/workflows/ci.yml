@@ -8,14 +8,14 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.26"
-      - uses: extractions/setup-just@v2
+      - uses: extractions/setup-just@v4
       - name: Cache golangci-lint binary
         id: cache-golangci
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/go/bin/golangci-lint
           key: golangci-lint-v2.12.2-${{ runner.os }}
@@ -45,8 +45,8 @@ jobs:
         image: amazon/dynamodb-local
         ports: ["8000:8000"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.26"
       # amazon/dynamodb-local declares no HEALTHCHECK, so the runner reports
