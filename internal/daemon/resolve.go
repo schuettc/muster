@@ -81,7 +81,7 @@ func (d *Daemon) requireKnownAlias(field, given string) (string, error) {
 // label/label_manual, never a live tmux re-read — internal/daemon is
 // tmux-agnostic by rule (CLAUDE.md). The stored copy is kept current by the
 // writers: `muster label` pushes its change here via the set_label op in the
-// same command that sets the tmux option (see humancli.syncLabelToBus), and
+// same command that sets the tmux option (see cli.syncLabelToBus), and
 // register_agent's upsert re-captures it — so this resolver and the CLI's
 // live-tmux resolver see the same manual labels, not eventually-consistent
 // ones. (A label written by raw tmux set-option, bypassing muster, still
@@ -95,7 +95,7 @@ func (d *Daemon) resolveAgentTarget(from, given string) (string, error) {
 	// model-supplied target is checked: MCP passes to_target straight through
 	// with no client-side resolution, so without this a model that read a
 	// short alias off the roster could not address it at all. Local-first,
-	// matching the CLI's expandAlias (internal/humancli/dispalias.go): try
+	// matching the CLI's expandAlias (internal/cli/dispalias.go): try
 	// <device>-<given> before the literal given, and expand only when the
 	// seeded form actually exists in the roster already in hand — an
 	// unexpandable name is left untouched so the caller's error names what

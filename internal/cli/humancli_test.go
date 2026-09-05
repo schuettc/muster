@@ -1,0 +1,822 @@
+package cli
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"path/filepath"
+	"reflect"
+	"strings"
+	"testing"
+
+	"github.com/schuettc/muster/internal/daemon"
+	"github.com/schuettc/muster/internal/mustertest"
+	"github.com/schuettc/muster/internal/paths"
+	"github.com/schuettc/muster/internal/store"
+	"github.com/schuettc/muster/internal/tmuxenv"
+)
+
+// startTestDaemon boots a real in-process daemon on a temp socket, returning
+// the underlying store so tests can seed rows (e.g. events at a controlled
+// timestamp) directly, bypassing the wire protocol.
+func startTestDaemon(t *testing.T) *store.Store {
+	t.Helper()
+	dir, cleanup, err := mustertest.ShortHome()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(cleanup)
+	t.Setenv("MUSTER_HOME", dir)
+	s, err := store.Open(filepath.Join(dir, "bus.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	d, err := daemon.Serve(paths.SocketPath(), s, nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+	return s
+}
+
+func TestAgentsCommandListsRegistered(t *testing.T) {
+	startTestDaemon(t)
+	// Register two agents directly via the daemon op (through Dispatch's helper).
+	if _, err := callData("register_agent", map[string]any{"alias": "backend", "role": "producer", "model_type": "claude"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := callData("register_agent", map[string]any{"alias": "consumer", "role": "consumer", "model_type": "codex"}); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	if err := Dispatch([]string{"agents"}, &buf); err != nil {
+		t.Fatalf("agents: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "backend") || !strings.Contains(out, "consumer") || !strings.Contains(out, "claude") || !strings.Contains(out, "codex") {
+		t.Fatalf("agents output missing rows:\n%s", out)
+	}
+}
+
+// TestAgentsHidesDeviceColumnOnOneDevice pins the default: a local bus has
+// exactly one device, so a column reading "this" on every row is noise and
+// must not appear. This is the overwhelmingly common case and the one a
+// regression here would degrade silently.
+func TestAgentsHidesDeviceColumnOnOneDevice(t *testing.T) {
+	startTestDaemon(t)
+	t.Setenv("MUSTER_DEVICE_ID", "device-one")
+	for _, alias := range []string{"backend", "consumer"} {
+		if _, err := callData("register_agent", map[string]any{
+			"alias": alias, "model_type": "claude", "device_id": "device-one",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var buf bytes.Buffer
+	if err := Dispatch([]string{"agents"}, &buf); err != nil {
+		t.Fatalf("agents: %v", err)
+	}
+	if strings.Contains(buf.String(), "DEVICE") {
+		t.Fatalf("DEVICE column shown for a single-device roster:\n%s", buf.String())
+	}
+}
+
+// TestAgentsShowsDeviceColumnAcrossDevices is the hosted-bus case the column
+// exists for: two machines in one roster, this one named rather than
+// rendered as an id the operator would have to compare by eye.
+func TestAgentsShowsDeviceColumnAcrossDevices(t *testing.T) {
+	startTestDaemon(t)
+	t.Setenv("MUSTER_DEVICE_ID", "device-here")
+	if _, err := callData("register_agent", map[string]any{
+		"alias": "local-agent", "model_type": "claude", "device_id": "device-here",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := callData("register_agent", map[string]any{
+		"alias": "far-agent", "model_type": "claude", "device_id": "abcdef0123456789",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	if err := Dispatch([]string{"agents"}, &buf); err != nil {
+		t.Fatalf("agents: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "DEVICE") {
+		t.Fatalf("DEVICE column missing from a multi-device roster:\n%s", out)
+	}
+	if !strings.Contains(out, "this") {
+		t.Fatalf("local device not rendered as \"this\":\n%s", out)
+	}
+	// Truncated, not full: the column has to stay narrow enough to sit in the
+	// table beside everything else.
+	if !strings.Contains(out, "abcdef01") || strings.Contains(out, "abcdef0123456789") {
+		t.Fatalf("remote device id not shortened to %d chars:\n%s", deviceShortLen, out)
+	}
+	// Another machine's agent must read "unknowable", never "dead". Liveness
+	// is a LOCAL tmux probe, and socket paths collide across machines, so the
+	// probe can match an unrelated local session — ✗ here would be a claim
+	// this device is not entitled to make.
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "far-agent") && !strings.Contains(line, "◌") {
+			t.Fatalf("remote agent's liveness not rendered as unknowable:\n%s", line)
+		}
+	}
+}
+
+// TestDeviceCellPrecedence pins the order the roster's DEVICE column resolves
+// in. "this" outranking the machine's own name is the deliberate part: the
+// question the column answers is "here or elsewhere", and an operator should
+// not have to recall what they named the machine they are sitting at.
+func TestDeviceCellPrecedence(t *testing.T) {
+	const local = "device-here"
+	for _, tc := range []struct {
+		name, id, devName, want string
+	}{
+		{"local machine wins over its own name", local, "work-laptop", "this"},
+		{"another machine shows its name", "other", "desktop", "desktop"},
+		{"unnamed machine falls back to a short id", "abcdef0123456789", "", "abcdef01"},
+		{"short id is not truncated further", "dev-b", "", "dev-b"},
+		{"nothing known at all", "", "", "—"},
+		{"named but id-less row still reads", "", "desktop", "desktop"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := deviceCell(tc.id, tc.devName, local); got != tc.want {
+				t.Fatalf("deviceCell(%q, %q, %q) = %q, want %q", tc.id, tc.devName, local, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestDispatchUnknownCommand(t *testing.T) {
+	if err := Dispatch([]string{"bogus"}, nil); err == nil {
+		t.Fatalf("expected error for unknown subcommand")
+	}
+}
+
+func TestSendThenInboxShowsMessage(t *testing.T) {
+	startTestDaemon(t)
+	if _, err := callData("register_agent", map[string]any{"alias": "consumer", "role": "consumer", "model_type": "codex"}); err != nil {
+		t.Fatal(err)
+	}
+	var sendBuf bytes.Buffer
+	if err := Dispatch([]string{"send", "consumer", "the API changed", "--from", "backend", "--subject", "heads up"}, &sendBuf); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	var inboxBuf bytes.Buffer
+	if err := Dispatch([]string{"inbox", "consumer"}, &inboxBuf); err != nil {
+		t.Fatalf("inbox: %v", err)
+	}
+	if !strings.Contains(inboxBuf.String(), "heads up") {
+		t.Fatalf("inbox missing sent message:\n%s", inboxBuf.String())
+	}
+}
+
+// TestInboxTableShowsLastFromAndUnread proves `muster inbox` renders the
+// LAST-FROM and UNREAD columns from get_inbox's new annotation fields — the
+// CLI side of the fix for the production defect where an inbox listing gave
+// no way to tell a peer's reply from the caller's own last send.
+func TestInboxTableShowsLastFromAndUnread(t *testing.T) {
+	startTestDaemon(t)
+	if _, err := callData("register_agent", map[string]any{"alias": "web", "role": "producer", "model_type": "claude"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := callData("register_agent", map[string]any{"alias": "api", "role": "consumer", "model_type": "claude"}); err != nil {
+		t.Fatal(err)
+	}
+	sendRaw, err := callData("send_message", map[string]any{"from": "web", "to_kind": "agent", "to_target": "api", "subject": "status?", "body": "how's it going"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sendOut struct {
+		ThreadID int64 `json:"thread_id"`
+	}
+	if err := json.Unmarshal(sendRaw, &sendOut); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := callData("reply", map[string]any{"thread_id": sendOut.ThreadID, "from": "api", "body": "all good"}); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	if err := Dispatch([]string{"inbox", "web"}, &buf); err != nil {
+		t.Fatalf("inbox: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "LAST-FROM") || !strings.Contains(out, "UNREAD") {
+		t.Fatalf("inbox table missing new columns:\n%s", out)
+	}
+	if !strings.Contains(out, "api") {
+		t.Fatalf("inbox table missing last_from=api:\n%s", out)
+	}
+	// The row for the thread web originated must show unread=1 (api's
+	// reply), the exact case get_inbox previously left indistinguishable
+	// from web's own last send.
+	found := false
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "status?") {
+			found = true
+			if !strings.Contains(line, "1") {
+				t.Fatalf("inbox row for replied thread missing unread=1:\n%s", line)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("inbox table missing the thread row:\n%s", out)
+	}
+}
+
+// TestInboxPeekPrintsNotice covers the regression this task closes: a CLI
+// `muster inbox` reading an alias that is not THIS process's own tmux
+// session (no caller proof matches) must get the threads back as a harmless
+// peek — no watermark move — and be told so, or an operator has no way to
+// tell a peek from a real drain of their own mail.
+func TestInboxPeekPrintsNotice(t *testing.T) {
+	startTestDaemon(t)
+	// No $TMUX set: this process's capture proves nothing, so the daemon's
+	// callerOwns check cannot attribute the read to any session — exactly the
+	// case a peek exists for.
+	if _, err := callData("register_agent", map[string]any{
+		"alias": "x", "socket_path": "/other-sock", "session_id": "$OTHER", "session_created": 100,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	if err := Dispatch([]string{"inbox", "x"}, &buf); err != nil {
+		t.Fatalf("inbox: %v", err)
+	}
+	if !strings.HasSuffix(strings.TrimRight(buf.String(), "\n"), "peek only: 'x' is not this pane's alias — unread state unchanged") {
+		t.Fatalf("expected trailing peek notice, got:\n%s", buf.String())
+	}
+}
+
+// TestInboxOwnedPrintsNoNotice is the other half: reading an alias that IS
+// this process's own tmux session (caller proof matches) must move the
+// watermark and print no peek notice.
+func TestInboxOwnedPrintsNoNotice(t *testing.T) {
+	startTestDaemon(t)
+	t.Setenv("TMUX", "/tmp/sock,1,0")
+	t.Setenv("TMUX_PANE", "%1")
+	prev := tmuxenv.Run
+	tmuxenv.Run = func(args ...string) (string, error) {
+		if args[len(args)-1] == "#{session_created}" {
+			return "100", nil
+		}
+		return "$1", nil
+	}
+	t.Cleanup(func() { tmuxenv.Run = prev })
+	if _, err := callData("register_agent", map[string]any{
+		"alias": "mine", "socket_path": "/tmp/sock", "session_id": "$1", "session_created": 100,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	if err := Dispatch([]string{"inbox", "mine"}, &buf); err != nil {
+		t.Fatalf("inbox: %v", err)
+	}
+	if strings.Contains(buf.String(), "peek only") {
+		t.Fatalf("owned read must not print a peek notice, got:\n%s", buf.String())
+	}
+}
+
+// TestSendFromExpandsLocalFirst is send's twin of
+// TestDeregisterExpandsExplicitArgLocalFirst / TestBecomeFromExpandsLocalFirst:
+// the roster holds BOTH a local seeded row ("personal-backend") and a
+// foreign bare row of the same short name ("backend", a different tuple).
+// `muster send consumer body --from backend` must attribute the thread to
+// the LOCAL row — send --from was, before this fix, passed to send_message
+// verbatim with no expansion at all, so a bare --from (the very form the CLI
+// prints as its hint) either mis-attributed the thread to a stranger's real
+// agent of that name, or created an orphan FromAgent with no roster row.
+func TestSendFromExpandsLocalFirst(t *testing.T) {
+	startTestDaemon(t)
+	t.Setenv("MUSTER_DEVICE_NAME", "personal")
+	if _, err := callData("register_agent", map[string]any{"alias": "consumer", "role": "consumer", "model_type": "codex"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := callData("register_agent", map[string]any{"alias": "personal-backend", "socket_path": "/s", "session_id": "$1"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := callData("register_agent", map[string]any{"alias": "backend", "socket_path": "/s2", "session_id": "$2"}); err != nil {
+		t.Fatal(err)
+	}
+
+	var sendBuf bytes.Buffer
+	if err := Dispatch([]string{"send", "consumer", "the API changed", "--from", "backend"}, &sendBuf); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+
+	raw, err := callData("list_threads", map[string]any{"limit": 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var res struct {
+		Threads []struct {
+			FromAgent string `json:"from_agent"`
+		} `json:"threads"`
+	}
+	if err := json.Unmarshal(raw, &res); err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Threads) != 1 || res.Threads[0].FromAgent != "personal-backend" {
+		t.Fatalf("expected thread attributed to local row 'personal-backend', got %+v", res.Threads)
+	}
+}
+
+// TestSendCommandAcceptsIntent proves --intent lands on the thread (visible
+// via list_threads) and renders as a journal tag in `muster events`.
+func TestSendCommandAcceptsIntent(t *testing.T) {
+	startTestDaemon(t)
+	if _, err := callData("register_agent", map[string]any{"alias": "consumer", "role": "consumer", "model_type": "codex"}); err != nil {
+		t.Fatal(err)
+	}
+	var sendBuf bytes.Buffer
+	if err := Dispatch([]string{"send", "consumer", "please take a look", "--from", "backend", "--subject", "spec review", "--intent", "reply-requested"}, &sendBuf); err != nil {
+		t.Fatalf("send --intent: %v", err)
+	}
+
+	raw, err := callData("list_threads", map[string]any{"limit": 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var res struct {
+		Threads []struct {
+			Subject string `json:"subject"`
+			Intent  string `json:"intent"`
+		} `json:"threads"`
+	}
+	if err := json.Unmarshal(raw, &res); err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Threads) != 1 || res.Threads[0].Intent != "reply-requested" {
+		t.Fatalf("expected thread with intent reply-requested, got %+v", res.Threads)
+	}
+
+	var eventsBuf bytes.Buffer
+	if err := Dispatch([]string{"events", "--kind", "send"}, &eventsBuf); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(eventsBuf.String(), "[reply?]") {
+		t.Fatalf("events output missing intent tag:\n%s", eventsBuf.String())
+	}
+}
+
+// TestSendCommandRejectsInvalidIntent proves an unrecognized --intent value
+// is rejected client-side (a clearer error than a daemon round-trip), and
+// that no thread is created.
+func TestSendCommandRejectsInvalidIntent(t *testing.T) {
+	startTestDaemon(t)
+	if _, err := callData("register_agent", map[string]any{"alias": "consumer", "role": "consumer", "model_type": "codex"}); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	err := Dispatch([]string{"send", "consumer", "body", "--from", "backend", "--intent", "urgent"}, &out)
+	if err == nil {
+		t.Fatalf("expected error for invalid --intent")
+	}
+	if !strings.Contains(err.Error(), "intent") {
+		t.Fatalf("error should mention intent, got: %v", err)
+	}
+	raw, lerr := callData("list_threads", map[string]any{"limit": 10})
+	if lerr != nil {
+		t.Fatal(lerr)
+	}
+	var res struct {
+		Threads []json.RawMessage `json:"threads"`
+	}
+	if uerr := json.Unmarshal(raw, &res); uerr != nil {
+		t.Fatal(uerr)
+	}
+	if len(res.Threads) != 0 {
+		t.Fatalf("invalid intent must not create a thread, got %d", len(res.Threads))
+	}
+}
+
+// soleThreadIntent fetches the one thread list_threads currently holds and
+// returns its intent — the two regression tests below both just want to know
+// what landed in the DB, not the full row shape.
+func soleThreadIntent(t *testing.T) string {
+	t.Helper()
+	raw, err := callData("list_threads", map[string]any{"limit": 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var res struct {
+		Threads []struct {
+			Intent string `json:"intent"`
+		} `json:"threads"`
+	}
+	if err := json.Unmarshal(raw, &res); err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Threads) != 1 {
+		t.Fatalf("expected exactly one thread, got %d", len(res.Threads))
+	}
+	return res.Threads[0].Intent
+}
+
+// TestSendIntentAfterPositionalBody is the literal regression case behind the
+// live incident (thread 35, intent stored ”): --intent given AFTER an
+// unquoted, multi-word positional body — exactly the shape a real shell
+// produces when the body isn't quoted — must still land on the thread.
+func TestSendIntentAfterPositionalBody(t *testing.T) {
+	startTestDaemon(t)
+	if _, err := callData("register_agent", map[string]any{"alias": "bettor", "role": "consumer", "model_type": "codex"}); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	// Unquoted body: the shell would have split "1.2.2 shipped, FYI" into
+	// four separate positional tokens, exactly as Dispatch receives them here.
+	args := []string{"send", "bettor", "1.2.2", "shipped,", "FYI", "--from", "api", "--intent", "action-requested"}
+	if err := Dispatch(args, &out); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	if got := soleThreadIntent(t); got != "action-requested" {
+		t.Fatalf("expected intent action-requested, got %q", got)
+	}
+}
+
+// TestSendIntentNotSwallowedByDanglingValueFlag proves the actual mechanism
+// behind the "silently drops the flag" symptom: Go's flag.Parse ALWAYS
+// consumes the very next token as a non-boolean flag's value, regardless of
+// what that token looks like — so a dangling value flag with no value of its
+// own (--subject given no argument here) used to bind the FOLLOWING
+// "--intent" token as its own bogus value, leaving "action-requested" as
+// stray text flag.Parse silently discards (it stops parsing at the first
+// unrecognized-as-flag token and never surfaces it) — intent landed as ""
+// with no error at all. splitFlagsAndPositional now detects a value flag
+// immediately followed by another flag-looking token and rewrites it to its
+// explicit `name=` (empty value) form, so --intent is left untouched for its
+// own turn and its value lands correctly.
+func TestSendIntentNotSwallowedByDanglingValueFlag(t *testing.T) {
+	startTestDaemon(t)
+	if _, err := callData("register_agent", map[string]any{"alias": "bettor", "role": "consumer", "model_type": "codex"}); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	args := []string{"send", "bettor", "body", "--subject", "--intent", "action-requested"}
+	if err := Dispatch(args, &out); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	if got := soleThreadIntent(t); got != "action-requested" {
+		t.Fatalf("expected intent action-requested (not swallowed by dangling --subject), got %q", got)
+	}
+}
+
+func TestTasksCommandShowsOnlyTasks(t *testing.T) {
+	startTestDaemon(t)
+	if _, err := callData("register_agent", map[string]any{"alias": "rev", "role": "reviewer", "model_type": "codex"}); err != nil {
+		t.Fatal(err)
+	}
+	// One message and one task addressed to rev's role.
+	if _, err := callData("send_message", map[string]any{"from": "backend", "to_kind": "role", "to_target": "reviewer", "subject": "just a note", "body": "x"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := callData("task_create", map[string]any{"from": "backend", "to_kind": "role", "to_target": "reviewer", "subject": "please review", "body": "y"}); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	if err := Dispatch([]string{"tasks", "rev"}, &buf); err != nil {
+		t.Fatalf("tasks: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "please review") {
+		t.Fatalf("tasks output missing the task:\n%s", out)
+	}
+	if strings.Contains(out, "just a note") {
+		t.Fatalf("tasks output should exclude the plain message:\n%s", out)
+	}
+}
+
+func TestNudgeCommandRejectsUnknownAlias(t *testing.T) {
+	startTestDaemon(t)
+	var buf bytes.Buffer
+	if err := Dispatch([]string{"nudge", "ghost"}, &buf); err == nil {
+		t.Fatalf("expected error nudging an unregistered alias")
+	}
+}
+
+func TestNudgeCommandResolvesAndNudges(t *testing.T) {
+	startTestDaemon(t)
+	// register an agent with a pane via the daemon op directly
+	if _, err := callData("register_agent", map[string]any{"alias": "rev", "role": "reviewer", "model_type": "codex", "socket_path": "/s", "pane_id": "%2", "session_id": "$1"}); err != nil {
+		t.Fatal(err)
+	}
+	var recorded [][]string
+	origNudge := nudgeRun
+	nudgeRun = func(args ...string) error { recorded = append(recorded, args); return nil }
+	t.Cleanup(func() { nudgeRun = origNudge })
+
+	var buf bytes.Buffer
+	if err := Dispatch([]string{"nudge", "rev"}, &buf); err != nil {
+		t.Fatalf("nudge: %v", err)
+	}
+	if !strings.Contains(buf.String(), "rev") || len(recorded) == 0 {
+		t.Fatalf("expected resolved-target output + a send-keys call; out=%q calls=%v", buf.String(), recorded)
+	}
+}
+
+// TestNudgeDeadPaneRefusesWithRemedy proves nudge refuses to send-keys into
+// a stored pane that's gone when its session is still alive (a reaped
+// teammate's pane, or any stale pane row) — auto-retargeting to a guessed
+// pane would be worse than failing (spec §3), so cmdNudge must error with
+// the remedy instead of attempting a doomed send-keys.
+func TestNudgeDeadPaneRefusesWithRemedy(t *testing.T) {
+	startTestDaemon(t)
+	if _, err := callData("register_agent", map[string]any{
+		"alias": "rev", "role": "reviewer", "model_type": "codex",
+		"socket_path": "/s", "pane_id": "%99", "session_id": "$1",
+		"session_created": 200,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var recorded [][]string
+	origNudge := nudgeRun
+	nudgeRun = func(args ...string) error { recorded = append(recorded, args); return nil }
+	t.Cleanup(func() { nudgeRun = origNudge })
+
+	origRun := tmuxenv.Run
+	// session_created probe answers 200 (matches registration → session
+	// alive); the pane_id probe for %99 answers "" (not in the map →
+	// hookRun's default) → pane gone.
+	tmuxenv.Run = hookRun(map[string]string{"#{session_created}": "200"})
+	t.Cleanup(func() { tmuxenv.Run = origRun })
+
+	var buf bytes.Buffer
+	err := Dispatch([]string{"nudge", "rev"}, &buf)
+	if err == nil {
+		t.Fatalf("expected an error nudging a dead stored pane, got nil (out=%q)", buf.String())
+	}
+	if !strings.Contains(err.Error(), "stored pane %99 is gone") || !strings.Contains(err.Error(), "heals at the session's next start") {
+		t.Fatalf("expected error to name the dead pane and the remedy, got %q", err.Error())
+	}
+	if len(recorded) != 0 {
+		t.Fatalf("expected NO send-keys call for a dead stored pane, got %v", recorded)
+	}
+}
+
+// TestNudgePrintsLiveSessionName proves nudge reports the session's CURRENT
+// tmux name, not the stale registration-time snapshot: session names are
+// mutable (a human can `tmux rename-session` any time), so a stored
+// session_name goes stale the moment that happens — the production report
+// was 'bettor-help-workspace' printed for what tmux itself now calls
+// 'bettor-help-workspace-4'.
+func TestNudgePrintsLiveSessionName(t *testing.T) {
+	startTestDaemon(t)
+	if _, err := callData("register_agent", map[string]any{
+		"alias": "rev", "role": "reviewer", "model_type": "codex",
+		"socket_path": "/s", "pane_id": "%2", "session_id": "$1",
+		"session_name": "stale-name",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	origNudge := nudgeRun
+	nudgeRun = func(_ ...string) error { return nil }
+	t.Cleanup(func() { nudgeRun = origNudge })
+
+	origRun := tmuxenv.Run
+	tmuxenv.Run = hookRun(map[string]string{"#{session_name}": "renamed-live"})
+	t.Cleanup(func() { tmuxenv.Run = origRun })
+
+	var buf bytes.Buffer
+	if err := Dispatch([]string{"nudge", "rev"}, &buf); err != nil {
+		t.Fatalf("nudge: %v", err)
+	}
+	if !strings.Contains(buf.String(), "renamed-live") {
+		t.Fatalf("expected nudge output to report the LIVE session name, got %q", buf.String())
+	}
+	if strings.Contains(buf.String(), "stale-name") {
+		t.Fatalf("nudge output must not show the stale stored session name once the live query succeeds, got %q", buf.String())
+	}
+}
+
+// TestNudgeFallsBackToStoredSessionNameWhenLiveQueryFails: when the live
+// tmux query can't answer (session gone, tmux unreachable), nudge must fall
+// back to the stored session_name rather than printing a blank field.
+func TestNudgeFallsBackToStoredSessionNameWhenLiveQueryFails(t *testing.T) {
+	startTestDaemon(t)
+	if _, err := callData("register_agent", map[string]any{
+		"alias": "rev", "role": "reviewer", "model_type": "codex",
+		"socket_path": "/s", "pane_id": "%2", "session_id": "$1",
+		"session_name": "stored-name",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	origNudge := nudgeRun
+	nudgeRun = func(_ ...string) error { return nil }
+	t.Cleanup(func() { nudgeRun = origNudge })
+
+	origRun := tmuxenv.Run
+	tmuxenv.Run = func(_ ...string) (string, error) { return "", fmt.Errorf("no tmux") }
+	t.Cleanup(func() { tmuxenv.Run = origRun })
+
+	var buf bytes.Buffer
+	if err := Dispatch([]string{"nudge", "rev"}, &buf); err != nil {
+		t.Fatalf("nudge: %v", err)
+	}
+	if !strings.Contains(buf.String(), "stored-name") {
+		t.Fatalf("expected fallback to the stored session name when the live query fails, got %q", buf.String())
+	}
+}
+
+// TestNudgeSelfReportsJournalRow: after a successful nudge, a "nudge" event
+// row exists for the target alias (best-effort log_event call from cmdNudge).
+func TestNudgeSelfReportsJournalRow(t *testing.T) {
+	startTestDaemon(t)
+	if _, err := callData("register_agent", map[string]any{"alias": "rev", "role": "reviewer", "model_type": "codex", "socket_path": "/s", "pane_id": "%2", "session_id": "$1"}); err != nil {
+		t.Fatal(err)
+	}
+	origNudge := nudgeRun
+	nudgeRun = func(_ ...string) error { return nil }
+	t.Cleanup(func() { nudgeRun = origNudge })
+
+	var buf bytes.Buffer
+	if err := Dispatch([]string{"nudge", "rev"}, &buf); err != nil {
+		t.Fatalf("nudge: %v", err)
+	}
+
+	raw, err := callData("list_events", map[string]any{"kind": "nudge", "backlog": true, "limit": 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var res struct {
+		Events []struct {
+			Kind   string `json:"kind"`
+			Target string `json:"target"`
+			Detail string `json:"detail"`
+		} `json:"events"`
+	}
+	if err := json.Unmarshal(raw, &res); err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Events) != 1 || res.Events[0].Target != "rev" || res.Events[0].Detail != "submitted" {
+		t.Fatalf("expected 1 nudge event for rev/submitted, got %+v", res.Events)
+	}
+}
+
+// TestNudgeSelfReportsTypedWhenNoSubmit: when nudging with --no-submit flag,
+// the journal records detail="typed" (not submitted).
+func TestNudgeSelfReportsTypedWhenNoSubmit(t *testing.T) {
+	startTestDaemon(t)
+	if _, err := callData("register_agent", map[string]any{"alias": "rev", "role": "reviewer", "model_type": "codex", "socket_path": "/s", "pane_id": "%2", "session_id": "$1"}); err != nil {
+		t.Fatal(err)
+	}
+	origNudge := nudgeRun
+	nudgeRun = func(_ ...string) error { return nil }
+	t.Cleanup(func() { nudgeRun = origNudge })
+
+	var buf bytes.Buffer
+	if err := Dispatch([]string{"nudge", "--no-submit", "rev"}, &buf); err != nil {
+		t.Fatalf("nudge --no-submit: %v", err)
+	}
+
+	raw, err := callData("list_events", map[string]any{"kind": "nudge", "backlog": true, "limit": 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var res struct {
+		Events []struct {
+			Kind   string `json:"kind"`
+			Target string `json:"target"`
+			Detail string `json:"detail"`
+		} `json:"events"`
+	}
+	if err := json.Unmarshal(raw, &res); err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Events) != 1 || res.Events[0].Target != "rev" || res.Events[0].Detail != "typed" {
+		t.Fatalf("expected 1 nudge event for rev/typed, got %+v", res.Events)
+	}
+}
+
+func TestSplitFlagsAndPositional(t *testing.T) {
+	cases := []struct {
+		name           string
+		args           []string
+		wantFlagArgs   []string
+		wantPositional []string
+	}{
+		{
+			name:           "flags after positionals",
+			args:           []string{"consumer", "the body", "--from", "backend", "--subject", "heads up"},
+			wantFlagArgs:   []string{"--from", "backend", "--subject", "heads up"},
+			wantPositional: []string{"consumer", "the body"},
+		},
+		{
+			name:           "boolean flag does not consume the next token",
+			args:           []string{"rev", "please review", "--role"},
+			wantFlagArgs:   []string{"--role"},
+			wantPositional: []string{"rev", "please review"},
+		},
+		{
+			name:           "broadcast bool flag plus body",
+			args:           []string{"--broadcast", "hello world"},
+			wantFlagArgs:   []string{"--broadcast"},
+			wantPositional: []string{"hello world"},
+		},
+		{
+			name:           "equals form keeps flag and value together",
+			args:           []string{"--from=backend", "x", "y"},
+			wantFlagArgs:   []string{"--from=backend"},
+			wantPositional: []string{"x", "y"},
+		},
+		{
+			name:           "missing value at end does not panic",
+			args:           []string{"a", "b", "--from"},
+			wantFlagArgs:   []string{"--from"},
+			wantPositional: []string{"a", "b"},
+		},
+		{
+			name:           "dangling value flag followed by another flag does not swallow it",
+			args:           []string{"a", "b", "--subject", "--intent", "action-requested"},
+			wantFlagArgs:   []string{"--subject=", "--intent", "action-requested"},
+			wantPositional: []string{"a", "b"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			flagArgs, positional := splitFlagsAndPositional(tc.args)
+			if !reflect.DeepEqual(flagArgs, tc.wantFlagArgs) {
+				t.Errorf("flagArgs = %#v, want %#v", flagArgs, tc.wantFlagArgs)
+			}
+			if !reflect.DeepEqual(positional, tc.wantPositional) {
+				t.Errorf("positional = %#v, want %#v", positional, tc.wantPositional)
+			}
+		})
+	}
+}
+
+// TestNudgeRefusalStripsTheDevicePrefix: cmdNudge's success line runs the
+// alias through dispAlias, so its refusal must too — one command must not
+// speak two vocabularies, naming the agent "dotfiles/main" when it works and
+// "testdev-dotfiles/main" when it doesn't.
+func TestNudgeRefusalStripsTheDevicePrefix(t *testing.T) {
+	startTestDaemon(t)
+	t.Setenv("MUSTER_DEVICE_NAME", "testdev")
+	if _, err := callData("register_agent", map[string]any{
+		"alias": "testdev-dotfiles/main", "role": "reviewer", "model_type": "codex",
+		"socket_path": "/s", "pane_id": "%99", "session_id": "$1",
+		"session_created": 200,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	origNudge := nudgeRun
+	nudgeRun = func(_ ...string) error { return nil }
+	t.Cleanup(func() { nudgeRun = origNudge })
+
+	origRun := tmuxenv.Run
+	// Session alive (created matches), pane %99 gone → the refusal path.
+	tmuxenv.Run = hookRun(map[string]string{"#{session_created}": "200"})
+	t.Cleanup(func() { tmuxenv.Run = origRun })
+
+	var buf bytes.Buffer
+	err := Dispatch([]string{"nudge", "dotfiles/main"}, &buf)
+	if err == nil {
+		t.Fatalf("expected the stale-pane refusal, got nil (out=%q)", buf.String())
+	}
+	if !strings.Contains(err.Error(), "nudge dotfiles/main:") {
+		t.Fatalf("refusal must name the agent as every other human surface does, got %q", err.Error())
+	}
+	if strings.Contains(err.Error(), "testdev-") {
+		t.Fatalf("refusal leaked the device prefix: %q", err.Error())
+	}
+}
+
+// TestNudgeSessionNameFallbackStripsTheDevicePrefix: with no live and no
+// stored session name, nudge prints the alias in the "session" field — a
+// field whose whole vocabulary is short tmux names, and whose short form the
+// alias's stripped rendering IS.
+func TestNudgeSessionNameFallbackStripsTheDevicePrefix(t *testing.T) {
+	startTestDaemon(t)
+	t.Setenv("MUSTER_DEVICE_NAME", "testdev")
+	if _, err := callData("register_agent", map[string]any{
+		"alias": "testdev-dotfiles/main", "role": "reviewer", "model_type": "codex",
+		"socket_path": "/s", "pane_id": "%2", "session_id": "$1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	origNudge := nudgeRun
+	nudgeRun = func(_ ...string) error { return nil }
+	t.Cleanup(func() { nudgeRun = origNudge })
+
+	origRun := tmuxenv.Run
+	tmuxenv.Run = func(_ ...string) (string, error) { return "", fmt.Errorf("no tmux") }
+	t.Cleanup(func() { tmuxenv.Run = origRun })
+
+	var buf bytes.Buffer
+	if err := Dispatch([]string{"nudge", "dotfiles/main"}, &buf); err != nil {
+		t.Fatalf("nudge: %v", err)
+	}
+	if !strings.Contains(buf.String(), "session dotfiles/main /") {
+		t.Fatalf("session-name fallback must render like every other human surface, got %q", buf.String())
+	}
+	if strings.Contains(buf.String(), "testdev-") {
+		t.Fatalf("nudge output leaked the device prefix: %q", buf.String())
+	}
+}

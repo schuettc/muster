@@ -30,7 +30,7 @@ type nudgeResultMsg struct {
 }
 
 // nudgeCmd resolves alias to its registered tmux pane and nudges it —
-// exactly cmdNudge's sequence (internal/humancli.cmdNudge): get_agent, then
+// exactly cmdNudge's sequence (internal/cli.cmdNudge): get_agent, then
 // TmuxNudger.Nudge, then a best-effort log_event self-report so the journal
 // carries the same "nudge" event a CLI-driven nudge would. Errors at any
 // step surface on nudgeResultMsg.err; the self-report is deliberately

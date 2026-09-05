@@ -120,7 +120,7 @@ func TestTaskClaimAcceptsStringThreadID(t *testing.T) {
 
 // decodeGetAgent re-marshals a get_agent response's Data (already a
 // map[string]any from the wire) into a typed found/agent pair, matching the
-// approach internal/humancli uses for the same response shape.
+// approach internal/cli uses for the same response shape.
 func decodeGetAgent(t *testing.T, resp proto.Response) (store.Agent, bool) {
 	t.Helper()
 	raw, err := json.Marshal(resp.Data)

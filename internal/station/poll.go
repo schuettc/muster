@@ -72,8 +72,8 @@ func fetchBacklogEventsCmd(caller render.Caller, limit int, gen int64) tea.Cmd {
 }
 
 // agentRow mirrors the list_agents wire JSON — station is a peer client of
-// the daemon, like humancli (see internal/humancli.agentRow); it decodes its
-// own copy rather than importing internal/humancli or internal/store.
+// the daemon, like humancli (see internal/cli.agentRow); it decodes its
+// own copy rather than importing internal/cli or internal/store.
 type agentRow struct {
 	Alias          string `json:"alias"`
 	Role           string `json:"role"`
