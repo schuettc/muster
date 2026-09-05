@@ -17,7 +17,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/modelcontextprotocol/go-sdk v1.6.1
 	github.com/muesli/termenv v0.16.0
-	github.com/schuettc/tools-common v0.1.0
+	github.com/schuettc/tools-common v0.3.0
 	modernc.org/sqlite v1.53.0
 )
 
