@@ -2,7 +2,7 @@
 // (CLAUDE.md's "one canonical module per concern" rule): the precedence a
 // bare user- or agent-supplied target string is matched against the roster
 // by — exact alias, then a project-qualified "proj:label", then a bare label
-// scoped to the caller's own project. Both internal/humancli (the CLI's own
+// scoped to the caller's own project. Both internal/cli (the CLI's own
 // resolver, used before nudge/inbox/tasks/send) and internal/daemon (the
 // authoritative check send_message/task_create run for every caller,
 // including MCP agents that never resolve client-side) share this one

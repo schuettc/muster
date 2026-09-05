@@ -88,7 +88,7 @@ func (r *Renderer) SetLabels(labels map[string]string) {
 // showing one name for two agents is worse than one showing a prefix.
 //
 // This is the third implementation of that rule, matching
-// humancli.aliasDisplay and station.computeAliasStripCollisions. It differs
+// cli.aliasDisplay and station.computeAliasStripCollisions. It differs
 // from them only in what it counts over: they see one view's rows, this sees
 // the whole roster, which is what the renderer has at render time — a
 // streamed feed prints one event at a time and never holds "the set of rows
@@ -160,7 +160,7 @@ func (r *Renderer) fit(e EventRow) {
 // disp resolves an alias for display: the agent's current label when one is
 // known (pinned or auto topic), the alias otherwise — with this machine's
 // device-name prefix stripped, exactly like the rest of the CLI's human
-// surfaces (internal/humancli's dispAlias/aliasDisplay). Labels resolve at
+// surfaces (internal/cli's dispAlias/aliasDisplay). Labels resolve at
 // render time, so old events show whoever the agent is *today* — use
 // --aliases for the stable raw view (still stripped: --aliases only turns
 // off label resolution, it does not re-expose the wire-format alias).

@@ -44,6 +44,23 @@ func newTestStore(t *testing.T) *Store {
 	return s
 }
 
+func markReadInbox(t *testing.T, s *Store, alias string) {
+	t.Helper()
+	threads, err := s.Inbox(alias)
+	if err != nil {
+		t.Fatalf("Inbox(%q): %v", alias, err)
+	}
+	var upToEntryID int64
+	for _, thread := range threads {
+		if thread.LastEntryID > upToEntryID {
+			upToEntryID = thread.LastEntryID
+		}
+	}
+	if err := s.MarkRead(alias, upToEntryID); err != nil {
+		t.Fatalf("MarkRead(%q): %v", alias, err)
+	}
+}
+
 // testTableName derives a unique table per test so tests never share state.
 //
 // DynamoDB accepts only [a-zA-Z0-9_.-] in a table name, and Go builds subtest

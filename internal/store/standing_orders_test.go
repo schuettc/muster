@@ -76,7 +76,7 @@ func TestRetractDoesNotDisturbAlreadyReadSession(t *testing.T) {
 	if err := s.RegisterAgent(Agent{Alias: "seen", Project: "web"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.MarkRead("seen"); err != nil {
+	if err := s.MarkRead("seen", maxEntryID(t, s)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.RetractStandingOrder("web", "invariants"); err != nil {

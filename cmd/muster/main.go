@@ -8,14 +8,15 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
 	"github.com/schuettc/muster/internal/channel"
+	"github.com/schuettc/muster/internal/cli"
 	"github.com/schuettc/muster/internal/client"
 	"github.com/schuettc/muster/internal/daemon"
 	"github.com/schuettc/muster/internal/device"
-	"github.com/schuettc/muster/internal/humancli"
 	"github.com/schuettc/muster/internal/mcpserver"
 	"github.com/schuettc/muster/internal/paths"
 	"github.com/schuettc/muster/internal/proto"
@@ -34,50 +35,50 @@ func main() {
 		if os.Getenv(LambdaRuntimeEnv) != "" {
 			os.Exit(runLambda())
 		}
-		humancli.Usage(os.Stdout)
+		cli.Usage(os.Stdout)
 		os.Exit(2)
 	}
 	switch os.Args[1] {
 	case "serve":
 		if wantsHelp(os.Args[2:]) {
-			_ = humancli.HelpFor("serve", os.Stdout)
+			_ = cli.HelpFor("serve", os.Stdout)
 			return
 		}
 		os.Exit(runServe())
 	case "debug":
 		if wantsHelp(os.Args[2:]) {
-			_ = humancli.HelpFor("debug", os.Stdout)
+			_ = cli.HelpFor("debug", os.Stdout)
 			return
 		}
 		runDebug(os.Args[2:])
 	case "mcp":
 		if wantsHelp(os.Args[2:]) {
-			_ = humancli.HelpFor("mcp", os.Stdout)
+			_ = cli.HelpFor("mcp", os.Stdout)
 			return
 		}
 		runMCP()
 	case "lambda":
 		if wantsHelp(os.Args[2:]) {
-			_ = humancli.HelpFor("lambda", os.Stdout)
+			_ = cli.HelpFor("lambda", os.Stdout)
 			return
 		}
 		os.Exit(runLambda())
 	case "channel":
 		if wantsHelp(os.Args[2:]) {
-			_ = humancli.HelpFor("channel", os.Stdout)
+			_ = cli.HelpFor("channel", os.Stdout)
 			return
 		}
 		runChannel()
 	default:
-		// humancli.Dispatch owns the CLI subcommand list (including
+		// cli.Dispatch owns the CLI subcommand list (including
 		// help/version) and errors on an unknown one — routing everything
 		// here keeps that list canonical (a second list in this switch once
 		// shipped a release whose usage advertised a subcommand main()
 		// refused to route).
-		if err := humancli.Dispatch(os.Args[1:], os.Stdout); err != nil {
+		if err := cli.Dispatch(os.Args[1:], os.Stdout); err != nil {
 			fmt.Fprintln(os.Stderr, "muster:", err)
 			code := 1
-			var usageErr *humancli.UsageError
+			var usageErr *cli.UsageError
 			if errors.As(err, &usageErr) {
 				code = 2
 			}
@@ -87,11 +88,11 @@ func main() {
 }
 
 // wantsHelp reports whether the first token after a subcommand name is a
-// help flag. serve/mcp/channel/debug/lambda are owned by main() (not humancli.Dispatch),
+// help flag. serve/mcp/channel/debug/lambda are owned by main() (not cli.Dispatch),
 // so their -h/--help handling lives here rather than behind flag.ErrHelp
-// interception the way the humancli-dispatched commands do it.
+// interception the way the cli-dispatched commands do it.
 func wantsHelp(args []string) bool {
-	return len(args) > 0 && humancli.IsHelpArg(args[0])
+	return len(args) > 0 && cli.IsHelpArg(args[0])
 }
 
 // LambdaRuntimeEnv is set by the AWS Lambda runtime in every execution
@@ -167,10 +168,19 @@ func channelInterval() time.Duration {
 // every client above the daemon is identical either way. Local mode touches no
 // remote code at all, and neither mode links the AWS SDK.
 func runServe() int {
-	if err := os.MkdirAll(paths.Home(), 0o755); err != nil {
+	if err := paths.EnsureHome(); err != nil {
 		fmt.Fprintln(os.Stderr, "muster: mkdir:", err)
 		return 1
 	}
+	serveLock, acquired, err := acquireServeLock()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "muster: serve lock:", err)
+		return 1
+	}
+	if !acquired {
+		return 0
+	}
+	defer func() { _ = serveLock.Close() }()
 	notifier := wake.NewTmuxNotifier("@muster_inbox", 500*time.Millisecond)
 
 	var d *daemon.Daemon
@@ -208,6 +218,25 @@ func runServe() int {
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	<-sig
 	return 0
+}
+
+// acquireServeLock serializes daemon ownership of the local socket. A client
+// may auto-spawn serve concurrently with another first client; only the owner
+// may clear a stale socket and bind a new listener.
+func acquireServeLock() (*os.File, bool, error) {
+	f, err := os.OpenFile(filepath.Join(paths.Home(), "serve.lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, false, err
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		if errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN) {
+			_ = f.Close()
+			return nil, false, nil
+		}
+		_ = f.Close()
+		return nil, false, err
+	}
+	return f, true, nil
 }
 
 // serveRemote builds the remote-mode daemon: it keeps the unix socket and the

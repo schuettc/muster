@@ -183,6 +183,7 @@ func itemToThread(item map[string]types.AttributeValue) store.Thread {
 // denormalized attributes — the counterpart of the SQLite backend's
 // threadLastEntryCTE/Join. Only Threads() and Inbox() call it.
 func annotateLastEntry(t *store.Thread, item map[string]types.AttributeValue) {
+	t.LastEntryID = numAttr(item, "last_entry_id")
 	t.LastFrom = strAttr(item, "last_from")
 	t.LastAt = numAttr(item, "last_at")
 	t.EntryCount = int(numAttr(item, "entry_count"))
@@ -944,39 +945,42 @@ func (s *Store) UnreadCount(alias string) (int, error) {
 	return len(unread), nil
 }
 
-// MarkRead records that alias has read its inbox up to the highest entry id
-// the alias could actually have been SHOWN — the entries Inbox reads, from the
-// alias's own gsi1 recipient partitions, filtered to threads that concern it.
-// The watermark is an entry id, not a wall-clock timestamp, so two entries
-// landing in the same millisecond never race a strict "after last read"
-// comparison. last_read_at is stamped for display only; no unread predicate
-// consults it.
+// MarkRead records that alias has read its inbox through upToEntryID — the
+// highest entry id the caller's own Inbox snapshot actually carried
+// (store.API), not anything this method reads for itself. The watermark is an
+// entry id, not a wall-clock timestamp, so two entries landing in the same
+// millisecond never race a strict "after last read" comparison. last_read_at
+// is stamped for display only; no unread predicate consults it.
 //
 // Three properties this must not lose:
 //
-//   - The watermark comes from WRITTEN entries, never from the entry counter.
-//     A counter value can already be allocated to an entry still in flight,
-//     and treating that as read would swallow its unread signal outright.
-//     entriesAfter reads index items, which exist only once a write committed.
-//   - It reads the SAME index Inbox reads (gsi1). Deriving it from the global
-//     entry log (gsi2) instead meant one write's two index replications could
-//     disagree, so a get_inbox could mark read an entry Inbox had not shown.
+//   - The watermark comes from SHOWN entries, never from the entry counter or
+//     any query of this method's own. A counter value can already be
+//     allocated to an entry still in flight, and a fresh query could see an
+//     entry the caller's snapshot did not — either way an entry gets marked
+//     read without ever being returned. The caller-supplied bound rules both
+//     out by construction.
+//   - The bound originates in the SAME index read Inbox answered from (gsi1's
+//     denormalized last_entry_id), so one write's two index replications
+//     (gsi1/gsi2) can never disagree about what was shown.
 //   - It never moves the watermark DOWN. agentByAlias is strongly consistent,
-//     so the floor is the alias's current watermark and an eventually
-//     consistent index that lags cannot re-surface already-read entries. (Two
-//     MarkReads for the same alias concurrently can still interleave — the
-//     write is not conditional on the old value, because condition failure
-//     already means "unknown alias" here.)
+//     so the floor is the alias's current watermark and a stale caller cannot
+//     re-surface already-read entries. (Two MarkReads for the same alias
+//     concurrently can still interleave — the write is not conditional on the
+//     old value, because condition failure already means "unknown alias"
+//     here — and the loser keeps the lower watermark: duplicated unread
+//     signal, never lost signal.)
 //
-// What remains: writers racing into the alias's own partitions. See "The
-// MarkRead watermark can overshoot" in the package comment.
+// What remains: writers racing into the alias's own partitions, now visible
+// as Inbox showing a committed higher id while a lower one is still in
+// flight. See "The MarkRead watermark can overshoot" in the package comment.
 //
 // The condition mirrors the SQLite UPDATE-matches-no-rows contract: DynamoDB's
 // UpdateItem is an upsert, so without it, marking an unknown alias read would
 // CREATE an agent row holding nothing but a watermark. It is kept alongside
 // the unknown-alias early return because the agent can be deleted between the
 // read and this write.
-func (s *Store) MarkRead(alias string) error {
+func (s *Store) MarkRead(alias string, upToEntryID int64) error {
 	ctx := backgroundCtx()
 	agent, ok, err := s.agentByAlias(ctx, alias)
 	if err != nil {
@@ -985,10 +989,7 @@ func (s *Store) MarkRead(alias string) error {
 	if !ok {
 		return nil // unknown alias: no-op, matching the SQLite contract
 	}
-	watermark, err := s.readableThrough(ctx, agent, agent.LastReadEntryID)
-	if err != nil {
-		return err
-	}
+	watermark := max(agent.LastReadEntryID, upToEntryID)
 	_, err = s.c.UpdateItem(ctx, &dynamodb.UpdateItemInput{
 		TableName: aws.String(s.table),
 		Key:       agentKey(alias),
@@ -1014,16 +1015,17 @@ func (s *Store) MarkRead(alias string) error {
 	return nil
 }
 
-// readableThrough is the watermark MarkRead writes: the highest id among the
-// entries visible to alias right now, or its current watermark if there are
-// none — never lower than after, so the watermark only moves forward.
+// readableThrough is the highest entry id visible to alias right now, or after
+// if there are none — never lower than after, so a watermark only moves
+// forward. RegisterAgent uses it to seed a new session's watermark to the
+// concern-scoped max (SQLite seeds the global MAX(entries.id); this is the
+// behaviourally identical concern-scoped equivalent for unread).
 //
 // It runs the same fan-out unreadFor runs (concerns, then entriesAfter from
-// after), which is why get_inbox pays for that fan-out twice. Entries outside
-// the concerning set are ignored even though they share a partition: an entry
-// on a thread that does not concern alias can never be unread for it
-// (unreadByThread filters on exactly this set), so counting it would raise the
-// watermark over in-flight ids for no signal at all.
+// after). Entries outside the concerning set are ignored even though they share
+// a partition: an entry on a thread that does not concern alias can never be
+// unread for it (unreadByThread filters on exactly this set), so counting it
+// would raise the watermark over in-flight ids for no signal at all.
 func (s *Store) readableThrough(ctx context.Context, a store.Agent, after int64) (int64, error) {
 	threads, parts, err := s.concerns(ctx, a)
 	if err != nil {

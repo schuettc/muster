@@ -18,7 +18,7 @@ func TestDispTargetScopedBroadcastShownAsIs(t *testing.T) {
 // TestDispStripsTheLocalPrefix covers events/watch/station's alias display
 // (--aliases mode, or any agent with no label yet): this machine's own
 // prefix comes off, a foreign one is left alone. Same human-surface rule as
-// internal/humancli's dispAlias.
+// internal/cli's dispAlias.
 func TestDispStripsTheLocalPrefix(t *testing.T) {
 	t.Setenv("MUSTER_HOME", t.TempDir())
 	t.Setenv("MUSTER_DEVICE_NAME", "personal")
@@ -51,7 +51,7 @@ func TestDispTargetStripsAgentTargetsOnly(t *testing.T) {
 }
 
 // TestDispRendersBothSidesOfAStripCollisionInFull is spec §5's fallback, the
-// one the other two human surfaces (humancli.aliasDisplay,
+// one the other two human surfaces (cli.aliasDisplay,
 // station.computeAliasStripCollisions) already implement. A legacy bare
 // "relay" beside a locally seeded "personal-relay" both strip to "relay", and
 // a feed showing one name for two agents is worse than one showing a prefix.

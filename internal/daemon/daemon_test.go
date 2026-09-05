@@ -3,6 +3,7 @@ package daemon
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -28,6 +29,28 @@ func startTestDaemon(t *testing.T) string {
 	}
 	t.Cleanup(func() { _ = d.Close() })
 	return paths.SocketPath()
+}
+
+func TestServeSecuresSocket(t *testing.T) {
+	dir := testHome(t)
+	s, err := store.Open(filepath.Join(dir, "bus.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	sock := filepath.Join(dir, "sock")
+	d, err := Serve(sock, s, nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+	info, err := os.Stat(sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("socket mode = %#o, want 0600", got)
+	}
 }
 
 func TestDaemonRegisterAndList(t *testing.T) {
@@ -120,7 +143,7 @@ func TestTaskClaimAcceptsStringThreadID(t *testing.T) {
 
 // decodeGetAgent re-marshals a get_agent response's Data (already a
 // map[string]any from the wire) into a typed found/agent pair, matching the
-// approach internal/humancli uses for the same response shape.
+// approach internal/cli uses for the same response shape.
 func decodeGetAgent(t *testing.T, resp proto.Response) (store.Agent, bool) {
 	t.Helper()
 	raw, err := json.Marshal(resp.Data)

@@ -311,28 +311,19 @@ WHERE `+threadConcerns+`
 	return n, err
 }
 
-// MarkRead records that alias has read its inbox up to the highest entry ID
-// that exists right now: the read and the watermark snapshot happen in one
-// transaction, so an entry appended concurrently (even in the same
-// millisecond) is never mistaken for already read. last_read_at is also
-// stamped, for display purposes only — it is no longer consulted by any
-// unread predicate.
-func (s *Store) MarkRead(alias string) error {
+// MarkRead records that alias has read its Inbox snapshot through upToEntryID.
+// The caller supplies the snapshot bound; querying entries here would create a
+// race where a newer entry could be marked read without ever being returned.
+// last_read_at is stamped for display only and does not affect unread math.
+func (s *Store) MarkRead(alias string, upToEntryID int64) error {
 	now := clock.NowMillis()
-	tx, err := s.db.Begin()
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	var maxID int64
-	if err := tx.QueryRow(`SELECT COALESCE(MAX(id), 0) FROM entries`).Scan(&maxID); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(`UPDATE agents SET last_read_entry_id=?, last_read_standing_entry_id=?, last_read_at=? WHERE alias=?`, maxID, maxID, now, alias); err != nil {
-		return err
-	}
-	return tx.Commit()
+	_, err := s.db.Exec(`
+UPDATE agents
+SET last_read_entry_id = MAX(last_read_entry_id, ?),
+    last_read_standing_entry_id = MAX(last_read_standing_entry_id, ?),
+    last_read_at = ?
+WHERE alias = ?`, upToEntryID, upToEntryID, now, alias)
+	return err
 }
 
 // ErrBecomeFromMissing / ErrBecomeToExists are become's guard sentinels —

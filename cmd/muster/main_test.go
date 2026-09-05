@@ -2,12 +2,21 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
+	"time"
+
+	"github.com/schuettc/muster/internal/daemon"
+	"github.com/schuettc/muster/internal/mustertest"
+	"github.com/schuettc/muster/internal/paths"
+	"github.com/schuettc/muster/internal/store"
 )
 
 // TestMain builds the shared binary lazily (see builtBinary) and removes its
@@ -23,7 +32,7 @@ func TestMain(m *testing.M) {
 // builtBinary lazily builds the real muster binary once per test process
 // (not per test) and returns its path, so exit-code/output behavior is
 // verified end-to-end through main() itself — the layer unit tests inside
-// internal/humancli can't reach, since the exit-code split (UsageError → 2,
+// internal/cli can't reach, since the exit-code split (UsageError → 2,
 // everything else → 1) and the bare-invocation/serve-mcp-debug help
 // interception all live here.
 var (
@@ -129,7 +138,7 @@ func TestVersionExitsZero(t *testing.T) {
 }
 
 // TestMainOwnedCommandHelpExitsZero covers the commands main() routes itself
-// rather than through humancli.Dispatch. They are also the ones whose help
+// rather than through cli.Dispatch. They are also the ones whose help
 // text can silently go missing, since Dispatch never sees them — a Registry
 // row is the only thing that gives them a banner.
 func TestMainOwnedCommandHelpExitsZero(t *testing.T) {
@@ -195,6 +204,21 @@ func TestUnknownBackendIsAnErrorNotAFallback(t *testing.T) {
 	}
 }
 
+func TestServeRepairsHomeDirectoryMode(t *testing.T) {
+	home := t.TempDir()
+	if err := os.Chmod(home, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_, _, _ = runEnv(t, []string{"MUSTER_HOME=" + home, "MUSTER_BACKEND=hosted"}, "serve")
+	info, err := os.Stat(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o700 {
+		t.Fatalf("MUSTER_HOME mode = %#o, want 0700", got)
+	}
+}
+
 // TestRemoteBackendRequiresItsURL: remote mode with no endpoint has nowhere to
 // forward to, and must say which variable is missing rather than start and
 // fail on the first op.
@@ -222,6 +246,60 @@ func TestRemoteBackendRequiresItsToken(t *testing.T) {
 	if !strings.Contains(errOut, "remote-token") {
 		t.Errorf("stderr = %q, want it to name the token file", errOut)
 	}
+}
+
+// TestSecondServeLeavesFirstDaemonSocketOwned proves that an auto-spawned
+// duplicate exits before it can unlink the live daemon's socket.
+func TestSecondServeLeavesFirstDaemonSocketOwned(t *testing.T) {
+	// ShortHome, not t.TempDir(): the daemon socket path must stay under the
+	// unix sun_path ~104-char limit, which t.TempDir() exceeds on macOS.
+	home, cleanup, err := mustertest.ShortHome()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(cleanup)
+	t.Setenv("MUSTER_HOME", home)
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	s, err := store.Open(paths.DBPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	first, err := daemon.Serve(paths.SocketPath(), s, nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = first.Close() })
+
+	lock, err := os.OpenFile(filepath.Join(home, "serve.lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = lock.Close() })
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = syscall.Flock(int(lock.Fd()), syscall.LOCK_UN) })
+
+	bin := builtBinary(t)
+	ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, bin, "serve")
+	cmd.Env = append(os.Environ(), "MUSTER_HOME="+home)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		if ctx.Err() != nil {
+			t.Fatalf("second serve did not exit while the first owned serve.lock: %s", out)
+		}
+		t.Fatalf("second serve: %v: %s", err, out)
+	}
+
+	conn, err := net.DialTimeout("unix", paths.SocketPath(), 100*time.Millisecond)
+	if err != nil {
+		t.Fatalf("first daemon socket was unlinked: %v", err)
+	}
+	_ = conn.Close()
 }
 
 // TestBareInvocationUnderLambdaRuntimeRoutesToLambda pins the dispatch

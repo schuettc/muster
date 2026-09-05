@@ -338,7 +338,7 @@ func TestDispLabelStripsTheLocalDevicePrefix(t *testing.T) {
 // alias from a device that never adopted a name) both strip/pass-through to
 // "relay", and a roster showing one live agent's name twice is worse than one
 // showing a prefix (spec §5-LOCK item 7's "who → who" guarantee, same rule
-// aliasDisplay enforces in internal/humancli/dispalias.go). Both colliding
+// aliasDisplay enforces in internal/cli/dispalias.go). Both colliding
 // sides fall back to their full, unstripped alias. A third, non-colliding
 // alias ("personal-other") is included to prove the fallback is collision-
 // scoped, not a roster-wide kill switch on stripping.

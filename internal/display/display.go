@@ -2,7 +2,7 @@
 // careless bus payload (subject, body, reply preview) could put in front of
 // an operator's terminal: the renderer, journal preview columns, and the
 // station TUI all funnel through Sanitize rather than each rolling their own
-// escaping. It has no dependency on internal/humancli or internal/daemon so
+// escaping. It has no dependency on internal/cli or internal/daemon so
 // the daemon can sanitize at journal time without importing the CLI.
 package display
 

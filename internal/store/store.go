@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	_ "embed"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -34,7 +35,20 @@ func Open(dbPath string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
+	if err := secureDatabaseFiles(dbPath); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("secure db files: %w", err)
+	}
 	return &Store{db: db}, nil
+}
+
+func secureDatabaseFiles(dbPath string) error {
+	for _, path := range []string{dbPath, dbPath + "-wal", dbPath + "-shm"} {
+		if err := os.Chmod(path, 0o600); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return nil
 }
 
 // migrate applies additive column migrations to pre-existing databases. Each
