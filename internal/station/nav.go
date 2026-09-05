@@ -439,7 +439,7 @@ func computeLabelCollisions(agents []agentEnriched) map[string]bool {
 // distinct labels (both fall back to their own alias) yet strip to the same
 // "relay". When flagged here, BOTH sides fall back to their full,
 // unstripped alias, mirroring aliasDisplay in
-// internal/humancli/dispalias.go, whose doc comment claims parity with
+// internal/cli/dispalias.go, whose doc comment claims parity with
 // station.
 func computeAliasStripCollisions(agents []agentEnriched) map[string]bool {
 	name := device.Name()

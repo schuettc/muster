@@ -12,10 +12,10 @@ import (
 	"time"
 
 	"github.com/schuettc/muster/internal/channel"
+	"github.com/schuettc/muster/internal/cli"
 	"github.com/schuettc/muster/internal/client"
 	"github.com/schuettc/muster/internal/daemon"
 	"github.com/schuettc/muster/internal/device"
-	"github.com/schuettc/muster/internal/humancli"
 	"github.com/schuettc/muster/internal/mcpserver"
 	"github.com/schuettc/muster/internal/paths"
 	"github.com/schuettc/muster/internal/proto"
@@ -34,50 +34,50 @@ func main() {
 		if os.Getenv(LambdaRuntimeEnv) != "" {
 			os.Exit(runLambda())
 		}
-		humancli.Usage(os.Stdout)
+		cli.Usage(os.Stdout)
 		os.Exit(2)
 	}
 	switch os.Args[1] {
 	case "serve":
 		if wantsHelp(os.Args[2:]) {
-			_ = humancli.HelpFor("serve", os.Stdout)
+			_ = cli.HelpFor("serve", os.Stdout)
 			return
 		}
 		os.Exit(runServe())
 	case "debug":
 		if wantsHelp(os.Args[2:]) {
-			_ = humancli.HelpFor("debug", os.Stdout)
+			_ = cli.HelpFor("debug", os.Stdout)
 			return
 		}
 		runDebug(os.Args[2:])
 	case "mcp":
 		if wantsHelp(os.Args[2:]) {
-			_ = humancli.HelpFor("mcp", os.Stdout)
+			_ = cli.HelpFor("mcp", os.Stdout)
 			return
 		}
 		runMCP()
 	case "lambda":
 		if wantsHelp(os.Args[2:]) {
-			_ = humancli.HelpFor("lambda", os.Stdout)
+			_ = cli.HelpFor("lambda", os.Stdout)
 			return
 		}
 		os.Exit(runLambda())
 	case "channel":
 		if wantsHelp(os.Args[2:]) {
-			_ = humancli.HelpFor("channel", os.Stdout)
+			_ = cli.HelpFor("channel", os.Stdout)
 			return
 		}
 		runChannel()
 	default:
-		// humancli.Dispatch owns the CLI subcommand list (including
+		// cli.Dispatch owns the CLI subcommand list (including
 		// help/version) and errors on an unknown one — routing everything
 		// here keeps that list canonical (a second list in this switch once
 		// shipped a release whose usage advertised a subcommand main()
 		// refused to route).
-		if err := humancli.Dispatch(os.Args[1:], os.Stdout); err != nil {
+		if err := cli.Dispatch(os.Args[1:], os.Stdout); err != nil {
 			fmt.Fprintln(os.Stderr, "muster:", err)
 			code := 1
-			var usageErr *humancli.UsageError
+			var usageErr *cli.UsageError
 			if errors.As(err, &usageErr) {
 				code = 2
 			}
@@ -87,11 +87,11 @@ func main() {
 }
 
 // wantsHelp reports whether the first token after a subcommand name is a
-// help flag. serve/mcp/channel/debug/lambda are owned by main() (not humancli.Dispatch),
+// help flag. serve/mcp/channel/debug/lambda are owned by main() (not cli.Dispatch),
 // so their -h/--help handling lives here rather than behind flag.ErrHelp
-// interception the way the humancli-dispatched commands do it.
+// interception the way the cli-dispatched commands do it.
 func wantsHelp(args []string) bool {
-	return len(args) > 0 && humancli.IsHelpArg(args[0])
+	return len(args) > 0 && cli.IsHelpArg(args[0])
 }
 
 // LambdaRuntimeEnv is set by the AWS Lambda runtime in every execution

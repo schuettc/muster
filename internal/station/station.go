@@ -44,7 +44,7 @@ func (daemonCaller) Call(op string, args map[string]any) (json.RawMessage, error
 }
 
 // FlagSet declares station's flags, exported so muster's CLI command
-// registry (internal/humancli) can render `muster help station` /
+// registry (internal/cli) can render `muster help station` /
 // `muster station -h` and detect flag.ErrHelp before ever spinning up the
 // full-screen TUI, without keeping a second, driftable copy of the flag
 // list. Run below builds its OWN identical FlagSet rather than calling this

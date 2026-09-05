@@ -23,7 +23,7 @@ func TestMain(m *testing.M) {
 // builtBinary lazily builds the real muster binary once per test process
 // (not per test) and returns its path, so exit-code/output behavior is
 // verified end-to-end through main() itself — the layer unit tests inside
-// internal/humancli can't reach, since the exit-code split (UsageError → 2,
+// internal/cli can't reach, since the exit-code split (UsageError → 2,
 // everything else → 1) and the bare-invocation/serve-mcp-debug help
 // interception all live here.
 var (
@@ -129,7 +129,7 @@ func TestVersionExitsZero(t *testing.T) {
 }
 
 // TestMainOwnedCommandHelpExitsZero covers the commands main() routes itself
-// rather than through humancli.Dispatch. They are also the ones whose help
+// rather than through cli.Dispatch. They are also the ones whose help
 // text can silently go missing, since Dispatch never sees them — a Registry
 // row is the only thing that gives them a banner.
 func TestMainOwnedCommandHelpExitsZero(t *testing.T) {
