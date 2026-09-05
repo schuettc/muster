@@ -416,6 +416,22 @@ To add a second device, run `muster-deploy -join` on the machine you deployed
 from; it prints those exports, the token, and a fingerprint for checking the
 copy arrived intact.
 
-## License
+## Licensing
 
-[MIT](LICENSE) © Court Schuett
+muster is source-available under the **Business Source License 1.1**
+(`BUSL-1.1`) and is **free for any organization under 25 people** — individuals
+and small teams pay nothing and nothing is held back. At 25 employees or more, a
+company licenses muster; it is an honor-based commercial license, not a lock.
+muster never gates a feature, never asks for a key, and never phones home — the
+purchase receipt is the proof of compliance, and there is nothing to install or
+activate. Deploying the hosted backend into your own AWS account is permitted
+self-hosting, not a commercial hosted service.
+
+Pricing is a one-time purchase by company size (Starter / Team / Company /
+Growth, with a contact-us tier for 500+), available at
+[**muster.tools/buy**](https://muster.tools/buy/). Each release converts to
+Apache-2.0 three years after it ships, so no company is ever stranded on a
+binary it cannot fork. The binding terms are in [LICENSE](LICENSE).
+
+Versions before v0.18.0 were released under the MIT License and remain MIT in
+perpetuity; the Business Source License applies from v0.18.0 onward.
