@@ -1362,9 +1362,7 @@ func testNewSessionStandingOnce(t *testing.T, s store.API) {
 	if n, err := s.UnreadCount("newbie"); err != nil || n != 1 {
 		t.Fatalf("standing broadcast should reach new session: unread=%d (%v), want 1", n, err)
 	}
-	if err := s.MarkRead("newbie"); err != nil {
-		t.Fatalf("MarkRead: %v", err)
-	}
+	markReadInbox(t, s, "newbie")
 	if n, err := s.UnreadCount("newbie"); err != nil || n != 0 {
 		t.Fatalf("standing should be quiet after MarkRead: unread=%d (%v), want 0", n, err)
 	}
@@ -1449,9 +1447,7 @@ func testStandingOrderReGreets(t *testing.T, s store.API) {
 		t.Fatal(err)
 	}
 	mustRegister(t, s, store.Agent{Alias: "running", Project: "web"})
-	if err := s.MarkRead("running"); err != nil {
-		t.Fatal(err)
-	}
+	markReadInbox(t, s, "running")
 	if n, _ := s.UnreadCount("running"); n != 0 {
 		t.Fatalf("after reading v1, unread should be 0, got %d", n)
 	}
@@ -1505,9 +1501,7 @@ func testStandingOrderRetractSparesRead(t *testing.T, s store.API) {
 		t.Fatal(err)
 	}
 	mustRegister(t, s, store.Agent{Alias: "seen", Project: "web"})
-	if err := s.MarkRead("seen"); err != nil {
-		t.Fatal(err)
-	}
+	markReadInbox(t, s, "seen")
 	if _, err := s.RetractStandingOrder("web", "invariants"); err != nil {
 		t.Fatal(err)
 	}

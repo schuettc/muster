@@ -1015,6 +1015,36 @@ func (s *Store) MarkRead(alias string, upToEntryID int64) error {
 	return nil
 }
 
+// readableThrough is the highest entry id visible to alias right now, or after
+// if there are none — never lower than after, so a watermark only moves
+// forward. RegisterAgent uses it to seed a new session's watermark to the
+// concern-scoped max (SQLite seeds the global MAX(entries.id); this is the
+// behaviourally identical concern-scoped equivalent for unread).
+//
+// It runs the same fan-out unreadFor runs (concerns, then entriesAfter from
+// after). Entries outside the concerning set are ignored even though they share
+// a partition: an entry on a thread that does not concern alias can never be
+// unread for it (unreadByThread filters on exactly this set), so counting it
+// would raise the watermark over in-flight ids for no signal at all.
+func (s *Store) readableThrough(ctx context.Context, a store.Agent, after int64) (int64, error) {
+	threads, parts, err := s.concerns(ctx, a)
+	if err != nil {
+		return 0, err
+	}
+	entries, err := s.entriesAfter(ctx, parts, after)
+	if err != nil {
+		return 0, err
+	}
+	concerning := idSet(threads)
+	watermark := after
+	for _, e := range entries {
+		if e.ID > watermark && concerning[e.ThreadID] {
+			watermark = e.ID
+		}
+	}
+	return watermark, nil
+}
+
 // SessionUnread is the session-level unread query: all aliases sharing the
 // exact (socketPath, sessionID) tuple are ONE actor identity for unread math
 // and actor exclusion. total counts DISTINCT threads concerning any alias of

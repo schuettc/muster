@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/schuettc/muster/internal/daemon"
+	"github.com/schuettc/muster/internal/mustertest"
 	"github.com/schuettc/muster/internal/paths"
 	"github.com/schuettc/muster/internal/store"
 )
@@ -250,7 +251,13 @@ func TestRemoteBackendRequiresItsToken(t *testing.T) {
 // TestSecondServeLeavesFirstDaemonSocketOwned proves that an auto-spawned
 // duplicate exits before it can unlink the live daemon's socket.
 func TestSecondServeLeavesFirstDaemonSocketOwned(t *testing.T) {
-	home := t.TempDir()
+	// ShortHome, not t.TempDir(): the daemon socket path must stay under the
+	// unix sun_path ~104-char limit, which t.TempDir() exceeds on macOS.
+	home, cleanup, err := mustertest.ShortHome()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(cleanup)
 	t.Setenv("MUSTER_HOME", home)
 	if err := os.MkdirAll(home, 0o755); err != nil {
 		t.Fatal(err)
