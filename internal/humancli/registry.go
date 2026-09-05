@@ -485,6 +485,21 @@ exploring or debugging the wire protocol — not part of the stable operator
 surface.`,
 			Group: GroupPlumbing,
 		},
+		{
+			Name:     "commands",
+			Synopsis: "commands [--json]",
+			Summary:  "List every command (--json for the machine-readable index).",
+			Help: `Bare, this is the same grouped listing as bare 'muster' / 'muster help'.
+--json instead emits the .tools-family command index (name, synopsis,
+summary, group, help, selfRouted, flags) that kempt, tackle, and galley
+already expose the same way — so a coding agent can discover muster's full
+command surface, including the process-mode commands (serve/mcp/debug/
+lambda/channel) that main() dispatches directly and so report
+selfRouted: true, without shelling out to 'muster help' and scraping text.`,
+			Group:    GroupPlumbing,
+			NewFlags: newCommandsFlags,
+			Run:      cmdCommands,
+		},
 	}
 }
 
