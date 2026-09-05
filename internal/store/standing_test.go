@@ -62,7 +62,7 @@ func TestNewSessionSeesStandingBroadcastOnce(t *testing.T) {
 	if n, _ := s.UnreadCount("newbie"); n != 1 {
 		t.Fatalf("standing broadcast should reach new session: unread=%d, want 1", n)
 	}
-	if err := s.MarkRead("newbie"); err != nil {
+	if err := s.MarkRead("newbie", maxEntryID(t, s)); err != nil {
 		t.Fatal(err)
 	}
 	if n, _ := s.UnreadCount("newbie"); n != 0 {
@@ -93,7 +93,7 @@ func TestMarkReadAdvancesBothWatermarks(t *testing.T) {
 	bcast(t, s, false, "live")
 	bcast(t, s, true, "standing")
 	want := maxEntryID(t, s)
-	if err := s.MarkRead("a"); err != nil {
+	if err := s.MarkRead("a", want); err != nil {
 		t.Fatal(err)
 	}
 	got, _, _ := s.GetAgent("a")
@@ -109,7 +109,7 @@ func TestReviveKeepsBothWatermarks(t *testing.T) {
 		t.Fatal(err)
 	}
 	bcast(t, s, true, "standing")
-	if err := s.MarkRead("back"); err != nil {
+	if err := s.MarkRead("back", maxEntryID(t, s)); err != nil {
 		t.Fatal(err)
 	}
 	want := maxEntryID(t, s)

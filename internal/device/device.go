@@ -123,7 +123,7 @@ func SetName(name string) (string, error) {
 	if clean == "" {
 		return "", fmt.Errorf("device: %q is not a usable device name (letters, digits and dashes)", name)
 	}
-	if err := os.MkdirAll(paths.Home(), 0o755); err != nil {
+	if err := paths.EnsureHome(); err != nil {
 		return "", err
 	}
 	p := filepath.Join(paths.Home(), NameFileName)
@@ -212,7 +212,7 @@ func ID() (string, error) {
 	if v := strings.TrimSpace(string(b)); v != "" {
 		return v, nil
 	}
-	if err := os.MkdirAll(paths.Home(), 0o755); err != nil {
+	if err := paths.EnsureHome(); err != nil {
 		return "", err
 	}
 	v := uuid.NewString()
