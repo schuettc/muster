@@ -466,6 +466,32 @@ session: every internal error is swallowed.`,
 			Run:   func(args []string, out io.Writer) error { return cmdHook(args, os.Stdin, out) },
 		},
 		{
+			Name:     "setup",
+			Synopsis: "setup [--agent claude|codex|cursor] [--no-hooks] [--tmux] [--dry-run] [--force] [--print kempt]",
+			Summary:  "Configure your coding agents (Claude Code, Codex, Cursor) to use muster.",
+			Help: `Registers muster's MCP server with each DETECTED agent, installs the
+session-lifecycle hooks, and (with --tmux) renders the tmux mailbox — the
+imperative fallback for people not using kempt, applying the exact same
+configuration the kempt package declares so the two paths never drift.
+
+Detection is by config presence: Claude Code (~/.claude or ~/.claude.json),
+Codex (~/.codex), Cursor (~/.cursor). Only detected agents are touched; with
+none found, setup prints how to proceed and changes nothing.
+
+Every file edit is an idempotent deep-merge that preserves existing content,
+so re-running adds no duplicates. --dry-run prints every change without
+writing. --no-hooks registers the MCP server only. --agent (repeatable or
+comma-separated) limits to specific agents. --tmux (off by default) also adds
+the mailbox lines to ~/.tmux.conf.
+
+When kempt is installed, setup defers to it: it prints the [packages.muster]
+block to add to your kempt.toml rather than editing files, unless --force is
+given. --print kempt emits that same canonical block and exits.`,
+			Group:    GroupPlumbing,
+			NewFlags: newSetupFlags,
+			Run:      cmdSetup,
+		},
+		{
 			Name:     "update",
 			Synopsis: "update",
 			Summary:  "Update muster to the latest release.",

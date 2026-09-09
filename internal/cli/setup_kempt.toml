@@ -1,0 +1,71 @@
+# muster — kempt package (the canonical declarative setup)
+#
+# Drop this [packages.muster] block into your kempt.toml (https://kempt.tools)
+# and run `kempt apply`. kempt installs the binary, registers the MCP server
+# with each agent, installs the session hooks, renders the tmux mailbox, and
+# runs the daemon as a background service — all idempotently, no shell scripts.
+#
+# This block is emitted verbatim by `muster setup --print kempt`, and is the
+# exact configuration `muster setup` applies for people who do not use kempt,
+# so the two paths never drift.
+#
+# macOS-focused (launchd service). Drop the `service` step on Linux or adapt it
+# to systemd --user.
+
+[packages.muster]
+description = "Cross-terminal agent coordination bus (daemon, MCP + hooks in Claude/Codex/Cursor, tmux mailbox)"
+only = { os = "darwin" }
+
+  [[packages.muster.download]]
+  site = "muster.tools"
+  tool = "muster"
+  bin = "muster"
+
+  [[packages.muster.service]]
+  label = "tools.muster.serve"
+  program = ["/bin/zsh", "-lc", "exec \"$HOME/.local/bin/muster\" serve"]
+  stdout = "~/.local/share/muster/serve.log"
+  stderr = "~/.local/share/muster/serve.log"
+
+  [[packages.muster.json-merge]]
+  file = "~/.claude.json"
+  merge = { mcpServers = { muster = { type = "stdio", command = "muster", args = ["mcp"], env = {} }, "muster-channel" = { type = "stdio", command = "muster", args = ["channel"], env = {} } } }
+
+  [[packages.muster.toml-merge]]
+  file = "~/.codex/config.toml"
+  merge = { mcp_servers = { muster = { command = "muster", args = ["mcp"] } } }
+
+  [[packages.muster.json-merge]]
+  file = "~/.cursor/mcp.json"
+  merge = { mcpServers = { muster = { command = "muster", args = ["mcp"] } } }
+
+  [[packages.muster.json-merge]]
+  file = "~/.claude/settings.json"
+  merge = { permissions = { allow = ["mcp__muster"] } }
+
+  [[packages.muster.json-merge]]
+  file = "~/.claude/settings.json"
+  merge = { hooks = { SessionStart = [ { matcher = "startup|resume", hooks = [ { type = "command", command = "~/.local/bin/muster hook SessionStart claude" } ] } ], Stop = [ { hooks = [ { type = "command", command = "~/.local/bin/muster hook Stop claude" } ] } ], SessionEnd = [ { hooks = [ { type = "command", command = "~/.local/bin/muster hook SessionEnd claude" } ] } ] } }
+
+  [[packages.muster.json-merge]]
+  file = "~/.codex/hooks.json"
+  merge = { hooks = { SessionStart = [ { hooks = [ { type = "command", command = "${HOME}/.local/bin/muster hook SessionStart codex" } ] } ], Stop = [ { hooks = [ { type = "command", command = "${HOME}/.local/bin/muster hook Stop codex" } ] } ] } }
+
+  [[packages.muster.json-merge]]
+  file = "~/.cursor/hooks.json"
+  merge = { version = 1, hooks = { sessionStart = [ { command = "${HOME}/.local/bin/muster hook SessionStart cursor" } ], stop = [ { command = "${HOME}/.local/bin/muster hook Stop cursor", loop_limit = 3 } ], sessionEnd = [ { command = "${HOME}/.local/bin/muster hook SessionEnd cursor" } ] } }
+
+  [[packages.muster.line-in-file]]
+  file = "~/.tmux.conf"
+  line = "set -g set-titles on"
+
+  [[packages.muster.line-in-file]]
+  file = "~/.tmux.conf"
+  line = "set -g set-titles-string '#{?@muster_inbox,📬#{@muster_inbox} ,}#S'"
+
+  [[packages.muster.line-in-file]]
+  file = "~/.tmux.conf"
+  line = "set -ga status-left '#{?@muster_inbox,#[fg=colour0#,bg=colour6#,bold] 📬#{@muster_inbox} #[default] ,}'"
+
+  [[packages.muster.verify]]
+  command-exists = "muster"
