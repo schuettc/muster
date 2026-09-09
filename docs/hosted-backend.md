@@ -205,7 +205,7 @@ Any bucket will do; if you do not have one:
 
 ```sh
 aws s3 mb s3://my-muster-artifacts --region us-east-1
-aws s3 cp muster-lambda-arm64-v0.10.0.zip s3://my-muster-artifacts/
+aws s3 cp muster-lambda-arm64-<tag>.zip s3://my-muster-artifacts/
 ```
 
 S3 bucket names are globally unique across every AWS account, so
@@ -229,7 +229,7 @@ aws cloudformation deploy \
   --parameter-overrides \
       MusterToken="<the token from step 1>" \
       CodeS3Bucket=my-muster-artifacts \
-      CodeS3Key=muster-lambda-arm64-v0.10.0.zip
+      CodeS3Key=muster-lambda-arm64-<tag>.zip
 ```
 
 The token parameter is declared `NoEcho`, so it will not appear in stack
@@ -511,7 +511,7 @@ aws cloudformation deploy \
       MusterToken="$NEW" \
       MusterTokenPrevious="<the current token>" \
       CodeS3Bucket=my-muster-artifacts \
-      CodeS3Key=muster-lambda-arm64-v0.10.0.zip
+      CodeS3Key=muster-lambda-arm64-<tag>.zip
 ```
 
 Both tokens now work. Nothing has broken.
@@ -528,17 +528,19 @@ retired credential you were rotating away from is still live.
 
 ## Upgrading the function
 
+Devices self-update with `muster update`; the Lambda function upgrade below stays the manual S3/CloudFormation path.
+
 Upload the new zip under a new, version-stamped key and point the stack at it:
 
 ```sh
-aws s3 cp muster-lambda-arm64-v0.11.0.zip s3://my-muster-artifacts/
+aws s3 cp muster-lambda-arm64-<new-tag>.zip s3://my-muster-artifacts/
 aws cloudformation deploy \
   --template-file contrib/cloudformation/muster-backend.yaml \
   --stack-name muster --capabilities CAPABILITY_IAM --region us-east-1 \
   --parameter-overrides \
       MusterToken="<current token>" \
       CodeS3Bucket=my-muster-artifacts \
-      CodeS3Key=muster-lambda-arm64-v0.11.0.zip
+      CodeS3Key=muster-lambda-arm64-<new-tag>.zip
 ```
 
 Reusing one key does not work: CloudFormation compares the key, not the bytes
