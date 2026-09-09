@@ -11,6 +11,10 @@ agents already running on their own plans). One static Go binary, multi-mode
 (`serve` daemon · `mcp` stdio server · human CLI · `lambda` handler for the
 optional hosted backend).
 
+**License.** muster is BUSL-1.1 as of v0.18.0 — free for organizations under 25
+employees, and each release converts to Apache-2.0 three years after it ships.
+Versions before v0.18.0 stay MIT in perpetuity.
+
 ## Build / test / run
 
 - **`just verify`** — the gate: `gofmt`, `golangci-lint`, `go test -race`, build,
@@ -27,7 +31,7 @@ optional hosted backend).
 - **macOS tests** use `internal/mustertest.ShortHome()` for unix-socket paths (the
   `sun_path` ~104-char limit; `t.TempDir()` is too long and breaks the socket).
 - Build + run: `go build -o ~/.local/bin/muster ./cmd/muster`, then
-  `muster serve | mcp | agents | send | inbox | tasks | nudge | register | …`.
+  `muster serve | mcp | agents | send | inbox | tasks | nudge | register | status | update | commands | standing | channel | station | …`.
 
 ## Branch model
 
@@ -56,7 +60,7 @@ only once the PR is open.
 
 - **daemon = API.** A lazy unix-socket daemon speaking newline-delimited JSON
   (`internal/proto`). The MCP server (`internal/mcpserver`) and the human CLI
-  (`internal/humancli`) are **peer clients** of the daemon — neither goes through the
+  (`internal/cli`) are **peer clients** of the daemon — neither goes through the
   other. Any daemon op is reachable from a plain CLI subcommand.
 - **tmux = substrate.** Liveness, wake, and identity lean on tmux — but only through
   `internal/tmuxenv` (the one canonical capture path) or the injected
@@ -116,10 +120,13 @@ register_agent resolves against that identity before ever inserting a row: a con
 
 `cmd/muster` entrypoint · `internal/proto` wire protocol · `internal/client` daemon
 client · `internal/daemon` the daemon · `internal/store` the `store.API` interface
-+ its SQLite implementation · `internal/mcpserver` MCP tools · `internal/humancli`
++ its SQLite implementation · `internal/mcpserver` MCP tools · `internal/cli`
 operator CLI · `internal/wake` notify · `internal/nudge` send-keys ·
+`internal/nudgeguard` proves a live-local target before send-keys ·
 `internal/channelmcp` stdlib claude/channel MCP server · `internal/channel` the
-channel carrier (journal tail → push) ·
+channel carrier (journal tail → push) · `internal/render` shared journal rendering ·
+`internal/resolve` canonical target resolution · `internal/display` terminal-output
+sanitizer · `internal/station` operator TUI · `internal/version` build stamp ·
 `internal/tmuxenv` tmux capture/liveness/label · `internal/harnessenv` paneless
 harness-session capture (tmuxenv's counterpart) · `internal/paths` socket+db paths ·
 `internal/clock` injectable time · `internal/mustertest` shared test helpers.

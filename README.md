@@ -4,14 +4,15 @@
 
 `muster` lets coding-agent sessions in separate terminals send messages and hand
 tasks to each other. Any agent that can register an MCP server can join the bus —
-Claude Code, OpenAI Codex, and Cursor Agent are supported. Everything runs over
-a local unix socket with state in a local SQLite file; muster itself never calls
-a model.
+Claude Code, OpenAI Codex, Cursor Agent, and pi are supported. Everything runs
+over a local unix socket with state in a local SQLite file; muster itself never
+calls a model.
 
 - **Messages and tasks between sessions.** One agent posts a "review this branch"
   task; a standing session in another terminal claims it, works it, and replies.
-- **One static Go binary**, three modes: a lazy-started daemon, a stdio MCP server
-  each agent registers, and a CLI for you.
+- **One static Go binary**, four modes: a lazy-started daemon, a stdio MCP server
+  each agent registers, a channel carrier that pushes wakes into idle sessions,
+  and a CLI for you.
 - **tmux-native wake** — mail sets a mailbox flag (`📬<count>`) on the recipient's
   tmux session; `muster nudge` is the only thing that types into a pane.
 
@@ -19,25 +20,27 @@ Landing page: **muster.tools**
 
 ## Status
 
-**v0.6.0** — `muster station`, the full-screen operator TUI, as a pure drill-down
-(projects → agents → threads → messages) with its own mailbox page; messages and
-tasks carry an intent (`fyi`, `reply-requested`, `action-requested`) that renders
-as a plain word everywhere, not a code; deregistration now tombstones an agent
-instead of deleting it, so a departed agent's thread history stays visible and
-re-registering the same alias revives it cleanly; and target resolution is
-canonical — an unknown `send`/`task_create` target (CLI or MCP) fails loudly
-instead of silently creating a thread addressed to nobody. Builds on the v0.5.x
-bus journal and `muster watch` live tail, and the v0.2.2 identity/addressing core
-(project-scoped agents, addressable labels, tmux-verified liveness) on top of the
-v0.1.0 base (SQLite store, lazy daemon, MCP server, human CLI, notify/nudge wake).
-See [releases](https://github.com/schuettc/muster/releases) for the changelog.
+**v0.18.0** — muster is now source-available under the **Business Source License
+1.1** (free for any organization under 25 people; each release converts to
+Apache-2.0 three years after it ships; versions before v0.18.0 stay MIT). The
+coordination core is mature: **channel mode** (`muster channel`) pushes wakes
+into idle sessions over MCP; **standing orders** are a keyed, retractable
+per-project convention that new sessions read once instead of inheriting a live
+broadcast backlog; a **broadcast storm guard** gates every broadcast behind a
+blast-radius confirmation and routes replies to the originator; and `muster
+station` is the full-screen operator TUI. Messages and tasks carry an intent
+(`fyi`, `reply-requested`, `action-requested`); a departed agent is tombstoned,
+not deleted, so its history stays visible and re-registering its alias revives
+it; and target resolution is canonical — an unknown `send`/`task_create` target
+(CLI or MCP) fails loudly instead of addressing a thread to nobody. See
+[releases](https://github.com/schuettc/muster/releases) for the full changelog.
 
 ## Setup
 
 ```bash
 # 1. install the binary (macOS or Linux; on Windows use WSL2)
 curl -fsSL https://muster.tools/install.sh | sh
-#    (or build from source with Go 1.22+: go install github.com/schuettc/muster/cmd/muster@latest)
+#    (or build from source with Go 1.26+: go install github.com/schuettc/muster/cmd/muster@latest)
 
 # 2. register the MCP server with each agent
 claude mcp add muster -s user -- muster mcp     # Claude Code
@@ -122,15 +125,30 @@ want to (they auto-start the daemon):
 
 ```bash
 muster agents                              # who's registered
+muster status --json                       # side-effect-free per-alias unread counts (marks nothing read)
 muster inbox <alias>                       # an agent's threads — addressed to it or started by it
 muster tasks <alias>                       # just the tasks for an agent
 muster events                              # the bus event log: every mailbox notify and inbox read
 muster watch                               # follow the bus live — every message, task, wake and read as it happens
 muster station                             # the full-screen operator TUI — projects, agents, threads, compose
+muster commands --json                     # every subcommand, for family CLI discovery
+muster update                              # self-update the binary in place
 muster send <alias> "message"  --from me   # send a directed message
 muster send <alias> "message"  --from me --intent action-requested  # mark it as needing a reply
 muster send --role reviewer "please look"  --from me   # to a role
-muster send --broadcast "heads up"         --from me   # to everyone
+muster send --broadcast "heads up"         --from me   # to everyone (prints the blast radius and prompts first)
+```
+
+A plain `--broadcast` is gated: it prints who it would reach and waits for
+confirmation before sending, and replies route back to the sender rather than
+fanning out. `--yes` skips the prompt; `--standing` also reaches sessions that
+start later, until they read it once (standing orders); `--wake` is break-glass
+— it interrupts every recipient now instead of waiting for their next turn.
+
+```bash
+muster standing <proj>                     # list a project's live standing orders
+muster standing set <proj> --key invariants "…" --from me   # create or replace one
+muster standing retract <proj> --key invariants            # retract one
 ```
 
 ### Registering & liveness
@@ -357,7 +375,9 @@ The muster binary is its own hook — point your harness at `muster hook <event>
 <model>` (e.g. `muster hook Stop claude`). Copy-paste config for Claude Code,
 Codex, and Cursor Agent is in [`contrib/`](contrib/README.md). Cursor's
 hook config goes in `~/.cursor/hooks.json`; its stop hook uses a `loop_limit`
-and muster respects Cursor's loop/status guard.
+and muster respects Cursor's loop/status guard. Set `MUSTER_HOOK_DISABLE=1` in a
+nested harness subprocess to keep its lifecycle hooks from firing under the
+parent session's identity.
 
 **Pane ownership.** Only the session's primary agent pane acts on these
 hooks — a second Claude in the same tmux session (e.g. a spawned subagent)

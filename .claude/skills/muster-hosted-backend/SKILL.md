@@ -39,6 +39,9 @@ to run without downtime.
 
 ## Deploying
 
+Deploying the hosted backend into your own AWS account is permitted
+self-hosting under BUSL-1.1 — it is not a commercial hosted service.
+
 `muster-deploy` is not installed with `muster` — it links the AWS SDK, which
 the device binary deliberately does not, and it is needed on one machine once:
 
@@ -61,6 +64,9 @@ endpoint. On a first deploy it generates a token and writes it to
 `<MUSTER_HOME>/remote-token` at mode 0600 without printing it. On an update it
 keeps the token already in the stack, so re-running never rotates the fleet's
 credential by accident.
+
+The deploy machine and devices self-update with `muster update` (v0.16.0)
+instead of re-running the installer.
 
 Deleting the stack deletes the table and every message on the bus, with no
 backup.
