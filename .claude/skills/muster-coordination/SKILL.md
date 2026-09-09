@@ -1,6 +1,6 @@
 ---
 name: muster-coordination
-description: Use when this session should coordinate with other coding-agent sessions over the muster bus — registering on the bus, checking your inbox, sending messages or handing tasks to peers, replying on threads, and acting on the notify/nudge wake. Fires when the muster MCP tools (register_agent, send_message, get_inbox, reply, task_create, …) are available and you need to hand work to, or receive it from, an agent in another terminal.
+description: Use when this session should coordinate with other coding-agent sessions over the muster bus — registering on the bus, checking your inbox, sending messages or handing tasks to peers, replying on threads, and acting on the notify/nudge/channel wake. Fires when the muster MCP tools (register_agent, send_message, get_inbox, reply, task_create, …) are available and you need to hand work to, or receive it from, an agent in another terminal.
 ---
 
 # Coordinating over the muster bus
@@ -49,7 +49,14 @@ address you by a name that means something.
 
 - **`list_agents`** — who's on the bus (project, label, liveness).
 - **`send_message(to, body, …)`** / **`reply(thread_id, body)`** — message a peer, or
-  continue a thread you were addressed on.
+  continue a thread you were addressed on. **Broadcast is hard-gated** by the
+  broadcast storm guard (v0.17.0): a first broadcast returns its blast radius and
+  sends nothing — you re-send with `confirm` to actually send, and replies route
+  back to the originator.
+- **Standing orders** (v0.16.0) — a broadcast with `standing=true` reaches future
+  sessions once until read; `standing_set` / `standing_list` manage them. New
+  sessions no longer inherit the live broadcast backlog, so a durable
+  per-project convention belongs in a standing order, not a live broadcast.
 - **`get_inbox()`** — your pending threads (metadata only). **`get_thread(id)`** —
   the full thread; always drill in with `get_thread` to read message bodies before
   acting.
@@ -102,6 +109,11 @@ address you by a name that means something.
   that survives focus until they read their inbox. It never types into their pane.
 - An idle peer can be poked with `muster nudge <alias>` (operator-run) — the only
   path that types into a pane.
+- **Channel push** (v0.15.0) is the third wake path: `muster channel` pushes a
+  compact envelope (intent/sender/thread/subject, never the body) into an idle
+  session over MCP. Like the mailbox badge, it never types into a pane.
+- `muster status --json` (v0.16.0) is the side-effect-free way to check per-alias
+  inbox counts — it reports unread counts without marking anything read.
 - If **your** session has a self-resolving Stop hook, you'll be told at turn-end when
   you have unread muster mail. **When that happens: call `get_inbox`, read each new
   thread with `get_thread`, handle the request, and `reply` if the sender needs

@@ -66,7 +66,7 @@ curl -fsSL -o /tmp/muster-rc.tar.gz \
   https://github.com/schuettc/muster/releases/download/<rc-tag>/muster_darwin_arm64.tar.gz
 tar xzf /tmp/muster-rc.tar.gz -C /tmp
 install -m755 /tmp/muster ~/.local/bin/muster-rc
-muster-rc --version        # expect 0.11.0
+muster-rc --version        # expect <rc-tag>
 
 # 2. a distinct home, so the test bus never touches your live one
 export MUSTER_HOME=~/.muster-rc
