@@ -16,6 +16,22 @@ import (
 	"github.com/schuettc/muster/internal/version"
 )
 
+// channelCapture resolves the tmux identity the channel pushes for: the
+// environment when the harness passed $TMUX/$TMUX_PANE through, else the
+// process-ancestry walk. This mirrors cli.hookCapture on purpose — the
+// channel MCP server is a synchronous, long-lived child of the harness
+// process, so it shares the pane's ancestry exactly as a hook does. Without
+// the fallback, a harness that spawns MCP servers env-stripped (the hook is
+// registered via ancestry, but the channel saw only $TMUX) leaves the carrier
+// paneless and silently idle: mail lands in the inbox but never wakes the
+// session (the 2026-09 "no tmux identity" report).
+func channelCapture() tmuxenv.Capture {
+	if c := tmuxenv.CaptureEnv(); c.SocketPath != "" && c.PaneID != "" {
+		return c
+	}
+	return tmuxenv.CaptureFromAncestry()
+}
+
 // channelInstructions is the durable core, taught once at handshake: what
 // the channel is and how a push is shaped. Everything specific to a kind of
 // event travels WITH that event, after the separator, so the rule sits next
@@ -56,7 +72,7 @@ func channelMaxListed() int {
 // pi-channels client, which had to SIGKILL after a grace period.
 func runChannel() {
 	channel.MaxListed = channelMaxListed()
-	capture := tmuxenv.CaptureEnv()
+	capture := channelCapture()
 	carrier := &channel.Carrier{
 		Call:     channel.DaemonClient(paths.SocketPath()),
 		Ident:    channel.Identity{SocketPath: capture.SocketPath, SessionID: capture.SessionID, PaneID: capture.PaneID, SessionCreated: capture.SessionCreated},
