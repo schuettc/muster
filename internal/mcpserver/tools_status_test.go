@@ -33,7 +33,7 @@ func TestGetStatusReturnsAllRowsWithOnePureRead(t *testing.T) {
 func TestGetStatusExactAliasFilter(t *testing.T) {
 	prevCall := callDaemon
 	t.Cleanup(func() { callDaemon = prevCall })
-	callDaemon = func(op string, _ map[string]any) (json.RawMessage, error) {
+	callDaemon = func(_ string, _ map[string]any) (json.RawMessage, error) {
 		return json.RawMessage(`{"agents":[{"alias":"api","unread":3},{"alias":"api-2","unread":4}]}`), nil
 	}
 
@@ -49,7 +49,7 @@ func TestGetStatusExactAliasFilter(t *testing.T) {
 func TestGetStatusUnknownAliasReturnsEmpty(t *testing.T) {
 	prevCall := callDaemon
 	t.Cleanup(func() { callDaemon = prevCall })
-	callDaemon = func(op string, _ map[string]any) (json.RawMessage, error) {
+	callDaemon = func(_ string, _ map[string]any) (json.RawMessage, error) {
 		return json.RawMessage(`{"agents":[{"alias":"api"}]}`), nil
 	}
 

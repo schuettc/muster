@@ -8,10 +8,12 @@ import (
 	"github.com/schuettc/muster/internal/store"
 )
 
+// GetStatusIn optionally selects one exact alias.
 type GetStatusIn struct {
 	Alias string `json:"alias,omitempty" jsonschema:"optional exact alias to filter; labels and prefixes do not match"`
 }
 
+// GetStatusOut contains side-effect-free inbox counts.
 type GetStatusOut struct {
 	Agents []store.AliasStatus `json:"agents" jsonschema:"side-effect-free inbox counts for matching aliases"`
 }

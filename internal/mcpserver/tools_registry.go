@@ -32,14 +32,17 @@ type OKOut struct {
 // calling MCP server process.
 type CurrentAgentIn struct{}
 
+// CurrentAgentOut describes the live identity proven for the MCP caller.
 type CurrentAgentOut struct {
 	Registered   bool       `json:"registered" jsonschema:"whether this session currently owns a live muster identity"`
 	Agent        *AgentView `json:"agent,omitempty" jsonschema:"the canonical live identity this session should use"`
 	OwnedAliases []string   `json:"owned_aliases" jsonschema:"all live aliases owned by this session"`
 }
 
+// DeregisterAgentIn has no fields; callers cannot nominate a target.
 type DeregisterAgentIn struct{}
 
+// DeregisterAgentOut reports the caller-owned aliases tombstoned by the call.
 type DeregisterAgentOut struct {
 	Deregistered []string `json:"deregistered" jsonschema:"aliases tombstoned by this call"`
 	Changed      int      `json:"changed" jsonschema:"number of aliases tombstoned by this call"`
