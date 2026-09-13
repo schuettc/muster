@@ -7,6 +7,22 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
+// ListTasksIn selects a bounded set of task threads.
+type ListTasksIn struct {
+	Project  string   `json:"project,omitempty" jsonschema:"optional project touched by a current participant or durable origin_project"`
+	Statuses []string `json:"statuses,omitempty" jsonschema:"optional exact statuses; defaults to open, claimed, needs_info, and blocked"`
+	ToKind   string   `json:"to_kind,omitempty" jsonschema:"optional exact target kind: agent, role, or broadcast"`
+	ToTarget string   `json:"to_target,omitempty" jsonschema:"optional exact target; requires to_kind"`
+	From     string   `json:"from,omitempty" jsonschema:"optional exact creator alias"`
+	Limit    int      `json:"limit,omitempty" jsonschema:"maximum tasks to return; defaults to 100 and cannot exceed 500"`
+}
+
+// ListTasksOut contains matching tasks and reports whether more were omitted.
+type ListTasksOut struct {
+	Tasks     []ThreadView `json:"tasks" jsonschema:"matching tasks ordered by recent update then id"`
+	Truncated bool         `json:"truncated" jsonschema:"true when more matching tasks exist beyond the limit"`
+}
+
 // TaskCreateIn is the input to task_create.
 type TaskCreateIn struct {
 	From     string `json:"from" jsonschema:"the requesting agent's alias"`
@@ -30,6 +46,40 @@ type TaskTransitionIn struct {
 	By       string `json:"by" jsonschema:"the alias making the change"`
 	Status   string `json:"status" jsonschema:"new status: open, claimed, needs_info, blocked, completed, declined, or cancelled"`
 	Note     string `json:"note,omitempty" jsonschema:"optional note recorded with the status change"`
+}
+
+func listTasksHandler(_ context.Context, _ *mcp.CallToolRequest, in ListTasksIn) (*mcp.CallToolResult, ListTasksOut, error) {
+	args := map[string]any{}
+	if in.Project != "" {
+		args["project"] = in.Project
+	}
+	if len(in.Statuses) > 0 {
+		args["statuses"] = in.Statuses
+	}
+	if in.ToKind != "" {
+		args["to_kind"] = in.ToKind
+	}
+	if in.ToTarget != "" {
+		args["to_target"] = in.ToTarget
+	}
+	if in.From != "" {
+		args["from"] = in.From
+	}
+	if in.Limit != 0 {
+		args["limit"] = in.Limit
+	}
+	raw, err := callDaemon("list_tasks", args)
+	if err != nil {
+		return nil, ListTasksOut{}, err
+	}
+	var out ListTasksOut
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, ListTasksOut{}, err
+	}
+	if out.Tasks == nil {
+		out.Tasks = []ThreadView{}
+	}
+	return nil, out, nil
 }
 
 func taskCreateHandler(_ context.Context, _ *mcp.CallToolRequest, in TaskCreateIn) (*mcp.CallToolResult, ThreadIDOut, error) {
@@ -66,9 +116,9 @@ func taskTransitionHandler(_ context.Context, _ *mcp.CallToolRequest, in TaskTra
 	return nil, OKOut{OK: true, Detail: in.Status}, nil
 }
 
-// registerTaskTools registers task_create, task_claim, and task_transition
-// on srv.
+// registerTaskTools registers the task tools on srv.
 func registerTaskTools(srv *mcp.Server) {
+	mcp.AddTool(srv, &mcp.Tool{Name: "list_tasks", Description: "Discover task threads across the bus with exact composable filters. Defaults to nonterminal tasks and 100 results; maximum 500. Results are ordered by most recent update and report truncated when more match."}, listTasksHandler)
 	mcp.AddTool(srv, &mcp.Tool{Name: "task_create", Description: "Create a task addressed to an agent or role. The assignee(s) can claim and work it. Optional intent (fyi/reply-requested/action-requested) defaults to action-requested — a task is inherently a request for action."}, taskCreateHandler)
 	mcp.AddTool(srv, &mcp.Tool{Name: "task_claim", Description: "Claim an open task. Only the first claimer succeeds; a second claim fails."}, taskClaimHandler)
 	mcp.AddTool(srv, &mcp.Tool{Name: "task_transition", Description: "Move a task to a new status (claimed, needs_info, blocked, completed, declined, cancelled) with an optional note."}, taskTransitionHandler)

@@ -57,6 +57,9 @@ func TestCallerLifecycleEndToEndOverMCP(t *testing.T) {
 	if properties, _ := schemas["deregister_agent"]["properties"].(map[string]any); properties["alias"] != nil || properties["target"] != nil {
 		t.Fatalf("deregister_agent must have no target property: %v", schemas["deregister_agent"])
 	}
+	if !seen["list_tasks"] {
+		t.Fatalf("list_tasks not advertised: %v", seen)
+	}
 	for _, name := range []string{"kv_set", "kv_delete"} {
 		if !seen[name] {
 			t.Fatalf("%s not advertised: %v", name, seen)
