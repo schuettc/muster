@@ -14,7 +14,7 @@ type ListTasksIn struct {
 	ToKind   string   `json:"to_kind,omitempty" jsonschema:"optional exact target kind: agent, role, or broadcast"`
 	ToTarget string   `json:"to_target,omitempty" jsonschema:"optional exact target; requires to_kind"`
 	From     string   `json:"from,omitempty" jsonschema:"optional exact creator alias"`
-	Limit    int      `json:"limit,omitempty" jsonschema:"maximum tasks to return; defaults to 100 and cannot exceed 500"`
+	Limit    *int     `json:"limit,omitempty" jsonschema:"maximum tasks to return; defaults to 100 and must be between 1 and 500"`
 }
 
 // ListTasksOut contains matching tasks and reports whether more were omitted.
@@ -65,8 +65,8 @@ func listTasksHandler(_ context.Context, _ *mcp.CallToolRequest, in ListTasksIn)
 	if in.From != "" {
 		args["from"] = in.From
 	}
-	if in.Limit != 0 {
-		args["limit"] = in.Limit
+	if in.Limit != nil {
+		args["limit"] = *in.Limit
 	}
 	raw, err := callDaemon("list_tasks", args)
 	if err != nil {

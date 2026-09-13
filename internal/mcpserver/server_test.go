@@ -23,6 +23,28 @@ import (
 // refused by design (the already-registered guard), so the tool call that used
 // to be here created no row and "e2e-reviewer1" was an alias nobody held. That
 // was invisible while task_claim accepted any string for `by`; it is not now.
+func TestListTasksExplicitZeroLimitRejectedOverMCP(t *testing.T) {
+	startTestDaemon(t)
+	ctx := context.Background()
+	srv := mcp.NewServer(&mcp.Implementation{Name: "muster", Version: version}, nil)
+	registerAll(srv)
+	clientT, serverT := mcp.NewInMemoryTransports()
+	go func() { _ = srv.Run(ctx, serverT) }()
+	cs, err := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "v0"}, nil).Connect(ctx, clientT, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = cs.Close() }()
+
+	result, err := cs.CallTool(ctx, &mcp.CallToolParams{Name: "list_tasks", Arguments: map[string]any{"limit": 0}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.IsError {
+		t.Fatalf("list_tasks limit 0 must fail, got %+v", result.StructuredContent)
+	}
+}
+
 func TestCallerLifecycleEndToEndOverMCP(t *testing.T) {
 	startTestDaemon(t)
 	t.Setenv("MUSTER_DEVICE_NAME", "lifecycle")

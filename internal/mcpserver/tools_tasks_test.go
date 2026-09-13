@@ -24,9 +24,10 @@ func TestListTasksForwardsFiltersAndTruncation(t *testing.T) {
 		return json.RawMessage(`{"tasks":[{"id":9,"kind":"task","from_agent":"author","to_kind":"role","to_target":"reviewer","subject":"Review","ref":"repo=x","status":"blocked","created_at":10,"updated_at":20,"last_from":"reviewer","entry_count":3}],"truncated":true}`), nil
 	}
 
+	limit := 25
 	_, got, err := listTasksHandler(context.Background(), nil, ListTasksIn{
 		Project: "muster", Statuses: []string{"open", "blocked"}, From: "author",
-		ToKind: "role", ToTarget: "reviewer", Limit: 25,
+		ToKind: "role", ToTarget: "reviewer", Limit: &limit,
 	})
 	if err != nil {
 		t.Fatal(err)
