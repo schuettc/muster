@@ -13,6 +13,7 @@ var captureCallerHarness = harnessenv.FromEnv
 
 type callerIdentity struct {
 	Agent       rosterRow
+	Proven      bool
 	Registered  bool
 	LiveAliases []string
 }
@@ -41,7 +42,7 @@ func resolveCallerIdentity() (callerIdentity, error) {
 		return callerIdentity{}, err
 	}
 	if len(lineage.Aliases) == 0 {
-		return callerIdentity{}, nil
+		return callerIdentity{Proven: true}, nil
 	}
 
 	raw, err = callDaemon("list_agents", nil)
@@ -63,7 +64,7 @@ func resolveCallerIdentity() (callerIdentity, error) {
 		}
 	}
 	if len(live) == 0 {
-		return callerIdentity{}, nil
+		return callerIdentity{Proven: true}, nil
 	}
 	sort.Slice(live, func(i, j int) bool { return live[i].Alias < live[j].Alias })
 	primary := live[0]
@@ -79,7 +80,7 @@ func resolveCallerIdentity() (callerIdentity, error) {
 	for i, row := range live {
 		aliases[i] = row.Alias
 	}
-	return callerIdentity{Agent: primary, Registered: true, LiveAliases: aliases}, nil
+	return callerIdentity{Agent: primary, Proven: true, Registered: true, LiveAliases: aliases}, nil
 }
 
 func agentViewOf(row rosterRow) AgentView {

@@ -28,6 +28,23 @@ type OKOut struct {
 	Detail string `json:"detail,omitempty" jsonschema:"optional human-readable detail"`
 }
 
+// CurrentAgentIn has no fields; current_agent derives identity from the
+// calling MCP server process.
+type CurrentAgentIn struct{}
+
+type CurrentAgentOut struct {
+	Registered   bool       `json:"registered" jsonschema:"whether this session currently owns a live muster identity"`
+	Agent        *AgentView `json:"agent,omitempty" jsonschema:"the canonical live identity this session should use"`
+	OwnedAliases []string   `json:"owned_aliases" jsonschema:"all live aliases owned by this session"`
+}
+
+type DeregisterAgentIn struct{}
+
+type DeregisterAgentOut struct {
+	Deregistered []string `json:"deregistered" jsonschema:"aliases tombstoned by this call"`
+	Changed      int      `json:"changed" jsonschema:"number of aliases tombstoned by this call"`
+}
+
 // ListAgentsIn has no fields; list_agents takes no arguments.
 type ListAgentsIn struct{}
 
@@ -145,6 +162,38 @@ func registerAgentHandler(_ context.Context, _ *mcp.CallToolRequest, in Register
 	return nil, OKOut{OK: true, Detail: detail}, nil
 }
 
+func currentAgentHandler(_ context.Context, _ *mcp.CallToolRequest, _ CurrentAgentIn) (*mcp.CallToolResult, CurrentAgentOut, error) {
+	identity, err := resolveCallerIdentity()
+	if err != nil {
+		return nil, CurrentAgentOut{}, err
+	}
+	out := CurrentAgentOut{Registered: identity.Registered, OwnedAliases: identity.LiveAliases}
+	if identity.Registered {
+		agent := agentViewOf(identity.Agent)
+		out.Agent = &agent
+	}
+	return nil, out, nil
+}
+
+func deregisterAgentHandler(_ context.Context, _ *mcp.CallToolRequest, _ DeregisterAgentIn) (*mcp.CallToolResult, DeregisterAgentOut, error) {
+	identity, err := resolveCallerIdentity()
+	if err != nil {
+		return nil, DeregisterAgentOut{}, err
+	}
+	if !identity.Proven {
+		return nil, DeregisterAgentOut{}, fmt.Errorf("cannot deregister: this MCP process has no tmux or harness session identity")
+	}
+	out := DeregisterAgentOut{Deregistered: []string{}}
+	for _, alias := range identity.LiveAliases {
+		if _, err := callDaemon("deregister_agent", map[string]any{"alias": alias}); err != nil {
+			return nil, out, fmt.Errorf("deregister current session alias %q: %w", alias, err)
+		}
+		out.Deregistered = append(out.Deregistered, alias)
+	}
+	out.Changed = len(out.Deregistered)
+	return nil, out, nil
+}
+
 func listAgentsHandler(_ context.Context, _ *mcp.CallToolRequest, _ ListAgentsIn) (*mcp.CallToolResult, ListAgentsOut, error) {
 	raw, err := callDaemon("list_agents", nil)
 	if err != nil {
@@ -158,6 +207,14 @@ func listAgentsHandler(_ context.Context, _ *mcp.CallToolRequest, _ ListAgentsIn
 }
 
 func registerRegistryTools(srv *mcp.Server) {
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "current_agent",
+		Description: "Report the live muster identity owned by this MCP session, without registering or changing anything. Use this when you need your exact alias for another tool.",
+	}, currentAgentHandler)
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "deregister_agent",
+		Description: "Leave the muster bus by tombstoning every live alias owned by this MCP session. Takes no target: it cannot deregister another agent. History and read state are preserved, and a later registration revives them.",
+	}, deregisterAgentHandler)
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "register_agent",
 		Description: "Claim an agent identity on the muster bus. NOTE: sessions inside tmux are auto-registered at session start under their tmux session name — you almost never need this tool; the Stop hook and your inbox already address you. Calling it from an already-registered pane returns your existing identity instead of adding a second alias.",
