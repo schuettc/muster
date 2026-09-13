@@ -540,6 +540,41 @@ func (s *Store) GetThread(id int64) (store.Thread, []store.Entry, error) {
 // sort key, and updated_at is not one.
 func (s *Store) Threads(limit int) ([]store.Thread, error) {
 	limit = clampThreadsLimit(limit)
+	out, err := s.allAnnotatedThreads()
+	if err != nil {
+		return nil, err
+	}
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+// Tasks returns task threads matching q's exact metadata filters, annotated
+// and ordered by updated_at DESC, id DESC.
+func (s *Store) Tasks(q store.TaskQuery) ([]store.Thread, error) {
+	threads, err := s.allAnnotatedThreads()
+	if err != nil {
+		return nil, err
+	}
+	statuses := make(map[string]bool, len(q.Statuses))
+	for _, status := range q.Statuses {
+		statuses[status] = true
+	}
+	out := []store.Thread{}
+	for _, thread := range threads {
+		if thread.Kind != "task" || len(statuses) > 0 && !statuses[thread.Status] ||
+			q.FromAgent != "" && thread.FromAgent != q.FromAgent ||
+			q.ToKind != "" && thread.ToKind != q.ToKind ||
+			q.ToTarget != "" && thread.ToTarget != q.ToTarget {
+			continue
+		}
+		out = append(out, thread)
+	}
+	return out, nil
+}
+
+func (s *Store) allAnnotatedThreads() ([]store.Thread, error) {
 	items, err := s.queryAll(backgroundCtx(), &dynamodb.QueryInput{
 		TableName:                 aws.String(s.table),
 		IndexName:                 aws.String(gsi2Name),
@@ -549,16 +584,13 @@ func (s *Store) Threads(limit int) ([]store.Thread, error) {
 	if err != nil {
 		return nil, fmt.Errorf("dynamostore: list threads: %w", err)
 	}
-	var out []store.Thread
+	out := make([]store.Thread, 0, len(items))
 	for _, item := range items {
-		t := itemToThread(item)
-		annotateLastEntry(&t, item)
-		out = append(out, t)
+		thread := itemToThread(item)
+		annotateLastEntry(&thread, item)
+		out = append(out, thread)
 	}
 	sortThreadsRecent(out)
-	if len(out) > limit {
-		out = out[:limit]
-	}
 	return out, nil
 }
 

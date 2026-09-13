@@ -182,6 +182,8 @@ var cases = []conformanceCase{
 	{"TransitionTaskValidatesAndRecords", testTransitionRecords},
 	{"TransitionTaskOnMissingThreadIsNotFound", testTransitionMissingThread},
 	{"TransitionTaskBackToOpenIsClaimableAgain", testTransitionReopen},
+	{"TasksExcludeMessagesAnnotateAndOrder", testTasksExcludeAnnotateOrder},
+	{"TasksComposeMetadataFilters", testTasksComposeFilters},
 
 	// Idempotency records.
 	{"IdemBeginClaimsThenReportsDone", testIdemLifecycle},
@@ -2157,6 +2159,43 @@ func testKVLastWriteWins(t *testing.T, s store.API) {
 // testKVReadYourWrites: the blackboard is a coordination primitive, so an
 // agent that writes a fact and reads it back must never be handed the
 // superseded value.
+func testTasksExcludeAnnotateOrder(t *testing.T, s store.API) {
+	freezeClock(t, 1700000000000)
+	older := mustThread(t, s, store.Thread{Kind: "task", FromAgent: "alice", ToKind: "role", ToTarget: "reviewer", Status: "open"}, "older")
+	newer := mustThread(t, s, store.Thread{Kind: "task", FromAgent: "bob", ToKind: "agent", ToTarget: "worker", Status: "blocked"}, "newer")
+	mustThread(t, s, store.Thread{Kind: "message", FromAgent: "alice", ToKind: "broadcast"}, "not a task")
+	if _, err := s.AppendEntry(older, "reviewer", "working", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	tasks, err := s.Tasks(store.TaskQuery{})
+	if err != nil {
+		t.Fatalf("Tasks: %v", err)
+	}
+	if len(tasks) != 2 || tasks[0].ID != newer || tasks[1].ID != older {
+		t.Fatalf("Tasks order = %+v", tasks)
+	}
+	if tasks[1].LastFrom != "reviewer" || tasks[1].EntryCount != 2 || tasks[1].LastEntryID == 0 {
+		t.Fatalf("older annotations = %+v", tasks[1])
+	}
+}
+
+func testTasksComposeFilters(t *testing.T, s store.API) {
+	mustThread(t, s, store.Thread{Kind: "task", FromAgent: "alice", ToKind: "role", ToTarget: "reviewer", Status: "open"}, "match")
+	mustThread(t, s, store.Thread{Kind: "task", FromAgent: "alice", ToKind: "role", ToTarget: "reviewer", Status: "completed"}, "wrong status")
+	mustThread(t, s, store.Thread{Kind: "task", FromAgent: "bob", ToKind: "role", ToTarget: "reviewer", Status: "open"}, "wrong creator")
+	mustThread(t, s, store.Thread{Kind: "task", FromAgent: "alice", ToKind: "agent", ToTarget: "reviewer", Status: "open"}, "wrong kind")
+	mustThread(t, s, store.Thread{Kind: "task", FromAgent: "alice", ToKind: "role", ToTarget: "producer", Status: "open"}, "wrong target")
+
+	tasks, err := s.Tasks(store.TaskQuery{Statuses: []string{"open", "blocked"}, FromAgent: "alice", ToKind: "role", ToTarget: "reviewer"})
+	if err != nil {
+		t.Fatalf("Tasks: %v", err)
+	}
+	if len(tasks) != 1 || tasks[0].Subject != "" || tasks[0].FromAgent != "alice" || tasks[0].Status != "open" {
+		t.Fatalf("filtered tasks = %+v", tasks)
+	}
+}
+
 func testKVListPrefixOrder(t *testing.T, s store.API) {
 	for _, item := range []struct{ key, value string }{
 		{"app.z", "z"}, {"app.a", "a"}, {"apple", "fruit"}, {"app_%", "literal"},
