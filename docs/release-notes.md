@@ -2,6 +2,10 @@
 
 There is no CHANGELOG.md in this repository yet. This file holds the notes for releases where the change is operator-visible enough to need explaining rather than just listing. Newest first.
 
+## Unreleased — MCP data actions
+
+**The MCP blackboard is now complete and task work is discoverable bus-wide.** `kv_list` returns the complete small blackboard in lexicographic key order with an optional literal prefix, and idempotent `kv_delete` removes one key. `kv_set` and `kv_delete` no longer accept a caller-supplied `by`; they derive attribution from the proven current session and reject unregistered callers. `list_tasks` provides composable exact project, status, creator, and target filters, defaults to the newest 100 nonterminal tasks, caps requests at 500, and reports `truncated` instead of introducing cursors.
+
 ## Unreleased — MCP caller lifecycle
 
 **MCP clients can now discover and retire their own identity without guessing an alias.** Call `current_agent` first: it returns the calling session's proven live identity and every live alias in that session's lineage. If it is not registered, call `register_agent`; otherwise use the returned alias in identity-dependent tools. `deregister_agent` takes no arguments and tombstones every live alias proven to belong to the caller, preserving history and read state for a later return. It cannot target another agent. `get_status` exposes the existing side-effect-free unread and action-required counts for every alias or one exact alias; it never marks mail read or journals a peek.
