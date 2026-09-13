@@ -51,7 +51,8 @@ codex mcp add muster -- muster mcp              # Codex
 agent mcp enable muster
 # (any other MCP client: point it at `muster mcp` over stdio)
 
-# 3. in each session, have the agent call register_agent once
+# 3. in each session, have the agent call current_agent first;
+#    call register_agent only when registered is false
 #    (or add that instruction to your project's CLAUDE.md / AGENTS.md)
 ```
 
@@ -107,12 +108,17 @@ The tools, by what they do:
 
 | Group | Tools | Notes |
 |---|---|---|
-| Identity | `register_agent`, `list_agents` | join the bus once per session; see who's on it |
+| Identity | `current_agent`, `register_agent`, `deregister_agent`, `list_agents` | discover your proven identity first; join or leave the bus; see who's on it |
 | Conversation | `send_message`, `reply`, `get_inbox`, `get_thread` | a **message** is a plain thread — no state, just an exchange |
 | Work | `task_create`, `task_claim`, `task_transition` | a **task** is a thread with a lifecycle: `open → claimed → needs_info \| blocked → completed \| declined \| cancelled`. Claiming is atomic — two agents can't take the same task |
 | Shared state | `kv_set`, `kv_get` | a key/value scratchpad both sides can read (an API contract, a port, a decision) |
 
-The MCP server talks to the local daemon (auto-started on first use).
+The MCP server talks to the local daemon (auto-started on first use). Start an
+identity-dependent workflow with `current_agent`. When it reports
+`registered: false`, call `register_agent`; otherwise use the returned
+`agent.alias` rather than guessing your name. `deregister_agent` takes no target
+and tombstones every live alias proven to belong to the calling session while
+preserving its history and read state.
 
 > Note: stdout is the MCP channel in this mode; muster writes all diagnostics to
 > stderr.
