@@ -2,6 +2,10 @@
 
 There is no CHANGELOG.md in this repository yet. This file holds the notes for releases where the change is operator-visible enough to need explaining rather than just listing. Newest first.
 
+## Unreleased — MCP caller lifecycle
+
+**MCP clients can now discover and retire their own identity without guessing an alias.** Call `current_agent` first: it returns the calling session's proven live identity and every live alias in that session's lineage. If it is not registered, call `register_agent`; otherwise use the returned alias in identity-dependent tools. `deregister_agent` takes no arguments and tombstones every live alias proven to belong to the caller, preserving history and read state for a later return. It cannot target another agent. `get_status` exposes the existing side-effect-free unread and action-required counts for every alias or one exact alias; it never marks mail read or journals a peek.
+
 ## 0.19.1 — channel wakes survive an env-stripped harness
 
 **The muster channel now resolves its pane by process ancestry when the environment is stripped.** The channel MCP server captured its tmux identity from `$TMUX`/`$TMUX_PANE` only. Harnesses that spawn MCP servers without those variables (Claude Code) left the channel with no pane: the SessionStart hook still registered the agent (it already walks process ancestry), so mail arrived and the inbox filled, but the channel never pushed a wake — the session only saw its mail when an operator told it to check the inbox, and `muster_channel_status` reported `idle: no tmux pane`. The channel now uses the same env-else-ancestry capture the hooks use (`channelCapture`); since the channel server is a synchronous child of the harness, its ancestry reaches the pane's shell exactly as a hook's does. No change is needed on machines where the channel already worked. A genuinely paneless session (no pane in the environment or the ancestry) still idles, as before.
