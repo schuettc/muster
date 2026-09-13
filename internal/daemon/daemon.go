@@ -1229,6 +1229,18 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 			return fail(err)
 		}
 		return ok(map[string]any{"found": found, "pair": p})
+	case "kv_list":
+		pairs, err := d.s.KVList(str(a, "prefix"))
+		if err != nil {
+			return fail(err)
+		}
+		return ok(map[string]any{"pairs": pairs})
+	case "kv_delete":
+		deleted, err := d.s.KVDelete(str(a, "key"))
+		if err != nil {
+			return fail(err)
+		}
+		return ok(map[string]any{"deleted": deleted})
 	case "log_event":
 		target, detail := str(a, "target"), str(a, "detail")
 		if detail != "typed" && detail != "submitted" {

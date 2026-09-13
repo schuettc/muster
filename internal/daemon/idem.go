@@ -35,7 +35,7 @@ var writeOps = map[string]bool{
 	"send_message": true, "task_create": true, "reply": true,
 	"task_claim": true, "task_transition": true,
 	"standing_set": true, "standing_retract": true,
-	"kv_set": true, "log_event": true, "set_label": true,
+	"kv_set": true, "kv_delete": true, "log_event": true, "set_label": true,
 	"prune_events": true, "get_inbox": true,
 	// become is a CAS (it refuses an existing target), so it needs a key for
 	// the same reason task_claim does: a claim that succeeded but lost its

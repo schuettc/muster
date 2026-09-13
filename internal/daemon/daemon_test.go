@@ -31,6 +31,40 @@ func startTestDaemon(t *testing.T) string {
 	return paths.SocketPath()
 }
 
+func TestDaemonKVListAndDelete(t *testing.T) {
+	sock := startTestDaemon(t)
+	for _, pair := range []struct{ key, value string }{{"api.z", "z"}, {"api.a", "a"}, {"other", "o"}} {
+		resp, err := client.Call(sock, proto.Request{Op: "kv_set", Args: map[string]any{"key": pair.key, "value": pair.value, "by": "writer"}})
+		if err != nil || !resp.OK {
+			t.Fatalf("kv_set %q: err=%v resp=%+v", pair.key, err, resp)
+		}
+	}
+	listed, err := client.Call(sock, proto.Request{Op: "kv_list", Args: map[string]any{"prefix": "api."}})
+	if err != nil || !listed.OK {
+		t.Fatalf("kv_list: err=%v resp=%+v", err, listed)
+	}
+	var out struct {
+		Pairs []store.KVPair `json:"pairs"`
+	}
+	decode(t, listed, &out)
+	if len(out.Pairs) != 2 || out.Pairs[0].Key != "api.a" || out.Pairs[1].Key != "api.z" {
+		t.Fatalf("kv_list pairs = %+v", out.Pairs)
+	}
+	for i, want := range []bool{true, false} {
+		deleted, err := client.Call(sock, proto.Request{Op: "kv_delete", Args: map[string]any{"key": "api.a"}})
+		if err != nil || !deleted.OK {
+			t.Fatalf("kv_delete #%d: err=%v resp=%+v", i+1, err, deleted)
+		}
+		var got struct {
+			Deleted bool `json:"deleted"`
+		}
+		decode(t, deleted, &got)
+		if got.Deleted != want {
+			t.Fatalf("kv_delete #%d deleted=%v, want %v", i+1, got.Deleted, want)
+		}
+	}
+}
+
 func TestServeSecuresSocket(t *testing.T) {
 	dir := testHome(t)
 	s, err := store.Open(filepath.Join(dir, "bus.db"))

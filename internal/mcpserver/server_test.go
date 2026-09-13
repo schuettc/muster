@@ -46,18 +46,24 @@ func TestCallerLifecycleEndToEndOverMCP(t *testing.T) {
 		t.Fatalf("list tools: %v", err)
 	}
 	seen := map[string]bool{}
-	var deregisterSchema map[string]any
+	schemas := map[string]map[string]any{}
 	for _, tool := range listed.Tools {
 		seen[tool.Name] = true
-		if tool.Name == "deregister_agent" {
-			deregisterSchema, _ = tool.InputSchema.(map[string]any)
-		}
+		schemas[tool.Name], _ = tool.InputSchema.(map[string]any)
 	}
 	if !seen["current_agent"] || !seen["deregister_agent"] || !seen["get_status"] {
 		t.Fatalf("caller lifecycle tools not advertised: %v", seen)
 	}
-	if properties, _ := deregisterSchema["properties"].(map[string]any); properties["alias"] != nil || properties["target"] != nil {
-		t.Fatalf("deregister_agent must have no target property: %v", deregisterSchema)
+	if properties, _ := schemas["deregister_agent"]["properties"].(map[string]any); properties["alias"] != nil || properties["target"] != nil {
+		t.Fatalf("deregister_agent must have no target property: %v", schemas["deregister_agent"])
+	}
+	for _, name := range []string{"kv_set", "kv_delete"} {
+		if !seen[name] {
+			t.Fatalf("%s not advertised: %v", name, seen)
+		}
+		if properties, _ := schemas[name]["properties"].(map[string]any); properties["by"] != nil {
+			t.Fatalf("%s must not expose by: %v", name, schemas[name])
+		}
 	}
 	call := func(name string, args map[string]any) map[string]any {
 		t.Helper()
