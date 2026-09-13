@@ -25,6 +25,7 @@ func Run(ctx context.Context) error {
 // own registration here via this central function.
 func registerAll(srv *mcp.Server) {
 	registerRegistryTools(srv)
+	registerStatusTools(srv)
 	registerMessageTools(srv)
 	registerStandingTools(srv)
 	registerTaskTools(srv)

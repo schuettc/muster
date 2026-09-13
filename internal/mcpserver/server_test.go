@@ -46,11 +46,18 @@ func TestCallerLifecycleEndToEndOverMCP(t *testing.T) {
 		t.Fatalf("list tools: %v", err)
 	}
 	seen := map[string]bool{}
+	var deregisterSchema map[string]any
 	for _, tool := range listed.Tools {
 		seen[tool.Name] = true
+		if tool.Name == "deregister_agent" {
+			deregisterSchema, _ = tool.InputSchema.(map[string]any)
+		}
 	}
-	if !seen["current_agent"] || !seen["deregister_agent"] {
+	if !seen["current_agent"] || !seen["deregister_agent"] || !seen["get_status"] {
 		t.Fatalf("caller lifecycle tools not advertised: %v", seen)
+	}
+	if properties, _ := deregisterSchema["properties"].(map[string]any); properties["alias"] != nil || properties["target"] != nil {
+		t.Fatalf("deregister_agent must have no target property: %v", deregisterSchema)
 	}
 	call := func(name string, args map[string]any) map[string]any {
 		t.Helper()
