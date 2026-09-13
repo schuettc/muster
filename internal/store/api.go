@@ -144,6 +144,8 @@ type API interface {
 	DevicePoll(deviceID string, sinceEntryID int64) (DevicePollResult, error)
 	KVSet(key, value, updatedBy string) error
 	KVGet(key string) (KVPair, bool, error)
+	KVList(prefix string) ([]KVPair, error)
+	KVDelete(key string) (bool, error)
 	AppendEvent(e Event) error
 	Events(q EventQuery) ([]Event, error)
 	MaxEventID() (int64, error)

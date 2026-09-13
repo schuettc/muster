@@ -2,6 +2,8 @@ package dynamostore
 
 import (
 	"fmt"
+	"sort"
+	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
@@ -43,6 +45,45 @@ func (s *Store) KVSet(key, value, updatedBy string) error {
 		return fmt.Errorf("dynamostore: kv set %q: %w", key, err)
 	}
 	return nil
+}
+
+// KVList returns every blackboard pair whose key has the literal prefix,
+// sorted lexicographically. The blackboard is intentionally small, so this is
+// one complete base-table scan with filtering in memory.
+func (s *Store) KVList(prefix string) ([]store.KVPair, error) {
+	paginator := dynamodb.NewScanPaginator(s.c, &dynamodb.ScanInput{TableName: aws.String(s.table)})
+	pairs := []store.KVPair{}
+	for paginator.HasMorePages() {
+		page, err := paginator.NextPage(backgroundCtx())
+		if err != nil {
+			return nil, fmt.Errorf("dynamostore: kv list: %w", err)
+		}
+		for _, item := range page.Items {
+			if !strings.HasPrefix(strAttr(item, "pk"), "KV#") || numAttr(item, "sk") != metaSK {
+				continue
+			}
+			key := strAttr(item, "key")
+			if !strings.HasPrefix(key, prefix) {
+				continue
+			}
+			pairs = append(pairs, store.KVPair{
+				Key: key, Value: strAttr(item, "value"), UpdatedBy: strAttr(item, "updated_by"), UpdatedAt: numAttr(item, "updated_at"),
+			})
+		}
+	}
+	sort.Slice(pairs, func(i, j int) bool { return pairs[i].Key < pairs[j].Key })
+	return pairs, nil
+}
+
+// KVDelete removes key and reports whether a pair existed.
+func (s *Store) KVDelete(key string) (bool, error) {
+	out, err := s.c.DeleteItem(backgroundCtx(), &dynamodb.DeleteItemInput{
+		TableName: aws.String(s.table), Key: kvKey(key), ReturnValues: types.ReturnValueAllOld,
+	})
+	if err != nil {
+		return false, fmt.Errorf("dynamostore: kv delete %q: %w", key, err)
+	}
+	return len(out.Attributes) > 0, nil
 }
 
 // KVGet returns the pair for key; ok is false if the key is absent.

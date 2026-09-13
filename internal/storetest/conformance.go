@@ -193,6 +193,8 @@ var cases = []conformanceCase{
 	// Blackboard.
 	{"KVSetIsLastWriteWins", testKVLastWriteWins},
 	{"KVGetIsReadYourWrites", testKVReadYourWrites},
+	{"KVListUsesLiteralPrefixAndLexicographicOrder", testKVListPrefixOrder},
+	{"KVDeleteIsIdempotent", testKVDeleteIdempotent},
 
 	// Journal.
 	{"AppendEventRoundTripsEveryField", testEventRoundTrip},
@@ -2155,6 +2157,64 @@ func testKVLastWriteWins(t *testing.T, s store.API) {
 // testKVReadYourWrites: the blackboard is a coordination primitive, so an
 // agent that writes a fact and reads it back must never be handed the
 // superseded value.
+func testKVListPrefixOrder(t *testing.T, s store.API) {
+	for _, item := range []struct{ key, value string }{
+		{"app.z", "z"}, {"app.a", "a"}, {"apple", "fruit"}, {"app_%", "literal"},
+	} {
+		if err := s.KVSet(item.key, item.value, "writer"); err != nil {
+			t.Fatalf("KVSet(%q): %v", item.key, err)
+		}
+	}
+
+	pairs, err := s.KVList("app.")
+	if err != nil {
+		t.Fatalf("KVList: %v", err)
+	}
+	if len(pairs) != 2 {
+		t.Fatalf("KVList prefix = %+v, want 2 pairs", pairs)
+	}
+	if got, want := []string{pairs[0].Key, pairs[1].Key}, []string{"app.a", "app.z"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("KVList prefix keys = %v, want %v", got, want)
+	}
+	literal, err := s.KVList("app_%")
+	if err != nil || len(literal) != 1 || literal[0].Key != "app_%" {
+		t.Fatalf("KVList literal prefix = %+v, err = %v", literal, err)
+	}
+	all, err := s.KVList("")
+	if err != nil {
+		t.Fatalf("KVList all: %v", err)
+	}
+	got := make([]string, len(all))
+	for i, pair := range all {
+		got[i] = pair.Key
+	}
+	want := []string{"app.a", "app.z", "app_%", "apple"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("KVList all keys = %v, want %v", got, want)
+	}
+	empty, err := s.KVList("missing")
+	if err != nil || empty == nil || len(empty) != 0 {
+		t.Fatalf("KVList empty = %#v, err = %v", empty, err)
+	}
+}
+
+func testKVDeleteIdempotent(t *testing.T, s store.API) {
+	if err := s.KVSet("ephemeral", "value", "writer"); err != nil {
+		t.Fatal(err)
+	}
+	deleted, err := s.KVDelete("ephemeral")
+	if err != nil || !deleted {
+		t.Fatalf("first KVDelete: deleted=%v err=%v", deleted, err)
+	}
+	deleted, err = s.KVDelete("ephemeral")
+	if err != nil || deleted {
+		t.Fatalf("second KVDelete: deleted=%v err=%v", deleted, err)
+	}
+	if _, ok, err := s.KVGet("ephemeral"); err != nil || ok {
+		t.Fatalf("KVGet after delete: ok=%v err=%v", ok, err)
+	}
+}
+
 func testKVReadYourWrites(t *testing.T, s store.API) {
 	for i := range 20 {
 		if err := s.KVSet("k", fmt.Sprintf("v%d", i), "writer"); err != nil {
