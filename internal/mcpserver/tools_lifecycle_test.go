@@ -35,6 +35,26 @@ func TestCurrentAgentReturnsCallerAndOwnedAliases(t *testing.T) {
 	}
 }
 
+func TestCurrentAgentUnregisteredReturnsEmptyAliasList(t *testing.T) {
+	prevCall := callDaemon
+	t.Cleanup(func() { callDaemon = prevCall })
+	stubCallerCaptures(t, tmuxenv.Capture{}, harnessenv.Capture{SessionID: "hs-1"})
+	callDaemon = func(op string, _ map[string]any) (json.RawMessage, error) {
+		if op != "session_aliases" {
+			t.Fatalf("unexpected op %q", op)
+		}
+		return json.RawMessage(`{"aliases":[]}`), nil
+	}
+
+	_, got, err := currentAgentHandler(context.Background(), nil, CurrentAgentIn{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Registered || got.Agent != nil || got.OwnedAliases == nil || len(got.OwnedAliases) != 0 {
+		t.Fatalf("current agent = %+v, want unregistered with non-nil empty aliases", got)
+	}
+}
+
 func TestDeregisterAgentWithoutSessionProofFails(t *testing.T) {
 	prevCall := callDaemon
 	t.Cleanup(func() { callDaemon = prevCall })

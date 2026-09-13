@@ -170,7 +170,11 @@ func currentAgentHandler(_ context.Context, _ *mcp.CallToolRequest, _ CurrentAge
 	if err != nil {
 		return nil, CurrentAgentOut{}, err
 	}
-	out := CurrentAgentOut{Registered: identity.Registered, OwnedAliases: identity.LiveAliases}
+	aliases := identity.LiveAliases
+	if aliases == nil {
+		aliases = []string{}
+	}
+	out := CurrentAgentOut{Registered: identity.Registered, OwnedAliases: aliases}
 	if identity.Registered {
 		agent := agentViewOf(identity.Agent)
 		out.Agent = &agent

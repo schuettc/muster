@@ -97,6 +97,32 @@ func TestResolveCallerIdentityReturnsAllLiveLineageAliases(t *testing.T) {
 	}
 }
 
+func TestResolveCallerIdentityExcludesForeignDeviceTupleCollision(t *testing.T) {
+	prevCall := callDaemon
+	t.Cleanup(func() { callDaemon = prevCall })
+	stubCallerCaptures(t,
+		tmuxenv.Capture{SocketPath: "/s", SessionID: "$1", PaneID: "%2", SessionCreated: 100},
+		harnessenv.Capture{})
+	callDaemon = func(op string, _ map[string]any) (json.RawMessage, error) {
+		if op == "session_aliases" {
+			// The daemon's device-scoped proof returns only the local lineage.
+			return json.RawMessage(`{"aliases":["local"]}`), nil
+		}
+		return json.RawMessage(`[
+			{"alias":"local","device_id":"local-device","socket_path":"/s","session_id":"$1","pane_id":"%2","session_created":100},
+			{"alias":"foreign","device_id":"foreign-device","socket_path":"/s","session_id":"$1","pane_id":"%2","session_created":100}
+		]`), nil
+	}
+
+	got, err := resolveCallerIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Registered || got.Agent.Alias != "local" || len(got.LiveAliases) != 1 || got.LiveAliases[0] != "local" {
+		t.Fatalf("identity = %+v", got)
+	}
+}
+
 func TestResolveCallerIdentityWithoutProofIsUnregistered(t *testing.T) {
 	prevCall := callDaemon
 	t.Cleanup(func() { callDaemon = prevCall })
