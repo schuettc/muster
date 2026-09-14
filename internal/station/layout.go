@@ -388,9 +388,11 @@ func windowLines(lines []string, height, selected int) []string {
 // see threadWhoWidth. LAST (the old "last speaker" column) stays dropped:
 // WHO's own arrow already conveys the participants.
 const (
-	threadIDWidth  = 5
-	threadTagWidth = 12 // fits "needs action" (12 chars) verbatim
-	threadAgeWidth = 4
+	threadIDWidth            = 5
+	threadTagWidth           = 12 // fits "needs action" (12 chars) verbatim
+	threadStateWidth         = 10 // fits "needs info" and "completed"
+	threadStateMinTableWidth = 110
+	threadAgeWidth           = 4
 
 	// threadWhoMinWidth is WHO's floor — a narrow or small terminal (or a
 	// table whose longest WHO string is shorter than this) renders exactly
@@ -429,12 +431,20 @@ const (
 // threadSubjectMinBudget columns, the cap wins instead; if the cap itself
 // would fall below the floor (a narrow terminal), the floor wins, matching
 // pre-fix behavior exactly.
+func showThreadStateColumn(innerW int) bool {
+	return innerW >= threadStateMinTableWidth
+}
+
 func threadWhoWidth(innerW, maxContent int) int {
 	who := maxContent
 	if who < threadWhoMinWidth {
 		who = threadWhoMinWidth
 	}
-	capW := innerW - threadsFixedNonWhoWidth - threadSubjectMinBudget
+	fixedNonWho := threadsFixedNonWhoWidth
+	if showThreadStateColumn(innerW) {
+		fixedNonWho += threadStateWidth + 2
+	}
+	capW := innerW - fixedNonWho - threadSubjectMinBudget
 	if capW < threadWhoMinWidth {
 		capW = threadWhoMinWidth
 	}
@@ -456,6 +466,9 @@ func threadWhoWidth(innerW, maxContent int) int {
 func threadsColumnWidths(innerW, maxWhoContent int) (whoW, fixedWidth int) {
 	whoW = threadWhoWidth(innerW, maxWhoContent)
 	fixedWidth = threadsFixedNonWhoWidth + whoW
+	if showThreadStateColumn(innerW) {
+		fixedWidth += threadStateWidth + 2
+	}
 	return whoW, fixedWidth
 }
 
@@ -466,8 +479,11 @@ func threadsColumnWidths(innerW, maxWhoContent int) (whoW, fixedWidth int) {
 // aligned with every row under it regardless of the table's width.
 func threadsHeaderLine(innerW, maxWhoContent int) string {
 	whoW, _ := threadsColumnWidths(innerW, maxWhoContent)
-	return "  " + render.PadDisplay("ID", threadIDWidth) + "  " + render.PadDisplay("INTENT", threadTagWidth) + "  " +
-		render.PadDisplay("WHO", whoW) + "  " + render.PadDisplay("AGE", threadAgeWidth) + "  " + "SUBJECT"
+	line := "  " + render.PadDisplay("ID", threadIDWidth) + "  " + render.PadDisplay("INTENT", threadTagWidth) + "  "
+	if showThreadStateColumn(innerW) {
+		line += render.PadDisplay("STATE", threadStateWidth) + "  "
+	}
+	return line + render.PadDisplay("WHO", whoW) + "  " + render.PadDisplay("AGE", threadAgeWidth) + "  " + "SUBJECT"
 }
 
 // colorIntentTag wraps an already-padded intent-word column in its intent's

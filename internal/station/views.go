@@ -416,6 +416,13 @@ func (m Model) renderWho(row listThreadRow, arrow string) string {
 // "(unassigned)" thread list and screenAgent's thread list
 // (conversationRows() already picks the right underlying rows for whichever
 // screen is active).
+func taskStateText(row listThreadRow) string {
+	if row.Kind != "task" {
+		return ""
+	}
+	return strings.ReplaceAll(row.Status, "_", " ")
+}
+
 func (m Model) renderThreadRow(row listThreadRow) string {
 	marker := "  "
 	if row.ID == m.conversation {
@@ -429,7 +436,8 @@ func (m Model) renderThreadRow(row listThreadRow) string {
 	last := m.dispLabel(row.LastFrom)
 	age := relativeAge(time.Now(), row.LastAt)
 	subject := display.Sanitize(row.Subject, 200)
-	return fmt.Sprintf("%s#%d%s %s | %s %s | %s", marker, row.ID, word, participants, last, age, subject)
+	state := taskStateText(row)
+	return fmt.Sprintf("%s#%d%s %s | %s %s | %s | %s", marker, row.ID, word, participants, last, age, state, subject)
 }
 
 // threadWhoContentWidth is WHO's column-width fix (operator finding: a flat
@@ -476,6 +484,10 @@ func (m Model) renderConversationLineMarked(c conversationRow, innerW, maxWhoCon
 	idCol := render.PadDisplay(display.Sanitize(fmt.Sprintf("#%d", c.ID), threadIDWidth), threadIDWidth)
 	wordPlain := intentWord(c.Intent)
 	intentCol := colorIntentTag(c.Intent, render.PadDisplay(wordPlain, threadTagWidth))
+	stateCol := ""
+	if showThreadStateColumn(innerW) {
+		stateCol = render.PadDisplay(display.Sanitize(taskStateText(c.listThreadRow), threadStateWidth), threadStateWidth) + "  "
+	}
 	who := m.renderWho(c.listThreadRow, "→")
 	whoCol := render.PadDisplay(display.Sanitize(who, whoW), whoW)
 	ageCol := render.PadDisplay(relativeAge(time.Now(), c.LastAt), threadAgeWidth)
@@ -494,7 +506,7 @@ func (m Model) renderConversationLineMarked(c conversationRow, innerW, maxWhoCon
 	}
 	subjectCol := render.PadDisplay(display.Sanitize(subject, subjectBudget), subjectBudget)
 
-	return marker + idCol + "  " + intentCol + "  " + whoCol + "  " + ageCol + "  " + subjectCol
+	return marker + idCol + "  " + intentCol + "  " + stateCol + whoCol + "  " + ageCol + "  " + subjectCol
 }
 
 // renderConvListBox builds a thread-list box (shared by screenProject's
@@ -584,7 +596,11 @@ func (m Model) conversationLines(width int) (lines []string, entryStart []int) {
 			marker = "> "
 		}
 		age := relativeAge(time.Now(), e.CreatedAt)
-		header := display.Sanitize(fmt.Sprintf("%s%s · %s", marker, m.dispLabel(e.FromAgent), age), width)
+		headerText := fmt.Sprintf("%s%s · %s", marker, m.dispLabel(e.FromAgent), age)
+		if e.StatusChange != "" {
+			headerText += " · → " + strings.ReplaceAll(e.StatusChange, "_", " ")
+		}
+		header := display.Sanitize(headerText, width)
 		lines = append(lines, conversationAuthorStyle.Render(render.PadDisplay(header, width)))
 
 		for _, bl := range wrapBody(e.Body, bodyWidth) {
@@ -644,6 +660,23 @@ func snapToEntryBoundary(entryStart []int, top int) int {
 	return realStarts[len(realStarts)-1]
 }
 
+func (m Model) taskContextLines(width int) []string {
+	idx := indexOfThread(m.threads, m.viewThreadID)
+	if idx < 0 || m.threads[idx].Kind != "task" {
+		return nil
+	}
+	thread := m.threads[idx]
+	lines := []string{
+		render.PadDisplay(display.Sanitize("state: "+taskStateText(thread), width), width),
+		render.PadDisplay(display.Sanitize(m.renderWho(thread, " → "), width), width),
+	}
+	if thread.Ref != "" {
+		lines = append(lines, render.PadDisplay(display.Sanitize("ref: "+thread.Ref, width), width))
+	}
+	lines = append(lines, "")
+	return lines
+}
+
 // renderConversationBox builds the right pane's thread content — the
 // passive "last messages" preview (focused=false: just the tail, no cursor
 // marks, no load-older/newer hints) or screenRead's focused reader
@@ -673,7 +706,11 @@ func (m Model) renderConversationBox(outerW, outerH int, focused bool) string {
 	if height < 1 {
 		height = 1
 	}
-	var content []string
+	content := m.taskContextLines(innerW)
+	height -= len(content)
+	if height < 1 {
+		height = 1
+	}
 	if focused && m.viewOffset > 0 {
 		content = append(content, render.PadDisplay(display.Sanitize("↑ more above — k/↑ to load older", innerW), innerW))
 		height--

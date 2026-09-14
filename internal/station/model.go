@@ -131,6 +131,7 @@ type listThreadRow struct {
 	ToKind    string `json:"to_kind"`
 	ToTarget  string `json:"to_target"`
 	Subject   string `json:"subject"`
+	Ref       string `json:"ref"`
 	Status    string `json:"status"`
 	Intent    string `json:"intent"`
 	CreatedAt int64  `json:"created_at"`
