@@ -106,10 +106,11 @@ type API interface {
 	RetractStandingOrder(project, key string) (bool, error)
 	ListStandingOrders(project string) ([]StandingOrder, error)
 	AppendEntry(threadID int64, fromAgent, body, statusChange string) (int64, error)
-	ClaimTask(threadID int64, byAgent string) error
+	ClaimTask(threadID int64, byAgent string, note ...string) error
 	TransitionTask(threadID int64, byAgent, newStatus, note string) error
 	GetThread(id int64) (Thread, []Entry, error)
 	Threads(limit int) ([]Thread, error)
+	Tasks(q TaskQuery) ([]Thread, error)
 	Inbox(alias string) ([]Thread, error)
 	// MarkRead records that alias has read an Inbox snapshot through
 	// upToEntryID. Callers must derive the bound from that snapshot, never
@@ -144,6 +145,8 @@ type API interface {
 	DevicePoll(deviceID string, sinceEntryID int64) (DevicePollResult, error)
 	KVSet(key, value, updatedBy string) error
 	KVGet(key string) (KVPair, bool, error)
+	KVList(prefix string) ([]KVPair, error)
+	KVDelete(key string) (bool, error)
 	AppendEvent(e Event) error
 	Events(q EventQuery) ([]Event, error)
 	MaxEventID() (int64, error)

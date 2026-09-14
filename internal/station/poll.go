@@ -36,8 +36,9 @@ type agentsMsg struct {
 
 // threadsMsg carries one list_threads snapshot (or a fetch error).
 type threadsMsg struct {
-	threads []listThreadRow
-	err     error
+	threads              []listThreadRow
+	activeTasksTruncated bool
+	err                  error
 }
 
 func tickCmd(interval time.Duration) tea.Cmd {
@@ -78,7 +79,11 @@ type agentRow struct {
 	Alias          string `json:"alias"`
 	Role           string `json:"role"`
 	ModelType      string `json:"model_type"`
+	DeviceName     string `json:"device_name"`
+	DeviceID       string `json:"device_id"`
+	Departed       bool   `json:"departed"`
 	SocketPath     string `json:"socket_path"`
+	PaneID         string `json:"pane_id"`
 	SessionID      string `json:"session_id"`
 	SessionCreated int64  `json:"session_created"`
 	Project        string `json:"project"`
@@ -108,6 +113,10 @@ type sessionTupleKey struct {
 	sessionCreated        int64
 }
 
+func effectiveAgentLive(departed, sessionAlive bool) bool {
+	return !departed && sessionAlive
+}
+
 // fetchAgents lists agents, overlays live tmux state (liveness + current
 // label, exactly like `muster agents`), and looks up each distinct live
 // session tuple's unread count once.
@@ -125,10 +134,11 @@ func fetchAgents(caller render.Caller) ([]agentEnriched, error) {
 	for _, a := range rows {
 		e := agentEnriched{
 			Alias: a.Alias, Project: a.Project, ModelType: a.ModelType, Role: a.Role,
+			DeviceName: a.DeviceName, DeviceID: a.DeviceID, Departed: a.Departed,
 			Label: a.Label, LabelManual: a.LabelManual,
-			SocketPath: a.SocketPath, SessionID: a.SessionID,
+			SocketPath: a.SocketPath, PaneID: a.PaneID, SessionID: a.SessionID, SessionCreated: a.SessionCreated,
 		}
-		e.Live = tmuxenv.IsSessionAlive(a.SocketPath, a.SessionID, a.SessionCreated)
+		e.Live = effectiveAgentLive(a.Departed, tmuxenv.IsSessionAlive(a.SocketPath, a.SessionID, a.SessionCreated))
 		if e.Live {
 			e.Label, e.LabelManual = tmuxenv.SessionLabel(a.SocketPath, a.SessionID)
 		}
@@ -170,23 +180,34 @@ const threadListLimit = 200
 
 func fetchThreadsCmd(caller render.Caller) tea.Cmd {
 	return func() tea.Msg {
-		threads, err := fetchThreads(caller)
-		return threadsMsg{threads: threads, err: err}
+		threads, truncated, err := fetchThreads(caller)
+		return threadsMsg{threads: threads, activeTasksTruncated: truncated, err: err}
 	}
 }
 
-func fetchThreads(caller render.Caller) ([]listThreadRow, error) {
-	raw, err := caller.Call("list_threads", map[string]any{"limit": threadListLimit})
+func fetchThreads(caller render.Caller) ([]listThreadRow, bool, error) {
+	raw, err := caller.Call("list_threads", map[string]any{
+		"limit": threadListLimit, "include_nonterminal_tasks": true,
+	})
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	var res struct {
-		Threads []listThreadRow `json:"threads"`
+		Threads               []listThreadRow `json:"threads"`
+		ActiveTasksTruncated  bool            `json:"active_tasks_truncated"`
+		RetainedActiveTaskIDs []int64         `json:"retained_active_task_ids"`
 	}
 	if err := json.Unmarshal(raw, &res); err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	return res.Threads, nil
+	retained := make(map[int64]bool, len(res.RetainedActiveTaskIDs))
+	for _, id := range res.RetainedActiveTaskIDs {
+		retained[id] = true
+	}
+	for i := range res.Threads {
+		res.Threads[i].RetainedActiveTask = retained[res.Threads[i].ID]
+	}
+	return res.Threads, res.ActiveTasksTruncated, nil
 }
 
 // threadViewPageSize bounds the thread view's initial get_thread fetch (spec

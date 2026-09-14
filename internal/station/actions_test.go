@@ -2,9 +2,11 @@ package station
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
+	"github.com/schuettc/muster/internal/store"
 	"github.com/schuettc/muster/internal/tmuxenv"
 )
 
@@ -464,6 +466,197 @@ func TestAliasesToggleSwitchesDisplay(t *testing.T) {
 	}
 	if view := m.View(); !strings.Contains(view, "backend-1") {
 		t.Fatalf("after toggling aliases on, the raw alias must show:\n%s", view)
+	}
+}
+
+func TestStationDeregisterOpensOnlyForEligibleSelectedAgents(t *testing.T) {
+	base := func(agent agentEnriched, self string) Model {
+		m := NewModel(fakeCaller{}, Options{Alias: self})
+		m.screen = screenProject
+		m.project = agent.Project
+		m.agents = []agentEnriched{agent}
+		m.agent = agent.Alias
+		return m
+	}
+	for name, agent := range map[string]agentEnriched{
+		"local":    {Alias: "local", Project: "p", SocketPath: "/s", PaneID: "%1", SessionID: "$1", SessionCreated: 10, Live: true},
+		"remote":   {Alias: "remote", Project: "p", DeviceName: "laptop", DeviceID: "d2", SocketPath: "/remote", SessionID: "$2"},
+		"paneless": {Alias: "paneless", Project: "p", DeviceName: "ci", SessionID: "harness-1"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			m := base(agent, "station")
+			next, _ := m.Update(keyMsg("d"))
+			m = mustModel(t, next)
+			if m.deregisterConfirmAlias != agent.Alias {
+				t.Fatalf("confirmation = %q", m.deregisterConfirmAlias)
+			}
+		})
+	}
+	for name, agent := range map[string]agentEnriched{
+		"departed": {Alias: "gone", Project: "p", Departed: true},
+		"self":     {Alias: "station", Project: "p"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			m := base(agent, "station")
+			next, _ := m.Update(keyMsg("d"))
+			m = mustModel(t, next)
+			if m.deregisterConfirmAlias != "" {
+				t.Fatalf("ineligible agent opened confirmation: %q", m.deregisterConfirmAlias)
+			}
+		})
+	}
+}
+
+func TestStationDeregisterConfirmationAndAction(t *testing.T) {
+	var calls []string
+	caller := fakeCaller{fn: func(op string, args map[string]any) (json.RawMessage, error) {
+		calls = append(calls, op)
+		if op == "deregister_agent" {
+			if args["alias"] != "backend" {
+				t.Fatalf("deregister args = %+v", args)
+			}
+			return json.RawMessage(`null`), nil
+		}
+		return json.RawMessage(`[]`), nil
+	}}
+	m := NewModel(caller, Options{Alias: "station"})
+	m.screen, m.project, m.agent = screenProject, "muster", "backend"
+	m.agents = []agentEnriched{{Alias: "backend", Project: "muster", DeviceName: "work-laptop", SocketPath: "/s", SessionID: "$1", Live: true}}
+
+	next, _ := m.Update(keyMsg("d"))
+	m = mustModel(t, next)
+	confirmation := m.renderBottomLine()
+	for _, want := range []string{"backend", "muster", "work-laptop", "live", "tombstone", "y/n"} {
+		if !strings.Contains(confirmation, want) {
+			t.Fatalf("confirmation missing %q: %q", want, confirmation)
+		}
+	}
+	next, cmd := m.Update(keyMsg("n"))
+	m = mustModel(t, next)
+	if cmd != nil || len(calls) != 0 || m.deregisterConfirmAlias != "" {
+		t.Fatalf("cancel changed state: cmd=%v calls=%v confirm=%q", cmd != nil, calls, m.deregisterConfirmAlias)
+	}
+
+	next, _ = m.Update(keyMsg("d"))
+	m = mustModel(t, next)
+	next, cmd = m.Update(keyMsg("y"))
+	m = mustModel(t, next)
+	msg, ok := cmd().(deregisterResultMsg)
+	if !ok || msg.err != nil || msg.alias != "backend" || len(calls) != 1 {
+		t.Fatalf("result=%+v calls=%v", msg, calls)
+	}
+	next, refresh := m.Update(msg)
+	m = mustModel(t, next)
+	if refresh == nil || !strings.Contains(m.status, "deregistered") {
+		t.Fatalf("success status=%q refresh=%v", m.status, refresh != nil)
+	}
+}
+
+func TestStationTaskTransitionOnlyOpensForTasks(t *testing.T) {
+	m := NewModel(fakeCaller{}, Options{Alias: "station"})
+	m.screen, m.agent, m.conversation = screenAgent, "worker", 7
+	m.threads = []listThreadRow{{ID: 7, Kind: "message", Subject: "note"}}
+	next, _ := m.Update(keyMsg("t"))
+	m = mustModel(t, next)
+	if m.taskTransition.open {
+		t.Fatal("message opened task transition menu")
+	}
+	m.threads = []listThreadRow{{ID: 7, Kind: "task", Status: "blocked", Subject: "work"}}
+	next, _ = m.Update(keyMsg("t"))
+	m = mustModel(t, next)
+	if !m.taskTransition.open || m.taskTransition.threadID != 7 {
+		t.Fatalf("task transition = %+v", m.taskTransition)
+	}
+	menu := m.renderBottomLine()
+	for _, want := range []string{"claim (open only)", "needs info", "blocked (current)", "complete", "decline", "cancel", "reopen"} {
+		if !strings.Contains(menu, want) {
+			t.Fatalf("transition menu missing %q: %q", want, menu)
+		}
+	}
+}
+
+func TestStationTaskTransitionUsesExistingDaemonOps(t *testing.T) {
+	var gotOp string
+	var gotArgs map[string]any
+	caller := fakeCaller{fn: func(op string, args map[string]any) (json.RawMessage, error) {
+		gotOp, gotArgs = op, args
+		return json.RawMessage(`null`), nil
+	}}
+	m := NewModel(caller, Options{Alias: "station"})
+	m.screen, m.conversation = screenAgent, 7
+	m.threads = []listThreadRow{{ID: 7, Kind: "task", Status: "open"}}
+	next, _ := m.Update(keyMsg("t"))
+	m = mustModel(t, next)
+	next, _ = m.Update(keyMsg("enter"))
+	m = mustModel(t, next)
+	m.taskTransition.note.SetValue("taking it")
+	next, cmd := m.Update(keyMsg("enter"))
+	m = mustModel(t, next)
+	msg := cmd().(taskTransitionResultMsg)
+	if msg.err != nil || gotOp != "task_claim" || gotArgs["thread_id"] != int64(7) || gotArgs["by"] != "station" || gotArgs["note"] != "taking it" {
+		t.Fatalf("claim call: op=%q args=%+v result=%+v", gotOp, gotArgs, msg)
+	}
+
+	m.conversation = 8
+	m.threads = []listThreadRow{{ID: 8, Kind: "task", Status: "open"}}
+	next, _ = m.Update(keyMsg("t"))
+	m = mustModel(t, next)
+	m.taskTransition.choice = 2
+	next, _ = m.Update(keyMsg("enter"))
+	m = mustModel(t, next)
+	m.taskTransition.note.SetValue("waiting on API")
+	next, cmd = m.Update(keyMsg("enter"))
+	m = mustModel(t, next)
+	msg = cmd().(taskTransitionResultMsg)
+	if msg.err != nil || gotOp != "task_transition" || gotArgs["status"] != "blocked" || gotArgs["note"] != "waiting on API" {
+		t.Fatalf("transition call: op=%q args=%+v result=%+v", gotOp, gotArgs, msg)
+	}
+}
+
+func TestStationTaskClaimConflictSurfacesAndPreservesSelection(t *testing.T) {
+	caller := fakeCaller{fn: func(op string, _ map[string]any) (json.RawMessage, error) {
+		if op != "task_claim" {
+			t.Fatalf("op = %q, want task_claim", op)
+		}
+		return nil, store.ErrNotClaimable
+	}}
+	m := NewModel(caller, Options{Alias: "station"})
+	m.screen, m.agent, m.conversation, m.viewThreadID = screenAgent, "worker", 9, 9
+	msg := taskTransitionCmd(caller, "station", 7, "claim", "claimed", "")().(taskTransitionResultMsg)
+	next, cmd := m.Update(msg)
+	m = mustModel(t, next)
+	if cmd != nil || m.agent != "worker" || m.conversation != 9 || m.viewThreadID != 9 || !strings.Contains(m.status, "not claimable") {
+		t.Fatalf("claim conflict mutated selection: agent=%q conversation=%d viewed=%d status=%q", m.agent, m.conversation, m.viewThreadID, m.status)
+	}
+}
+
+func TestStationTaskTransitionSuccessRefreshesWithoutChangingSelection(t *testing.T) {
+	m := NewModel(fakeCaller{}, Options{})
+	m.screen, m.agent, m.conversation, m.viewThreadID = screenRead, "worker", 9, 9
+	next, cmd := m.Update(taskTransitionResultMsg{threadID: 7, status: "blocked"})
+	m = mustModel(t, next)
+	if cmd == nil || m.screen != screenRead || m.agent != "worker" || m.conversation != 9 || m.viewThreadID != 9 || !strings.Contains(m.status, "blocked") {
+		t.Fatalf("success changed selection or skipped refresh: screen=%v agent=%q conversation=%d viewed=%d status=%q refresh=%v", m.screen, m.agent, m.conversation, m.viewThreadID, m.status, cmd != nil)
+	}
+}
+
+func TestStationTaskTransitionFailurePreservesView(t *testing.T) {
+	m := NewModel(fakeCaller{}, Options{})
+	m.screen, m.agent, m.conversation, m.viewThreadID = screenRead, "worker", 7, 7
+	next, cmd := m.Update(taskTransitionResultMsg{threadID: 7, status: "blocked", err: errors.New("conflict")})
+	m = mustModel(t, next)
+	if cmd != nil || m.screen != screenRead || m.agent != "worker" || m.conversation != 7 || m.viewThreadID != 7 || !strings.Contains(m.status, "conflict") {
+		t.Fatalf("failure mutated view: screen=%v agent=%q conversation=%d viewed=%d status=%q", m.screen, m.agent, m.conversation, m.viewThreadID, m.status)
+	}
+}
+
+func TestStationDeregisterFailurePreservesView(t *testing.T) {
+	m := NewModel(fakeCaller{}, Options{})
+	m.screen, m.project, m.agent = screenAgent, "p", "backend"
+	next, cmd := m.Update(deregisterResultMsg{alias: "backend", err: errors.New("boom")})
+	m = mustModel(t, next)
+	if cmd != nil || m.screen != screenAgent || m.project != "p" || m.agent != "backend" || !strings.Contains(m.status, "boom") {
+		t.Fatalf("failure mutated view: screen=%v project=%q agent=%q status=%q", m.screen, m.project, m.agent, m.status)
 	}
 }
 

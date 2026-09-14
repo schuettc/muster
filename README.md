@@ -51,7 +51,8 @@ codex mcp add muster -- muster mcp              # Codex
 agent mcp enable muster
 # (any other MCP client: point it at `muster mcp` over stdio)
 
-# 3. in each session, have the agent call register_agent once
+# 3. in each session, have the agent call current_agent first;
+#    call register_agent only when registered is false
 #    (or add that instruction to your project's CLAUDE.md / AGENTS.md)
 ```
 
@@ -107,12 +108,24 @@ The tools, by what they do:
 
 | Group | Tools | Notes |
 |---|---|---|
-| Identity | `register_agent`, `list_agents` | join the bus once per session; see who's on it |
+| Identity | `current_agent`, `register_agent`, `deregister_agent`, `list_agents`, `get_status` | discover your proven identity first; join or leave the bus; see who's on it; inspect unread counts without marking mail read |
 | Conversation | `send_message`, `reply`, `get_inbox`, `get_thread` | a **message** is a plain thread — no state, just an exchange |
-| Work | `task_create`, `task_claim`, `task_transition` | a **task** is a thread with a lifecycle: `open → claimed → needs_info \| blocked → completed \| declined \| cancelled`. Claiming is atomic — two agents can't take the same task |
-| Shared state | `kv_set`, `kv_get` | a key/value scratchpad both sides can read (an API contract, a port, a decision) |
+| Work | `list_tasks`, `task_create`, `task_claim`, `task_transition` | discover tasks with exact filters, then create or advance them through `open → claimed → needs_info \| blocked → completed \| declined \| cancelled`. Claiming is atomic |
+| Shared state | `kv_set`, `kv_get`, `kv_list`, `kv_delete` | a small key/value scratchpad; mutations are attributed to the proven caller rather than a client-supplied alias |
 
-The MCP server talks to the local daemon (auto-started on first use).
+The MCP server talks to the local daemon (auto-started on first use). Start an
+identity-dependent workflow with `current_agent`. When it reports
+`registered: false`, call `register_agent`; otherwise use the returned
+`agent.alias` rather than guessing your name. `deregister_agent` takes no target
+and tombstones every live alias proven to belong to the calling session while
+preserving its history and read state. `get_status` returns side-effect-free unread
+and action-required counts for all aliases, or filters by one exact alias.
+
+`kv_list` returns the complete blackboard in key order and accepts an optional
+literal prefix; `kv_delete` is idempotent. `list_tasks` composes exact project,
+status, creator, and target filters. It defaults to the 100 most recently
+updated nonterminal tasks, accepts limits through 500, and sets `truncated`
+when more matching work exists.
 
 > Note: stdout is the MCP channel in this mode; muster writes all diagnostics to
 > stderr.
@@ -296,19 +309,27 @@ jumps home from anywhere · `m` toggles the mailbox page — station's own
 mail, unread and read history; the header always shows a 📬 badge with the
 current unread count, on every screen · `s` opens the composer to send
 (with a target picker and an intent cycle) · `r` replies on the open
-thread · `n` nudges the selected agent (with a confirmation prompt) · `/`
-filters the current list · `a` toggles aliases vs. labels · `q` quits.
+thread · `n` nudges the selected agent (with a confirmation prompt) · `d`
+deregisters the selected non-departed agent after showing its identity and a
+tombstone-only confirmation (never Station itself) · `t` opens a compact
+claim/state-transition menu for the selected task, followed by an optional
+note · `/` filters the current list · `a` toggles aliases vs. labels · `q`
+quits.
 
 Intents render as plain words, not the CLI's bracket shorthand — "needs
-action", "wants reply", "fyi". An agent that exits cleanly doesn't vanish
+action", "wants reply", "fyi". Nonterminal tasks remain in the Station
+snapshot even when they are older than the general recent-thread window;
+wide thread tables show task state, and task readers show status, assignment,
+ref, and explicit status-change entries. An agent that exits cleanly doesn't vanish
 from its project: it stays listed below a divider, dimmed, with its thread
 history intact (a tombstone).
 
 Station registers on the bus itself, as agent `station` — `muster send
 station "…"` and `muster nudge station` reach it like any other agent. If
 an alias `station` is already live (a second station on the same machine),
-it fails over to `station-2`, `station-3`, and so on. It deregisters on
-quit, provided nothing else has since taken over its alias.
+it fails over to `station-2`, `station-3`, and so on. Quitting does not
+deregister Station: its durable row and read watermark survive and revive on
+the next launch.
 
 ### Notifications & nudging
 

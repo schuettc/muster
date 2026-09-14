@@ -17,7 +17,11 @@ var TaskStates = map[string]bool{
 }
 
 // ClaimTask atomically moves a task from open → claimed and records it.
-func (s *Store) ClaimTask(threadID int64, byAgent string) error {
+func (s *Store) ClaimTask(threadID int64, byAgent string, note ...string) error {
+	body := ""
+	if len(note) > 0 {
+		body = note[0]
+	}
 	now := clock.NowMillis()
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -36,7 +40,7 @@ func (s *Store) ClaimTask(threadID int64, byAgent string) error {
 	if n != 1 {
 		return ErrNotClaimable
 	}
-	if _, err := tx.Exec(`INSERT INTO entries (thread_id, from_agent, body, status_change, created_at) VALUES (?, ?, '', 'claimed', ?)`, threadID, byAgent, now); err != nil {
+	if _, err := tx.Exec(`INSERT INTO entries (thread_id, from_agent, body, status_change, created_at) VALUES (?, ?, ?, 'claimed', ?)`, threadID, byAgent, body, now); err != nil {
 		return err
 	}
 	return tx.Commit()

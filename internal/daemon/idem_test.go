@@ -319,7 +319,7 @@ func TestGetInboxIsIdempotencyProtected(t *testing.T) {
 // anything", which TestEveryDispatchOpIsClassified enforces.
 var readOps = map[string]bool{
 	"list_agents": true, "session_aliases": true, "session_unread": true,
-	"get_thread": true, "list_threads": true, "kv_get": true,
+	"get_thread": true, "list_threads": true, "list_tasks": true, "kv_get": true, "kv_list": true,
 	"standing_list": true, "status": true,
 	// device_poll reads a watermark and answers with it; the watermark lives
 	// on the POLLING DEVICE (the daemon's own loop variable), never in the

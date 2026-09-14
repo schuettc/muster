@@ -14,11 +14,18 @@ import (
 // AgentView (the tool-facing shape) deliberately omits but identity guards
 // need. Tags match the daemon's snake_case store JSON.
 type rosterRow struct {
-	Alias      string `json:"alias"`
-	ModelType  string `json:"model_type"`
-	SocketPath string `json:"socket_path"`
-	PaneID     string `json:"pane_id"`
-	SessionID  string `json:"session_id"`
+	Alias            string `json:"alias"`
+	Role             string `json:"role"`
+	ModelType        string `json:"model_type"`
+	SocketPath       string `json:"socket_path"`
+	PaneID           string `json:"pane_id"`
+	SessionName      string `json:"session_name"`
+	SessionID        string `json:"session_id"`
+	DeviceID         string `json:"device_id"`
+	DeviceName       string `json:"device_name"`
+	HarnessSessionID string `json:"harness_session_id"`
+	TranscriptPath   string `json:"transcript_path"`
+	Project          string `json:"project"`
 	// SessionCreated is the incarnation half of tmux identity (#{session_created},
 	// unix seconds — see tmuxenv.Capture.SessionCreated). tmux recycles session
 	// IDs from $0 across server restarts, so a (socket_path, session_id, pane_id)
@@ -27,6 +34,9 @@ type rosterRow struct {
 	// same IDs. 0 = unknown (a pre-upgrade row, or one captured outside tmux).
 	SessionCreated int64  `json:"session_created"`
 	Label          string `json:"label"`
+	LabelManual    bool   `json:"label_manual"`
+	RegisteredAt   int64  `json:"registered_at"`
+	LastSeen       int64  `json:"last_seen"`
 	Departed       bool   `json:"departed"`
 	// SupersededBy mirrors store.Agent.SupersededBy — non-empty on a row
 	// retired via `become`, naming the alias its identity moved onto.

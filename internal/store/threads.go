@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/schuettc/muster/internal/clock"
 )
@@ -376,19 +377,43 @@ func clampThreadsLimit(limit int) int {
 // entries table — this runs on a polling cadence (station, once a second).
 func (s *Store) Threads(limit int) ([]Thread, error) {
 	limit = clampThreadsLimit(limit)
+	return s.queryThreads(`ORDER BY updated_at DESC, id DESC LIMIT ?`, []any{limit})
+}
+
+// Tasks returns task threads matching q's exact metadata filters, annotated
+// and ordered by updated_at DESC, id DESC.
+func (s *Store) Tasks(q TaskQuery) ([]Thread, error) {
+	where := []string{"kind='task'"}
+	args := []any{}
+	if len(q.Statuses) > 0 {
+		marks := make([]string, len(q.Statuses))
+		for i, status := range q.Statuses {
+			marks[i] = "?"
+			args = append(args, status)
+		}
+		where = append(where, "status IN ("+strings.Join(marks, ",")+")")
+	}
+	for column, value := range map[string]string{"from_agent": q.FromAgent, "to_kind": q.ToKind, "to_target": q.ToTarget} {
+		if value != "" {
+			where = append(where, column+"=?")
+			args = append(args, value)
+		}
+	}
+	return s.queryThreads("WHERE "+strings.Join(where, " AND ")+" ORDER BY updated_at DESC, id DESC", args)
+}
+
+func (s *Store) queryThreads(clause string, args []any) ([]Thread, error) {
 	rows, err := s.db.Query(`
 WITH recent AS (
     SELECT *, `+effectiveIntent+` AS eff_intent
-    FROM threads
-    ORDER BY updated_at DESC, id DESC
-    LIMIT ?
+    FROM threads `+clause+`
 ),`+threadLastEntryCTE+`
 SELECT recent.id, recent.kind, recent.from_agent, recent.to_kind, recent.to_target,
        recent.subject, recent.ref, recent.status, recent.eff_intent, recent.standing, recent.wake,
        recent.created_at, recent.updated_at, recent.origin_project,
        last.max_id, le.from_agent, le.created_at, last.n
 FROM recent`+threadLastEntryJoin+`
-ORDER BY recent.updated_at DESC, recent.id DESC`, limit)
+ORDER BY recent.updated_at DESC, recent.id DESC`, args...)
 	if err != nil {
 		return nil, err
 	}

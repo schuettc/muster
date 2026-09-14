@@ -557,6 +557,11 @@ wire protocol.
 These are all known and accepted for this version. Each one is here because
 running into it without warning would reasonably look like a bug.
 
+**Listing the blackboard scans the base table.** `kv_list` performs one complete
+DynamoDB scan, keeps only KV items (and the optional literal key prefix), then
+sorts them in memory. The blackboard is intentionally small, so this avoids a
+new index and pagination contract. Do not use it as a large object store.
+
 **A notification can be missed — on this backend only.** When two writers
 commit into the same recipient's mailbox at the same moment, one entry's
 *notification* can be buried: the unread count and the tmux badge for it are

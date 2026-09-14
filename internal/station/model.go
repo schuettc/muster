@@ -38,9 +38,9 @@ import (
 // more: the right pane is always preview-only, and mail is its own page
 // rather than an L0 toggle).
 type keyMap struct {
-	Down, Up, Quit, Enter, Esc, Home, End                  key.Binding
-	Send, Reply, Nudge, Filter, Aliases, CycleIntent, Help key.Binding
-	MailJump                                               key.Binding
+	Down, Up, Quit, Enter, Esc, Home, End                                          key.Binding
+	Send, Reply, Nudge, Deregister, Transition, Filter, Aliases, CycleIntent, Help key.Binding
+	MailJump                                                                       key.Binding
 }
 
 var keys = keyMap{
@@ -57,6 +57,8 @@ var keys = keyMap{
 	Send:        key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "send")),
 	Reply:       key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "reply")),
 	Nudge:       key.NewBinding(key.WithKeys("n"), key.WithHelp("n", "nudge")),
+	Deregister:  key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "deregister")),
+	Transition:  key.NewBinding(key.WithKeys("t"), key.WithHelp("t", "task transition")),
 	Filter:      key.NewBinding(key.WithKeys("/"), key.WithHelp("/", "filter")),
 	Aliases:     key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "aliases")),
 	CycleIntent: key.NewBinding(key.WithKeys("tab"), key.WithHelp("tab", "intent")), // composer-local only; the base nav vocabulary has no Tab binding
@@ -109,18 +111,23 @@ type agentVitals struct {
 // agentEnriched is one roster row: the wire agent row plus tmux-live state
 // and its session's unread count.
 type agentEnriched struct {
-	Alias       string
-	Project     string
-	ModelType   string
-	Role        string
-	Label       string
-	LabelManual bool
-	SocketPath  string
-	SessionID   string
-	Live        bool
-	Unread      int
-	Action      bool // true when the session's unread includes an action-requested thread
-	ActionCount int  // the session's action-requested unread count
+	Alias          string
+	Project        string
+	ModelType      string
+	Role           string
+	DeviceName     string
+	DeviceID       string
+	Departed       bool
+	Label          string
+	LabelManual    bool
+	SocketPath     string
+	PaneID         string
+	SessionID      string
+	SessionCreated int64
+	Live           bool
+	Unread         int
+	Action         bool // true when the session's unread includes an action-requested thread
+	ActionCount    int  // the session's action-requested unread count
 }
 
 // listThreadRow mirrors store.Thread's wire JSON for the thread lists.
@@ -131,6 +138,7 @@ type listThreadRow struct {
 	ToKind    string `json:"to_kind"`
 	ToTarget  string `json:"to_target"`
 	Subject   string `json:"subject"`
+	Ref       string `json:"ref"`
 	Status    string `json:"status"`
 	Intent    string `json:"intent"`
 	CreatedAt int64  `json:"created_at"`
@@ -141,10 +149,11 @@ type listThreadRow struct {
 	// threadProjects unions this with the roster-derived participant
 	// projects so a thread whose participants have ALL since deregistered
 	// still has a project home.
-	OriginProject string `json:"origin_project"`
-	LastFrom      string `json:"last_from"`
-	LastAt        int64  `json:"last_at"`
-	EntryCount    int    `json:"entry_count"`
+	OriginProject      string `json:"origin_project"`
+	LastFrom           string `json:"last_from"`
+	LastAt             int64  `json:"last_at"`
+	EntryCount         int    `json:"entry_count"`
+	RetainedActiveTask bool   `json:"-"`
 }
 
 // Options configures a Model — station.Run's flags, or whatever a test wants
@@ -166,6 +175,34 @@ type Options struct {
 	SessionCreated int64
 }
 
+var taskTransitionChoices = []struct {
+	label  string
+	action string
+	status string
+}{
+	{label: "claim", action: "claim", status: "claimed"},
+	{label: "needs info", status: "needs_info"},
+	{label: "blocked", status: "blocked"},
+	{label: "complete", status: "completed"},
+	{label: "decline", status: "declined"},
+	{label: "cancel", status: "cancelled"},
+	{label: "reopen", status: "open"},
+}
+
+func taskTransitionChoiceDisabled(choice int, currentStatus string) bool {
+	item := taskTransitionChoices[choice]
+	return item.status == currentStatus || (item.action == "claim" && currentStatus != "open")
+}
+
+type taskTransitionState struct {
+	open          bool
+	editingNote   bool
+	threadID      int64
+	currentStatus string
+	choice        int
+	note          textinput.Model
+}
+
 // Model is the station Bubble Tea model. It owns the event journal cursor —
 // Update's eventsMsg branch is the ONLY place it advances, and only after a
 // page is actually applied.
@@ -184,7 +221,8 @@ type Model struct {
 	labelCollide      map[string]bool   // alias → true when its current label needs its alias appended to stay unambiguous (spec §5-LOCK item 7)
 	aliasStripCollide map[string]bool   // alias → true when stripping this machine's device prefix would render it identically to another agent's post-strip alias; forces full form on BOTH sides (see computeAliasStripCollisions)
 
-	threads []listThreadRow
+	threads              []listThreadRow
+	activeTasksTruncated bool
 
 	// Navigation (spec §5-LOCK decision B: pure stack). stack[0] is always
 	// {screen: screenProjects}; screen mirrors stack's top for the many call
@@ -238,8 +276,10 @@ type Model struct {
 	// key while it's set. nudger is the send-keys seam (DI'd via
 	// Options.Nudger; tests inject a fake so a model test never shells to
 	// real tmux).
-	nudgeConfirmAlias string
-	nudger            nudger
+	nudgeConfirmAlias      string
+	deregisterConfirmAlias string
+	taskTransition         taskTransitionState
+	nudger                 nudger
 
 	// filter implements '/': a substring filter over the CURRENT left list's
 	// rendered row text, selection-aware exactly like nav.go's generic
@@ -432,6 +472,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.applyComposerSent(msg), nil
 	case nudgeResultMsg:
 		return m.applyNudgeResult(msg), nil
+	case deregisterResultMsg:
+		return m.applyDeregisterResult(msg)
+	case taskTransitionResultMsg:
+		return m.applyTaskTransitionResult(msg)
 	case lastActiveMsg:
 		return m.applyLastActive(msg), nil
 	}
@@ -448,6 +492,10 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case m.composer.phase != composerClosed:
 		return m.handleComposerKey(msg)
+	case m.taskTransition.open:
+		return m.handleTaskTransitionKey(msg)
+	case m.deregisterConfirmAlias != "":
+		return m.handleDeregisterConfirmKey(msg)
 	case m.nudgeConfirmAlias != "":
 		return m.handleNudgeConfirmKey(msg)
 	case m.filter.editing:
@@ -481,6 +529,10 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleReplyKey()
 	case key.Matches(msg, keys.Nudge):
 		return m.handleNudgeKey(), nil
+	case key.Matches(msg, keys.Deregister):
+		return m.handleDeregisterKey(), nil
+	case key.Matches(msg, keys.Transition):
+		return m.handleTaskTransitionKey(msg)
 	case key.Matches(msg, keys.MailJump):
 		return m.handleMailJumpKey()
 	case key.Matches(msg, keys.Filter):
@@ -1056,6 +1108,152 @@ func (m Model) clearThreadView() Model {
 	return m
 }
 
+func (m Model) selectedTask() (listThreadRow, bool) {
+	var id int64
+	switch m.screen {
+	case screenRead:
+		id = m.viewThreadID
+	case screenMailbox:
+		id = m.mailboxSel
+	case screenAgent:
+		id = m.conversation
+	case screenProject:
+		if m.l1IsOrphaned() {
+			id = m.conversation
+		}
+	}
+	idx := indexOfThread(m.threads, id)
+	if idx < 0 || m.threads[idx].Kind != "task" {
+		return listThreadRow{}, false
+	}
+	return m.threads[idx], true
+}
+
+func (m Model) handleTaskTransitionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if !m.taskTransition.open {
+		thread, ok := m.selectedTask()
+		if !ok {
+			return m, nil
+		}
+		note := textinput.New()
+		note.Placeholder = "optional note"
+		choice := 0
+		for choice < len(taskTransitionChoices) && taskTransitionChoiceDisabled(choice, thread.Status) {
+			choice++
+		}
+		if choice == len(taskTransitionChoices) {
+			choice = 0
+		}
+		m.taskTransition = taskTransitionState{open: true, threadID: thread.ID, currentStatus: thread.Status, choice: choice, note: note}
+		return m, nil
+	}
+	if m.taskTransition.editingNote {
+		switch msg.String() {
+		case "esc":
+			m.taskTransition = taskTransitionState{}
+			return m, nil
+		case "enter":
+			choice := taskTransitionChoices[m.taskTransition.choice]
+			threadID, note := m.taskTransition.threadID, m.taskTransition.note.Value()
+			m.taskTransition = taskTransitionState{}
+			m.status = fmt.Sprintf("updating task #%d…", threadID)
+			return m, taskTransitionCmd(m.caller, m.opts.Alias, threadID, choice.action, choice.status, note)
+		default:
+			var cmd tea.Cmd
+			m.taskTransition.note, cmd = m.taskTransition.note.Update(msg)
+			return m, cmd
+		}
+	}
+	switch msg.String() {
+	case "esc":
+		m.taskTransition = taskTransitionState{}
+	case "j", "down":
+		m.moveTaskTransitionChoice(1)
+	case "k", "up":
+		m.moveTaskTransitionChoice(-1)
+	case "enter":
+		if !taskTransitionChoiceDisabled(m.taskTransition.choice, m.taskTransition.currentStatus) {
+			m.taskTransition.editingNote = true
+			m.taskTransition.note.Focus()
+			return m, textinput.Blink
+		}
+	}
+	return m, nil
+}
+
+func (m *Model) moveTaskTransitionChoice(delta int) {
+	for range taskTransitionChoices {
+		m.taskTransition.choice = (m.taskTransition.choice + delta + len(taskTransitionChoices)) % len(taskTransitionChoices)
+		if !taskTransitionChoiceDisabled(m.taskTransition.choice, m.taskTransition.currentStatus) {
+			return
+		}
+	}
+}
+
+func (m Model) applyTaskTransitionResult(msg taskTransitionResultMsg) (Model, tea.Cmd) {
+	if msg.err != nil {
+		m.status = fmt.Sprintf("task #%d update failed: %v", msg.threadID, msg.err)
+		return m, nil
+	}
+	m.status = fmt.Sprintf("task #%d → %s", msg.threadID, strings.ReplaceAll(msg.status, "_", " "))
+	cmds := []tea.Cmd{fetchThreadsCmd(m.caller)}
+	if m.screen == screenRead && m.viewThreadID == msg.threadID {
+		cmds = append(cmds, fetchThreadPageCmd(m.caller, m.viewThreadID, m.viewOffset, int64(threadViewPageSize), false, false, m.viewGen))
+	}
+	return m, tea.Batch(cmds...)
+}
+
+func (m Model) handleDeregisterKey() Model {
+	switch {
+	case m.screen == screenProject && !m.l1IsOrphaned():
+		rows := m.agentStripRows()
+		q, f := m.filterQueryFor(llProjectItems)
+		if !selectionVisible(rows, agentKey, m.agent, m.renderRosterRow, q, f) {
+			m.agent = snapSelection(rows, agentKey, m.agent, m.renderRosterRow, q, f, "")
+			if m.agent == "" {
+				m.status = "no agent visible — adjust or clear the filter"
+			}
+			return m
+		}
+	case m.screen == screenAgent:
+		if m.agent == "" {
+			return m
+		}
+	default:
+		return m
+	}
+	if m.agent == m.opts.Alias {
+		m.status = "that's you — Station cannot deregister itself"
+		return m
+	}
+	agent, found := m.agentByAlias(m.agent)
+	if !found || agent.Departed {
+		m.status = "agent is already departed"
+		return m
+	}
+	m.deregisterConfirmAlias = agent.Alias
+	return m
+}
+
+func (m Model) handleDeregisterConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	alias := m.deregisterConfirmAlias
+	m.deregisterConfirmAlias = ""
+	if msg.String() != "y" {
+		return m, nil
+	}
+	m.status = fmt.Sprintf("deregistering %s…", m.dispLabel(alias))
+	return m, deregisterCmd(m.caller, alias)
+}
+
+func (m Model) applyDeregisterResult(msg deregisterResultMsg) (Model, tea.Cmd) {
+	if msg.err != nil {
+		m.status = fmt.Sprintf("deregister %s failed: %v", m.dispLabel(msg.alias), msg.err)
+		return m, nil
+	}
+	m.status = fmt.Sprintf("deregistered %s — history and read state preserved", m.dispLabel(msg.alias))
+	return m, fetchAgentsCmd(m.caller)
+}
+
 // handleNudgeKey implements 'n': valid when L1's agents list is showing
 // (nudges the selected agent — never the "(unassigned)" bucket's ORPHANED
 // THREADS exception, which has no agents to nudge) or when a whole agent
@@ -1410,6 +1608,7 @@ func (m Model) applyThreads(msg threadsMsg) (Model, tea.Cmd) {
 		return m, nil
 	}
 	m.threads = msg.threads
+	m.activeTasksTruncated = msg.activeTasksTruncated
 
 	// Never touched while actually reading (screenRead): the thread being
 	// read is tracked by viewThreadID/m.conversation as they stood at the

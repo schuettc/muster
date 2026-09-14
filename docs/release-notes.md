@@ -2,6 +2,20 @@
 
 There is no CHANGELOG.md in this repository yet. This file holds the notes for releases where the change is operator-visible enough to need explaining rather than just listing. Newest first.
 
+## 0.20.0 — MCP and Station action surface
+
+### Station task and lifecycle actions
+
+**Station now keeps active work visible and can act on it in place.** Its existing thread snapshot retains up to 500 older nonterminal tasks without adding another poll. Wide thread tables show task state, task readers show status, assignment, ref, and empty-body status changes, and `/` filtering matches task state. Press `t` to claim or transition a selected task with an optional note. Press `d` on a selected non-departed agent to review its identity and liveness, then tombstone it while preserving history and read state; Station cannot deregister itself. Quitting Station continues to preserve its own durable row and read watermark.
+
+### MCP data actions
+
+**The MCP blackboard is now complete and task work is discoverable bus-wide.** `kv_list` returns the complete small blackboard in lexicographic key order with an optional literal prefix, and idempotent `kv_delete` removes one key. `kv_set` and `kv_delete` no longer accept a caller-supplied `by`; they derive attribution from the proven current session and reject unregistered callers. `list_tasks` provides composable exact project, status, creator, and target filters, defaults to the newest 100 nonterminal tasks, caps requests at 500, and reports `truncated` instead of introducing cursors.
+
+### MCP caller lifecycle
+
+**MCP clients can now discover and retire their own identity without guessing an alias.** Call `current_agent` first: it returns the calling session's proven live identity and every live alias in that session's lineage. If it is not registered, call `register_agent`; otherwise use the returned alias in identity-dependent tools. `deregister_agent` takes no arguments and tombstones every live alias proven to belong to the caller, preserving history and read state for a later return. It cannot target another agent. `get_status` exposes the existing side-effect-free unread and action-required counts for every alias or one exact alias; it never marks mail read or journals a peek.
+
 ## 0.19.1 — channel wakes survive an env-stripped harness
 
 **The muster channel now resolves its pane by process ancestry when the environment is stripped.** The channel MCP server captured its tmux identity from `$TMUX`/`$TMUX_PANE` only. Harnesses that spawn MCP servers without those variables (Claude Code) left the channel with no pane: the SessionStart hook still registered the agent (it already walks process ancestry), so mail arrived and the inbox filled, but the channel never pushed a wake — the session only saw its mail when an operator told it to check the inbox, and `muster_channel_status` reported `idle: no tmux pane`. The channel now uses the same env-else-ancestry capture the hooks use (`channelCapture`); since the channel server is a synchronous child of the harness, its ancestry reaches the pane's shell exactly as a hook's does. No change is needed on machines where the channel already worked. A genuinely paneless session (no pane in the environment or the ancestry) still idles, as before.

@@ -212,6 +212,16 @@ func TestSingleProjectAutoSkipsL0(t *testing.T) {
 // TestProjectRollupMath is computeProjectSummaries' own unit test: sibling
 // aliases of the SAME session tuple must not double-count that session's
 // unread, while distinct sessions in the same project DO sum.
+func TestRetainedActiveTasksDoNotDistortUnreadAgeProxy(t *testing.T) {
+	threads := []listThreadRow{
+		{ID: 1, FromAgent: "sender", ToKind: "agent", ToTarget: "worker", LastFrom: "sender", LastAt: 200},
+		{ID: 2, Kind: "task", FromAgent: "sender", ToKind: "agent", ToTarget: "worker", LastFrom: "sender", LastAt: 100, RetainedActiveTask: true},
+	}
+	if got := oldestUnreadAt(unreadThreadsFor(threads, "worker")); got != 200 {
+		t.Fatalf("oldest unread proxy = %d, want recent-window timestamp 200", got)
+	}
+}
+
 func TestProjectRollupMath(t *testing.T) {
 	agents := []agentEnriched{
 		{Alias: "a-session-name", Project: "muster", SocketPath: "/s", SessionID: "$1", Unread: 3, ActionCount: 1},

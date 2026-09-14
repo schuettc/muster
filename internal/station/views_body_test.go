@@ -22,6 +22,25 @@ func markdownThreadFake(entries []threadEntryRow, total int) fakeCaller {
 	}}
 }
 
+func TestTaskReaderShowsContextAndEmptyBodyStatusChange(t *testing.T) {
+	m := NewModel(fakeCaller{}, Options{})
+	m.viewThreadID = 9
+	m.threads = []listThreadRow{{
+		ID: 9, Kind: "task", Status: "blocked", FromAgent: "author", ToKind: "role", ToTarget: "reviewer",
+		Ref: "repo=x\nunsafe", Subject: "Review",
+	}}
+	m.viewEntries = []threadEntryRow{{ID: 1, ThreadID: 9, FromAgent: "station", StatusChange: "blocked", Body: "", CreatedAt: 0}}
+	view := m.renderConversationBox(70, 12, true)
+	for _, want := range []string{"state: blocked", "author → role:reviewer", "ref: repo=x", "station ·", "→ blocked"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("task reader missing %q:\n%s", want, view)
+		}
+	}
+	if strings.Contains(view, "\nunsafe") {
+		t.Fatalf("task ref was not sanitized:\n%s", view)
+	}
+}
+
 // TestConversationLinesMarkdownBodyRendersWithStructure is the core
 // iteration-three regression test: a message body written the way agents
 // actually write them — a paragraph, a blank line, a "- " bullet list, bold

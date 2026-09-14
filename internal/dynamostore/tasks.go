@@ -28,10 +28,15 @@ import (
 // UPDATE simply matches no rows for an id that does not exist, and the daemon's
 // task_claim op is built on that. This is the one place applyTaskWrite's
 // `missing` field earns its keep.
-func (s *Store) ClaimTask(threadID int64, byAgent string) error {
+func (s *Store) ClaimTask(threadID int64, byAgent string, note ...string) error {
+	body := ""
+	if len(note) > 0 {
+		body = note[0]
+	}
 	return s.applyTaskWrite(taskWrite{
 		threadID:   threadID,
 		byAgent:    byAgent,
+		body:       body,
 		newStatus:  "claimed",
 		onlyIfOpen: true,
 		missing:    store.ErrNotClaimable,
