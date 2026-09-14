@@ -412,6 +412,15 @@ func TestReadStateSurvivesQuitAndRelaunch(t *testing.T) {
 // tombstone fix, deregister hard-deleted the row and this exact history is
 // what the ghost-site/bettor-help-workspace-4 incident (spec §5-LOCK's own
 // motivating case) lost.
+func TestDepartedAgentOverridesLiveTmuxSession(t *testing.T) {
+	if effectiveAgentLive(true, true) {
+		t.Fatal("a tombstoned agent must render departed even while its tmux pane remains alive")
+	}
+	if !effectiveAgentLive(false, true) {
+		t.Fatal("a registered agent with a live tmux session must remain live")
+	}
+}
+
 func TestDepartedAgentSurvivesUnderTheBar(t *testing.T) {
 	startStationTestDaemon(t)
 	caller := daemonCaller{}
