@@ -121,6 +121,31 @@ func mustModel(t *testing.T, v interface{}) Model {
 	return m
 }
 
+func TestFetchThreadsRequestsActiveTasksAndDecodesTruncation(t *testing.T) {
+	caller := fakeCaller{fn: func(op string, args map[string]any) (json.RawMessage, error) {
+		if op != "list_threads" || args["limit"] != threadListLimit || args["include_nonterminal_tasks"] != true {
+			t.Fatalf("fetchThreads call: op=%q args=%+v", op, args)
+		}
+		return json.RawMessage(`{"threads":[{"id":7}],"active_tasks_truncated":true}`), nil
+	}}
+	msg, ok := fetchThreadsCmd(caller)().(threadsMsg)
+	if !ok {
+		t.Fatalf("fetchThreadsCmd returned %T", fetchThreadsCmd(caller)())
+	}
+	if msg.err != nil || len(msg.threads) != 1 || msg.threads[0].ID != 7 || !msg.activeTasksTruncated {
+		t.Fatalf("threadsMsg = %+v", msg)
+	}
+}
+
+func TestActiveTaskTruncationAppearsInStatus(t *testing.T) {
+	m := NewModel(fakeCaller{}, Options{})
+	next, _ := m.Update(threadsMsg{activeTasksTruncated: true})
+	m = mustModel(t, next)
+	if !strings.Contains(m.status, "active task list truncated at 500") {
+		t.Fatalf("status = %q", m.status)
+	}
+}
+
 // TestCursorAdvancesOnlyOnAppliedEvents is the data-loop's core invariant
 // (spec §5): the cursor moves ONLY in the events-msg branch, and only after
 // a page is actually applied. A threads-fetch failure between two

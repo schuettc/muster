@@ -1410,6 +1410,9 @@ func (m Model) applyThreads(msg threadsMsg) (Model, tea.Cmd) {
 		return m, nil
 	}
 	m.threads = msg.threads
+	if msg.activeTasksTruncated {
+		m.status = "active task list truncated at 500"
+	}
 
 	// Never touched while actually reading (screenRead): the thread being
 	// read is tracked by viewThreadID/m.conversation as they stood at the

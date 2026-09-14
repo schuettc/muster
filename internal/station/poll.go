@@ -36,8 +36,9 @@ type agentsMsg struct {
 
 // threadsMsg carries one list_threads snapshot (or a fetch error).
 type threadsMsg struct {
-	threads []listThreadRow
-	err     error
+	threads              []listThreadRow
+	activeTasksTruncated bool
+	err                  error
 }
 
 func tickCmd(interval time.Duration) tea.Cmd {
@@ -170,23 +171,26 @@ const threadListLimit = 200
 
 func fetchThreadsCmd(caller render.Caller) tea.Cmd {
 	return func() tea.Msg {
-		threads, err := fetchThreads(caller)
-		return threadsMsg{threads: threads, err: err}
+		threads, truncated, err := fetchThreads(caller)
+		return threadsMsg{threads: threads, activeTasksTruncated: truncated, err: err}
 	}
 }
 
-func fetchThreads(caller render.Caller) ([]listThreadRow, error) {
-	raw, err := caller.Call("list_threads", map[string]any{"limit": threadListLimit})
+func fetchThreads(caller render.Caller) ([]listThreadRow, bool, error) {
+	raw, err := caller.Call("list_threads", map[string]any{
+		"limit": threadListLimit, "include_nonterminal_tasks": true,
+	})
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	var res struct {
-		Threads []listThreadRow `json:"threads"`
+		Threads              []listThreadRow `json:"threads"`
+		ActiveTasksTruncated bool            `json:"active_tasks_truncated"`
 	}
 	if err := json.Unmarshal(raw, &res); err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	return res.Threads, nil
+	return res.Threads, res.ActiveTasksTruncated, nil
 }
 
 // threadViewPageSize bounds the thread view's initial get_thread fetch (spec
