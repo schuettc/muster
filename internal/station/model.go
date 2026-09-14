@@ -38,9 +38,9 @@ import (
 // more: the right pane is always preview-only, and mail is its own page
 // rather than an L0 toggle).
 type keyMap struct {
-	Down, Up, Quit, Enter, Esc, Home, End                  key.Binding
-	Send, Reply, Nudge, Filter, Aliases, CycleIntent, Help key.Binding
-	MailJump                                               key.Binding
+	Down, Up, Quit, Enter, Esc, Home, End                              key.Binding
+	Send, Reply, Nudge, Deregister, Filter, Aliases, CycleIntent, Help key.Binding
+	MailJump                                                           key.Binding
 }
 
 var keys = keyMap{
@@ -57,6 +57,7 @@ var keys = keyMap{
 	Send:        key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "send")),
 	Reply:       key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "reply")),
 	Nudge:       key.NewBinding(key.WithKeys("n"), key.WithHelp("n", "nudge")),
+	Deregister:  key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "deregister")),
 	Filter:      key.NewBinding(key.WithKeys("/"), key.WithHelp("/", "filter")),
 	Aliases:     key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "aliases")),
 	CycleIntent: key.NewBinding(key.WithKeys("tab"), key.WithHelp("tab", "intent")), // composer-local only; the base nav vocabulary has no Tab binding
@@ -109,18 +110,23 @@ type agentVitals struct {
 // agentEnriched is one roster row: the wire agent row plus tmux-live state
 // and its session's unread count.
 type agentEnriched struct {
-	Alias       string
-	Project     string
-	ModelType   string
-	Role        string
-	Label       string
-	LabelManual bool
-	SocketPath  string
-	SessionID   string
-	Live        bool
-	Unread      int
-	Action      bool // true when the session's unread includes an action-requested thread
-	ActionCount int  // the session's action-requested unread count
+	Alias          string
+	Project        string
+	ModelType      string
+	Role           string
+	DeviceName     string
+	DeviceID       string
+	Departed       bool
+	Label          string
+	LabelManual    bool
+	SocketPath     string
+	PaneID         string
+	SessionID      string
+	SessionCreated int64
+	Live           bool
+	Unread         int
+	Action         bool // true when the session's unread includes an action-requested thread
+	ActionCount    int  // the session's action-requested unread count
 }
 
 // listThreadRow mirrors store.Thread's wire JSON for the thread lists.
@@ -239,8 +245,9 @@ type Model struct {
 	// key while it's set. nudger is the send-keys seam (DI'd via
 	// Options.Nudger; tests inject a fake so a model test never shells to
 	// real tmux).
-	nudgeConfirmAlias string
-	nudger            nudger
+	nudgeConfirmAlias      string
+	deregisterConfirmAlias string
+	nudger                 nudger
 
 	// filter implements '/': a substring filter over the CURRENT left list's
 	// rendered row text, selection-aware exactly like nav.go's generic
@@ -433,6 +440,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.applyComposerSent(msg), nil
 	case nudgeResultMsg:
 		return m.applyNudgeResult(msg), nil
+	case deregisterResultMsg:
+		return m.applyDeregisterResult(msg)
 	case lastActiveMsg:
 		return m.applyLastActive(msg), nil
 	}
@@ -449,6 +458,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case m.composer.phase != composerClosed:
 		return m.handleComposerKey(msg)
+	case m.deregisterConfirmAlias != "":
+		return m.handleDeregisterConfirmKey(msg)
 	case m.nudgeConfirmAlias != "":
 		return m.handleNudgeConfirmKey(msg)
 	case m.filter.editing:
@@ -482,6 +493,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleReplyKey()
 	case key.Matches(msg, keys.Nudge):
 		return m.handleNudgeKey(), nil
+	case key.Matches(msg, keys.Deregister):
+		return m.handleDeregisterKey(), nil
 	case key.Matches(msg, keys.MailJump):
 		return m.handleMailJumpKey()
 	case key.Matches(msg, keys.Filter):
@@ -1055,6 +1068,57 @@ func (m Model) clearThreadView() Model {
 	m.viewTotal = 0
 	m.viewCursor = 0
 	return m
+}
+
+func (m Model) handleDeregisterKey() Model {
+	switch {
+	case m.screen == screenProject && !m.l1IsOrphaned():
+		rows := m.agentStripRows()
+		q, f := m.filterQueryFor(llProjectItems)
+		if !selectionVisible(rows, agentKey, m.agent, m.renderRosterRow, q, f) {
+			m.agent = snapSelection(rows, agentKey, m.agent, m.renderRosterRow, q, f, "")
+			if m.agent == "" {
+				m.status = "no agent visible — adjust or clear the filter"
+			}
+			return m
+		}
+	case m.screen == screenAgent:
+		if m.agent == "" {
+			return m
+		}
+	default:
+		return m
+	}
+	if m.agent == m.opts.Alias {
+		m.status = "that's you — Station cannot deregister itself"
+		return m
+	}
+	agent, found := m.agentByAlias(m.agent)
+	if !found || agent.Departed {
+		m.status = "agent is already departed"
+		return m
+	}
+	m.deregisterConfirmAlias = agent.Alias
+	return m
+}
+
+func (m Model) handleDeregisterConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	alias := m.deregisterConfirmAlias
+	m.deregisterConfirmAlias = ""
+	if msg.String() != "y" {
+		return m, nil
+	}
+	m.status = fmt.Sprintf("deregistering %s…", m.dispLabel(alias))
+	return m, deregisterCmd(m.caller, alias)
+}
+
+func (m Model) applyDeregisterResult(msg deregisterResultMsg) (Model, tea.Cmd) {
+	if msg.err != nil {
+		m.status = fmt.Sprintf("deregister %s failed: %v", m.dispLabel(msg.alias), msg.err)
+		return m, nil
+	}
+	m.status = fmt.Sprintf("deregistered %s — history and read state preserved", m.dispLabel(msg.alias))
+	return m, fetchAgentsCmd(m.caller)
 }
 
 // handleNudgeKey implements 'n': valid when L1's agents list is showing

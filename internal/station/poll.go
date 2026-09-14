@@ -79,7 +79,11 @@ type agentRow struct {
 	Alias          string `json:"alias"`
 	Role           string `json:"role"`
 	ModelType      string `json:"model_type"`
+	DeviceName     string `json:"device_name"`
+	DeviceID       string `json:"device_id"`
+	Departed       bool   `json:"departed"`
 	SocketPath     string `json:"socket_path"`
+	PaneID         string `json:"pane_id"`
 	SessionID      string `json:"session_id"`
 	SessionCreated int64  `json:"session_created"`
 	Project        string `json:"project"`
@@ -126,8 +130,9 @@ func fetchAgents(caller render.Caller) ([]agentEnriched, error) {
 	for _, a := range rows {
 		e := agentEnriched{
 			Alias: a.Alias, Project: a.Project, ModelType: a.ModelType, Role: a.Role,
+			DeviceName: a.DeviceName, DeviceID: a.DeviceID, Departed: a.Departed,
 			Label: a.Label, LabelManual: a.LabelManual,
-			SocketPath: a.SocketPath, SessionID: a.SessionID,
+			SocketPath: a.SocketPath, PaneID: a.PaneID, SessionID: a.SessionID, SessionCreated: a.SessionCreated,
 		}
 		e.Live = tmuxenv.IsSessionAlive(a.SocketPath, a.SessionID, a.SessionCreated)
 		if e.Live {

@@ -839,6 +839,35 @@ func (m Model) renderHelpOverlay() string {
 	return renderBox("HELP (any key closes)", true, width, h, padded)
 }
 
+func (m Model) renderDeregisterConfirmation() string {
+	agent, found := m.agentByAlias(m.deregisterConfirmAlias)
+	if !found {
+		return fmt.Sprintf("deregister %s? tombstone only; history/read state remain · y/n", m.deregisterConfirmAlias)
+	}
+	parts := []string{"deregister " + m.dispLabel(agent.Alias) + "?"}
+	if agent.Project != "" {
+		parts = append(parts, "project "+agent.Project)
+	}
+	if agent.DeviceName != "" {
+		parts = append(parts, "device "+agent.DeviceName)
+	} else if agent.DeviceID != "" {
+		parts = append(parts, "device "+agent.DeviceID)
+	}
+	liveness := "not live"
+	switch {
+	case agent.Departed:
+		liveness = "departed"
+	case agent.SocketPath == "" && agent.SessionID != "":
+		liveness = "paneless"
+	case agent.Live:
+		liveness = "live"
+	case agent.DeviceName != "" || agent.DeviceID != "":
+		liveness = "remote or unavailable"
+	}
+	parts = append(parts, liveness, "tombstone only; history/read state remain", "y/n")
+	return strings.Join(parts, " · ")
+}
+
 // renderBottomLine renders whichever of the composer, the nudge y/n
 // confirmation, the '/' filter edit box, or the plain status line currently
 // owns the bottom of the screen — mirroring handleKey's same modal-priority
@@ -849,6 +878,8 @@ func (m Model) renderBottomLine() string {
 		return m.renderComposerPicker()
 	case m.composer.phase == composerEditingBody:
 		return m.renderComposerBody()
+	case m.deregisterConfirmAlias != "":
+		return m.renderDeregisterConfirmation()
 	case m.nudgeConfirmAlias != "":
 		return fmt.Sprintf("nudge %s? y/n", m.dispLabel(m.nudgeConfirmAlias))
 	case m.filter.editing:

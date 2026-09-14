@@ -2,6 +2,7 @@ package station
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -464,6 +465,99 @@ func TestAliasesToggleSwitchesDisplay(t *testing.T) {
 	}
 	if view := m.View(); !strings.Contains(view, "backend-1") {
 		t.Fatalf("after toggling aliases on, the raw alias must show:\n%s", view)
+	}
+}
+
+func TestStationDeregisterOpensOnlyForEligibleSelectedAgents(t *testing.T) {
+	base := func(agent agentEnriched, self string) Model {
+		m := NewModel(fakeCaller{}, Options{Alias: self})
+		m.screen = screenProject
+		m.project = agent.Project
+		m.agents = []agentEnriched{agent}
+		m.agent = agent.Alias
+		return m
+	}
+	for name, agent := range map[string]agentEnriched{
+		"local":    {Alias: "local", Project: "p", SocketPath: "/s", PaneID: "%1", SessionID: "$1", SessionCreated: 10, Live: true},
+		"remote":   {Alias: "remote", Project: "p", DeviceName: "laptop", DeviceID: "d2", SocketPath: "/remote", SessionID: "$2"},
+		"paneless": {Alias: "paneless", Project: "p", DeviceName: "ci", SessionID: "harness-1"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			m := base(agent, "station")
+			next, _ := m.Update(keyMsg("d"))
+			m = mustModel(t, next)
+			if m.deregisterConfirmAlias != agent.Alias {
+				t.Fatalf("confirmation = %q", m.deregisterConfirmAlias)
+			}
+		})
+	}
+	for name, agent := range map[string]agentEnriched{
+		"departed": {Alias: "gone", Project: "p", Departed: true},
+		"self":     {Alias: "station", Project: "p"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			m := base(agent, "station")
+			next, _ := m.Update(keyMsg("d"))
+			m = mustModel(t, next)
+			if m.deregisterConfirmAlias != "" {
+				t.Fatalf("ineligible agent opened confirmation: %q", m.deregisterConfirmAlias)
+			}
+		})
+	}
+}
+
+func TestStationDeregisterConfirmationAndAction(t *testing.T) {
+	var calls []string
+	caller := fakeCaller{fn: func(op string, args map[string]any) (json.RawMessage, error) {
+		calls = append(calls, op)
+		if op == "deregister_agent" {
+			if args["alias"] != "backend" {
+				t.Fatalf("deregister args = %+v", args)
+			}
+			return json.RawMessage(`null`), nil
+		}
+		return json.RawMessage(`[]`), nil
+	}}
+	m := NewModel(caller, Options{Alias: "station"})
+	m.screen, m.project, m.agent = screenProject, "muster", "backend"
+	m.agents = []agentEnriched{{Alias: "backend", Project: "muster", DeviceName: "work-laptop", SocketPath: "/s", SessionID: "$1", Live: true}}
+
+	next, _ := m.Update(keyMsg("d"))
+	m = mustModel(t, next)
+	confirmation := m.renderBottomLine()
+	for _, want := range []string{"backend", "muster", "work-laptop", "live", "tombstone", "y/n"} {
+		if !strings.Contains(confirmation, want) {
+			t.Fatalf("confirmation missing %q: %q", want, confirmation)
+		}
+	}
+	next, cmd := m.Update(keyMsg("n"))
+	m = mustModel(t, next)
+	if cmd != nil || len(calls) != 0 || m.deregisterConfirmAlias != "" {
+		t.Fatalf("cancel changed state: cmd=%v calls=%v confirm=%q", cmd != nil, calls, m.deregisterConfirmAlias)
+	}
+
+	next, _ = m.Update(keyMsg("d"))
+	m = mustModel(t, next)
+	next, cmd = m.Update(keyMsg("y"))
+	m = mustModel(t, next)
+	msg, ok := cmd().(deregisterResultMsg)
+	if !ok || msg.err != nil || msg.alias != "backend" || len(calls) != 1 {
+		t.Fatalf("result=%+v calls=%v", msg, calls)
+	}
+	next, refresh := m.Update(msg)
+	m = mustModel(t, next)
+	if refresh == nil || !strings.Contains(m.status, "deregistered") {
+		t.Fatalf("success status=%q refresh=%v", m.status, refresh != nil)
+	}
+}
+
+func TestStationDeregisterFailurePreservesView(t *testing.T) {
+	m := NewModel(fakeCaller{}, Options{})
+	m.screen, m.project, m.agent = screenAgent, "p", "backend"
+	next, cmd := m.Update(deregisterResultMsg{alias: "backend", err: errors.New("boom")})
+	m = mustModel(t, next)
+	if cmd != nil || m.screen != screenAgent || m.project != "p" || m.agent != "backend" || !strings.Contains(m.status, "boom") {
+		t.Fatalf("failure mutated view: screen=%v project=%q agent=%q status=%q", m.screen, m.project, m.agent, m.status)
 	}
 }
 
