@@ -791,11 +791,13 @@ var helpKeyLines = []string{
 	"s        send a message from anywhere (roster-filtered picker)",
 	"r        reply to the currently selected/open thread",
 	"n        nudge (the agents list, or an agent's own page)",
+	"d        deregister selected live agent (confirmed; not Station itself)",
+	"t        transition the selected/open task",
 	"m        jump to your mailbox — every thread addressed to you, read and unread",
 	"/        filter the current left list",
 	"a        toggle raw aliases vs. current labels",
 	"?        toggle this help",
-	"q        quit (deregisters this station)",
+	"q        quit (Station's durable row and read state remain)",
 }
 
 // helpLegendLines is the glyph legend.
@@ -968,7 +970,7 @@ func (m Model) renderStatus() string {
 
 	right := m.levelKeysHint()
 	if m.screen == screenRead {
-		right = fmt.Sprintf("%s scroll · %s reply · %s back · g home", keys.Down.Help().Key, keys.Reply.Help().Key, keys.Esc.Help().Key)
+		right = fmt.Sprintf("%s scroll · %s reply · %s task · %s back · g home", keys.Down.Help().Key, keys.Reply.Help().Key, keys.Transition.Help().Key, keys.Esc.Help().Key)
 	}
 	return joinStatusLine(left, right, width)
 }

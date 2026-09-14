@@ -521,7 +521,7 @@ func colorIntentLine(intent, padded string) string {
 // joinStatusLine against the status/error text. Tab is retired entirely
 // (spec §5-LOCK decision B) — every screen has exactly one focusable list, so
 // there is never a second target to cycle to.
-const keysHintBase = "enter drill · esc back · g home · s send · r reply · n nudge · m mail · / filter · a aliases · ? help · q quit"
+const keysHintBase = "enter drill · esc back · g home · s send · r reply · n/d/t act · m mail · / filter · a aliases · ? help · q quit"
 
 // statusIsError classifies m.status text for the bottom line's distinct
 // error prefix — a pure text heuristic over already-assigned status strings
