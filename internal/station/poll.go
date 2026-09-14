@@ -113,6 +113,10 @@ type sessionTupleKey struct {
 	sessionCreated        int64
 }
 
+func effectiveAgentLive(departed, sessionAlive bool) bool {
+	return !departed && sessionAlive
+}
+
 // fetchAgents lists agents, overlays live tmux state (liveness + current
 // label, exactly like `muster agents`), and looks up each distinct live
 // session tuple's unread count once.
@@ -134,7 +138,7 @@ func fetchAgents(caller render.Caller) ([]agentEnriched, error) {
 			Label: a.Label, LabelManual: a.LabelManual,
 			SocketPath: a.SocketPath, PaneID: a.PaneID, SessionID: a.SessionID, SessionCreated: a.SessionCreated,
 		}
-		e.Live = tmuxenv.IsSessionAlive(a.SocketPath, a.SessionID, a.SessionCreated)
+		e.Live = effectiveAgentLive(a.Departed, tmuxenv.IsSessionAlive(a.SocketPath, a.SessionID, a.SessionCreated))
 		if e.Live {
 			e.Label, e.LabelManual = tmuxenv.SessionLabel(a.SocketPath, a.SessionID)
 		}
