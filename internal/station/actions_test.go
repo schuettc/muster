@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/schuettc/muster/internal/store"
 	"github.com/schuettc/muster/internal/tmuxenv"
 )
 
@@ -567,7 +568,7 @@ func TestStationTaskTransitionOnlyOpensForTasks(t *testing.T) {
 		t.Fatalf("task transition = %+v", m.taskTransition)
 	}
 	menu := m.renderBottomLine()
-	for _, want := range []string{"claim", "needs info", "blocked (current)", "complete", "decline", "cancel", "reopen"} {
+	for _, want := range []string{"claim (open only)", "needs info", "blocked (current)", "complete", "decline", "cancel", "reopen"} {
 		if !strings.Contains(menu, want) {
 			t.Fatalf("transition menu missing %q: %q", want, menu)
 		}
@@ -588,10 +589,11 @@ func TestStationTaskTransitionUsesExistingDaemonOps(t *testing.T) {
 	m = mustModel(t, next)
 	next, _ = m.Update(keyMsg("enter"))
 	m = mustModel(t, next)
+	m.taskTransition.note.SetValue("taking it")
 	next, cmd := m.Update(keyMsg("enter"))
 	m = mustModel(t, next)
 	msg := cmd().(taskTransitionResultMsg)
-	if msg.err != nil || gotOp != "task_claim" || gotArgs["thread_id"] != int64(7) || gotArgs["by"] != "station" {
+	if msg.err != nil || gotOp != "task_claim" || gotArgs["thread_id"] != int64(7) || gotArgs["by"] != "station" || gotArgs["note"] != "taking it" {
 		t.Fatalf("claim call: op=%q args=%+v result=%+v", gotOp, gotArgs, msg)
 	}
 
@@ -608,6 +610,33 @@ func TestStationTaskTransitionUsesExistingDaemonOps(t *testing.T) {
 	msg = cmd().(taskTransitionResultMsg)
 	if msg.err != nil || gotOp != "task_transition" || gotArgs["status"] != "blocked" || gotArgs["note"] != "waiting on API" {
 		t.Fatalf("transition call: op=%q args=%+v result=%+v", gotOp, gotArgs, msg)
+	}
+}
+
+func TestStationTaskClaimConflictSurfacesAndPreservesSelection(t *testing.T) {
+	caller := fakeCaller{fn: func(op string, _ map[string]any) (json.RawMessage, error) {
+		if op != "task_claim" {
+			t.Fatalf("op = %q, want task_claim", op)
+		}
+		return nil, store.ErrNotClaimable
+	}}
+	m := NewModel(caller, Options{Alias: "station"})
+	m.screen, m.agent, m.conversation, m.viewThreadID = screenAgent, "worker", 9, 9
+	msg := taskTransitionCmd(caller, "station", 7, "claim", "claimed", "")().(taskTransitionResultMsg)
+	next, cmd := m.Update(msg)
+	m = mustModel(t, next)
+	if cmd != nil || m.agent != "worker" || m.conversation != 9 || m.viewThreadID != 9 || !strings.Contains(m.status, "not claimable") {
+		t.Fatalf("claim conflict mutated selection: agent=%q conversation=%d viewed=%d status=%q", m.agent, m.conversation, m.viewThreadID, m.status)
+	}
+}
+
+func TestStationTaskTransitionSuccessRefreshesWithoutChangingSelection(t *testing.T) {
+	m := NewModel(fakeCaller{}, Options{})
+	m.screen, m.agent, m.conversation, m.viewThreadID = screenRead, "worker", 9, 9
+	next, cmd := m.Update(taskTransitionResultMsg{threadID: 7, status: "blocked"})
+	m = mustModel(t, next)
+	if cmd == nil || m.screen != screenRead || m.agent != "worker" || m.conversation != 9 || m.viewThreadID != 9 || !strings.Contains(m.status, "blocked") {
+		t.Fatalf("success changed selection or skipped refresh: screen=%v agent=%q conversation=%d viewed=%d status=%q refresh=%v", m.screen, m.agent, m.conversation, m.viewThreadID, m.status, cmd != nil)
 	}
 }
 

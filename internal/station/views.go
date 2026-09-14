@@ -851,6 +851,8 @@ func (m Model) renderTaskTransition() string {
 		label := choice.label
 		if choice.status == m.taskTransition.currentStatus {
 			label += " (current)"
+		} else if choice.action == "claim" && m.taskTransition.currentStatus != "open" {
+			label += " (open only)"
 		}
 		if i == m.taskTransition.choice {
 			label = "> " + label
@@ -964,6 +966,14 @@ func (m Model) renderStatus() string {
 	}
 
 	left := m.status
+	if m.activeTasksTruncated {
+		warning := "active task list truncated at 500"
+		if left == "" {
+			left = warning
+		} else {
+			left += " · " + warning
+		}
+	}
 	if statusIsError(left) {
 		left = statusErrStyle.Render("✗ " + left)
 	}

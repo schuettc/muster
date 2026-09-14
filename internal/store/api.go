@@ -106,7 +106,7 @@ type API interface {
 	RetractStandingOrder(project, key string) (bool, error)
 	ListStandingOrders(project string) ([]StandingOrder, error)
 	AppendEntry(threadID int64, fromAgent, body, statusChange string) (int64, error)
-	ClaimTask(threadID int64, byAgent string) error
+	ClaimTask(threadID int64, byAgent string, note ...string) error
 	TransitionTask(threadID int64, byAgent, newStatus, note string) error
 	GetThread(id int64) (Thread, []Entry, error)
 	Threads(limit int) ([]Thread, error)

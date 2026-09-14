@@ -10,7 +10,7 @@ import (
 	"github.com/schuettc/muster/internal/store"
 )
 
-func decodeThreadList(t *testing.T, response proto.Response) (threads []store.Thread, truncated bool) {
+func decodeThreadList(t *testing.T, response proto.Response) (threads []store.Thread, truncated bool, retainedIDs []int64) {
 	t.Helper()
 	if !response.OK {
 		t.Fatalf("list_threads: %s", response.Error)
@@ -20,13 +20,14 @@ func decodeThreadList(t *testing.T, response proto.Response) (threads []store.Th
 		t.Fatal(err)
 	}
 	var out struct {
-		Threads              []store.Thread `json:"threads"`
-		ActiveTasksTruncated bool           `json:"active_tasks_truncated"`
+		Threads               []store.Thread `json:"threads"`
+		ActiveTasksTruncated  bool           `json:"active_tasks_truncated"`
+		RetainedActiveTaskIDs []int64        `json:"retained_active_task_ids"`
 	}
 	if err := json.Unmarshal(data, &out); err != nil {
 		t.Fatal(err)
 	}
-	return out.Threads, out.ActiveTasksTruncated
+	return out.Threads, out.ActiveTasksTruncated, out.RetainedActiveTaskIDs
 }
 
 func TestListThreadsCanRetainOldActiveTasksWithoutChangingLegacyCalls(t *testing.T) {
@@ -50,8 +51,8 @@ func TestListThreadsCanRetainOldActiveTasksWithoutChangingLegacyCalls(t *testing
 	}
 	d := &Daemon{s: db}
 
-	legacy, legacyTruncated := decodeThreadList(t, d.dispatch(proto.Request{Op: "list_threads", Args: map[string]any{"limit": float64(200)}}))
-	if legacyTruncated || len(legacy) != 200 {
+	legacy, legacyTruncated, legacyRetained := decodeThreadList(t, d.dispatch(proto.Request{Op: "list_threads", Args: map[string]any{"limit": float64(200)}}))
+	if legacyTruncated || len(legacyRetained) != 0 || len(legacy) != 200 {
 		t.Fatalf("legacy len=%d truncated=%v", len(legacy), legacyTruncated)
 	}
 	for _, thread := range legacy {
@@ -60,10 +61,10 @@ func TestListThreadsCanRetainOldActiveTasksWithoutChangingLegacyCalls(t *testing
 		}
 	}
 
-	withActive, truncated := decodeThreadList(t, d.dispatch(proto.Request{Op: "list_threads", Args: map[string]any{
+	withActive, truncated, retained := decodeThreadList(t, d.dispatch(proto.Request{Op: "list_threads", Args: map[string]any{
 		"limit": float64(200), "include_nonterminal_tasks": true,
 	}}))
-	if truncated || len(withActive) != 201 || withActive[len(withActive)-1].ID != oldTask {
+	if truncated || len(withActive) != 201 || withActive[len(withActive)-1].ID != oldTask || len(retained) != 1 || retained[0] != oldTask {
 		t.Fatalf("with active len=%d truncated=%v last=%+v", len(withActive), truncated, withActive[len(withActive)-1])
 	}
 	seen := map[int64]bool{}
@@ -87,10 +88,10 @@ func TestListThreadsCapsActiveTaskRetentionAt500(t *testing.T) {
 		}
 	}
 	d := &Daemon{s: db}
-	threads, truncated := decodeThreadList(t, d.dispatch(proto.Request{Op: "list_threads", Args: map[string]any{
+	threads, truncated, retained := decodeThreadList(t, d.dispatch(proto.Request{Op: "list_threads", Args: map[string]any{
 		"limit": float64(1), "include_nonterminal_tasks": true,
 	}}))
-	if !truncated || len(threads) != 500 {
-		t.Fatalf("len=%d truncated=%v", len(threads), truncated)
+	if !truncated || len(threads) != 500 || len(retained) != 499 {
+		t.Fatalf("len=%d retained=%d truncated=%v", len(threads), len(retained), truncated)
 	}
 }

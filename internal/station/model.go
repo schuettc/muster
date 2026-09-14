@@ -149,10 +149,11 @@ type listThreadRow struct {
 	// threadProjects unions this with the roster-derived participant
 	// projects so a thread whose participants have ALL since deregistered
 	// still has a project home.
-	OriginProject string `json:"origin_project"`
-	LastFrom      string `json:"last_from"`
-	LastAt        int64  `json:"last_at"`
-	EntryCount    int    `json:"entry_count"`
+	OriginProject      string `json:"origin_project"`
+	LastFrom           string `json:"last_from"`
+	LastAt             int64  `json:"last_at"`
+	EntryCount         int    `json:"entry_count"`
+	RetainedActiveTask bool   `json:"-"`
 }
 
 // Options configures a Model — station.Run's flags, or whatever a test wants
@@ -188,6 +189,11 @@ var taskTransitionChoices = []struct {
 	{label: "reopen", status: "open"},
 }
 
+func taskTransitionChoiceDisabled(choice int, currentStatus string) bool {
+	item := taskTransitionChoices[choice]
+	return item.status == currentStatus || (item.action == "claim" && currentStatus != "open")
+}
+
 type taskTransitionState struct {
 	open          bool
 	editingNote   bool
@@ -215,7 +221,8 @@ type Model struct {
 	labelCollide      map[string]bool   // alias → true when its current label needs its alias appended to stay unambiguous (spec §5-LOCK item 7)
 	aliasStripCollide map[string]bool   // alias → true when stripping this machine's device prefix would render it identically to another agent's post-strip alias; forces full form on BOTH sides (see computeAliasStripCollisions)
 
-	threads []listThreadRow
+	threads              []listThreadRow
+	activeTasksTruncated bool
 
 	// Navigation (spec §5-LOCK decision B: pure stack). stack[0] is always
 	// {screen: screenProjects}; screen mirrors stack's top for the many call
@@ -1131,7 +1138,7 @@ func (m Model) handleTaskTransitionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		note := textinput.New()
 		note.Placeholder = "optional note"
 		choice := 0
-		for choice < len(taskTransitionChoices) && taskTransitionChoices[choice].status == thread.Status {
+		for choice < len(taskTransitionChoices) && taskTransitionChoiceDisabled(choice, thread.Status) {
 			choice++
 		}
 		if choice == len(taskTransitionChoices) {
@@ -1165,8 +1172,7 @@ func (m Model) handleTaskTransitionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "k", "up":
 		m.moveTaskTransitionChoice(-1)
 	case "enter":
-		choice := taskTransitionChoices[m.taskTransition.choice]
-		if choice.status != m.taskTransition.currentStatus {
+		if !taskTransitionChoiceDisabled(m.taskTransition.choice, m.taskTransition.currentStatus) {
 			m.taskTransition.editingNote = true
 			m.taskTransition.note.Focus()
 			return m, textinput.Blink
@@ -1178,7 +1184,7 @@ func (m Model) handleTaskTransitionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m *Model) moveTaskTransitionChoice(delta int) {
 	for range taskTransitionChoices {
 		m.taskTransition.choice = (m.taskTransition.choice + delta + len(taskTransitionChoices)) % len(taskTransitionChoices)
-		if taskTransitionChoices[m.taskTransition.choice].status != m.taskTransition.currentStatus {
+		if !taskTransitionChoiceDisabled(m.taskTransition.choice, m.taskTransition.currentStatus) {
 			return
 		}
 	}
@@ -1602,9 +1608,7 @@ func (m Model) applyThreads(msg threadsMsg) (Model, tea.Cmd) {
 		return m, nil
 	}
 	m.threads = msg.threads
-	if msg.activeTasksTruncated {
-		m.status = "active task list truncated at 500"
-	}
+	m.activeTasksTruncated = msg.activeTasksTruncated
 
 	// Never touched while actually reading (screenRead): the thread being
 	// read is tracked by viewThreadID/m.conversation as they stood at the

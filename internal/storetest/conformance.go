@@ -1839,18 +1839,21 @@ func testDevicePollScopedBroadcast(t *testing.T, s store.API) {
 
 func testClaimOnce(t *testing.T, s store.API) {
 	id := newTask(t, s)
-	if err := s.ClaimTask(id, "rev1"); err != nil {
+	if err := s.ClaimTask(id, "rev1", "taking this"); err != nil {
 		t.Fatalf("first claim: %v", err)
 	}
 	if err := s.ClaimTask(id, "rev2"); !errors.Is(err, store.ErrNotClaimable) {
 		t.Fatalf("second claim err = %v, want ErrNotClaimable", err)
 	}
-	th, _, err := s.GetThread(id)
+	th, entries, err := s.GetThread(id)
 	if err != nil {
 		t.Fatalf("GetThread: %v", err)
 	}
 	if th.Status != "claimed" {
 		t.Fatalf("status = %q, want claimed", th.Status)
+	}
+	if got := entries[len(entries)-1].Body; got != "taking this" {
+		t.Fatalf("claim note = %q, want taking this", got)
 	}
 }
 

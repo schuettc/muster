@@ -1052,7 +1052,7 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 		if err != nil {
 			return fail(err)
 		}
-		if err := d.s.ClaimTask(i64(a, "thread_id"), by); err != nil {
+		if err := d.s.ClaimTask(i64(a, "thread_id"), by, str(a, "note")); err != nil {
 			return fail(err)
 		}
 		d.logEvent(store.Event{Kind: "claim", Agent: by, ThreadID: i64(a, "thread_id")})
@@ -1232,7 +1232,11 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 		for _, thread := range threads {
 			byID[thread.ID] = thread
 		}
+		retainedTaskIDs := make([]int64, 0, len(active))
 		for _, task := range active {
+			if _, alreadyRecent := byID[task.ID]; !alreadyRecent {
+				retainedTaskIDs = append(retainedTaskIDs, task.ID)
+			}
 			byID[task.ID] = task
 		}
 		threads = threads[:0]
@@ -1245,7 +1249,7 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 			}
 			return threads[i].ID > threads[j].ID
 		})
-		return ok(map[string]any{"threads": threads, "active_tasks_truncated": activeTruncated})
+		return ok(map[string]any{"threads": threads, "active_tasks_truncated": activeTruncated, "retained_active_task_ids": retainedTaskIDs})
 	case "list_tasks":
 		req, err := parseListTasksArgs(a)
 		if err != nil {

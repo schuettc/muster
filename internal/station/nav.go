@@ -319,6 +319,9 @@ func conversationsForAgentAnnotated(threads []listThreadRow, aliasProject map[st
 func unreadThreadsFor(threads []listThreadRow, alias string) []listThreadRow {
 	var out []listThreadRow
 	for _, row := range conversationsForAgent(threads, alias) {
+		if row.RetainedActiveTask {
+			continue
+		}
 		if row.LastFrom != "" && row.LastFrom != alias {
 			out = append(out, row)
 		}
@@ -332,6 +335,9 @@ func unreadThreadsFor(threads []listThreadRow, alias string) []listThreadRow {
 func unreadThreadsForProject(threads []listThreadRow, aliasProject map[string]string, project string) []listThreadRow {
 	var out []listThreadRow
 	for _, row := range conversationsForProject(threads, aliasProject, project) {
+		if row.RetainedActiveTask {
+			continue
+		}
 		if row.LastFrom == "" {
 			continue
 		}

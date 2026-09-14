@@ -189,11 +189,19 @@ func fetchThreads(caller render.Caller) ([]listThreadRow, bool, error) {
 		return nil, false, err
 	}
 	var res struct {
-		Threads              []listThreadRow `json:"threads"`
-		ActiveTasksTruncated bool            `json:"active_tasks_truncated"`
+		Threads               []listThreadRow `json:"threads"`
+		ActiveTasksTruncated  bool            `json:"active_tasks_truncated"`
+		RetainedActiveTaskIDs []int64         `json:"retained_active_task_ids"`
 	}
 	if err := json.Unmarshal(raw, &res); err != nil {
 		return nil, false, err
+	}
+	retained := make(map[int64]bool, len(res.RetainedActiveTaskIDs))
+	for _, id := range res.RetainedActiveTaskIDs {
+		retained[id] = true
+	}
+	for i := range res.Threads {
+		res.Threads[i].RetainedActiveTask = retained[res.Threads[i].ID]
 	}
 	return res.Threads, res.ActiveTasksTruncated, nil
 }

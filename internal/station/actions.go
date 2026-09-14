@@ -81,7 +81,7 @@ func taskTransitionCmd(caller render.Caller, actor string, threadID int64, actio
 		args := map[string]any{"thread_id": threadID, "by": actor, "status": status, "note": note}
 		if action == "claim" {
 			op = "task_claim"
-			args = map[string]any{"thread_id": threadID, "by": actor}
+			args = map[string]any{"thread_id": threadID, "by": actor, "note": note}
 		}
 		_, err := caller.Call(op, args)
 		return taskTransitionResultMsg{threadID: threadID, status: status, err: err}
