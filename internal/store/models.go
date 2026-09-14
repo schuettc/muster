@@ -100,6 +100,15 @@ type Agent struct {
 	SupersededBy string `json:"superseded_by"`
 }
 
+// TaskQuery selects task threads by exact metadata fields. Empty fields do not
+// filter; an empty Statuses slice selects every task status.
+type TaskQuery struct {
+	Statuses  []string
+	FromAgent string
+	ToKind    string
+	ToTarget  string
+}
+
 // Thread is a conversation: a message (no status) or a task (status set).
 type Thread struct {
 	ID        int64  `json:"id"`

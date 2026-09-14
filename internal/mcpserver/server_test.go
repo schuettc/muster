@@ -23,6 +23,28 @@ import (
 // refused by design (the already-registered guard), so the tool call that used
 // to be here created no row and "e2e-reviewer1" was an alias nobody held. That
 // was invisible while task_claim accepted any string for `by`; it is not now.
+func TestListTasksExplicitZeroLimitRejectedOverMCP(t *testing.T) {
+	startTestDaemon(t)
+	ctx := context.Background()
+	srv := mcp.NewServer(&mcp.Implementation{Name: "muster", Version: version}, nil)
+	registerAll(srv)
+	clientT, serverT := mcp.NewInMemoryTransports()
+	go func() { _ = srv.Run(ctx, serverT) }()
+	cs, err := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "v0"}, nil).Connect(ctx, clientT, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = cs.Close() }()
+
+	result, err := cs.CallTool(ctx, &mcp.CallToolParams{Name: "list_tasks", Arguments: map[string]any{"limit": 0}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.IsError {
+		t.Fatalf("list_tasks limit 0 must fail, got %+v", result.StructuredContent)
+	}
+}
+
 func TestCallerLifecycleEndToEndOverMCP(t *testing.T) {
 	startTestDaemon(t)
 	t.Setenv("MUSTER_DEVICE_NAME", "lifecycle")
@@ -46,18 +68,27 @@ func TestCallerLifecycleEndToEndOverMCP(t *testing.T) {
 		t.Fatalf("list tools: %v", err)
 	}
 	seen := map[string]bool{}
-	var deregisterSchema map[string]any
+	schemas := map[string]map[string]any{}
 	for _, tool := range listed.Tools {
 		seen[tool.Name] = true
-		if tool.Name == "deregister_agent" {
-			deregisterSchema, _ = tool.InputSchema.(map[string]any)
-		}
+		schemas[tool.Name], _ = tool.InputSchema.(map[string]any)
 	}
 	if !seen["current_agent"] || !seen["deregister_agent"] || !seen["get_status"] {
 		t.Fatalf("caller lifecycle tools not advertised: %v", seen)
 	}
-	if properties, _ := deregisterSchema["properties"].(map[string]any); properties["alias"] != nil || properties["target"] != nil {
-		t.Fatalf("deregister_agent must have no target property: %v", deregisterSchema)
+	if properties, _ := schemas["deregister_agent"]["properties"].(map[string]any); properties["alias"] != nil || properties["target"] != nil {
+		t.Fatalf("deregister_agent must have no target property: %v", schemas["deregister_agent"])
+	}
+	if !seen["list_tasks"] {
+		t.Fatalf("list_tasks not advertised: %v", seen)
+	}
+	for _, name := range []string{"kv_set", "kv_delete"} {
+		if !seen[name] {
+			t.Fatalf("%s not advertised: %v", name, seen)
+		}
+		if properties, _ := schemas[name]["properties"].(map[string]any); properties["by"] != nil {
+			t.Fatalf("%s must not expose by: %v", name, schemas[name])
+		}
 	}
 	call := func(name string, args map[string]any) map[string]any {
 		t.Helper()

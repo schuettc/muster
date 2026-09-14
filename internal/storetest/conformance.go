@@ -182,6 +182,8 @@ var cases = []conformanceCase{
 	{"TransitionTaskValidatesAndRecords", testTransitionRecords},
 	{"TransitionTaskOnMissingThreadIsNotFound", testTransitionMissingThread},
 	{"TransitionTaskBackToOpenIsClaimableAgain", testTransitionReopen},
+	{"TasksExcludeMessagesAnnotateAndOrder", testTasksExcludeAnnotateOrder},
+	{"TasksComposeMetadataFilters", testTasksComposeFilters},
 
 	// Idempotency records.
 	{"IdemBeginClaimsThenReportsDone", testIdemLifecycle},
@@ -193,6 +195,8 @@ var cases = []conformanceCase{
 	// Blackboard.
 	{"KVSetIsLastWriteWins", testKVLastWriteWins},
 	{"KVGetIsReadYourWrites", testKVReadYourWrites},
+	{"KVListUsesLiteralPrefixAndLexicographicOrder", testKVListPrefixOrder},
+	{"KVDeleteIsIdempotent", testKVDeleteIdempotent},
 
 	// Journal.
 	{"AppendEventRoundTripsEveryField", testEventRoundTrip},
@@ -2155,6 +2159,101 @@ func testKVLastWriteWins(t *testing.T, s store.API) {
 // testKVReadYourWrites: the blackboard is a coordination primitive, so an
 // agent that writes a fact and reads it back must never be handed the
 // superseded value.
+func testTasksExcludeAnnotateOrder(t *testing.T, s store.API) {
+	freezeClock(t, 1700000000000)
+	older := mustThread(t, s, store.Thread{Kind: "task", FromAgent: "alice", ToKind: "role", ToTarget: "reviewer", Status: "open"}, "older")
+	newer := mustThread(t, s, store.Thread{Kind: "task", FromAgent: "bob", ToKind: "agent", ToTarget: "worker", Status: "blocked"}, "newer")
+	mustThread(t, s, store.Thread{Kind: "message", FromAgent: "alice", ToKind: "broadcast"}, "not a task")
+	if _, err := s.AppendEntry(older, "reviewer", "working", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	tasks, err := s.Tasks(store.TaskQuery{})
+	if err != nil {
+		t.Fatalf("Tasks: %v", err)
+	}
+	if len(tasks) != 2 || tasks[0].ID != newer || tasks[1].ID != older {
+		t.Fatalf("Tasks order = %+v", tasks)
+	}
+	if tasks[1].LastFrom != "reviewer" || tasks[1].EntryCount != 2 || tasks[1].LastEntryID == 0 {
+		t.Fatalf("older annotations = %+v", tasks[1])
+	}
+}
+
+func testTasksComposeFilters(t *testing.T, s store.API) {
+	mustThread(t, s, store.Thread{Kind: "task", FromAgent: "alice", ToKind: "role", ToTarget: "reviewer", Status: "open"}, "match")
+	mustThread(t, s, store.Thread{Kind: "task", FromAgent: "alice", ToKind: "role", ToTarget: "reviewer", Status: "completed"}, "wrong status")
+	mustThread(t, s, store.Thread{Kind: "task", FromAgent: "bob", ToKind: "role", ToTarget: "reviewer", Status: "open"}, "wrong creator")
+	mustThread(t, s, store.Thread{Kind: "task", FromAgent: "alice", ToKind: "agent", ToTarget: "reviewer", Status: "open"}, "wrong kind")
+	mustThread(t, s, store.Thread{Kind: "task", FromAgent: "alice", ToKind: "role", ToTarget: "producer", Status: "open"}, "wrong target")
+
+	tasks, err := s.Tasks(store.TaskQuery{Statuses: []string{"open", "blocked"}, FromAgent: "alice", ToKind: "role", ToTarget: "reviewer"})
+	if err != nil {
+		t.Fatalf("Tasks: %v", err)
+	}
+	if len(tasks) != 1 || tasks[0].Subject != "" || tasks[0].FromAgent != "alice" || tasks[0].Status != "open" {
+		t.Fatalf("filtered tasks = %+v", tasks)
+	}
+}
+
+func testKVListPrefixOrder(t *testing.T, s store.API) {
+	for _, item := range []struct{ key, value string }{
+		{"app.z", "z"}, {"app.a", "a"}, {"apple", "fruit"}, {"app_%", "literal"},
+	} {
+		if err := s.KVSet(item.key, item.value, "writer"); err != nil {
+			t.Fatalf("KVSet(%q): %v", item.key, err)
+		}
+	}
+
+	pairs, err := s.KVList("app.")
+	if err != nil {
+		t.Fatalf("KVList: %v", err)
+	}
+	if len(pairs) != 2 {
+		t.Fatalf("KVList prefix = %+v, want 2 pairs", pairs)
+	}
+	if got, want := []string{pairs[0].Key, pairs[1].Key}, []string{"app.a", "app.z"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("KVList prefix keys = %v, want %v", got, want)
+	}
+	literal, err := s.KVList("app_%")
+	if err != nil || len(literal) != 1 || literal[0].Key != "app_%" {
+		t.Fatalf("KVList literal prefix = %+v, err = %v", literal, err)
+	}
+	all, err := s.KVList("")
+	if err != nil {
+		t.Fatalf("KVList all: %v", err)
+	}
+	got := make([]string, len(all))
+	for i, pair := range all {
+		got[i] = pair.Key
+	}
+	want := []string{"app.a", "app.z", "app_%", "apple"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("KVList all keys = %v, want %v", got, want)
+	}
+	empty, err := s.KVList("missing")
+	if err != nil || empty == nil || len(empty) != 0 {
+		t.Fatalf("KVList empty = %#v, err = %v", empty, err)
+	}
+}
+
+func testKVDeleteIdempotent(t *testing.T, s store.API) {
+	if err := s.KVSet("ephemeral", "value", "writer"); err != nil {
+		t.Fatal(err)
+	}
+	deleted, err := s.KVDelete("ephemeral")
+	if err != nil || !deleted {
+		t.Fatalf("first KVDelete: deleted=%v err=%v", deleted, err)
+	}
+	deleted, err = s.KVDelete("ephemeral")
+	if err != nil || deleted {
+		t.Fatalf("second KVDelete: deleted=%v err=%v", deleted, err)
+	}
+	if _, ok, err := s.KVGet("ephemeral"); err != nil || ok {
+		t.Fatalf("KVGet after delete: ok=%v err=%v", ok, err)
+	}
+}
+
 func testKVReadYourWrites(t *testing.T, s store.API) {
 	for i := range 20 {
 		if err := s.KVSet("k", fmt.Sprintf("v%d", i), "writer"); err != nil {

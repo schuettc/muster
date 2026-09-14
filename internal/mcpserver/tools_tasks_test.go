@@ -6,6 +6,53 @@ import (
 	"testing"
 )
 
+func TestListTasksForwardsFiltersAndTruncation(t *testing.T) {
+	prevCall := callDaemon
+	t.Cleanup(func() { callDaemon = prevCall })
+	callDaemon = func(op string, args map[string]any) (json.RawMessage, error) {
+		if op != "list_tasks" {
+			t.Fatalf("unexpected op %q", op)
+		}
+		if args["project"] != "muster" || args["from"] != "author" || args["to_kind"] != "role" ||
+			args["to_target"] != "reviewer" || args["limit"] != 25 {
+			t.Fatalf("args = %+v", args)
+		}
+		statuses, ok := args["statuses"].([]string)
+		if !ok || len(statuses) != 2 || statuses[0] != "open" || statuses[1] != "blocked" {
+			t.Fatalf("statuses = %#v", args["statuses"])
+		}
+		return json.RawMessage(`{"tasks":[{"id":9,"kind":"task","from_agent":"author","to_kind":"role","to_target":"reviewer","subject":"Review","ref":"repo=x","status":"blocked","created_at":10,"updated_at":20,"last_from":"reviewer","entry_count":3}],"truncated":true}`), nil
+	}
+
+	limit := 25
+	_, got, err := listTasksHandler(context.Background(), nil, ListTasksIn{
+		Project: "muster", Statuses: []string{"open", "blocked"}, From: "author",
+		ToKind: "role", ToTarget: "reviewer", Limit: &limit,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Truncated || len(got.Tasks) != 1 || got.Tasks[0].ID != 9 || got.Tasks[0].LastFrom != "reviewer" || got.Tasks[0].EntryCount != 3 {
+		t.Fatalf("list_tasks = %+v", got)
+	}
+}
+
+func TestListTasksDefaultsOmitOptionalArgumentsAndReturnEmptyList(t *testing.T) {
+	prevCall := callDaemon
+	t.Cleanup(func() { callDaemon = prevCall })
+	callDaemon = func(op string, args map[string]any) (json.RawMessage, error) {
+		if op != "list_tasks" || len(args) != 0 {
+			t.Fatalf("call = %q %+v", op, args)
+		}
+		return json.RawMessage(`{"tasks":[],"truncated":false}`), nil
+	}
+
+	_, got, err := listTasksHandler(context.Background(), nil, ListTasksIn{})
+	if err != nil || got.Tasks == nil || len(got.Tasks) != 0 || got.Truncated {
+		t.Fatalf("list_tasks = %+v err=%v", got, err)
+	}
+}
+
 func TestTaskCreateClaimTransition(t *testing.T) {
 	startTestDaemon(t)
 	// rev2 exists only so the second claim below fails for the reason this

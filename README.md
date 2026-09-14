@@ -110,8 +110,8 @@ The tools, by what they do:
 |---|---|---|
 | Identity | `current_agent`, `register_agent`, `deregister_agent`, `list_agents`, `get_status` | discover your proven identity first; join or leave the bus; see who's on it; inspect unread counts without marking mail read |
 | Conversation | `send_message`, `reply`, `get_inbox`, `get_thread` | a **message** is a plain thread — no state, just an exchange |
-| Work | `task_create`, `task_claim`, `task_transition` | a **task** is a thread with a lifecycle: `open → claimed → needs_info \| blocked → completed \| declined \| cancelled`. Claiming is atomic — two agents can't take the same task |
-| Shared state | `kv_set`, `kv_get` | a key/value scratchpad both sides can read (an API contract, a port, a decision) |
+| Work | `list_tasks`, `task_create`, `task_claim`, `task_transition` | discover tasks with exact filters, then create or advance them through `open → claimed → needs_info \| blocked → completed \| declined \| cancelled`. Claiming is atomic |
+| Shared state | `kv_set`, `kv_get`, `kv_list`, `kv_delete` | a small key/value scratchpad; mutations are attributed to the proven caller rather than a client-supplied alias |
 
 The MCP server talks to the local daemon (auto-started on first use). Start an
 identity-dependent workflow with `current_agent`. When it reports
@@ -120,6 +120,12 @@ identity-dependent workflow with `current_agent`. When it reports
 and tombstones every live alias proven to belong to the calling session while
 preserving its history and read state. `get_status` returns side-effect-free unread
 and action-required counts for all aliases, or filters by one exact alias.
+
+`kv_list` returns the complete blackboard in key order and accepts an optional
+literal prefix; `kv_delete` is idempotent. `list_tasks` composes exact project,
+status, creator, and target filters. It defaults to the 100 most recently
+updated nonterminal tasks, accepts limits through 500, and sets `truncated`
+when more matching work exists.
 
 > Note: stdout is the MCP channel in this mode; muster writes all diagnostics to
 > stderr.

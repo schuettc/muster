@@ -1218,6 +1218,24 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 			return fail(err)
 		}
 		return ok(map[string]any{"threads": threads})
+	case "list_tasks":
+		req, err := parseListTasksArgs(a)
+		if err != nil {
+			return fail(err)
+		}
+		tasks, err := d.s.Tasks(req.Query)
+		if err != nil {
+			return fail(err)
+		}
+		var agents []store.Agent
+		if req.Project != "" {
+			agents, err = d.s.ListAgents()
+			if err != nil {
+				return fail(err)
+			}
+		}
+		tasks, truncated := finishTaskList(tasks, agents, req)
+		return ok(map[string]any{"tasks": tasks, "truncated": truncated})
 	case "kv_set":
 		if err := d.s.KVSet(str(a, "key"), str(a, "value"), str(a, "by")); err != nil {
 			return fail(err)
@@ -1229,6 +1247,18 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 			return fail(err)
 		}
 		return ok(map[string]any{"found": found, "pair": p})
+	case "kv_list":
+		pairs, err := d.s.KVList(str(a, "prefix"))
+		if err != nil {
+			return fail(err)
+		}
+		return ok(map[string]any{"pairs": pairs})
+	case "kv_delete":
+		deleted, err := d.s.KVDelete(str(a, "key"))
+		if err != nil {
+			return fail(err)
+		}
+		return ok(map[string]any{"deleted": deleted})
 	case "log_event":
 		target, detail := str(a, "target"), str(a, "detail")
 		if detail != "typed" && detail != "submitted" {
