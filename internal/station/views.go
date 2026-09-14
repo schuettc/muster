@@ -839,6 +839,25 @@ func (m Model) renderHelpOverlay() string {
 	return renderBox("HELP (any key closes)", true, width, h, padded)
 }
 
+func (m Model) renderTaskTransition() string {
+	if m.taskTransition.editingNote {
+		choice := taskTransitionChoices[m.taskTransition.choice]
+		return fmt.Sprintf("task #%d → %s · note: %s · Enter apply · Esc cancel", m.taskTransition.threadID, choice.label, m.taskTransition.note.View())
+	}
+	items := make([]string, len(taskTransitionChoices))
+	for i, choice := range taskTransitionChoices {
+		label := choice.label
+		if choice.status == m.taskTransition.currentStatus {
+			label += " (current)"
+		}
+		if i == m.taskTransition.choice {
+			label = "> " + label
+		}
+		items[i] = label
+	}
+	return fmt.Sprintf("task #%d: %s · j/k choose · Enter note · Esc cancel", m.taskTransition.threadID, strings.Join(items, " | "))
+}
+
 func (m Model) renderDeregisterConfirmation() string {
 	agent, found := m.agentByAlias(m.deregisterConfirmAlias)
 	if !found {
@@ -878,6 +897,8 @@ func (m Model) renderBottomLine() string {
 		return m.renderComposerPicker()
 	case m.composer.phase == composerEditingBody:
 		return m.renderComposerBody()
+	case m.taskTransition.open:
+		return m.renderTaskTransition()
 	case m.deregisterConfirmAlias != "":
 		return m.renderDeregisterConfirmation()
 	case m.nudgeConfirmAlias != "":

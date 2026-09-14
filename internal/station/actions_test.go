@@ -551,6 +551,76 @@ func TestStationDeregisterConfirmationAndAction(t *testing.T) {
 	}
 }
 
+func TestStationTaskTransitionOnlyOpensForTasks(t *testing.T) {
+	m := NewModel(fakeCaller{}, Options{Alias: "station"})
+	m.screen, m.agent, m.conversation = screenAgent, "worker", 7
+	m.threads = []listThreadRow{{ID: 7, Kind: "message", Subject: "note"}}
+	next, _ := m.Update(keyMsg("t"))
+	m = mustModel(t, next)
+	if m.taskTransition.open {
+		t.Fatal("message opened task transition menu")
+	}
+	m.threads = []listThreadRow{{ID: 7, Kind: "task", Status: "blocked", Subject: "work"}}
+	next, _ = m.Update(keyMsg("t"))
+	m = mustModel(t, next)
+	if !m.taskTransition.open || m.taskTransition.threadID != 7 {
+		t.Fatalf("task transition = %+v", m.taskTransition)
+	}
+	menu := m.renderBottomLine()
+	for _, want := range []string{"claim", "needs info", "blocked (current)", "complete", "decline", "cancel", "reopen"} {
+		if !strings.Contains(menu, want) {
+			t.Fatalf("transition menu missing %q: %q", want, menu)
+		}
+	}
+}
+
+func TestStationTaskTransitionUsesExistingDaemonOps(t *testing.T) {
+	var gotOp string
+	var gotArgs map[string]any
+	caller := fakeCaller{fn: func(op string, args map[string]any) (json.RawMessage, error) {
+		gotOp, gotArgs = op, args
+		return json.RawMessage(`null`), nil
+	}}
+	m := NewModel(caller, Options{Alias: "station"})
+	m.screen, m.conversation = screenAgent, 7
+	m.threads = []listThreadRow{{ID: 7, Kind: "task", Status: "open"}}
+	next, _ := m.Update(keyMsg("t"))
+	m = mustModel(t, next)
+	next, _ = m.Update(keyMsg("enter"))
+	m = mustModel(t, next)
+	next, cmd := m.Update(keyMsg("enter"))
+	m = mustModel(t, next)
+	msg := cmd().(taskTransitionResultMsg)
+	if msg.err != nil || gotOp != "task_claim" || gotArgs["thread_id"] != int64(7) || gotArgs["by"] != "station" {
+		t.Fatalf("claim call: op=%q args=%+v result=%+v", gotOp, gotArgs, msg)
+	}
+
+	m.conversation = 8
+	m.threads = []listThreadRow{{ID: 8, Kind: "task", Status: "open"}}
+	next, _ = m.Update(keyMsg("t"))
+	m = mustModel(t, next)
+	m.taskTransition.choice = 2
+	next, _ = m.Update(keyMsg("enter"))
+	m = mustModel(t, next)
+	m.taskTransition.note.SetValue("waiting on API")
+	next, cmd = m.Update(keyMsg("enter"))
+	m = mustModel(t, next)
+	msg = cmd().(taskTransitionResultMsg)
+	if msg.err != nil || gotOp != "task_transition" || gotArgs["status"] != "blocked" || gotArgs["note"] != "waiting on API" {
+		t.Fatalf("transition call: op=%q args=%+v result=%+v", gotOp, gotArgs, msg)
+	}
+}
+
+func TestStationTaskTransitionFailurePreservesView(t *testing.T) {
+	m := NewModel(fakeCaller{}, Options{})
+	m.screen, m.agent, m.conversation, m.viewThreadID = screenRead, "worker", 7, 7
+	next, cmd := m.Update(taskTransitionResultMsg{threadID: 7, status: "blocked", err: errors.New("conflict")})
+	m = mustModel(t, next)
+	if cmd != nil || m.screen != screenRead || m.agent != "worker" || m.conversation != 7 || m.viewThreadID != 7 || !strings.Contains(m.status, "conflict") {
+		t.Fatalf("failure mutated view: screen=%v agent=%q conversation=%d viewed=%d status=%q", m.screen, m.agent, m.conversation, m.viewThreadID, m.status)
+	}
+}
+
 func TestStationDeregisterFailurePreservesView(t *testing.T) {
 	m := NewModel(fakeCaller{}, Options{})
 	m.screen, m.project, m.agent = screenAgent, "p", "backend"
