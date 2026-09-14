@@ -416,6 +416,13 @@ func (m Model) renderWho(row listThreadRow, arrow string) string {
 // "(unassigned)" thread list and screenAgent's thread list
 // (conversationRows() already picks the right underlying rows for whichever
 // screen is active).
+func taskStateText(row listThreadRow) string {
+	if row.Kind != "task" {
+		return ""
+	}
+	return strings.ReplaceAll(row.Status, "_", " ")
+}
+
 func (m Model) renderThreadRow(row listThreadRow) string {
 	marker := "  "
 	if row.ID == m.conversation {
@@ -429,7 +436,8 @@ func (m Model) renderThreadRow(row listThreadRow) string {
 	last := m.dispLabel(row.LastFrom)
 	age := relativeAge(time.Now(), row.LastAt)
 	subject := display.Sanitize(row.Subject, 200)
-	return fmt.Sprintf("%s#%d%s %s | %s %s | %s", marker, row.ID, word, participants, last, age, subject)
+	state := taskStateText(row)
+	return fmt.Sprintf("%s#%d%s %s | %s %s | %s | %s", marker, row.ID, word, participants, last, age, state, subject)
 }
 
 // threadWhoContentWidth is WHO's column-width fix (operator finding: a flat
@@ -476,6 +484,10 @@ func (m Model) renderConversationLineMarked(c conversationRow, innerW, maxWhoCon
 	idCol := render.PadDisplay(display.Sanitize(fmt.Sprintf("#%d", c.ID), threadIDWidth), threadIDWidth)
 	wordPlain := intentWord(c.Intent)
 	intentCol := colorIntentTag(c.Intent, render.PadDisplay(wordPlain, threadTagWidth))
+	stateCol := ""
+	if showThreadStateColumn(innerW) {
+		stateCol = render.PadDisplay(display.Sanitize(taskStateText(c.listThreadRow), threadStateWidth), threadStateWidth) + "  "
+	}
 	who := m.renderWho(c.listThreadRow, "→")
 	whoCol := render.PadDisplay(display.Sanitize(who, whoW), whoW)
 	ageCol := render.PadDisplay(relativeAge(time.Now(), c.LastAt), threadAgeWidth)
@@ -494,7 +506,7 @@ func (m Model) renderConversationLineMarked(c conversationRow, innerW, maxWhoCon
 	}
 	subjectCol := render.PadDisplay(display.Sanitize(subject, subjectBudget), subjectBudget)
 
-	return marker + idCol + "  " + intentCol + "  " + whoCol + "  " + ageCol + "  " + subjectCol
+	return marker + idCol + "  " + intentCol + "  " + stateCol + whoCol + "  " + ageCol + "  " + subjectCol
 }
 
 // renderConvListBox builds a thread-list box (shared by screenProject's
@@ -584,7 +596,11 @@ func (m Model) conversationLines(width int) (lines []string, entryStart []int) {
 			marker = "> "
 		}
 		age := relativeAge(time.Now(), e.CreatedAt)
-		header := display.Sanitize(fmt.Sprintf("%s%s · %s", marker, m.dispLabel(e.FromAgent), age), width)
+		headerText := fmt.Sprintf("%s%s · %s", marker, m.dispLabel(e.FromAgent), age)
+		if e.StatusChange != "" {
+			headerText += " · → " + strings.ReplaceAll(e.StatusChange, "_", " ")
+		}
+		header := display.Sanitize(headerText, width)
 		lines = append(lines, conversationAuthorStyle.Render(render.PadDisplay(header, width)))
 
 		for _, bl := range wrapBody(e.Body, bodyWidth) {
@@ -644,6 +660,23 @@ func snapToEntryBoundary(entryStart []int, top int) int {
 	return realStarts[len(realStarts)-1]
 }
 
+func (m Model) taskContextLines(width int) []string {
+	idx := indexOfThread(m.threads, m.viewThreadID)
+	if idx < 0 || m.threads[idx].Kind != "task" {
+		return nil
+	}
+	thread := m.threads[idx]
+	lines := []string{
+		render.PadDisplay(display.Sanitize("state: "+taskStateText(thread), width), width),
+		render.PadDisplay(display.Sanitize(m.renderWho(thread, " → "), width), width),
+	}
+	if thread.Ref != "" {
+		lines = append(lines, render.PadDisplay(display.Sanitize("ref: "+thread.Ref, width), width))
+	}
+	lines = append(lines, "")
+	return lines
+}
+
 // renderConversationBox builds the right pane's thread content — the
 // passive "last messages" preview (focused=false: just the tail, no cursor
 // marks, no load-older/newer hints) or screenRead's focused reader
@@ -673,7 +706,11 @@ func (m Model) renderConversationBox(outerW, outerH int, focused bool) string {
 	if height < 1 {
 		height = 1
 	}
-	var content []string
+	content := m.taskContextLines(innerW)
+	height -= len(content)
+	if height < 1 {
+		height = 1
+	}
 	if focused && m.viewOffset > 0 {
 		content = append(content, render.PadDisplay(display.Sanitize("↑ more above — k/↑ to load older", innerW), innerW))
 		height--
@@ -754,11 +791,13 @@ var helpKeyLines = []string{
 	"s        send a message from anywhere (roster-filtered picker)",
 	"r        reply to the currently selected/open thread",
 	"n        nudge (the agents list, or an agent's own page)",
+	"d        deregister selected live agent (confirmed; not Station itself)",
+	"t        transition the selected/open task",
 	"m        jump to your mailbox — every thread addressed to you, read and unread",
 	"/        filter the current left list",
 	"a        toggle raw aliases vs. current labels",
 	"?        toggle this help",
-	"q        quit (deregisters this station)",
+	"q        quit (Station's durable row and read state remain)",
 }
 
 // helpLegendLines is the glyph legend.
@@ -802,6 +841,56 @@ func (m Model) renderHelpOverlay() string {
 	return renderBox("HELP (any key closes)", true, width, h, padded)
 }
 
+func (m Model) renderTaskTransition() string {
+	if m.taskTransition.editingNote {
+		choice := taskTransitionChoices[m.taskTransition.choice]
+		return fmt.Sprintf("task #%d → %s · note: %s · Enter apply · Esc cancel", m.taskTransition.threadID, choice.label, m.taskTransition.note.View())
+	}
+	items := make([]string, len(taskTransitionChoices))
+	for i, choice := range taskTransitionChoices {
+		label := choice.label
+		if choice.status == m.taskTransition.currentStatus {
+			label += " (current)"
+		} else if choice.action == "claim" && m.taskTransition.currentStatus != "open" {
+			label += " (open only)"
+		}
+		if i == m.taskTransition.choice {
+			label = "> " + label
+		}
+		items[i] = label
+	}
+	return fmt.Sprintf("task #%d: %s · j/k choose · Enter note · Esc cancel", m.taskTransition.threadID, strings.Join(items, " | "))
+}
+
+func (m Model) renderDeregisterConfirmation() string {
+	agent, found := m.agentByAlias(m.deregisterConfirmAlias)
+	if !found {
+		return fmt.Sprintf("deregister %s? tombstone only; history/read state remain · y/n", m.deregisterConfirmAlias)
+	}
+	parts := []string{"deregister " + m.dispLabel(agent.Alias) + "?"}
+	if agent.Project != "" {
+		parts = append(parts, "project "+agent.Project)
+	}
+	if agent.DeviceName != "" {
+		parts = append(parts, "device "+agent.DeviceName)
+	} else if agent.DeviceID != "" {
+		parts = append(parts, "device "+agent.DeviceID)
+	}
+	liveness := "not live"
+	switch {
+	case agent.Departed:
+		liveness = "departed"
+	case agent.SocketPath == "" && agent.SessionID != "":
+		liveness = "paneless"
+	case agent.Live:
+		liveness = "live"
+	case agent.DeviceName != "" || agent.DeviceID != "":
+		liveness = "remote or unavailable"
+	}
+	parts = append(parts, liveness, "tombstone only; history/read state remain", "y/n")
+	return strings.Join(parts, " · ")
+}
+
 // renderBottomLine renders whichever of the composer, the nudge y/n
 // confirmation, the '/' filter edit box, or the plain status line currently
 // owns the bottom of the screen — mirroring handleKey's same modal-priority
@@ -812,6 +901,10 @@ func (m Model) renderBottomLine() string {
 		return m.renderComposerPicker()
 	case m.composer.phase == composerEditingBody:
 		return m.renderComposerBody()
+	case m.taskTransition.open:
+		return m.renderTaskTransition()
+	case m.deregisterConfirmAlias != "":
+		return m.renderDeregisterConfirmation()
 	case m.nudgeConfirmAlias != "":
 		return fmt.Sprintf("nudge %s? y/n", m.dispLabel(m.nudgeConfirmAlias))
 	case m.filter.editing:
@@ -873,13 +966,21 @@ func (m Model) renderStatus() string {
 	}
 
 	left := m.status
+	if m.activeTasksTruncated {
+		warning := "active task list truncated at 500"
+		if left == "" {
+			left = warning
+		} else {
+			left += " · " + warning
+		}
+	}
 	if statusIsError(left) {
 		left = statusErrStyle.Render("✗ " + left)
 	}
 
 	right := m.levelKeysHint()
 	if m.screen == screenRead {
-		right = fmt.Sprintf("%s scroll · %s reply · %s back · g home", keys.Down.Help().Key, keys.Reply.Help().Key, keys.Esc.Help().Key)
+		right = fmt.Sprintf("%s scroll · %s reply · %s task · %s back · g home", keys.Down.Help().Key, keys.Reply.Help().Key, keys.Transition.Help().Key, keys.Esc.Help().Key)
 	}
 	return joinStatusLine(left, right, width)
 }

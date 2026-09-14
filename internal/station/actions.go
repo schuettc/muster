@@ -69,6 +69,39 @@ func nudgeCmd(caller render.Caller, n nudger, alias string) tea.Cmd {
 	}
 }
 
+type taskTransitionResultMsg struct {
+	threadID int64
+	status   string
+	err      error
+}
+
+func taskTransitionCmd(caller render.Caller, actor string, threadID int64, action, status, note string) tea.Cmd {
+	return func() tea.Msg {
+		op := "task_transition"
+		args := map[string]any{"thread_id": threadID, "by": actor, "status": status, "note": note}
+		if action == "claim" {
+			op = "task_claim"
+			args = map[string]any{"thread_id": threadID, "by": actor, "note": note}
+		}
+		_, err := caller.Call(op, args)
+		return taskTransitionResultMsg{threadID: threadID, status: status, err: err}
+	}
+}
+
+type deregisterResultMsg struct {
+	alias string
+	err   error
+}
+
+// deregisterCmd tombstones the selected alias through the existing operator
+// daemon operation. The caller has already confirmed the exact target.
+func deregisterCmd(caller render.Caller, alias string) tea.Cmd {
+	return func() tea.Msg {
+		_, err := caller.Call("deregister_agent", map[string]any{"alias": alias})
+		return deregisterResultMsg{alias: alias, err: err}
+	}
+}
+
 // composerSentMsg carries the outcome of one composer submit (send_message
 // or reply — see sendMessageCmd/replyCmd).
 type composerSentMsg struct {

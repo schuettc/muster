@@ -1052,7 +1052,7 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 		if err != nil {
 			return fail(err)
 		}
-		if err := d.s.ClaimTask(i64(a, "thread_id"), by); err != nil {
+		if err := d.s.ClaimTask(i64(a, "thread_id"), by, str(a, "note")); err != nil {
 			return fail(err)
 		}
 		d.logEvent(store.Event{Kind: "claim", Agent: by, ThreadID: i64(a, "thread_id")})
@@ -1217,7 +1217,39 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 		if err != nil {
 			return fail(err)
 		}
-		return ok(map[string]any{"threads": threads})
+		if !boolArg(a, "include_nonterminal_tasks") {
+			return ok(map[string]any{"threads": threads})
+		}
+		active, err := d.s.Tasks(store.TaskQuery{Statuses: defaultTaskStatuses})
+		if err != nil {
+			return fail(err)
+		}
+		activeTruncated := len(active) > 500
+		if activeTruncated {
+			active = active[:500]
+		}
+		byID := make(map[int64]store.Thread, len(threads)+len(active))
+		for _, thread := range threads {
+			byID[thread.ID] = thread
+		}
+		retainedTaskIDs := make([]int64, 0, len(active))
+		for _, task := range active {
+			if _, alreadyRecent := byID[task.ID]; !alreadyRecent {
+				retainedTaskIDs = append(retainedTaskIDs, task.ID)
+			}
+			byID[task.ID] = task
+		}
+		threads = threads[:0]
+		for _, thread := range byID {
+			threads = append(threads, thread)
+		}
+		sort.Slice(threads, func(i, j int) bool {
+			if threads[i].UpdatedAt != threads[j].UpdatedAt {
+				return threads[i].UpdatedAt > threads[j].UpdatedAt
+			}
+			return threads[i].ID > threads[j].ID
+		})
+		return ok(map[string]any{"threads": threads, "active_tasks_truncated": activeTruncated, "retained_active_task_ids": retainedTaskIDs})
 	case "list_tasks":
 		req, err := parseListTasksArgs(a)
 		if err != nil {

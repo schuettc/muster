@@ -309,19 +309,27 @@ jumps home from anywhere · `m` toggles the mailbox page — station's own
 mail, unread and read history; the header always shows a 📬 badge with the
 current unread count, on every screen · `s` opens the composer to send
 (with a target picker and an intent cycle) · `r` replies on the open
-thread · `n` nudges the selected agent (with a confirmation prompt) · `/`
-filters the current list · `a` toggles aliases vs. labels · `q` quits.
+thread · `n` nudges the selected agent (with a confirmation prompt) · `d`
+deregisters the selected non-departed agent after showing its identity and a
+tombstone-only confirmation (never Station itself) · `t` opens a compact
+claim/state-transition menu for the selected task, followed by an optional
+note · `/` filters the current list · `a` toggles aliases vs. labels · `q`
+quits.
 
 Intents render as plain words, not the CLI's bracket shorthand — "needs
-action", "wants reply", "fyi". An agent that exits cleanly doesn't vanish
+action", "wants reply", "fyi". Nonterminal tasks remain in the Station
+snapshot even when they are older than the general recent-thread window;
+wide thread tables show task state, and task readers show status, assignment,
+ref, and explicit status-change entries. An agent that exits cleanly doesn't vanish
 from its project: it stays listed below a divider, dimmed, with its thread
 history intact (a tombstone).
 
 Station registers on the bus itself, as agent `station` — `muster send
 station "…"` and `muster nudge station` reach it like any other agent. If
 an alias `station` is already live (a second station on the same machine),
-it fails over to `station-2`, `station-3`, and so on. It deregisters on
-quit, provided nothing else has since taken over its alias.
+it fails over to `station-2`, `station-3`, and so on. Quitting does not
+deregister Station: its durable row and read watermark survive and revive on
+the next launch.
 
 ### Notifications & nudging
 

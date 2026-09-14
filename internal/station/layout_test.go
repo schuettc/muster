@@ -241,6 +241,33 @@ func TestConversationListColumnizedAndCrossProjectMarked(t *testing.T) {
 // TestStatusLineShowsKeyHintsAndErrorPrefix checks the bottom line shows the
 // key-hint vocabulary, and an error status gets a visually distinct prefix
 // rather than reading like routine status text.
+func TestTaskStateColumnAppearsOnlyWhenThreadTableHasRoom(t *testing.T) {
+	m := NewModel(fakeCaller{}, Options{})
+	for _, status := range []string{"open", "blocked", "completed"} {
+		row := conversationRow{listThreadRow: listThreadRow{ID: 1, Kind: "task", Status: status, FromAgent: "a", ToKind: "role", ToTarget: "reviewer", Subject: "work"}}
+		wide := m.renderConversationLineMarked(row, 140, 10, false)
+		if !strings.Contains(wide, status) {
+			t.Fatalf("wide task row for %q missing state: %q", status, wide)
+		}
+		narrow := m.renderConversationLineMarked(row, 70, 10, false)
+		if strings.Contains(narrow, status) {
+			t.Fatalf("narrow task row for %q unexpectedly includes state: %q", status, narrow)
+		}
+	}
+	message := conversationRow{listThreadRow: listThreadRow{ID: 2, Kind: "message", FromAgent: "a", ToKind: "broadcast", Subject: "note"}}
+	if got := m.renderConversationLineMarked(message, 140, 10, false); strings.Contains(got, "open") || strings.Contains(got, "blocked") || strings.Contains(got, "completed") {
+		t.Fatalf("message row gained a task state: %q", got)
+	}
+}
+
+func TestTaskStateParticipatesInThreadFiltering(t *testing.T) {
+	m := NewModel(fakeCaller{}, Options{})
+	row := conversationRow{listThreadRow: listThreadRow{ID: 1, Kind: "task", Status: "blocked", FromAgent: "a", ToKind: "role", ToTarget: "reviewer", Subject: "work"}}
+	if !strings.Contains(m.plainConvRow(row), "blocked") {
+		t.Fatalf("plain row missing task state: %q", m.plainConvRow(row))
+	}
+}
+
 func TestStatusLineShowsKeyHintsAndErrorPrefix(t *testing.T) {
 	m := NewModel(fakeCaller{}, Options{})
 	m.status = ""
@@ -567,6 +594,9 @@ func TestLongWhoRendersUntruncatedWithHeaderAligned(t *testing.T) {
 	// rune index and display-column offset coincide, so WHO must start at
 	// the identical rune index in both the header and the data row.
 	prefixW := 2 + threadIDWidth + 2 + threadTagWidth + 2
+	if showThreadStateColumn(innerW) {
+		prefixW += threadStateWidth + 2
+	}
 	headerRunes := []rune(header)
 	rowRunes := []rune(line)
 	if len(headerRunes) < prefixW+3 || string(headerRunes[prefixW:prefixW+3]) != "WHO" {
