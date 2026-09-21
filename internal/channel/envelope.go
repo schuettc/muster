@@ -115,44 +115,88 @@ func strictest(events []Event) string {
 	return best
 }
 
-// drainSuffix closes every per-event rule: get_thread and reply never move
+// drainClause closes every per-event rule: get_thread and reply never move
 // the read watermark or touch the tmux badge (only an owned get_inbox does,
 // via the daemon's setSessionBadge), so a channel-handled thread would leave
-// the operator's 📬 lit forever without this final drain.
-const drainSuffix = " Finish by calling get_inbox for your alias — that marks the mail read and clears the inbox badge."
+// the operator's 📬 lit forever without this final drain. It states the drain
+// in BOTH tool and CLI form and names the session's OWN alias when the carrier
+// resolved it — the channel push used to say only "call get_inbox for your
+// alias", which a CLI-driven agent mistranslated into `muster inbox <a nearby
+// thread label>` (a peek that marks nothing read) and so never cleared the
+// badge. It now mirrors the Stop-hook's cliFallback (internal/cli/hook.go) so
+// the live push and the next-turn hook drain instruct the agent identically:
+// the get_inbox TOOL is the method, and the `muster inbox` CLI is the
+// equivalent an agent falls back to only when it has no muster MCP tools. That
+// tool-first / CLI-if-absent framing (rather than presenting them as coequal)
+// is what lets each surface apply its own correct method — an MCP-equipped
+// session reaches for the tool, a CLI-only session (every pi session today)
+// reaches for the command. Empty aliases (the carrier has not resolved a
+// registration yet) fall back to the generic "<your-alias>" placeholder.
+func drainClause(aliases []string) string {
+	const lead = " Reading a thread does not clear the 📬 badge — finish by draining your OWN inbox"
+	switch len(aliases) {
+	case 0:
+		return lead + ": call your get_inbox tool for your alias (no muster MCP tools? run `muster inbox <your-alias>`)."
+	case 1:
+		a := aliases[0]
+		return fmt.Sprintf(lead+": call your get_inbox tool for alias '%s' (no muster MCP tools? run `muster inbox '%s'`).", a, a)
+	default:
+		return fmt.Sprintf(lead+": for each of your aliases %s call your get_inbox tool (no muster MCP tools? run `muster inbox <alias>`).", quoteJoin(aliases))
+	}
+}
+
+// quoteJoin renders an alias list as 'a', 'b', 'c' for the multi-alias drain
+// clause — a split-identity session must drain every alias it owns.
+func quoteJoin(aliases []string) string {
+	q := make([]string, len(aliases))
+	for i, a := range aliases {
+		q[i] = "'" + a + "'"
+	}
+	return strings.Join(q, ", ")
+}
 
 // guidance is the rule that travels with ONE event: what this push obliges
 // the agent to do, stated next to the action it governs rather than in a
-// handshake blob the agent read thousands of tokens ago.
-func guidance(e Event) string {
+// handshake blob the agent read thousands of tokens ago. aliases is the
+// session's own alias set, threaded through so the drain clause can name it.
+func guidance(e Event, aliases []string) string {
 	id := e.ThreadID
+	drain := drainClause(aliases)
 	if e.Kind == "reply" {
 		if e.Intent == "fyi" {
-			return fmt.Sprintf("A closing reply on your thread: read it with get_thread %d; no reply needed.", id) + drainSuffix
+			return fmt.Sprintf("A closing reply on your thread: read it with get_thread %d; no reply needed.", id) + drain
 		}
-		return fmt.Sprintf("Someone replied on your thread: call get_thread %d and reply only if the sender still needs something from you; close out with fyi so nobody is woken.", id) + drainSuffix
+		return fmt.Sprintf("Someone replied on your thread: call get_thread %d and reply only if the sender still needs something from you; close out with fyi so nobody is woken.", id) + drain
 	}
 	switch e.Intent {
 	case "action-requested":
-		return fmt.Sprintf("This thread asks you to do something: call get_thread %d, do what it asks, then answer with reply. Act autonomously — do not ask the user whether to check mail.", id) + drainSuffix
+		return fmt.Sprintf("This thread asks you to do something: call get_thread %d, do what it asks, then answer with reply. Act autonomously — do not ask the user whether to check mail.", id) + drain
 	case "reply-requested":
-		return fmt.Sprintf("The sender needs an answer: call get_thread %d, then reply with it. Act autonomously.", id) + drainSuffix
+		return fmt.Sprintf("The sender needs an answer: call get_thread %d, then reply with it. Act autonomously.", id) + drain
 	case "fyi":
-		return fmt.Sprintf("Informational only: read it with get_thread %d; do not reply — a reply would wake the sender.", id) + drainSuffix
+		return fmt.Sprintf("Informational only: read it with get_thread %d; do not reply — a reply would wake the sender.", id) + drain
 	}
-	return fmt.Sprintf("Call get_thread %d, act on it, then reply.", id) + drainSuffix
+	return fmt.Sprintf("Call get_thread %d, act on it, then reply.", id) + drain
 }
 
 // batchGuidance is the rule for a summary line that stands for many events.
-// It names every obligation once; the client keeps whichever apply.
+// It names every obligation once; the client keeps whichever apply. The drain
+// clause (tool + CLI, alias-named) is appended per push by batchGuide.
 const batchGuidance = "Call get_inbox and work through each thread. action-requested → do it and reply; reply-requested → answer with reply; fyi → read only, never reply. Act autonomously — do not ask the user whether to check mail."
+
+// batchGuide is batchGuidance plus the alias-aware drain clause — the same
+// closing rule a single-event push carries, so a batch or startup summary
+// clears the badge the same way.
+func batchGuide(aliases []string) string {
+	return batchGuidance + drainClause(aliases)
+}
 
 // Format renders one push for everything one poll tick found: an envelope
 // line, the Separator, then guidance. The body never travels. With one
 // event, meta carries its identity (kind, from, thread_id, intent); with
 // several, meta carries only count and the strictest intent — a thread_id
 // taken from the first event would be actively false for the rest.
-func Format(events []Event) (string, map[string]string) {
+func Format(events []Event, aliases []string) (string, map[string]string) {
 	if len(events) == 0 {
 		return "", nil
 	}
@@ -166,7 +210,7 @@ func Format(events []Event) (string, map[string]string) {
 			"count":     "1",
 		}
 		line := fmt.Sprintf("muster: %s from %s on thread #%d %q", label(first), first.Agent, first.ThreadID, subject(first))
-		return line + Separator + guidance(first), meta
+		return line + Separator + guidance(first, aliases), meta
 	}
 	top := strictest(events)
 	meta := map[string]string{
@@ -185,12 +229,14 @@ func Format(events []Event) (string, map[string]string) {
 		}
 		line += " — " + strings.Join(items, "; ")
 	}
-	return line + Separator + batchGuidance, meta
+	return line + Separator + batchGuide(aliases), meta
 }
 
 // Summary renders the startup push for mail that was already waiting when
-// the channel attached. Same envelope/guidance shape as Format.
-func Summary(unread int) (string, map[string]string) {
+// the channel attached. Same envelope/guidance shape as Format. aliases is
+// the session's own alias set (empty when the carrier could not resolve it
+// yet — the drain clause then uses the generic placeholder).
+func Summary(unread int, aliases []string) (string, map[string]string) {
 	line := fmt.Sprintf("muster: %d unread message(s) waiting", unread)
-	return line + Separator + batchGuidance, map[string]string{"kind": "summary", "count": strconv.Itoa(unread)}
+	return line + Separator + batchGuide(aliases), map[string]string{"kind": "summary", "count": strconv.Itoa(unread)}
 }
