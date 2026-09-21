@@ -75,6 +75,9 @@ func HelpFor(name string, out io.Writer) error {
 	}
 	_, _ = fmt.Fprintf(out, "muster %s — %s\n\n", cmd.Name, cmd.Summary)
 	_, _ = fmt.Fprintf(out, "Usage:\n  muster %s\n", cmd.Synopsis)
+	if len(cmd.Aliases) > 0 {
+		_, _ = fmt.Fprintf(out, "Aliases: %s (the MCP tool name for this operation)\n", strings.Join(cmd.Aliases, ", "))
+	}
 	if cmd.Help != "" {
 		_, _ = fmt.Fprintln(out)
 		_, _ = fmt.Fprintln(out, cmd.Help)
