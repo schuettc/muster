@@ -792,6 +792,7 @@ var helpKeyLines = []string{
 	"r        reply to the currently selected/open thread",
 	"n        nudge (the agents list, or an agent's own page)",
 	"d        deregister selected live agent (confirmed; not Station itself)",
+	"c        clear selected agent's inbox — mark read + clear badge (not a deregister)",
 	"t        transition the selected/open task",
 	"m        jump to your mailbox — every thread addressed to you, read and unread",
 	"/        filter the current left list",

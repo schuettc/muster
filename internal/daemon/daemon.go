@@ -1131,6 +1131,43 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 		}
 		d.logEvent(store.Event{Kind: "read", Agent: alias, Detail: detail})
 		return ok(map[string]any{"threads": threads, "marked_read": true})
+	case "mark_read":
+		// Operator-authoritative inbox drain (station's 'c'): advance alias's
+		// read watermark to the tail of its inbox and clear its session badge,
+		// WITHOUT the ownership proof get_inbox demands. An operator clearing a
+		// stale mailbox is not the session whose mailbox it is, so get_inbox's
+		// owned path can never reach it — this is the one op that marks a
+		// mailbox read from the outside. Non-destructive: every entry stays in
+		// thread history, only the unread watermark moves. Journaled as a read
+		// (detail "operator drain") so the badge-history log names why it
+		// cleared. Deliberately NOT exposed as an MCP tool: an agent draining a
+		// PEER's badge would corrupt that peer's drain tracking — this is an
+		// operator surface only (station, and the CLI).
+		alias, err := d.requireKnownAlias("alias", str(a, "alias"))
+		if err != nil {
+			return fail(err)
+		}
+		cleared, err := d.s.UnreadCount(alias)
+		if err != nil {
+			return fail(err)
+		}
+		threads, err := d.s.Inbox(alias)
+		if err != nil {
+			return fail(err)
+		}
+		if err := d.s.MarkRead(alias, inboxLastEntryID(threads)); err != nil {
+			return fail(err)
+		}
+		detail := "operator drain"
+		if d.n != nil {
+			if ag, found, _ := d.s.GetAgent(alias); found && ag.SocketPath != "" && ag.SessionID != "" {
+				if _, err := d.setSessionBadge(ag.SocketPath, ag.SessionID, ag.SessionCreated); err != nil {
+					detail = "operator drain; badge error: " + err.Error()
+				}
+			}
+		}
+		d.logEvent(store.Event{Kind: "read", Agent: alias, Detail: detail})
+		return ok(map[string]any{"cleared": cleared})
 	case "session_aliases":
 		// socket_path may be empty: a paneless session's tuple is ("",
 		// harness session UUID) — see internal/harnessenv. Only a missing

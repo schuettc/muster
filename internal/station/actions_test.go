@@ -552,6 +552,45 @@ func TestStationDeregisterConfirmationAndAction(t *testing.T) {
 	}
 }
 
+func TestStationClearInboxDrainsWithoutConfirm(t *testing.T) {
+	var calls []string
+	caller := fakeCaller{fn: func(op string, args map[string]any) (json.RawMessage, error) {
+		calls = append(calls, op)
+		if op == "mark_read" {
+			if args["alias"] != "backend" {
+				t.Fatalf("mark_read args = %+v", args)
+			}
+			return json.RawMessage(`{"cleared":3}`), nil
+		}
+		return json.RawMessage(`[]`), nil
+	}}
+	m := NewModel(caller, Options{Alias: "station"})
+	m.screen, m.project, m.agent = screenProject, "muster", "backend"
+	m.agents = []agentEnriched{{Alias: "backend", Project: "muster", Live: true}}
+
+	// 'c' fires immediately — no confirm gate, unlike 'd' deregister.
+	next, cmd := m.Update(keyMsg("c"))
+	m = mustModel(t, next)
+	if m.deregisterConfirmAlias != "" {
+		t.Fatalf("clear must not open the deregister confirm: %q", m.deregisterConfirmAlias)
+	}
+	if cmd == nil {
+		t.Fatal("'c' produced no command")
+	}
+	msg, ok := cmd().(markReadResultMsg)
+	if !ok || msg.err != nil || msg.alias != "backend" || msg.cleared != 3 {
+		t.Fatalf("result=%+v calls=%v", msg, calls)
+	}
+	if len(calls) != 1 || calls[0] != "mark_read" {
+		t.Fatalf("expected exactly one mark_read call, got %v", calls)
+	}
+	next, refresh := m.Update(msg)
+	m = mustModel(t, next)
+	if refresh == nil || !strings.Contains(m.status, "cleared 3 unread") {
+		t.Fatalf("success status=%q refresh=%v", m.status, refresh != nil)
+	}
+}
+
 func TestStationTaskTransitionOnlyOpensForTasks(t *testing.T) {
 	m := NewModel(fakeCaller{}, Options{Alias: "station"})
 	m.screen, m.agent, m.conversation = screenAgent, "worker", 7

@@ -37,6 +37,11 @@ var writeOps = map[string]bool{
 	"standing_set": true, "standing_retract": true,
 	"kv_set": true, "kv_delete": true, "log_event": true, "set_label": true,
 	"prune_events": true, "get_inbox": true,
+	// mark_read is the operator drain (station's 'c'): it advances a read
+	// watermark exactly as get_inbox's owned path does, minus the ownership
+	// proof — a write, and safe to replay (marking read to the same tail twice
+	// is a no-op).
+	"mark_read": true,
 	// become is a CAS (it refuses an existing target), so it needs a key for
 	// the same reason task_claim does: a claim that succeeded but lost its
 	// response would replay into ErrBecomeToExists and tell the caller its own
@@ -71,6 +76,9 @@ var badgeOps = map[string]bool{
 	"register_agent": true, "deregister_agent": true, "purge_agent": true,
 	"send_message": true, "task_create": true, "reply": true,
 	"task_claim": true, "task_transition": true, "get_inbox": true,
+	// mark_read calls setSessionBadge to clear the drained mailbox's badge, so
+	// remote mode must reconcile it exactly like get_inbox.
+	"mark_read": true,
 	// standing_set calls notifyForThread (the project's live sessions get the
 	// order now, exactly like a scoped standing broadcast). standing_retract is
 	// absent on purpose: it reaches no badge sink — a live session's stale count
