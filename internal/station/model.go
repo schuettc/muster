@@ -40,7 +40,7 @@ import (
 type keyMap struct {
 	Down, Up, Quit, Enter, Esc, Home, End                                          key.Binding
 	Send, Reply, Nudge, Deregister, Transition, Filter, Aliases, CycleIntent, Help key.Binding
-	MailJump                                                                       key.Binding
+	MailJump, ClearInbox                                                           key.Binding
 }
 
 var keys = keyMap{
@@ -58,6 +58,7 @@ var keys = keyMap{
 	Reply:       key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "reply")),
 	Nudge:       key.NewBinding(key.WithKeys("n"), key.WithHelp("n", "nudge")),
 	Deregister:  key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "deregister")),
+	ClearInbox:  key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "clear inbox")),
 	Transition:  key.NewBinding(key.WithKeys("t"), key.WithHelp("t", "task transition")),
 	Filter:      key.NewBinding(key.WithKeys("/"), key.WithHelp("/", "filter")),
 	Aliases:     key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "aliases")),
@@ -474,6 +475,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.applyNudgeResult(msg), nil
 	case deregisterResultMsg:
 		return m.applyDeregisterResult(msg)
+	case markReadResultMsg:
+		return m.applyMarkReadResult(msg)
 	case taskTransitionResultMsg:
 		return m.applyTaskTransitionResult(msg)
 	case lastActiveMsg:
@@ -531,6 +534,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleNudgeKey(), nil
 	case key.Matches(msg, keys.Deregister):
 		return m.handleDeregisterKey(), nil
+	case key.Matches(msg, keys.ClearInbox):
+		return m.handleClearInboxKey()
 	case key.Matches(msg, keys.Transition):
 		return m.handleTaskTransitionKey(msg)
 	case key.Matches(msg, keys.MailJump):
@@ -1251,6 +1256,52 @@ func (m Model) applyDeregisterResult(msg deregisterResultMsg) (Model, tea.Cmd) {
 		return m, nil
 	}
 	m.status = fmt.Sprintf("deregistered %s — history and read state preserved", m.dispLabel(msg.alias))
+	return m, fetchAgentsCmd(m.caller)
+}
+
+// handleClearInboxKey implements 'c': mark the selected agent's inbox read and
+// clear its 📬 badge — the operator drain a stale mailbox needs, distinct from
+// 'd' deregister (which tombstones the agent). Valid on the agents list or an
+// agent page, a no-op elsewhere. Non-destructive (mail stays in history), so
+// unlike deregister it fires immediately with no confirm gate. Station MAY
+// clear its OWN badge, unlike nudge/deregister. Mirrors handleNudgeKey's
+// filter/selection-desync guard.
+func (m Model) handleClearInboxKey() (tea.Model, tea.Cmd) {
+	switch {
+	case m.screen == screenProject && !m.l1IsOrphaned():
+		rows := m.agentStripRows()
+		q, f := m.filterQueryFor(llProjectItems)
+		if !selectionVisible(rows, agentKey, m.agent, m.renderRosterRow, q, f) {
+			m.agent = snapSelection(rows, agentKey, m.agent, m.renderRosterRow, q, f, "")
+			if m.agent == "" {
+				m.status = "no agent visible — adjust or clear the filter"
+			}
+			return m, nil
+		}
+	case m.screen == screenAgent:
+		if m.agent == "" {
+			return m, nil
+		}
+	default:
+		return m, nil
+	}
+	if m.agent == "" {
+		return m, nil
+	}
+	m.status = fmt.Sprintf("clearing %s…", m.dispLabel(m.agent))
+	return m, markReadCmd(m.caller, m.agent)
+}
+
+func (m Model) applyMarkReadResult(msg markReadResultMsg) (Model, tea.Cmd) {
+	if msg.err != nil {
+		m.status = fmt.Sprintf("clear %s failed: %v", m.dispLabel(msg.alias), msg.err)
+		return m, nil
+	}
+	if msg.cleared == 0 {
+		m.status = fmt.Sprintf("%s already clear", m.dispLabel(msg.alias))
+	} else {
+		m.status = fmt.Sprintf("cleared %d unread from %s", msg.cleared, m.dispLabel(msg.alias))
+	}
 	return m, fetchAgentsCmd(m.caller)
 }
 

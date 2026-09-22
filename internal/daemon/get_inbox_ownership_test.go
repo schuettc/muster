@@ -133,3 +133,43 @@ func TestGetInboxPanelessOwnedByHarnessID(t *testing.T) {
 		t.Fatal("paneless ownership is the harness UUID")
 	}
 }
+
+// TestMarkReadOperatorDrainClearsWithoutOwnership: the mark_read op is the
+// operator surface (station's 'c') — it drains a mailbox for a caller who does
+// NOT own it (no caller proof at all), which get_inbox's owned path can never
+// do. It returns the count it cleared, moves the watermark to 0, and is
+// idempotent (a second drain clears nothing).
+func TestMarkReadOperatorDrainClearsWithoutOwnership(t *testing.T) {
+	sock, s := startWithNotifierAndStore(t, &fakeNotifier{})
+	call(t, sock, "register_agent", map[string]any{"alias": "me", "socket_path": "/s", "session_id": "$1", "session_created": 5, "pane_id": "%1"})
+	call(t, sock, "register_agent", map[string]any{"alias": "peer", "socket_path": "/s", "session_id": "$2", "session_created": 5, "pane_id": "%2"})
+	call(t, sock, "send_message", map[string]any{"from": "peer", "to_kind": "agent", "to_target": "me", "subject": "s", "body": "b"})
+	if n, _ := s.UnreadCount("me"); n != 1 {
+		t.Fatalf("precondition: unread should be 1, got %d", n)
+	}
+
+	// No caller proof — an operator, not 'me' — still drains.
+	resp := call(t, sock, "mark_read", map[string]any{"alias": "me"})
+	if !resp.OK {
+		t.Fatalf("mark_read: %+v", resp)
+	}
+	m, _ := resp.Data.(map[string]any)
+	if cleared, _ := m["cleared"].(float64); cleared != 1 {
+		t.Fatalf("cleared = %v, want 1", m["cleared"])
+	}
+	if n, err := s.UnreadCount("me"); err != nil || n != 0 {
+		t.Fatalf("unread after operator drain = %d, err=%v", n, err)
+	}
+
+	// Idempotent: a second drain clears nothing.
+	resp = call(t, sock, "mark_read", map[string]any{"alias": "me"})
+	m, _ = resp.Data.(map[string]any)
+	if cleared, _ := m["cleared"].(float64); cleared != 0 {
+		t.Fatalf("second drain cleared = %v, want 0", m["cleared"])
+	}
+
+	// An unknown alias is refused, not silently a no-op.
+	if resp := call(t, sock, "mark_read", map[string]any{"alias": "ghost"}); resp.OK {
+		t.Fatalf("mark_read of an unregistered alias must fail, got %+v", resp)
+	}
+}

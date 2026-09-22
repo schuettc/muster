@@ -1020,3 +1020,36 @@ func TestHierarchyWalkEscChainPreservesSelectionAtEveryLevel(t *testing.T) {
 		t.Fatalf("Esc #3: expected screenProjects/p1, got screen=%v project=%q", m.screen, m.project)
 	}
 }
+
+// TestConversationsForAgentIncludesReceivedBroadcasts: an agent's own page must
+// show the broadcasts it RECEIVES (global, or its project) even though it is not
+// a participantAlias of them — otherwise the mailbox badge (which counts them)
+// and the visible THREADS list disagree ("where are the 6?").
+func TestConversationsForAgentIncludesReceivedBroadcasts(t *testing.T) {
+	aliasProject := map[string]string{"station": "tools-workspace", "tackle": "tools-workspace"}
+	threads := []listThreadRow{
+		{ID: 1, FromAgent: "tackle", ToKind: "broadcast", ToTarget: "tools-workspace", Subject: "LIFTED"},   // received (same project)
+		{ID: 2, FromAgent: "human", ToKind: "broadcast", ToTarget: "", Subject: "global"},                   // received (global)
+		{ID: 3, FromAgent: "nfl", ToKind: "broadcast", ToTarget: "bettor-help-workspace", Subject: "other"}, // NOT received (other project)
+		{ID: 4, FromAgent: "peer", ToKind: "agent", ToTarget: "station", Subject: "direct"},                 // received (direct)
+		{ID: 5, FromAgent: "station", ToKind: "agent", ToTarget: "peer", Subject: "sent"},                   // participant (sent)
+	}
+	got := map[int64]bool{}
+	for _, r := range conversationsForAgentIncludingBroadcasts(threads, aliasProject, "station") {
+		got[r.ID] = true
+	}
+	for _, id := range []int64{1, 2, 4, 5} {
+		if !got[id] {
+			t.Errorf("thread %d should appear on station's page, missing", id)
+		}
+	}
+	if got[3] {
+		t.Errorf("broadcast to another project (3) must NOT appear on station's page")
+	}
+	// The participant-only helper must stay broadcast-free (project grouping relies on it).
+	for _, r := range conversationsForAgent(threads, "station") {
+		if r.ToKind == "broadcast" && r.FromAgent != "station" {
+			t.Errorf("conversationsForAgent must not attribute a received broadcast (%d) to a recipient", r.ID)
+		}
+	}
+}

@@ -153,7 +153,13 @@ func (c *Carrier) Start() error {
 		return fmt.Errorf("decode session_unread: %w", err)
 	}
 	if unread.Total > 0 {
-		c.push(Summary(unread.Total))
+		// Resolve the session's own aliases so the summary's drain clause can
+		// name them (best-effort: an unresolved registration falls back to the
+		// generic placeholder). resolve() takes no lock, so calling it while we
+		// hold c.mu is safe.
+		aliases, _ := c.resolve()
+		c.aliases = aliases
+		c.push(Summary(unread.Total, aliases))
 	}
 	return nil
 }
@@ -226,7 +232,7 @@ func (c *Carrier) Tick() error {
 	c.cursor = head
 	c.lastErr = ""
 	if len(batch) > 0 {
-		content, meta := Format(batch)
+		content, meta := Format(batch, aliases)
 		c.push(content, meta)
 	}
 	return nil

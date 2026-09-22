@@ -27,6 +27,38 @@ var wantCommandNames = []string{
 // other Registry command must have a non-nil Run.
 var mainOwnedCommands = map[string]bool{"serve": true, "mcp": true, "channel": true, "lambda": true, "debug": true}
 
+// TestMCPToolNameAliasesResolve pins the cross-surface aliases: the CLI must
+// accept the MCP tool name for the same operation, so an agent that knows the
+// get_inbox TOOL and drops to a shell never has to translate it into `muster
+// inbox` (the mistranslation that left a mailbox badge lit). Aliases resolve
+// in lookup but must NOT appear as their own rows in the command vocabulary.
+func TestMCPToolNameAliasesResolve(t *testing.T) {
+	want := map[string]string{
+		"get_inbox":        "inbox",
+		"get_thread":       "thread",
+		"send_message":     "send",
+		"register_agent":   "register",
+		"deregister_agent": "deregister",
+		"list_agents":      "agents",
+	}
+	for alias, canonical := range want {
+		cmd, ok := lookup(alias)
+		if !ok {
+			t.Errorf("alias %q did not resolve", alias)
+			continue
+		}
+		if cmd.Name != canonical {
+			t.Errorf("alias %q resolved to %q, want %q", alias, cmd.Name, canonical)
+		}
+		// An alias must not itself be a top-level command name.
+		for _, n := range commandNames() {
+			if n == alias {
+				t.Errorf("alias %q leaked into the command vocabulary", alias)
+			}
+		}
+	}
+}
+
 func TestRegistryCompleteness(t *testing.T) {
 	got := append([]string(nil), commandNames()...)
 	want := append([]string(nil), wantCommandNames...)

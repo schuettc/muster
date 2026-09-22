@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/schuettc/muster/internal/harnessenv"
 	"github.com/schuettc/muster/internal/tmuxenv"
 )
 
@@ -276,5 +277,83 @@ func TestGetInboxCarriesLastFromAndUnread(t *testing.T) {
 	}
 	if got.LastAt == 0 {
 		t.Fatalf("last_at = 0, want nonzero")
+	}
+}
+
+// TestNormalizeSendMessageShorthands unit-tests the forgiving normalization
+// (from is passed explicitly here so resolveFrom short-circuits without a
+// daemon): `to` with inferred to_kind, message/text aliases, and a subject
+// derived from the body.
+func TestNormalizeSendMessageShorthands(t *testing.T) {
+	cases := []struct {
+		name                       string
+		in                         SendMessageIn
+		wantKind, wantTarget, wSub string
+		wantBody                   string
+		wantErr                    bool
+	}{
+		{"bare alias -> agent", SendMessageIn{From: "me", To: "consumer", Body: "first line\nsecond"}, "agent", "consumer", "first line", "first line\nsecond", false},
+		{"role: prefix -> role", SendMessageIn{From: "me", To: "role:reviewer", Message: "look"}, "role", "reviewer", "look", "look", false},
+		{"broadcast token", SendMessageIn{From: "me", To: "broadcast", Text: "all hands"}, "broadcast", "", "all hands", "all hands", false},
+		{"text alias for body", SendMessageIn{From: "me", ToTarget: "c", ToKind: "agent", Text: "hi"}, "agent", "c", "hi", "hi", false},
+		{"explicit beats shorthand", SendMessageIn{From: "me", ToKind: "agent", ToTarget: "real", To: "ignored", Body: "b", Subject: "keep"}, "agent", "real", "keep", "b", false},
+		{"no recipient errors", SendMessageIn{From: "me", Body: "b"}, "", "", "", "", true},
+		{"no body errors", SendMessageIn{From: "me", To: "c"}, "", "", "", "", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			in := tc.in
+			err := normalizeSendMessage(&in)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected error, got in=%+v", in)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if in.ToKind != tc.wantKind || in.ToTarget != tc.wantTarget || in.Subject != tc.wSub || in.Body != tc.wantBody {
+				t.Fatalf("normalized to kind=%q target=%q subject=%q body=%q, want kind=%q target=%q subject=%q body=%q",
+					in.ToKind, in.ToTarget, in.Subject, in.Body, tc.wantKind, tc.wantTarget, tc.wSub, tc.wantBody)
+			}
+			if in.To != "" || in.Message != "" || in.Text != "" {
+				t.Fatalf("convenience aliases must be cleared after normalization: %+v", in)
+			}
+		})
+	}
+}
+
+// TestSendMessageDefaultsFromToSessionAlias proves the from-default: with no
+// `from`, the send is attributed to this session's sole registered alias.
+func TestSendMessageDefaultsFromToSessionAlias(t *testing.T) {
+	prevTmux, prevHarness, prevDaemon := captureCallerTmux, captureCallerHarness, callDaemon
+	t.Cleanup(func() { captureCallerTmux, captureCallerHarness, callDaemon = prevTmux, prevHarness, prevDaemon })
+	captureCallerTmux = func() tmuxenv.Capture { return tmuxenv.Capture{} } // paneless
+	captureCallerHarness = func() harnessenv.Capture { return harnessenv.Capture{SessionID: "h1"} }
+
+	var sendArgs map[string]any
+	callDaemon = func(op string, args map[string]any) (json.RawMessage, error) {
+		switch op {
+		case "session_aliases":
+			return json.RawMessage(`{"aliases":["tools-workspace/me"]}`), nil
+		case "list_agents":
+			return json.RawMessage(`[{"alias":"tools-workspace/me","departed":false}]`), nil
+		case "send_message":
+			sendArgs = args
+			return json.RawMessage(`{"thread_id":7}`), nil
+		}
+		return json.RawMessage(`{}`), nil
+	}
+
+	_, out, err := sendMessageHandler(context.Background(), nil, SendMessageIn{To: "consumer", Message: "hi"})
+	if err != nil || out.ThreadID != 7 {
+		t.Fatalf("send: err=%v out=%+v", err, out)
+	}
+	if sendArgs["from"] != "tools-workspace/me" {
+		t.Fatalf("from should default to the session's alias, got %v", sendArgs["from"])
+	}
+	if sendArgs["to_kind"] != "agent" || sendArgs["to_target"] != "consumer" || sendArgs["subject"] != "hi" || sendArgs["body"] != "hi" {
+		t.Fatalf("normalized send args wrong: %+v", sendArgs)
 	}
 }
