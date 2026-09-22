@@ -102,6 +102,31 @@ func deregisterCmd(caller render.Caller, alias string) tea.Cmd {
 	}
 }
 
+type markReadResultMsg struct {
+	alias   string
+	cleared int
+	err     error
+}
+
+// markReadCmd clears an agent's mailbox from the operator surface: the
+// operator-authoritative mark_read op marks the alias's inbox read and clears
+// its session badge, WITHOUT deregistering the agent. This is the drain a
+// stale 📬 needs — the daemon op is what get_inbox's owned path does, minus
+// the ownership proof only the mailbox's own session can supply.
+func markReadCmd(caller render.Caller, alias string) tea.Cmd {
+	return func() tea.Msg {
+		raw, err := caller.Call("mark_read", map[string]any{"alias": alias})
+		if err != nil {
+			return markReadResultMsg{alias: alias, err: err}
+		}
+		var res struct {
+			Cleared int `json:"cleared"`
+		}
+		_ = json.Unmarshal(raw, &res)
+		return markReadResultMsg{alias: alias, cleared: res.Cleared}
+	}
+}
+
 // composerSentMsg carries the outcome of one composer submit (send_message
 // or reply — see sendMessageCmd/replyCmd).
 type composerSentMsg struct {

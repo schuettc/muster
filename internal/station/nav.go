@@ -291,6 +291,42 @@ func conversationsForAgent(threads []listThreadRow, alias string) []listThreadRo
 	return out
 }
 
+// agentReceivesBroadcast reports whether alias is a RECIPIENT of a broadcast
+// thread: an empty to_target reaches every agent on the bus, a project
+// to_target reaches only that project's agents. A broadcast lists no recipient
+// alias in participantAliases (its to_target is a project, not an alias), so
+// without this a recipient's own page never shows the broadcasts sitting in its
+// inbox — the badge count and the visible list disagree (the "where are the 6?"
+// gap: 6 unread project broadcasts, an empty THREADS panel).
+func agentReceivesBroadcast(row listThreadRow, aliasProject map[string]string, alias string) bool {
+	if row.ToKind != "broadcast" {
+		return false
+	}
+	return row.ToTarget == "" || row.ToTarget == aliasProject[alias]
+}
+
+// conversationsForAgentIncludingBroadcasts is conversationsForAgent PLUS the
+// broadcast threads alias RECEIVES. Used for an agent's OWN page, where the
+// list must reconcile with the mailbox badge; the participant-only
+// conversationsForAgent stays the basis for project grouping and unread-age,
+// so a project-wide broadcast is not attributed to every recipient's grouping.
+func conversationsForAgentIncludingBroadcasts(threads []listThreadRow, aliasProject map[string]string, alias string) []listThreadRow {
+	out := conversationsForAgent(threads, alias)
+	seen := make(map[int64]bool, len(out))
+	for _, r := range out {
+		seen[r.ID] = true
+	}
+	for _, row := range threads {
+		if seen[row.ID] {
+			continue
+		}
+		if agentReceivesBroadcast(row, aliasProject, alias) {
+			out = append(out, row)
+		}
+	}
+	return out
+}
+
 // conversationsForAgentAnnotated is conversationsForAgent, additionally
 // marking each row with whichever OTHER projects it touches beyond alias's
 // own home project — the "↔ otherproj" cross-project marker computed
@@ -298,7 +334,7 @@ func conversationsForAgent(threads []listThreadRow, alias string) []listThreadRo
 // whenever the thread ALSO touches a different project than the agent's own.
 func conversationsForAgentAnnotated(threads []listThreadRow, aliasProject map[string]string, alias string) []conversationRow {
 	home := aliasProject[alias]
-	rows := conversationsForAgent(threads, alias)
+	rows := conversationsForAgentIncludingBroadcasts(threads, aliasProject, alias)
 	out := make([]conversationRow, 0, len(rows))
 	for _, row := range rows {
 		var other []string

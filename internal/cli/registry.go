@@ -48,6 +48,15 @@ var groupHeading = map[Group]string{
 type Command struct {
 	// Name is the subcommand word, e.g. "send".
 	Name string
+	// Aliases are alternate words that resolve to this same command, used so
+	// the CLI accepts the MCP tool name for the same operation (`muster
+	// get_inbox` == `muster inbox`). An agent that crosses surfaces then never
+	// has to translate one namespace into the other — the mistranslation that
+	// left a CLI-driven session's mailbox badge lit (it knew the get_inbox
+	// TOOL, guessed a wrong `muster inbox` argument, and only peeked). Aliases
+	// resolve in lookup but are NOT listed as their own rows in usage/man, so
+	// the idiomatic name stays the one canonical command.
+	Aliases []string
 	// Synopsis is the argument shape shown after the name in usage output,
 	// e.g. `send <target> "body" [--from <alias>] ...`. It does NOT repeat
 	// "muster " or the command name.
@@ -91,6 +100,7 @@ func init() {
 	Registry = []Command{
 		{
 			Name:     "send",
+			Aliases:  []string{"send_message"},
 			Synopsis: `send <target> "body" [--from <alias>] [--subject <s>] [--ref <r>] [--role] [--broadcast [--project <p>] [--standing] [--wake] [--yes]] [--intent fyi|reply-requested|action-requested]`,
 			Summary:  "Send a message to an agent, role, or everyone.",
 			Help: `target is an alias, a label, or a "project:label" pair, resolved the same
@@ -187,6 +197,7 @@ alias. Departed aliases are included — their mail still waits.`,
 		},
 		{
 			Name:     "agents",
+			Aliases:  []string{"list_agents"},
 			Synopsis: "agents",
 			Summary:  "List registered agents, grouped by project, with live status.",
 			Help: `Shows every registered agent's project, alias, label, model, and whether
@@ -207,6 +218,7 @@ every device on the bus.`,
 		},
 		{
 			Name:     "inbox",
+			Aliases:  []string{"get_inbox"},
 			Synopsis: "inbox <alias|label|proj:label>",
 			Summary:  "Show an agent's threads.",
 			Help: `Prints every thread in the target agent's inbox: id, kind, from, to, status, who
@@ -231,6 +243,7 @@ you don't own is visible in 'muster events' after the fact.`,
 		},
 		{
 			Name:     "thread",
+			Aliases:  []string{"get_thread"},
 			Synopsis: "thread <id>",
 			Summary:  "Show one thread's full conversation.",
 			Help: `Prints the thread header (kind, participants, status, intent, subject)
@@ -285,6 +298,7 @@ marks anything read.`,
 		},
 		{
 			Name:     "register",
+			Aliases:  []string{"register_agent"},
 			Synopsis: "register [<alias>] [--role <role>] [--model claude|codex|cursor]",
 			Summary:  "Register the current tmux session as an agent.",
 			Help: `Alias precedence: the explicit argument, then $MUSTER_ALIAS, then the tmux
@@ -316,6 +330,7 @@ extra note — you inherit whatever inbox/history that name already carries.`,
 		},
 		{
 			Name:     "deregister",
+			Aliases:  []string{"deregister_agent"},
 			Synopsis: "deregister [<alias>]",
 			Summary:  "Remove an agent's registration.",
 			Help:     `Alias precedence mirrors register: the explicit argument, then $MUSTER_ALIAS, then the tmux session name. A soft delete (tombstone) — see 'muster gc'.`,
@@ -537,6 +552,11 @@ func lookup(name string) (Command, bool) {
 	for _, c := range Registry {
 		if c.Name == name {
 			return c, true
+		}
+		for _, a := range c.Aliases {
+			if a == name {
+				return c, true
+			}
 		}
 	}
 	return Command{}, false
