@@ -417,7 +417,7 @@ FROM agents WHERE alias=?`, to, now, now, from)
 // effective intent (effectiveIntent) is action-requested. An empty sessionID
 // never groups: it matches no agents, so both results are 0 (per-alias
 // identity is UnreadCount's job for such agents). socketPath MAY be empty —
-// ("", harness session UUID) is the paneless tuple (see internal/harnessenv),
+// ("", harness session UUID) is the paneless tuple (see tools-common/harness),
 // a real session identity whose sibling aliases group exactly like a tmux
 // session's; the sessionID guard alone keeps pre-harnessenv no-tmux rows
 // (both fields empty) from ever grouping with each other.

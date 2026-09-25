@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/schuettc/muster/internal/harnessenv"
 	"github.com/schuettc/muster/internal/tmuxenv"
+	"github.com/schuettc/tools-common/harness"
 )
 
 func TestSendMessageAndInbox(t *testing.T) {
@@ -330,7 +330,7 @@ func TestSendMessageDefaultsFromToSessionAlias(t *testing.T) {
 	prevTmux, prevHarness, prevDaemon := captureCallerTmux, captureCallerHarness, callDaemon
 	t.Cleanup(func() { captureCallerTmux, captureCallerHarness, callDaemon = prevTmux, prevHarness, prevDaemon })
 	captureCallerTmux = func() tmuxenv.Capture { return tmuxenv.Capture{} } // paneless
-	captureCallerHarness = func() harnessenv.Capture { return harnessenv.Capture{SessionID: "h1"} }
+	captureCallerHarness = func() harness.Capture { return harness.Capture{SessionID: "h1"} }
 
 	var sendArgs map[string]any
 	callDaemon = func(op string, args map[string]any) (json.RawMessage, error) {

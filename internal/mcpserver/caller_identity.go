@@ -4,12 +4,12 @@ import (
 	"encoding/json"
 	"sort"
 
-	"github.com/schuettc/muster/internal/harnessenv"
 	"github.com/schuettc/muster/internal/tmuxenv"
+	"github.com/schuettc/tools-common/harness"
 )
 
 var captureCallerTmux = tmuxenv.CaptureEnv
-var captureCallerHarness = harnessenv.FromEnv
+var captureCallerHarness = harness.FromEnv
 
 type callerIdentity struct {
 	Agent       rosterRow

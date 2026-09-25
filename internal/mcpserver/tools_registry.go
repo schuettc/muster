@@ -7,8 +7,8 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/schuettc/muster/internal/device"
-	"github.com/schuettc/muster/internal/harnessenv"
 	"github.com/schuettc/muster/internal/tmuxenv"
+	"github.com/schuettc/tools-common/harness"
 )
 
 // RegisterAgentIn is the input to register_agent. socket_path/pane_id are NOT
@@ -89,7 +89,7 @@ func registerAgentHandler(_ context.Context, _ *mcp.CallToolRequest, in Register
 		return nil, OKOut{OK: true, Detail: detail}, nil
 	}
 
-	h := harnessenv.FromEnv()
+	h := harness.FromEnv()
 	sessionName := in.SessionName
 	if sessionName == "" {
 		sessionName = c.SessionName

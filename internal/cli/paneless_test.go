@@ -41,7 +41,7 @@ func panelessEnv(t *testing.T, uuid, dirName string) string {
 	t.Setenv("MUSTER_ALIAS", "")
 	t.Setenv("CLAUDE_CODE_SESSION_ID", uuid)
 	// The harness-neutral spelling must be pinned too: a dev machine running
-	// `go test` inside a pi session leaks AGENT_SESSION_ID, and harnessenv
+	// `go test` inside a pi session leaks AGENT_SESSION_ID, and harness
 	// falls back to it whenever the Claude spelling is empty.
 	t.Setenv("AGENT_SESSION_ID", "")
 	pinAncestryWalkAway(t)
