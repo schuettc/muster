@@ -1170,7 +1170,7 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 		return ok(map[string]any{"cleared": cleared})
 	case "session_aliases":
 		// socket_path may be empty: a paneless session's tuple is ("",
-		// harness session UUID) — see internal/harnessenv. Only a missing
+		// harness session UUID) — see tools-common/harness. Only a missing
 		// session_id leaves no tuple to key on.
 		//
 		// SessionAliasLineage (not a flat tuple filter over ListAgents) walks

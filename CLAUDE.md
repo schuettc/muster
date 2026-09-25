@@ -123,12 +123,12 @@ client · `internal/daemon` the daemon · `internal/store` the `store.API` inter
 + its SQLite implementation · `internal/mcpserver` MCP tools · `internal/cli`
 operator CLI · `internal/wake` notify · `internal/nudge` send-keys ·
 `internal/nudgeguard` proves a live-local target before send-keys ·
-`internal/channelmcp` stdlib claude/channel MCP server · `internal/channel` the
+`tools-common/channelmcp` (external) stdlib claude/channel MCP server · `internal/channel` the
 channel carrier (journal tail → push) · `internal/render` shared journal rendering ·
 `internal/resolve` canonical target resolution · `internal/display` terminal-output
 sanitizer · `internal/station` operator TUI · `internal/version` build stamp ·
-`internal/tmuxenv` tmux capture/liveness/label · `internal/harnessenv` paneless
-harness-session capture (tmuxenv's counterpart) · `internal/paths` socket+db paths ·
+`internal/tmuxenv` tmux capture/liveness/label · `tools-common/harness` (external) paneless
+harness-session capture and the family identity rule (tmuxenv's counterpart) · `internal/paths` socket+db paths ·
 `internal/clock` injectable time · `internal/mustertest` shared test helpers.
 
 Hosted backend (all optional; a device links only `remote` and `device`):

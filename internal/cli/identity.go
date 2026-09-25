@@ -12,21 +12,21 @@ import (
 
 	"github.com/schuettc/muster/internal/clock"
 	"github.com/schuettc/muster/internal/device"
-	"github.com/schuettc/muster/internal/harnessenv"
 	"github.com/schuettc/muster/internal/tmuxenv"
+	"github.com/schuettc/tools-common/harness"
 )
 
 // newRegisterFlagsWithVals declares register's flags and returns typed
 // access to their values — shared by cmdRegister (real parsing) and
 // newRegisterFlags (registry help/man rendering).
-func newRegisterFlagsWithVals() (fs *flag.FlagSet, role, model, harness *string, ifAbsent *bool) {
+func newRegisterFlagsWithVals() (fs *flag.FlagSet, role, model, harnessSession *string, ifAbsent *bool) {
 	fs = flag.NewFlagSet("register", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	role = fs.String("role", "", "this agent's role")
 	model = fs.String("model", "claude", "model backing this agent: claude, codex, or cursor")
 	ifAbsent = fs.Bool("if-absent", false, "fail instead of upserting when the alias is already registered to a DIFFERENT session — the race-free guard for launch wrappers seeding a session-name alias. A same-tuple re-register (the ordinary relaunch-in-the-same-session seed path, even over a departed row) still succeeds; only a cross-session (different socket_path/session_id, or a differently-owned harness link) claim is refused")
-	harness = fs.String("harness-session", "", "harness session UUID this registration belongs to — the pane-side launch handshake passes the UUID it then hands to `claude --session-id`, so the session's own hooks (which see no tmux) can find this row")
-	return fs, role, model, harness, ifAbsent
+	harnessSession = fs.String("harness-session", "", "harness session UUID this registration belongs to — the pane-side launch handshake passes the UUID it then hands to `claude --session-id`, so the session's own hooks (which see no tmux) can find this row")
+	return fs, role, model, harnessSession, ifAbsent
 }
 
 // newRegisterFlags builds register's flag.FlagSet for registry-driven
@@ -39,12 +39,12 @@ func newRegisterFlags() *flag.FlagSet {
 // cmdRegister registers the current session as an agent. Alias precedence:
 // explicit positional arg → $MUSTER_ALIAS → tmux session name → the working
 // directory's basename (paneless fallback). A session with no tmux pane in
-// its process environment (harness daemon-hosted sessions — see harnessenv)
+// its process environment (harness daemon-hosted sessions — see tools-common/harness)
 // registers PANELESS: socket_path/pane_id empty, session_id carrying the
 // harness session UUID, so hook ownership and sibling grouping still have an
 // identity tuple, ("", uuid), to key on.
 func cmdRegister(args []string, out io.Writer) error {
-	fs, role, model, harness, ifAbsent := newRegisterFlagsWithVals()
+	fs, role, model, harnessSession, ifAbsent := newRegisterFlagsWithVals()
 	// --role and --model both take values, so they must be absent from the
 	// bool-flags set (an implicit default would wrongly reuse send's --role,
 	// which IS boolean there) — but --if-absent genuinely is boolean, so it
@@ -59,7 +59,7 @@ func cmdRegister(args []string, out io.Writer) error {
 		return err
 	}
 	c := tmuxenv.CaptureEnv()
-	h := harnessenv.FromEnv()
+	h := harness.FromEnv()
 	paneless := c.SocketPath == "" || c.PaneID == ""
 	alias := ""
 	switch {
@@ -147,7 +147,7 @@ func cmdRegister(args []string, out io.Writer) error {
 	// The harness link: --harness-session (the pane-side launch handshake,
 	// which mints the UUID before the session exists), else the ambient
 	// harness UUID when this process runs inside a session.
-	harnessID := *harness
+	harnessID := *harnessSession
 	if harnessID == "" {
 		harnessID = h.SessionID
 	}
@@ -206,7 +206,7 @@ func cmdDeregister(args []string, out io.Writer) error {
 			// No tmux: this session's alias may be handshake- or
 			// suffix-allocated, so resolve through the roster by harness
 			// session UUID first; the raw cwd basename is only a last resort.
-			h := harnessenv.FromEnv()
+			h := harness.FromEnv()
 			if owned := conversationRows(h); len(owned) > 0 {
 				alias = owned[0].Alias
 			} else {
@@ -265,7 +265,7 @@ func newGCFlags() *flag.FlagSet {
 // 720h = 30 days). --purge-agents instead hard-deletes every departed OR
 // currently-dead agent row (the pre-tombstone behavior, now explicit and
 // irreversible). Paneless rows (empty socket_path — harness daemon-hosted
-// sessions, see harnessenv) are exempt from BOTH liveness judgments: they
+// sessions, see tools-common/harness) are exempt from BOTH liveness judgments: they
 // have no tmux session to be dead in, so gc would otherwise reap every live
 // one; their lifecycle belongs to the SessionEnd hook and explicit
 // deregister. The agent phase and the event-prune phase are independent: a
