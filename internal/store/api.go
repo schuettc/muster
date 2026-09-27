@@ -105,6 +105,11 @@ type API interface {
 	SetStandingOrder(project, key, from, body string) (int64, error)
 	RetractStandingOrder(project, key string) (bool, error)
 	ListStandingOrders(project string) ([]StandingOrder, error)
+	// RetractStandingThread retracts one standing broadcast by thread id —
+	// keyed or ad-hoc (the only way to stop an un-keyed one greeting new
+	// sessions). Idempotent: a non-standing, already-retracted or missing
+	// thread changes nothing and returns (false, nil).
+	RetractStandingThread(id int64) (bool, error)
 	AppendEntry(threadID int64, fromAgent, body, statusChange string) (int64, error)
 	ClaimTask(threadID int64, byAgent string, note ...string) error
 	TransitionTask(threadID int64, byAgent, newStatus, note string) error

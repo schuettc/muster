@@ -2,6 +2,7 @@ package mcpserver
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 )
 
@@ -56,5 +57,30 @@ func TestStandingSetUnknownProjectRejected(t *testing.T) {
 	}
 	if _, _, err := standingSetHandler(context.Background(), nil, StandingSetIn{From: "web1", Project: "wbe", Body: "x"}); err == nil {
 		t.Fatal("standing_set to an unknown project must be rejected")
+	}
+}
+
+// standing_retract_thread retracts an ad-hoc standing broadcast by id — the
+// one kind standing_retract cannot name — and a repeat is a no-op.
+func TestStandingRetractThreadTool(t *testing.T) {
+	startTestDaemon(t)
+	if _, err := callDaemon("register_agent", map[string]any{"alias": "web1", "project": "web", "model_type": "claude"}); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := callDaemon("send_message", map[string]any{"from": "web1", "to_kind": "broadcast", "to_target": "web", "body": "ad-hoc", "standing": true, "confirm": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sent ThreadIDOut
+	if err := json.Unmarshal(raw, &sent); err != nil {
+		t.Fatal(err)
+	}
+	_, chg, err := standingRetractThreadHandler(context.Background(), nil, StandingRetractThreadIn{From: "web1", ThreadID: sent.ThreadID})
+	if err != nil || !chg.Changed {
+		t.Fatalf("standing_retract_thread: err=%v changed=%v", err, chg.Changed)
+	}
+	_, chg, err = standingRetractThreadHandler(context.Background(), nil, StandingRetractThreadIn{From: "web1", ThreadID: sent.ThreadID})
+	if err != nil || chg.Changed {
+		t.Fatalf("repeat must be a no-op: err=%v changed=%v", err, chg.Changed)
 	}
 }

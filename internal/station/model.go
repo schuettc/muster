@@ -40,7 +40,7 @@ import (
 type keyMap struct {
 	Down, Up, Quit, Enter, Esc, Home, End                                          key.Binding
 	Send, Reply, Nudge, Deregister, Transition, Filter, Aliases, CycleIntent, Help key.Binding
-	MailJump, ClearInbox                                                           key.Binding
+	MailJump, ClearInbox, RetractStanding                                          key.Binding
 }
 
 var keys = keyMap{
@@ -53,18 +53,22 @@ var keys = keyMap{
 	Home: key.NewBinding(key.WithKeys("g"), key.WithHelp("g", "home")),
 	// End snaps the focused thread reader to its live tail — a no-op
 	// everywhere else.
-	End:         key.NewBinding(key.WithKeys("end", "G"), key.WithHelp("end/G", "newest")),
-	Send:        key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "send")),
-	Reply:       key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "reply")),
-	Nudge:       key.NewBinding(key.WithKeys("n"), key.WithHelp("n", "nudge")),
-	Deregister:  key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "deregister")),
-	ClearInbox:  key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "clear inbox")),
-	Transition:  key.NewBinding(key.WithKeys("t"), key.WithHelp("t", "task transition")),
-	Filter:      key.NewBinding(key.WithKeys("/"), key.WithHelp("/", "filter")),
-	Aliases:     key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "aliases")),
-	CycleIntent: key.NewBinding(key.WithKeys("tab"), key.WithHelp("tab", "intent")), // composer-local only; the base nav vocabulary has no Tab binding
-	Help:        key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help")),
-	MailJump:    key.NewBinding(key.WithKeys("m"), key.WithHelp("m", "mail")),
+	End:        key.NewBinding(key.WithKeys("end", "G"), key.WithHelp("end/G", "newest")),
+	Send:       key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "send")),
+	Reply:      key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "reply")),
+	Nudge:      key.NewBinding(key.WithKeys("n"), key.WithHelp("n", "nudge")),
+	Deregister: key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "deregister")),
+	ClearInbox: key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "clear inbox")),
+	// RetractStanding is capital R: retracting a standing broadcast is
+	// deliberate and confirmed, and must not sit one shift away from nothing
+	// on the everyday 'r' reply.
+	RetractStanding: key.NewBinding(key.WithKeys("R"), key.WithHelp("R", "retract standing")),
+	Transition:      key.NewBinding(key.WithKeys("t"), key.WithHelp("t", "task transition")),
+	Filter:          key.NewBinding(key.WithKeys("/"), key.WithHelp("/", "filter")),
+	Aliases:         key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "aliases")),
+	CycleIntent:     key.NewBinding(key.WithKeys("tab"), key.WithHelp("tab", "intent")), // composer-local only; the base nav vocabulary has no Tab binding
+	Help:            key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help")),
+	MailJump:        key.NewBinding(key.WithKeys("m"), key.WithHelp("m", "mail")),
 }
 
 // Layout knobs. defaultRows/eventBacklog bound how much of the global events
@@ -142,8 +146,13 @@ type listThreadRow struct {
 	Ref       string `json:"ref"`
 	Status    string `json:"status"`
 	Intent    string `json:"intent"`
-	CreatedAt int64  `json:"created_at"`
-	UpdatedAt int64  `json:"updated_at"`
+	// Standing/StandingRetracted: a LIVE standing broadcast (standing and not
+	// retracted) greets every new session until read — station marks it and
+	// 'R' retracts it.
+	Standing          bool  `json:"standing"`
+	StandingRetracted bool  `json:"standing_retracted"`
+	CreatedAt         int64 `json:"created_at"`
+	UpdatedAt         int64 `json:"updated_at"`
 	// OriginProject is the sender's registered project stamped at thread
 	// creation time — "" when unstamped (a pre-migration row whose sender no
 	// longer resolves, or a genuinely unregistered sender). nav.go's
@@ -279,8 +288,11 @@ type Model struct {
 	// real tmux).
 	nudgeConfirmAlias      string
 	deregisterConfirmAlias string
-	taskTransition         taskTransitionState
-	nudger                 nudger
+	// retractConfirmThread is 0 (no pending confirmation) or the standing
+	// broadcast 'R' is asking "retract …? y/n" about.
+	retractConfirmThread int64
+	taskTransition       taskTransitionState
+	nudger               nudger
 
 	// filter implements '/': a substring filter over the CURRENT left list's
 	// rendered row text, selection-aware exactly like nav.go's generic
@@ -475,6 +487,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.applyNudgeResult(msg), nil
 	case deregisterResultMsg:
 		return m.applyDeregisterResult(msg)
+	case retractStandingResultMsg:
+		return m.applyRetractStandingResult(msg)
 	case markReadResultMsg:
 		return m.applyMarkReadResult(msg)
 	case taskTransitionResultMsg:
@@ -499,6 +513,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleTaskTransitionKey(msg)
 	case m.deregisterConfirmAlias != "":
 		return m.handleDeregisterConfirmKey(msg)
+	case m.retractConfirmThread != 0:
+		return m.handleRetractStandingConfirmKey(msg)
 	case m.nudgeConfirmAlias != "":
 		return m.handleNudgeConfirmKey(msg)
 	case m.filter.editing:
@@ -536,6 +552,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleDeregisterKey(), nil
 	case key.Matches(msg, keys.ClearInbox):
 		return m.handleClearInboxKey()
+	case key.Matches(msg, keys.RetractStanding):
+		return m.handleRetractStandingKey(), nil
 	case key.Matches(msg, keys.Transition):
 		return m.handleTaskTransitionKey(msg)
 	case key.Matches(msg, keys.MailJump):
@@ -1257,6 +1275,52 @@ func (m Model) applyDeregisterResult(msg deregisterResultMsg) (Model, tea.Cmd) {
 	}
 	m.status = fmt.Sprintf("deregistered %s — history and read state preserved", m.dispLabel(msg.alias))
 	return m, fetchAgentsCmd(m.caller)
+}
+
+// isLiveStanding reports whether row is a standing broadcast still greeting new
+// sessions — the only kind of thread 'R' acts on or station marks.
+func isLiveStanding(row listThreadRow) bool {
+	return row.ToKind == "broadcast" && row.Standing && !row.StandingRetracted
+}
+
+// handleRetractStandingKey implements 'R': ask to retract the selected/open
+// thread (replyTargetThreadID — the same target 'r' uses) when it is a live
+// standing broadcast. Anything else gets a status line, not a confirmation.
+func (m Model) handleRetractStandingKey() Model {
+	id := m.replyTargetThreadID()
+	if id == 0 {
+		return m
+	}
+	idx := indexOfThread(m.threads, id)
+	if idx < 0 || !isLiveStanding(m.threads[idx]) {
+		m.status = fmt.Sprintf("#%d is not a live standing broadcast", id)
+		return m
+	}
+	m.retractConfirmThread = id
+	return m
+}
+
+func (m Model) handleRetractStandingConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	id := m.retractConfirmThread
+	m.retractConfirmThread = 0
+	if msg.String() != "y" {
+		return m, nil
+	}
+	m.status = fmt.Sprintf("retracting standing broadcast #%d…", id)
+	return m, retractStandingCmd(m.caller, m.opts.Alias, id)
+}
+
+func (m Model) applyRetractStandingResult(msg retractStandingResultMsg) (Model, tea.Cmd) {
+	switch {
+	case msg.err != nil:
+		m.status = fmt.Sprintf("retract #%d failed: %v", msg.threadID, msg.err)
+		return m, nil
+	case msg.changed:
+		m.status = fmt.Sprintf("retracted standing broadcast #%d — it greets no new session; history stays", msg.threadID)
+	default:
+		m.status = fmt.Sprintf("#%d was already retracted", msg.threadID)
+	}
+	return m, fetchThreadsCmd(m.caller)
 }
 
 // handleClearInboxKey implements 'c': mark the selected agent's inbox read and

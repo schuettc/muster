@@ -34,7 +34,7 @@ var writeOps = map[string]bool{
 	"register_agent": true, "deregister_agent": true, "purge_agent": true,
 	"send_message": true, "task_create": true, "reply": true,
 	"task_claim": true, "task_transition": true,
-	"standing_set": true, "standing_retract": true,
+	"standing_set": true, "standing_retract": true, "standing_retract_thread": true,
 	"kv_set": true, "kv_delete": true, "log_event": true, "set_label": true,
 	"prune_events": true, "get_inbox": true,
 	// mark_read is the operator drain (station's 'c'): it advances a read
