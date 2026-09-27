@@ -2,6 +2,16 @@
 
 There is no CHANGELOG.md in this repository yet. This file holds the notes for releases where the change is operator-visible enough to need explaining rather than just listing. Newest first.
 
+## 0.22.0 — retract a standing broadcast
+
+**A standing broadcast can now be retracted, from Station, the CLI, or MCP.** A broadcast sent with `--standing` (`standing=true` on `send_message`) greets every session that starts later, once, until it reads it. Keyed standing orders (`muster standing set`) could always be retracted, but an ad-hoc standing broadcast had no key to name, so once sent it greeted every new session in the project with no way to stop it. Now:
+
+- **Station** marks every live standing broadcast `◆ standing` in the thread tables and the mailbox (`/standing` filters to them). Press `R` on the selected or open one to see its target and subject, then `y` to retract it. On any other thread `R` just says it isn't a live standing broadcast.
+- **CLI:** `muster standing retract --thread <id>`.
+- **MCP:** `standing_retract_thread` (`from`, `thread_id`).
+
+Retracting stops the broadcast greeting new sessions and journals a `standing` event; the thread and its replies stay in history, and a session that already read it is unaffected. Retracting an already-retracted thread reports that and changes nothing; an id that is not a standing broadcast is an error. `GetThread`, `list_threads` and `get_inbox` now report `standing_key` and `standing_retracted` on the SQLite store too, matching the hosted backend.
+
 ## 0.20.0 — MCP and Station action surface
 
 ### Station task and lifecycle actions
