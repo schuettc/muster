@@ -227,7 +227,7 @@ func (m Model) renderMailboxLine(cursorMark string, row listThreadRow, innerW in
 	suffix := fmt.Sprintf("  %s · %s", from, age)
 
 	bullet := "  "
-	subject := row.Subject
+	subject := standingTag(row) + row.Subject
 	if unread {
 		bullet = "• "
 		if word := intentWord(row.Intent); word != "" {

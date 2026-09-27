@@ -162,7 +162,11 @@ start later, until they read it once (standing orders); `--wake` is break-glass
 muster standing <proj>                     # list a project's live standing orders
 muster standing set <proj> --key invariants "…" --from me   # create or replace one
 muster standing retract <proj> --key invariants            # retract one
+muster standing retract --thread <id>                       # retract one standing broadcast by id
 ```
+
+An ad-hoc `send --broadcast --standing` has no key, so `retract --thread` (or
+`R` in station) is how you stop it greeting new sessions.
 
 ### Registering & liveness
 
@@ -313,7 +317,8 @@ thread · `n` nudges the selected agent (with a confirmation prompt) · `d`
 deregisters the selected non-departed agent after showing its identity and a
 tombstone-only confirmation (never Station itself) · `t` opens a compact
 claim/state-transition menu for the selected task, followed by an optional
-note · `/` filters the current list · `a` toggles aliases vs. labels · `q`
+note · `R` retracts the selected standing broadcast (marked `◆ standing`)
+after a confirmation · `/` filters the current list · `a` toggles aliases vs. labels · `q`
 quits.
 
 Intents render as plain words, not the CLI's bracket shorthand — "needs

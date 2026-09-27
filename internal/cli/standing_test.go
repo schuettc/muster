@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -61,5 +62,39 @@ func TestStandingSetTooFewArgs(t *testing.T) {
 	var buf bytes.Buffer
 	if err := cmdStanding([]string{"set", "web"}, &buf); err == nil {
 		t.Fatal("standing set without a body must error")
+	}
+}
+
+// retract --thread <id> retracts an ad-hoc standing broadcast (which has no key
+// to name), needs no project, and reports a repeat as a no-op.
+func TestStandingRetractByThread(t *testing.T) {
+	startTestDaemon(t)
+	if _, err := callData("register_agent", map[string]any{"alias": "web1", "project": "web", "model_type": "claude"}); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := callData("send_message", map[string]any{"from": "web1", "to_kind": "broadcast", "to_target": "web", "body": "ad-hoc", "standing": true, "confirm": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sent struct {
+		ThreadID int64 `json:"thread_id"`
+	}
+	if err := json.Unmarshal(raw, &sent); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	if err := cmdStanding([]string{"retract", "--thread", strconv.FormatInt(sent.ThreadID, 10)}, &buf); err != nil {
+		t.Fatalf("standing retract --thread: %v", err)
+	}
+	if !strings.Contains(buf.String(), "standing broadcast retracted") {
+		t.Fatalf("retract output = %q", buf.String())
+	}
+	buf.Reset()
+	if err := cmdStanding([]string{"retract", "--thread", strconv.FormatInt(sent.ThreadID, 10)}, &buf); err != nil {
+		t.Fatalf("repeat retract --thread: %v", err)
+	}
+	if !strings.Contains(buf.String(), "already retracted") {
+		t.Fatalf("repeat retract output = %q", buf.String())
 	}
 }
