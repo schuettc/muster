@@ -124,6 +124,23 @@ func (s *Store) RetractStandingOrder(project, key string) (bool, error) {
 	return n > 0, err
 }
 
+// RetractStandingThread retracts one standing broadcast by thread id — keyed
+// or ad-hoc. It is the only way to retract an ad-hoc standing broadcast
+// (standing_key=”), which RetractStandingOrder cannot name. Same effect as
+// that retraction: it greets no future session, and a session that already
+// read it is unaffected. Idempotent: a non-standing, already-retracted or
+// missing thread changes nothing and returns (false, nil).
+func (s *Store) RetractStandingThread(id int64) (bool, error) {
+	res, err := s.db.Exec(`UPDATE threads SET standing_retracted=1, updated_at=?
+ WHERE id=? AND to_kind='broadcast' AND standing=1 AND standing_retracted=0`,
+		clock.NowMillis(), id)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
+}
+
 // ListStandingOrders returns the live (non-retracted) keyed standing orders for
 // a project, each with its body (the order's first entry), sorted by key — the
 // audit/verify view the onboarding skill reads. Ad-hoc un-keyed standing
@@ -186,7 +203,7 @@ VALUES (?, ?, ?, ?, ?)`, threadID, fromAgent, body, nullable(statusChange), now)
 func scanThread(row interface{ Scan(...any) error }) (Thread, error) {
 	var t Thread
 	var status sql.NullString
-	err := row.Scan(&t.ID, &t.Kind, &t.FromAgent, &t.ToKind, &t.ToTarget, &t.Subject, &t.Ref, &status, &t.Intent, &t.Standing, &t.Wake, &t.CreatedAt, &t.UpdatedAt, &t.OriginProject)
+	err := row.Scan(&t.ID, &t.Kind, &t.FromAgent, &t.ToKind, &t.ToTarget, &t.Subject, &t.Ref, &status, &t.Intent, &t.Standing, &t.StandingKey, &t.StandingRetracted, &t.Wake, &t.CreatedAt, &t.UpdatedAt, &t.OriginProject)
 	if status.Valid {
 		t.Status = status.String
 	}
@@ -200,7 +217,7 @@ func scanThread(row interface{ Scan(...any) error }) (Thread, error) {
 // they compute eff_intent inside their own "recent" CTE instead — but all
 // three agree on the same effectiveIntent fragment (models.go, spec §2
 // ledger note).
-const threadColsEffectiveIntent = `id, kind, from_agent, to_kind, to_target, subject, ref, status, ` + effectiveIntent + ` AS intent, standing, wake, created_at, updated_at, origin_project`
+const threadColsEffectiveIntent = `id, kind, from_agent, to_kind, to_target, subject, ref, status, ` + effectiveIntent + ` AS intent, standing, standing_key, standing_retracted, wake, created_at, updated_at, origin_project`
 
 // effectiveIntent is the ONE canonical SQL fragment for a thread's operative
 // intent (spec §2): a task is a request for action, including every
@@ -325,7 +342,7 @@ unread AS (
     GROUP BY e.thread_id
 )
 SELECT recent.id, recent.kind, recent.from_agent, recent.to_kind, recent.to_target,
-       recent.subject, recent.ref, recent.status, recent.eff_intent, recent.standing, recent.wake,
+       recent.subject, recent.ref, recent.status, recent.eff_intent, recent.standing, recent.standing_key, recent.standing_retracted, recent.wake,
        recent.created_at, recent.updated_at, recent.origin_project,
        last.max_id, le.from_agent, le.created_at, last.n, COALESCE(unread.n, 0)
 FROM recent`+threadLastEntryJoin+`
@@ -340,7 +357,7 @@ ORDER BY recent.updated_at DESC`, alias, alias, alias, alias, alias, alias, alia
 		var t Thread
 		var status sql.NullString
 		if err := rows.Scan(&t.ID, &t.Kind, &t.FromAgent, &t.ToKind, &t.ToTarget,
-			&t.Subject, &t.Ref, &status, &t.Intent, &t.Standing, &t.Wake,
+			&t.Subject, &t.Ref, &status, &t.Intent, &t.Standing, &t.StandingKey, &t.StandingRetracted, &t.Wake,
 			&t.CreatedAt, &t.UpdatedAt, &t.OriginProject,
 			&t.LastEntryID, &t.LastFrom, &t.LastAt, &t.EntryCount, &t.Unread); err != nil {
 			return nil, err
@@ -409,7 +426,7 @@ WITH recent AS (
     FROM threads `+clause+`
 ),`+threadLastEntryCTE+`
 SELECT recent.id, recent.kind, recent.from_agent, recent.to_kind, recent.to_target,
-       recent.subject, recent.ref, recent.status, recent.eff_intent, recent.standing, recent.wake,
+       recent.subject, recent.ref, recent.status, recent.eff_intent, recent.standing, recent.standing_key, recent.standing_retracted, recent.wake,
        recent.created_at, recent.updated_at, recent.origin_project,
        last.max_id, le.from_agent, le.created_at, last.n
 FROM recent`+threadLastEntryJoin+`
@@ -423,7 +440,7 @@ ORDER BY recent.updated_at DESC, recent.id DESC`, args...)
 		var t Thread
 		var status sql.NullString
 		if err := rows.Scan(&t.ID, &t.Kind, &t.FromAgent, &t.ToKind, &t.ToTarget,
-			&t.Subject, &t.Ref, &status, &t.Intent, &t.Standing, &t.Wake,
+			&t.Subject, &t.Ref, &status, &t.Intent, &t.Standing, &t.StandingKey, &t.StandingRetracted, &t.Wake,
 			&t.CreatedAt, &t.UpdatedAt, &t.OriginProject,
 			&t.LastEntryID, &t.LastFrom, &t.LastAt, &t.EntryCount); err != nil {
 			return nil, err

@@ -125,6 +125,12 @@ var cases = []conformanceCase{
 	{"StandingOrderListIgnoresAdHocStandingBroadcast", testStandingOrderListIgnoresAdHoc},
 	{"StandingOrderScopedToItsProject", testStandingOrderScoped},
 
+	// Standing broadcasts retracted by thread id (ad-hoc or keyed).
+	{"StandingThreadRetractStopsGreetingAdHocBroadcast", testStandingThreadRetract},
+	{"StandingThreadRetractIgnoresNonStandingThreads", testStandingThreadRetractNonStanding},
+	{"StandingThreadRetractDropsKeyedOrderFromList", testStandingThreadRetractKeyed},
+	{"StandingRetractionSurfacesOnEveryRead", testStandingRetractionSurfaces},
+
 	// Session-scoped unread.
 	{"SessionUnreadCountsDistinctThreads", testSessionUnreadDistinct},
 	{"SessionUnreadExcludesSiblingAuthors", testSessionUnreadSiblingAuthors},
@@ -3220,5 +3226,106 @@ func testLineageCrossesIncarnations(t *testing.T, s store.API) {
 	}
 	if total != 1 {
 		t.Fatalf("unread = %d, want 1 — mail must follow the name across both a machine and a restart", total)
+	}
+}
+
+// testStandingThreadRetract: an ad-hoc (un-keyed) standing broadcast has no
+// key for RetractStandingOrder to name, so RetractStandingThread retracts it by
+// id — it stops greeting new sessions, and a second retract is a no-op.
+func testStandingThreadRetract(t *testing.T, s store.API) {
+	id := mustThread(t, s, store.Thread{Kind: "message", FromAgent: "a", ToKind: "broadcast", ToTarget: "web", Standing: true}, "ad-hoc")
+	if changed, err := s.RetractStandingThread(id); err != nil || !changed {
+		t.Fatalf("retract should change a row: changed=%v err=%v", changed, err)
+	}
+	mustRegister(t, s, store.Agent{Alias: "newbie", Project: "web"})
+	if n, _ := s.UnreadCount("newbie"); n != 0 {
+		t.Fatalf("retracted standing broadcast must not greet a new session: unread=%d, want 0", n)
+	}
+	if changed, err := s.RetractStandingThread(id); err != nil || changed {
+		t.Fatalf("second retract must be a no-op: changed=%v err=%v", changed, err)
+	}
+}
+
+// testStandingThreadRetractNonStanding: a plain broadcast, a direct message
+// and a missing id are not standing broadcasts — nothing changes, no error.
+func testStandingThreadRetractNonStanding(t *testing.T, s store.API) {
+	plain := mustThread(t, s, store.Thread{Kind: "message", FromAgent: "a", ToKind: "broadcast", ToTarget: "web"}, "live only")
+	direct := mustThread(t, s, store.Thread{Kind: "message", FromAgent: "a", ToKind: "agent", ToTarget: "b"}, "hi")
+	for _, id := range []int64{plain, direct, 999999} {
+		if changed, err := s.RetractStandingThread(id); err != nil || changed {
+			t.Fatalf("thread %d: retract must be a no-op: changed=%v err=%v", id, changed, err)
+		}
+	}
+	if th, _, err := s.GetThread(plain); err != nil || th.StandingRetracted {
+		t.Fatalf("plain broadcast must not be marked retracted: %+v err=%v", th, err)
+	}
+}
+
+// testStandingThreadRetractKeyed: retracting a keyed order by its thread id is
+// the same retraction RetractStandingOrder performs.
+func testStandingThreadRetractKeyed(t *testing.T, s store.API) {
+	id, err := s.SetStandingOrder("web", "invariants", "author", "rules")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := s.RetractStandingThread(id); err != nil || !changed {
+		t.Fatalf("retract should change a row: changed=%v err=%v", changed, err)
+	}
+	if orders, _ := s.ListStandingOrders("web"); len(orders) != 0 {
+		t.Fatalf("retracted order must drop from list, got %+v", orders)
+	}
+}
+
+// testStandingRetractionSurfaces: GetThread, Threads and Inbox all report
+// StandingKey and StandingRetracted, so a reader (station) can tell a live
+// standing broadcast from a retracted one.
+func testStandingRetractionSurfaces(t *testing.T, s store.API) {
+	mustRegister(t, s, store.Agent{Alias: "reader", Project: "web"})
+	live := mustThread(t, s, store.Thread{Kind: "message", FromAgent: "a", ToKind: "broadcast", ToTarget: "web", Standing: true}, "live")
+	gone := mustThread(t, s, store.Thread{Kind: "message", FromAgent: "a", ToKind: "broadcast", ToTarget: "web", Standing: true}, "gone")
+	keyed, err := s.SetStandingOrder("web", "rules", "author", "keyed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RetractStandingThread(gone); err != nil {
+		t.Fatal(err)
+	}
+	check := func(surface string, th store.Thread) {
+		t.Helper()
+		switch th.ID {
+		case live:
+			if !th.Standing || th.StandingRetracted {
+				t.Fatalf("%s: live standing broadcast read as %+v", surface, th)
+			}
+		case gone:
+			if !th.Standing || !th.StandingRetracted {
+				t.Fatalf("%s: retracted standing broadcast read as %+v", surface, th)
+			}
+		case keyed:
+			if th.StandingKey != "rules" || th.StandingRetracted {
+				t.Fatalf("%s: keyed order read as %+v", surface, th)
+			}
+		}
+	}
+	for _, id := range []int64{live, gone, keyed} {
+		th, _, err := s.GetThread(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		check("GetThread", th)
+	}
+	all, err := s.Threads(100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, th := range all {
+		check("Threads", th)
+	}
+	in, err := s.Inbox("reader")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, th := range in {
+		check("Inbox", th)
 	}
 }

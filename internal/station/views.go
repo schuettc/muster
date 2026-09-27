@@ -423,6 +423,15 @@ func taskStateText(row listThreadRow) string {
 	return strings.ReplaceAll(row.Status, "_", " ")
 }
 
+// standingTag prefixes a LIVE standing broadcast's subject so the operator can
+// see what is still greeting every new session (and retract it with 'R').
+func standingTag(row listThreadRow) string {
+	if isLiveStanding(row) {
+		return "◆ standing  "
+	}
+	return ""
+}
+
 func (m Model) renderThreadRow(row listThreadRow) string {
 	marker := "  "
 	if row.ID == m.conversation {
@@ -435,7 +444,7 @@ func (m Model) renderThreadRow(row listThreadRow) string {
 	participants := m.renderWho(row, " → ")
 	last := m.dispLabel(row.LastFrom)
 	age := relativeAge(time.Now(), row.LastAt)
-	subject := display.Sanitize(row.Subject, 200)
+	subject := display.Sanitize(standingTag(row)+row.Subject, 200)
 	state := taskStateText(row)
 	return fmt.Sprintf("%s#%d%s %s | %s %s | %s | %s", marker, row.ID, word, participants, last, age, state, subject)
 }
@@ -492,7 +501,7 @@ func (m Model) renderConversationLineMarked(c conversationRow, innerW, maxWhoCon
 	whoCol := render.PadDisplay(display.Sanitize(who, whoW), whoW)
 	ageCol := render.PadDisplay(relativeAge(time.Now(), c.LastAt), threadAgeWidth)
 
-	subject := c.Subject
+	subject := standingTag(c.listThreadRow) + c.Subject
 	if len(c.OtherProjects) > 0 {
 		names := make([]string, len(c.OtherProjects))
 		for i, p := range c.OtherProjects {
@@ -793,6 +802,7 @@ var helpKeyLines = []string{
 	"n        nudge (the agents list, or an agent's own page)",
 	"d        deregister selected live agent (confirmed; not Station itself)",
 	"c        clear selected agent's inbox — mark read + clear badge (not a deregister)",
+	"R        retract the selected/open standing broadcast (confirmed)",
 	"t        transition the selected/open task",
 	"m        jump to your mailbox — every thread addressed to you, read and unread",
 	"/        filter the current left list",
@@ -810,6 +820,7 @@ var helpLegendLines = []string{
 	"!        the unread includes an action-requested thread",
 	"needs action / wants reply / fyi   a thread's intent, in plain words",
 	"↔ proj   this thread also touches another project",
+	"◆ standing   a standing broadcast — greets every new session until read",
 	"📬 N for you   station's own unread mail (gray 0 when clear)",
 	"ORPHANED THREADS   the (unassigned) bucket: threads with no living agent to file under",
 }
@@ -892,6 +903,20 @@ func (m Model) renderDeregisterConfirmation() string {
 	return strings.Join(parts, " · ")
 }
 
+func (m Model) renderRetractStandingConfirmation() string {
+	id := m.retractConfirmThread
+	parts := []string{fmt.Sprintf("retract standing broadcast #%d?", id)}
+	if idx := indexOfThread(m.threads, id); idx >= 0 {
+		row := m.threads[idx]
+		parts = append(parts, "to "+m.dispToTarget(row))
+		if subject := display.Sanitize(row.Subject, 60); subject != "" {
+			parts = append(parts, subject)
+		}
+	}
+	parts = append(parts, "stops greeting new sessions; history stays", "y/n")
+	return strings.Join(parts, " · ")
+}
+
 // renderBottomLine renders whichever of the composer, the nudge y/n
 // confirmation, the '/' filter edit box, or the plain status line currently
 // owns the bottom of the screen — mirroring handleKey's same modal-priority
@@ -906,6 +931,8 @@ func (m Model) renderBottomLine() string {
 		return m.renderTaskTransition()
 	case m.deregisterConfirmAlias != "":
 		return m.renderDeregisterConfirmation()
+	case m.retractConfirmThread != 0:
+		return m.renderRetractStandingConfirmation()
 	case m.nudgeConfirmAlias != "":
 		return fmt.Sprintf("nudge %s? y/n", m.dispLabel(m.nudgeConfirmAlias))
 	case m.filter.editing:

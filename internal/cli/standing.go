@@ -14,17 +14,18 @@ import (
 // standingBoolFlags: only --json takes no value; --key/--from are value flags.
 var standingBoolFlags = map[string]bool{"json": true}
 
-func newStandingFlagsWithVals() (*flag.FlagSet, *bool, *string, *string) {
+func newStandingFlagsWithVals() (*flag.FlagSet, *bool, *string, *string, *int64) {
 	fs := flag.NewFlagSet("standing", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	jsonOut := fs.Bool("json", false, "with the list form: print the orders as JSON (the audit/verify seam)")
 	key := fs.String("key", "", "the order's key within the project (default 'invariants')")
 	from := fs.String("from", "human", "authoring/retracting agent alias (set/retract)")
-	return fs, jsonOut, key, from
+	thread := fs.Int64("thread", 0, "with retract: retract this standing broadcast by thread id (keyed or ad-hoc) instead of by project+key")
+	return fs, jsonOut, key, from, thread
 }
 
 func newStandingFlags() *flag.FlagSet {
-	fs, _, _, _ := newStandingFlagsWithVals()
+	fs, _, _, _, _ := newStandingFlagsWithVals()
 	return fs
 }
 
@@ -33,8 +34,9 @@ func newStandingFlags() *flag.FlagSet {
 //	muster standing <project> [--json]              list live orders
 //	muster standing set <project> [--key k] "body"  create-or-replace
 //	muster standing retract <project> [--key k]     retract
+//	muster standing retract --thread <id>           retract one standing broadcast by id
 func cmdStanding(args []string, out io.Writer) error {
-	fs, jsonOut, key, from := newStandingFlagsWithVals()
+	fs, jsonOut, key, from, thread := newStandingFlagsWithVals()
 	flagArgs, rest := splitFlagsAndPositional(args, standingBoolFlags)
 	if err := fs.Parse(flagArgs); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -68,8 +70,11 @@ func cmdStanding(args []string, out io.Writer) error {
 		_, err = fmt.Fprintf(out, "standing order set (thread %d)\n", res.ThreadID)
 		return err
 	case "retract":
+		if *thread != 0 {
+			return standingRetractThread(*thread, expandAlias(*from, rosterAliasExists()), out)
+		}
 		if len(rest) < 2 {
-			return fmt.Errorf("usage: muster standing retract <project> [--key <k>]")
+			return fmt.Errorf("usage: muster standing retract <project> [--key <k>] | retract --thread <id>")
 		}
 		raw, err := callData("standing_retract", map[string]any{
 			"from": expandAlias(*from, rosterAliasExists()), "project": rest[1], "key": *key,
@@ -93,6 +98,27 @@ func cmdStanding(args []string, out io.Writer) error {
 		// Bare project: list.
 		return standingList(rest[0], *jsonOut, out)
 	}
+}
+
+// standingRetractThread retracts one standing broadcast by thread id — the only
+// way to retract an ad-hoc 'send --broadcast --standing', which has no key.
+func standingRetractThread(id int64, from string, out io.Writer) error {
+	raw, err := callData("standing_retract_thread", map[string]any{"from": from, "thread_id": id})
+	if err != nil {
+		return err
+	}
+	var res struct {
+		Changed bool `json:"changed"`
+	}
+	if err := json.Unmarshal(raw, &res); err != nil {
+		return err
+	}
+	if res.Changed {
+		_, err = fmt.Fprintf(out, "standing broadcast retracted (thread %d)\n", id)
+	} else {
+		_, err = fmt.Fprintf(out, "thread %d is already retracted\n", id)
+	}
+	return err
 }
 
 func standingList(project string, jsonOut bool, out io.Writer) error {

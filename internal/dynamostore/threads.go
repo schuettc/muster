@@ -833,6 +833,34 @@ func (s *Store) RetractStandingOrder(project, key string) (bool, error) {
 	return n > 0, err
 }
 
+// RetractStandingThread retracts one standing broadcast by thread id, keyed or
+// ad-hoc; idempotent. Mirrors the SQLite store (see its doc comment): the
+// ConditionExpression is its WHERE clause, so a non-standing, already-retracted
+// or missing thread fails the condition and reports (false, nil).
+func (s *Store) RetractStandingThread(id int64) (bool, error) {
+	_, err := s.c.UpdateItem(backgroundCtx(), &dynamodb.UpdateItemInput{
+		TableName:        aws.String(s.table),
+		Key:              map[string]types.AttributeValue{"pk": attrS(pkThread(id)), "sk": attrN(metaSK)},
+		UpdateExpression: aws.String("SET #r = :true, #u = :now"),
+		ConditionExpression: aws.String("attribute_exists(pk) AND #tk = :broadcast AND #s = :true AND " +
+			"(attribute_not_exists(#r) OR #r = :false)"),
+		ExpressionAttributeNames: map[string]string{
+			"#r": "standing_retracted", "#u": "updated_at", "#tk": "to_kind", "#s": "standing",
+		},
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":true": attrBool(true), ":false": attrBool(false),
+			":now": attrN(clock.NowMillis()), ":broadcast": attrS("broadcast"),
+		},
+	})
+	if isConditionFailed(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("dynamostore: retract standing thread %d: %w", id, err)
+	}
+	return true, nil
+}
+
 // ListStandingOrders returns the live keyed standing orders for a project,
 // sorted by key; ad-hoc un-keyed standing broadcasts are excluded.
 func (s *Store) ListStandingOrders(project string) ([]store.StandingOrder, error) {

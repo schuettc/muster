@@ -22,6 +22,12 @@ type StandingRetractIn struct {
 	Key     string `json:"key,omitempty" jsonschema:"the order's key; defaults to 'invariants'"`
 }
 
+// StandingRetractThreadIn is the input to standing_retract_thread.
+type StandingRetractThreadIn struct {
+	From     string `json:"from" jsonschema:"the retracting agent's alias"`
+	ThreadID int64  `json:"thread_id" jsonschema:"the standing broadcast's thread id (keyed order or ad-hoc send_message standing broadcast)"`
+}
+
 // StandingListIn is the input to standing_list.
 type StandingListIn struct {
 	Project string `json:"project" jsonschema:"the project whose live standing orders to list"`
@@ -80,6 +86,21 @@ func standingRetractHandler(_ context.Context, _ *mcp.CallToolRequest, in Standi
 	return nil, out, nil
 }
 
+func standingRetractThreadHandler(_ context.Context, _ *mcp.CallToolRequest, in StandingRetractThreadIn) (*mcp.CallToolResult, StandingChangedOut, error) {
+	if err := requireRegisteredFrom(in.From); err != nil {
+		return nil, StandingChangedOut{}, err
+	}
+	raw, err := callDaemon("standing_retract_thread", map[string]any{"from": in.From, "thread_id": in.ThreadID})
+	if err != nil {
+		return nil, StandingChangedOut{}, err
+	}
+	var out StandingChangedOut
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, StandingChangedOut{}, err
+	}
+	return nil, out, nil
+}
+
 func standingListHandler(_ context.Context, _ *mcp.CallToolRequest, in StandingListIn) (*mcp.CallToolResult, StandingListOut, error) {
 	raw, err := callDaemon("standing_list", map[string]any{"project": in.Project})
 	if err != nil {
@@ -99,5 +120,6 @@ func standingListHandler(_ context.Context, _ *mcp.CallToolRequest, in StandingL
 func registerStandingTools(srv *mcp.Server) {
 	mcp.AddTool(srv, &mcp.Tool{Name: "standing_set", Description: "Create or REPLACE a project's standing order (its durable invariants) under a key (default 'invariants'). Idempotent by (project, key): a new set replaces the prior order rather than stacking, and RE-GREETS every session — those running now and those that start later — with the updated text, until each reads it. Use this for a project's golden rules that every session must read on start; use send_message with standing for ad-hoc one-off standing messages."}, standingSetHandler)
 	mcp.AddTool(srv, &mcp.Tool{Name: "standing_retract", Description: "Retract a project's standing order under a key (default 'invariants') so it greets no future session and drops from standing_list. Idempotent — retracting an absent order is a no-op. A session that already read the order is unaffected."}, standingRetractHandler)
+	mcp.AddTool(srv, &mcp.Tool{Name: "standing_retract_thread", Description: "Retract one standing broadcast by thread id so it greets no future session — the only way to retract an ad-hoc send_message broadcast sent with standing=true (it has no key for standing_retract to name); also works on a keyed order's thread. Errors if the thread is not a standing broadcast; idempotent otherwise. A session that already read it is unaffected."}, standingRetractThreadHandler)
 	mcp.AddTool(srv, &mcp.Tool{Name: "standing_list", Description: "List a project's live standing orders (key, body, author) — the audit/verify seam: read this to check what greets a new session in the project, and whether the invariants are present and current."}, standingListHandler)
 }
