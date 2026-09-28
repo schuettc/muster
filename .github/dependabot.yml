@@ -1,0 +1,14 @@
+# tools-common is the family's shared Go module; take each release as a PR
+# into dev, where changes are tested before a release promotes them to main.
+# Other dependencies are updated by hand.
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    target-branch: dev
+    schedule:
+      interval: weekly
+    allow:
+      - dependency-name: github.com/schuettc/tools-common*
+    commit-message:
+      prefix: "chore(deps)"
