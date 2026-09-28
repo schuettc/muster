@@ -102,6 +102,29 @@ func deregisterCmd(caller render.Caller, alias string) tea.Cmd {
 	}
 }
 
+type retractStandingResultMsg struct {
+	threadID int64
+	changed  bool
+	err      error
+}
+
+// retractStandingCmd retracts one standing broadcast by thread id through the
+// standing_retract_thread daemon op, attributed to station's own alias. The
+// caller has already confirmed the exact thread.
+func retractStandingCmd(caller render.Caller, from string, threadID int64) tea.Cmd {
+	return func() tea.Msg {
+		raw, err := caller.Call("standing_retract_thread", map[string]any{"from": from, "thread_id": threadID})
+		if err != nil {
+			return retractStandingResultMsg{threadID: threadID, err: err}
+		}
+		var res struct {
+			Changed bool `json:"changed"`
+		}
+		_ = json.Unmarshal(raw, &res)
+		return retractStandingResultMsg{threadID: threadID, changed: res.Changed}
+	}
+}
+
 type markReadResultMsg struct {
 	alias   string
 	cleared int

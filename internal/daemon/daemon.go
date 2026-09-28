@@ -1038,6 +1038,27 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 		}
 		d.logEvent(store.Event{Kind: "standing", Agent: from, Target: targetOf("broadcast", project), Detail: "retract standing order: " + key})
 		return ok(map[string]any{"changed": changed})
+	case "standing_retract_thread":
+		// Retract one standing broadcast by thread id — the only way to stop an
+		// ad-hoc (un-keyed) one greeting new sessions. A wrong id is an error,
+		// not a silent no-op; an already-retracted thread is changed:false.
+		from := str(a, "from")
+		id := i64(a, "thread_id")
+		th, _, err := d.s.GetThread(id)
+		if err != nil {
+			return fail(fmt.Errorf("thread %d: %w", id, err))
+		}
+		if th.ToKind != "broadcast" || !th.Standing {
+			return fail(fmt.Errorf("thread %d is not a standing broadcast", id))
+		}
+		changed, err := d.s.RetractStandingThread(id)
+		if err != nil {
+			return fail(err)
+		}
+		if changed {
+			d.logEvent(store.Event{Kind: "standing", Agent: from, Target: targetOf("broadcast", th.ToTarget), ThreadID: id, Detail: "retract standing broadcast"})
+		}
+		return ok(map[string]any{"changed": changed})
 	case "standing_list":
 		orders, err := d.s.ListStandingOrders(str(a, "project"))
 		if err != nil {
