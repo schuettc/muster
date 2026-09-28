@@ -85,13 +85,15 @@ func run(t *testing.T, args ...string) (stdout, stderr string, code int) {
 	return outBuf.String(), errBuf.String(), code
 }
 
-func TestBareInvocationExitsTwoOnStdout(t *testing.T) {
-	out, _, code := run(t)
+// Bare `muster` is the family usage error: the short grouped usage on
+// stderr, exit 2 (`muster help` is the long form, on stdout).
+func TestBareInvocationIsUsageError(t *testing.T) {
+	out, errOut, code := run(t)
 	if code != 2 {
 		t.Errorf("exit code = %d, want 2", code)
 	}
-	if !strings.Contains(out, "muster — local multi-agent coordination bus") {
-		t.Errorf("stdout missing grouped usage banner:\n%s", out)
+	if out != "" || !strings.HasPrefix(errOut, "usage: muster <command>") {
+		t.Errorf("stdout %q, stderr %q; want the usage on stderr", out, errOut)
 	}
 }
 
@@ -100,8 +102,8 @@ func TestHelpExitsZero(t *testing.T) {
 	if code != 0 {
 		t.Errorf("exit code = %d, want 0", code)
 	}
-	if !strings.Contains(out, "Talk:") {
-		t.Errorf("stdout missing grouped usage:\n%s", out)
+	if !strings.Contains(out, "\nTalk\n") || !strings.Contains(out, "local multi-agent coordination bus") {
+		t.Errorf("stdout missing the overview or grouped usage:\n%s", out)
 	}
 }
 
@@ -120,8 +122,8 @@ func TestUnknownHelpCommandExitsTwo(t *testing.T) {
 	if code != 2 {
 		t.Errorf("exit code = %d, want 2", code)
 	}
-	if !strings.Contains(errOut, "valid commands:") {
-		t.Errorf("stderr missing valid-commands listing: %q", errOut)
+	if !strings.Contains(errOut, `unknown command "bogus"`) {
+		t.Errorf("stderr does not name the unknown command: %q", errOut)
 	}
 }
 
@@ -138,9 +140,9 @@ func TestVersionExitsZero(t *testing.T) {
 }
 
 // TestMainOwnedCommandHelpExitsZero covers the commands main() routes itself
-// rather than through cli.Dispatch. They are also the ones whose help
-// text can silently go missing, since Dispatch never sees them — a Registry
-// row is the only thing that gives them a banner.
+// rather than through tools.App's dispatch. They are also the ones whose help
+// text can silently go missing, since dispatch never sees them — a Registry
+// row is the only thing that gives them help.
 func TestMainOwnedCommandHelpExitsZero(t *testing.T) {
 	for _, name := range []string{"serve", "mcp", "lambda", "debug"} {
 		for _, flag := range []string{"-h", "--help"} {
@@ -148,8 +150,8 @@ func TestMainOwnedCommandHelpExitsZero(t *testing.T) {
 			if code != 0 {
 				t.Errorf("%s %s: exit code = %d, want 0", name, flag, code)
 			}
-			if !strings.Contains(out, "muster "+name+" — ") {
-				t.Errorf("%s %s: stdout missing command help banner:\n%s", name, flag, out)
+			if !strings.Contains(out, "Usage: muster "+name) {
+				t.Errorf("%s %s: stdout missing the command's help:\n%s", name, flag, out)
 			}
 		}
 	}
@@ -334,12 +336,12 @@ func TestBareInvocationUnderLambdaRuntimeRoutesToLambda(t *testing.T) {
 // runtime, since that is how the variable would most plausibly get set by
 // accident.
 func TestBareInvocationOutsideLambdaStillPrintsUsage(t *testing.T) {
-	out, _, code := runEnv(t, []string{"AWS_LAMBDA_FUNCTION_NAME="})
+	_, errOut, code := runEnv(t, []string{"AWS_LAMBDA_FUNCTION_NAME="})
 	if code != 2 {
 		t.Errorf("exit code = %d, want 2", code)
 	}
-	if !strings.Contains(out, "muster — local multi-agent coordination bus") {
-		t.Errorf("stdout missing the usage banner:\n%s", out)
+	if !strings.HasPrefix(errOut, "usage: muster") {
+		t.Errorf("stderr missing the usage:\n%s", errOut)
 	}
 }
 

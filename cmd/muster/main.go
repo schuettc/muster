@@ -35,8 +35,7 @@ func main() {
 		if os.Getenv(LambdaRuntimeEnv) != "" {
 			os.Exit(runLambda())
 		}
-		cli.Usage(os.Stdout)
-		os.Exit(2)
+		os.Exit(cli.NewApp().Dispatch(nil, os.Stdout, os.Stderr))
 	}
 	switch os.Args[1] {
 	case "serve":
@@ -70,25 +69,17 @@ func main() {
 		}
 		runChannel()
 	default:
-		// cli.Dispatch owns the CLI subcommand list (including
-		// help/version) and errors on an unknown one — routing everything
-		// here keeps that list canonical (a second list in this switch once
-		// shipped a release whose usage advertised a subcommand main()
-		// refused to route).
-		if err := cli.Dispatch(os.Args[1:], os.Stdout); err != nil {
-			fmt.Fprintln(os.Stderr, "muster:", err)
-			code := 1
-			var usageErr *cli.UsageError
-			if errors.As(err, &usageErr) {
-				code = 2
-			}
-			os.Exit(code)
-		}
+		// cli.NewApp (tools.App over cli.Registry) owns the CLI subcommand
+		// list, help, version, man, commands and update, and errors on an
+		// unknown command — routing everything here keeps that list canonical
+		// (a second list in this switch once shipped a release whose usage
+		// advertised a subcommand main() refused to route).
+		os.Exit(cli.NewApp().Dispatch(os.Args[1:], os.Stdout, os.Stderr))
 	}
 }
 
 // wantsHelp reports whether the first token after a subcommand name is a
-// help flag. serve/mcp/channel/debug/lambda are owned by main() (not cli.Dispatch),
+// help flag. serve/mcp/channel/debug/lambda are owned by main() (not tools.App dispatch),
 // so their -h/--help handling lives here rather than behind flag.ErrHelp
 // interception the way the cli-dispatched commands do it.
 func wantsHelp(args []string) bool {
