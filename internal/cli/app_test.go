@@ -88,6 +88,11 @@ func TestHookNeverFails(t *testing.T) {
 // tools.App adds and removes nothing.
 func TestJSONSuccessOutputUnchanged(t *testing.T) {
 	startTestDaemon(t)
+	// whereami needs a resolvable pane; pin it (CI has no tmux, and a dev
+	// machine's real pane must not decide the answer).
+	t.Setenv("TMUX", "")
+	t.Setenv("TMUX_PANE", "")
+	stubAncestryMatch(t)
 	if _, err := callData("register_agent", map[string]any{"alias": "web/a", "model_type": "claude", "project": "web"}); err != nil {
 		t.Fatal(err)
 	}
