@@ -41,8 +41,9 @@ func TestCommandsJSONCoversRegistry(t *testing.T) {
 		t.Fatalf("commands --json output does not unmarshal as a JSON array: %v\noutput:\n%s", err, buf.String())
 	}
 
-	if len(rows) != len(Registry) {
-		t.Fatalf("commands --json listed %d commands, Registry has %d", len(rows), len(Registry))
+	// Registry plus tools.App's five built-ins (help, version, man, commands, update).
+	if len(rows) != len(Registry)+5 {
+		t.Fatalf("commands --json listed %d commands, want Registry's %d plus 5 built-ins", len(rows), len(Registry))
 	}
 
 	byName := make(map[string]commandsJSONRow, len(rows))
@@ -98,7 +99,7 @@ func TestCommandsBareShowsGroupedListing(t *testing.T) {
 		t.Fatalf("commands: unexpected error: %v", err)
 	}
 	out := buf.String()
-	for _, heading := range []string{"Talk:", "Watch:", "Identity:", "Plumbing:"} {
+	for _, heading := range []string{"\nTalk\n", "\nWatch\n", "\nIdentity\n", "\nPlumbing\n"} {
 		if !strings.Contains(out, heading) {
 			t.Errorf("commands output missing group heading %q:\n%s", heading, out)
 		}

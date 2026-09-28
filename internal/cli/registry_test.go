@@ -2,7 +2,6 @@ package cli
 
 import (
 	"bytes"
-	"errors"
 	"sort"
 	"strings"
 	"testing"
@@ -17,11 +16,13 @@ var wantCommandNames = []string{
 	"send", "nudge", "reply", "standing",
 	"agents", "status", "inbox", "tasks", "thread", "events", "watch", "station",
 	"register", "become", "deregister", "label", "whereami", "device", "gc",
-	"serve", "mcp", "channel", "lambda", "hook", "setup", "update", "debug", "commands",
+	"serve", "mcp", "channel", "lambda", "hook", "setup", "debug",
+	// tools.App built-ins
+	"help", "version", "man", "commands", "update",
 }
 
 // mainOwnedCommands are the Registry names cmd/muster's main() dispatches
-// directly (never through humancli.Dispatch) — they need process-level setup
+// directly (never through tools.App's dispatch) — they need process-level setup
 // (daemon startup, MCP stdio framing, a one-off raw daemon call, the Lambda
 // runtime behind a build tag) this package deliberately doesn't do. Every
 // other Registry command must have a non-nil Run.
@@ -51,7 +52,7 @@ func TestMCPToolNameAliasesResolve(t *testing.T) {
 			t.Errorf("alias %q resolved to %q, want %q", alias, cmd.Name, canonical)
 		}
 		// An alias must not itself be a top-level command name.
-		for _, n := range commandNames() {
+		for _, n := range appCommandNames(t) {
 			if n == alias {
 				t.Errorf("alias %q leaked into the command vocabulary", alias)
 			}
@@ -59,8 +60,19 @@ func TestMCPToolNameAliasesResolve(t *testing.T) {
 	}
 }
 
+// appCommandNames is every command the app answers to by name (Registry rows
+// and tools.App built-ins), not aliases.
+func appCommandNames(t *testing.T) []string {
+	t.Helper()
+	var names []string
+	for _, c := range commandIndex(t) {
+		names = append(names, c.Name)
+	}
+	return names
+}
+
 func TestRegistryCompleteness(t *testing.T) {
-	got := append([]string(nil), commandNames()...)
+	got := appCommandNames(t)
 	want := append([]string(nil), wantCommandNames...)
 	sort.Strings(got)
 	sort.Strings(want)
@@ -87,19 +99,6 @@ func TestRegistryRunNilOnlyForMainOwned(t *testing.T) {
 		if gotNil != wantNil {
 			t.Errorf("%s: Run nil = %v, want %v (mainOwnedCommands = %v)", c.Name, gotNil, wantNil, mainOwnedCommands[c.Name])
 		}
-	}
-}
-
-// TestDispatchUnknownCommandIsUsageError checks the exit-code-2 contract:
-// cmd/muster's main() type-asserts *UsageError to decide 2 vs 1.
-func TestDispatchUnknownCommandIsUsageError(t *testing.T) {
-	err := Dispatch([]string{"bogus"}, &bytes.Buffer{})
-	if err == nil {
-		t.Fatal("expected error for unknown command")
-	}
-	var ue *UsageError
-	if !errors.As(err, &ue) {
-		t.Fatalf("expected *UsageError, got %T: %v", err, err)
 	}
 }
 

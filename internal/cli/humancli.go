@@ -22,7 +22,6 @@ import (
 	"github.com/schuettc/muster/internal/proto"
 	"github.com/schuettc/muster/internal/store"
 	"github.com/schuettc/muster/internal/tmuxenv"
-	"github.com/schuettc/muster/internal/version"
 	"github.com/schuettc/tools-common/harness"
 )
 
@@ -174,33 +173,6 @@ func callData(op string, args map[string]any) (json.RawMessage, error) {
 		return nil, fmt.Errorf("marshal %s result: %w", op, err)
 	}
 	return b, nil
-}
-
-// Dispatch routes an operator subcommand. args[0] is the subcommand name.
-// It also owns muster's help/version surface (`help`, `-h`, `--help`,
-// `version`, `--version`) — cmd/muster's main() routes anything that isn't
-// serve/mcp/debug here, and those three special-case help themselves before
-// ever reaching Dispatch (see cmd/muster/main.go), so this is the one place
-// that needs to recognize them.
-func Dispatch(args []string, out io.Writer) error {
-	if len(args) == 0 {
-		return fmt.Errorf("usage: muster <command> [args] (see 'muster help')")
-	}
-	switch args[0] {
-	case "help":
-		return dispatchHelp(args[1:], out)
-	case "-h", "--help":
-		Usage(out)
-		return nil
-	case "version", "--version":
-		_, err := fmt.Fprintln(out, version.Line())
-		return err
-	}
-	cmd, ok := lookup(args[0])
-	if !ok || cmd.Run == nil {
-		return usageErrorf("unknown command %q (see 'muster help')", args[0])
-	}
-	return cmd.Run(args[1:], out)
 }
 
 // cmdAgents lists registered agents grouped by project, showing each
