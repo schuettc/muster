@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/schuettc/muster/internal/harnessenv"
 	"github.com/schuettc/muster/internal/mustertest"
 	"github.com/schuettc/muster/internal/tmuxenv"
+	"github.com/schuettc/tools-common/harness"
 )
 
 func TestHookStopLoopGuard(t *testing.T) {
@@ -88,6 +88,10 @@ func TestHookStopNoTmux(t *testing.T) {
 	// inside a Claude session whose CLAUDE_CODE_SESSION_ID would otherwise
 	// give this "no identity" scenario a paneless identity and a daemon dial.
 	t.Setenv("CLAUDE_CODE_SESSION_ID", "")
+	// And the harness-neutral id and its child marker: inside a pi session
+	// AGENT_SESSION_ID leaks in the same way.
+	t.Setenv("AGENT_SESSION_ID", "")
+	t.Setenv("AGENT_SESSION_CHILD", "")
 	// Pin the ancestry-walk fallback away too (finding F1 made hookStop try
 	// it when $TMUX is empty): on a dev machine `go test` itself commonly
 	// runs inside a real tmux pane, and without this the walk could resolve
@@ -1016,7 +1020,7 @@ func TestHookSessionEndUnresolvableIdentityNeverDialsDaemon(t *testing.T) {
 	// identity (the paneless tuple) and dialing would be correct — this test
 	// is specifically about the no-identity-at-all branch.
 	t.Setenv("CLAUDE_CODE_SESSION_ID", "")
-	// Same pin for the harness-neutral spelling harnessenv accepts since the
+	// Same pin for the harness-neutral spelling harness accepts since the
 	// AGENT_SESSION_ID fallback landed: a dev machine running `go test` inside
 	// a pi session leaks it in, and with it SessionEnd has a paneless identity.
 	t.Setenv("AGENT_SESSION_ID", "")
@@ -1258,7 +1262,7 @@ func TestStampHarnessLinksScopesToOwnedPane(t *testing.T) {
 	// (both, since they share the tuple) — call it directly to isolate F3
 	// from Stop's ownership gate (hookStopOwnsAnyAlias), which is a separate
 	// concern already covered elsewhere.
-	stampHarnessLinks([]string{"mine", "sibling"}, harnessenv.Capture{SessionID: "uuid-pane"}, "/tmp/sockPane", "$1", "%1")
+	stampHarnessLinks([]string{"mine", "sibling"}, harness.Capture{SessionID: "uuid-pane"}, "/tmp/sockPane", "$1", "%1")
 
 	mine, _, _ := hookGetAgent("mine")
 	sibling, _, _ := hookGetAgent("sibling")
@@ -1298,7 +1302,7 @@ func TestStampHarnessLinksProtectsEmptyPaneRowsExistingLink(t *testing.T) {
 
 	// A sibling pane's Stop hook, with no transcript proof that it IS the
 	// owning conversation, must not clobber the existing link.
-	stampHarnessLinks([]string{"shared"}, harnessenv.Capture{SessionID: "uuid-sibling", TranscriptPath: "/t/sibling.jsonl"}, "/tmp/sockShared", "$1", "%9")
+	stampHarnessLinks([]string{"shared"}, harness.Capture{SessionID: "uuid-sibling", TranscriptPath: "/t/sibling.jsonl"}, "/tmp/sockShared", "$1", "%9")
 	ag, _, _ := hookGetAgent("shared")
 	if ag.HarnessSessionID != "uuid-owner" || ag.TranscriptPath != "/t/owner.jsonl" {
 		t.Fatalf("an unrelated sibling must not overwrite the existing link, got %+v", ag)
@@ -1307,7 +1311,7 @@ func TestStampHarnessLinksProtectsEmptyPaneRowsExistingLink(t *testing.T) {
 	// The OWNING conversation (transcript matches) resuming under a new
 	// harness session id must still be able to repair the link — this is
 	// exactly what Task 8 needed.
-	stampHarnessLinks([]string{"shared"}, harnessenv.Capture{SessionID: "uuid-owner-2", TranscriptPath: "/t/owner.jsonl"}, "/tmp/sockShared", "$1", "%9")
+	stampHarnessLinks([]string{"shared"}, harness.Capture{SessionID: "uuid-owner-2", TranscriptPath: "/t/owner.jsonl"}, "/tmp/sockShared", "$1", "%9")
 	ag, _, _ = hookGetAgent("shared")
 	if ag.HarnessSessionID != "uuid-owner-2" {
 		t.Fatalf("the owning conversation (transcript match) must be able to repair its own link, got %+v", ag)
@@ -1560,7 +1564,7 @@ func TestHookProjectNameProjectsCustomTitle(t *testing.T) {
 
 	var buf bytes.Buffer
 	c := tmuxenv.Capture{SocketPath: "/s", SessionID: "$1", SessionCreated: 200, PaneID: "%5"}
-	hookProjectName(c, harnessenv.CustomTitle(tp), &buf)
+	hookProjectName(c, harness.CustomTitle(tp), &buf)
 
 	// tmux half: option + manual flag + refresh, all socket-aware
 	wantOpt := []string{"-S", "/s", "set-option", "-t", "$1", tmuxenv.LabelOption(), "nfl-3"}
@@ -1616,7 +1620,7 @@ func TestHookProjectNameTmuxFailureLeavesEverythingAsIs(t *testing.T) {
 
 	var buf bytes.Buffer
 	c := tmuxenv.Capture{SocketPath: "/s", SessionID: "$1", SessionCreated: 200, PaneID: "%5"}
-	hookProjectName(c, harnessenv.CustomTitle(tp), &buf)
+	hookProjectName(c, harness.CustomTitle(tp), &buf)
 
 	if ag := agentRowForTest(t, "muster-9"); ag.Label != "" || ag.LabelManual {
 		t.Fatalf("tmux failure must not push a bus label, got (%q, manual=%v)", ag.Label, ag.LabelManual)
@@ -1650,7 +1654,7 @@ func TestHookProjectNameWarnsOnCollision(t *testing.T) {
 
 	var buf bytes.Buffer
 	c := tmuxenv.Capture{SocketPath: "/s", SessionID: "$1", SessionCreated: 200, PaneID: "%5"}
-	hookProjectName(c, harnessenv.CustomTitle(tp), &buf)
+	hookProjectName(c, harness.CustomTitle(tp), &buf)
 	if !strings.Contains(buf.String(), "also held by") || !strings.Contains(buf.String(), "holder") {
 		t.Fatalf("expected collision warning naming the holder, got %q", buf.String())
 	}
@@ -1778,7 +1782,7 @@ func TestHookSessionStartSiblingPaneDoesNotStompName(t *testing.T) {
 }
 
 // writeTeammateTranscript writes a transcript whose teamName record sits at
-// line 3 — the same fixture shape as harnessenv's TestIsTeammateDetectsMemberTranscript
+// line 3 — the same fixture shape as tools-common harness's TestIsTeammateDetectsMemberTranscript
 // (a fleet member spawned into a pane of some primary's tmux session).
 func writeTeammateTranscript(t *testing.T) string {
 	t.Helper()

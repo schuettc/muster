@@ -10,10 +10,10 @@ import (
 	"syscall"
 
 	"github.com/schuettc/muster/internal/channel"
-	"github.com/schuettc/muster/internal/channelmcp"
 	"github.com/schuettc/muster/internal/paths"
 	"github.com/schuettc/muster/internal/tmuxenv"
 	"github.com/schuettc/muster/internal/version"
+	"github.com/schuettc/tools-common/channelmcp"
 )
 
 // channelCapture resolves the tmux identity the channel pushes for: the

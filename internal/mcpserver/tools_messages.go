@@ -7,8 +7,8 @@ import (
 	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/schuettc/muster/internal/harnessenv"
 	"github.com/schuettc/muster/internal/tmuxenv"
+	"github.com/schuettc/tools-common/harness"
 )
 
 // SendMessageIn is the input to send_message. Only the message content and a
@@ -240,14 +240,14 @@ func getInboxHandler(_ context.Context, _ *mcp.CallToolRequest, in GetInboxIn) (
 	// The caller's tmux/harness identity is the proof the daemon's
 	// callerOwns check needs (spec 2026-08-21 §3.2) to move alias's read
 	// watermark — sourced exactly like register_agent's own mint sites
-	// (tmuxenv.CaptureEnv for the tuple, harnessenv.FromEnv for the harness
+	// (tmuxenv.CaptureEnv for the tuple, harness.FromEnv for the harness
 	// UUID). No caller_device_id: the register path never sends one either
 	// (it is stamped server-side only for a fixed set of session-scoped ops
 	// in remote mode — see daemon.deviceOps), so a local client mirrors that
 	// by omission. No caller_pane_id: ownership here is session-granular, not
 	// pane-granular (daemon commit 5a79d0e).
 	c := tmuxenv.CaptureEnv()
-	h := harnessenv.FromEnv()
+	h := harness.FromEnv()
 	raw, err := callDaemon("get_inbox", map[string]any{
 		"alias":                     in.Alias,
 		"caller_socket_path":        c.SocketPath,

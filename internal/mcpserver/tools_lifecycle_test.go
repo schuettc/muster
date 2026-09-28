@@ -5,14 +5,14 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/schuettc/muster/internal/harnessenv"
 	"github.com/schuettc/muster/internal/tmuxenv"
+	"github.com/schuettc/tools-common/harness"
 )
 
 func TestCurrentAgentReturnsCallerAndOwnedAliases(t *testing.T) {
 	prevCall := callDaemon
 	t.Cleanup(func() { callDaemon = prevCall })
-	stubCallerCaptures(t, tmuxenv.Capture{}, harnessenv.Capture{SessionID: "hs-1"})
+	stubCallerCaptures(t, tmuxenv.Capture{}, harness.Capture{SessionID: "hs-1"})
 	callDaemon = func(op string, _ map[string]any) (json.RawMessage, error) {
 		if op == "session_aliases" {
 			return json.RawMessage(`{"aliases":["work","work-old"]}`), nil
@@ -38,7 +38,7 @@ func TestCurrentAgentReturnsCallerAndOwnedAliases(t *testing.T) {
 func TestCurrentAgentUnregisteredReturnsEmptyAliasList(t *testing.T) {
 	prevCall := callDaemon
 	t.Cleanup(func() { callDaemon = prevCall })
-	stubCallerCaptures(t, tmuxenv.Capture{}, harnessenv.Capture{SessionID: "hs-1"})
+	stubCallerCaptures(t, tmuxenv.Capture{}, harness.Capture{SessionID: "hs-1"})
 	callDaemon = func(op string, _ map[string]any) (json.RawMessage, error) {
 		if op != "session_aliases" {
 			t.Fatalf("unexpected op %q", op)
@@ -58,7 +58,7 @@ func TestCurrentAgentUnregisteredReturnsEmptyAliasList(t *testing.T) {
 func TestDeregisterAgentWithoutSessionProofFails(t *testing.T) {
 	prevCall := callDaemon
 	t.Cleanup(func() { callDaemon = prevCall })
-	stubCallerCaptures(t, tmuxenv.Capture{}, harnessenv.Capture{})
+	stubCallerCaptures(t, tmuxenv.Capture{}, harness.Capture{})
 
 	_, _, err := deregisterAgentHandler(context.Background(), nil, DeregisterAgentIn{})
 	if err == nil {
@@ -69,7 +69,7 @@ func TestDeregisterAgentWithoutSessionProofFails(t *testing.T) {
 func TestDeregisterAgentTombstonesEveryOwnedLiveAlias(t *testing.T) {
 	prevCall := callDaemon
 	t.Cleanup(func() { callDaemon = prevCall })
-	stubCallerCaptures(t, tmuxenv.Capture{}, harnessenv.Capture{SessionID: "hs-1"})
+	stubCallerCaptures(t, tmuxenv.Capture{}, harness.Capture{SessionID: "hs-1"})
 	var departed []string
 	callDaemon = func(op string, args map[string]any) (json.RawMessage, error) {
 		switch op {

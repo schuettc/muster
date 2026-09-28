@@ -8,8 +8,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/schuettc/muster/internal/harnessenv"
 	"github.com/schuettc/muster/internal/tmuxenv"
+	"github.com/schuettc/tools-common/harness"
 )
 
 // cmdHook implements "muster hook <SessionStart|SessionEnd|Stop> [model]" —
@@ -18,7 +18,7 @@ import (
 // "claude" when omitted.
 //
 // The stdin payload is read once here and handed to every branch: harnesses
-// that host sessions outside tmux (daemon-hosted sessions — see harnessenv)
+// that host sessions outside tmux (daemon-hosted sessions — see tools-common/harness)
 // leave tmuxenv.CaptureEnv empty, and the payload's session_id/cwd are then
 // the ONLY identity a hook has, for SessionStart's register just as much as
 // for Stop's inbox check.
@@ -80,13 +80,13 @@ func cmdHook(args []string, stdin io.Reader, out io.Writer) error {
 	// payloads carry no transcript_path and their processes carry
 	// neither flag, so neither signal ever matches them.
 	if tmuxenv.AncestorArgvContainsAll("--team-name", "--agent-id") ||
-		harnessenv.IsTeammate(harnessenv.FromHookPayload(payload).TranscriptPath) {
+		harness.IsTeammate(harness.FromHookPayload(payload).TranscriptPath) {
 		return nil
 	}
 	switch args[0] {
 	case "SessionStart":
 		c := hookCapture()
-		h := harnessenv.FromHookPayload(payload)
+		h := harness.FromHookPayload(payload)
 		var start struct {
 			Source string `json:"source"`
 		}
@@ -114,7 +114,7 @@ func cmdHook(args []string, stdin io.Reader, out io.Writer) error {
 			// misroute. A reclaimed conversation (handled) has proven its
 			// identity by reclaiming, so it projects regardless.
 			if handled || mayClaim {
-				hookProjectName(c, harnessenv.CustomTitle(h.TranscriptPath), out)
+				hookProjectName(c, harness.CustomTitle(h.TranscriptPath), out)
 			}
 		} else {
 			hookSessionStartPaneless(h, model)
@@ -128,7 +128,7 @@ func cmdHook(args []string, stdin io.Reader, out io.Writer) error {
 		// resolve ITS tuple, which is what scopes hookSessionEnd's tombstone
 		// sweep to that tuple instead of every alias the harness session
 		// ever registered (finding F2).
-		hookSessionEnd(hookCapture(), harnessenv.FromHookPayload(payload))
+		hookSessionEnd(hookCapture(), harness.FromHookPayload(payload))
 	case "Stop":
 		hookStop(payload, out)
 	}
@@ -136,7 +136,7 @@ func cmdHook(args []string, stdin io.Reader, out io.Writer) error {
 }
 
 // hookProjectName projects the conversation's user-set name (the transcript
-// custom-title — see harnessenv.CustomTitle) onto every naming surface at
+// custom-title — see harness.CustomTitle) onto every naming surface at
 // SessionStart: the tmux option pair (socket-aware — hooks run env-stripped,
 // so an ambient set-option would land nowhere) and the stored bus label
 // (manual, incarnation-scoped via set_label). This is the spec's
@@ -217,7 +217,7 @@ func hookCapture() tmuxenv.Capture {
 // SessionStart. It cannot delegate to cmdRegister: that reads the tmux
 // identity from the ENVIRONMENT, which a stripped hook doesn't have — the
 // capture c (env or ancestry walk) is the truth here.
-func hookRegisterPane(c tmuxenv.Capture, h harnessenv.Capture, model string) {
+func hookRegisterPane(c tmuxenv.Capture, h harness.Capture, model string) {
 	alias := hookAlias(c)
 	if alias == "" {
 		return
@@ -261,7 +261,7 @@ func hookRegisterPane(c tmuxenv.Capture, h harnessenv.Capture, model string) {
 // sum of per-alias guesses, so all reclaimed aliases share it. A
 // session_unread failure degrades to the per-alias acks already collected,
 // unchanged, rather than block the hook.
-func hookSessionStartResume(c tmuxenv.Capture, h harnessenv.Capture, model string, out io.Writer) bool {
+func hookSessionStartResume(c tmuxenv.Capture, h harness.Capture, model string, out io.Writer) bool {
 	if h.SessionID == "" {
 		return false
 	}
@@ -321,7 +321,7 @@ func reconnectLine(alias, outcome string, unread int) string {
 // second session in the same directory silently steal the first one's
 // identity and inbox. A session that already owns aliases on its tuple
 // (resume) refreshes the first instead of allocating a new one.
-func hookSessionStartPaneless(h harnessenv.Capture, model string) {
+func hookSessionStartPaneless(h harness.Capture, model string) {
 	regFn := func(alias string, ifAbsent bool) error {
 		_, err := callData("register_agent", registerPanelessArgs(alias, "", model, h, ifAbsent))
 		return err
@@ -456,7 +456,7 @@ func hookMayClaimIdentity(c tmuxenv.Capture) bool {
 // is enumerated the same way — every alias this harness session registered is
 // tombstoned; with no harness identity either, the single-identity gate is
 // all there is, exactly as before.
-func hookSessionEnd(c tmuxenv.Capture, h harnessenv.Capture) {
+func hookSessionEnd(c tmuxenv.Capture, h harness.Capture) {
 	if c.SocketPath == "" || c.SessionID == "" {
 		if h.SessionID != "" {
 			hookSessionEndPaneless(h)
@@ -504,7 +504,7 @@ func hookSessionEnd(c tmuxenv.Capture, h harnessenv.Capture) {
 // provably alive on its own tmux tuple (mirroring the reclaim collision
 // check in hookSessionStartResume) is therefore skipped: it belongs to
 // someone else's still-running session, not this dying one.
-func hookSessionEndPaneless(h harnessenv.Capture) {
+func hookSessionEndPaneless(h harness.Capture) {
 	for _, ag := range conversationRows(h) {
 		if ag.Departed {
 			continue
@@ -591,7 +591,7 @@ func hookStop(payload []byte, out io.Writer) {
 		return
 	}
 
-	h := harnessenv.FromHookPayload(payload)
+	h := harness.FromHookPayload(payload)
 
 	if os.Getenv("TMUX") != "" {
 		hookStopTmuxEnv(h, out)
@@ -611,7 +611,7 @@ func hookStop(payload []byte, out io.Writer) {
 // environment. The incarnation the daemon queries by comes from the same
 // ambient read (tmuxenv.CurrentSessionCreated) — the walked path below gets
 // it from its Capture instead.
-func hookStopTmuxEnv(h harnessenv.Capture, out io.Writer) {
+func hookStopTmuxEnv(h harness.Capture, out io.Writer) {
 	optCount, err := strconv.Atoi(tmuxenv.CurrentSessionOption("@muster_inbox"))
 	if err != nil || optCount <= 0 {
 		return // cheap gate: no daemon calls unless the tmux option says there's mail
@@ -629,7 +629,7 @@ func hookStopTmuxEnv(h harnessenv.Capture, out io.Writer) {
 // nothing here — every tmux read instead goes through the socket-aware query
 // seam (tmuxenv.SessionOption / SessionLabel) against the WALKED capture's
 // own tuple, never the (absent) ambient environment.
-func hookStopWalked(c tmuxenv.Capture, h harnessenv.Capture, out io.Writer) {
+func hookStopWalked(c tmuxenv.Capture, h harness.Capture, out io.Writer) {
 	optCount, err := strconv.Atoi(tmuxenv.SessionOption(c.SocketPath, c.PaneID, "@muster_inbox"))
 	if err != nil || optCount <= 0 {
 		return // cheap gate: no daemon calls unless the tmux option says there's mail
@@ -647,7 +647,7 @@ func hookStopWalked(c tmuxenv.Capture, h harnessenv.Capture, out io.Writer) {
 // read the option from. Either call's failure (or an empty alias list) falls
 // back to today's single session-name behavior so the hook never goes silent
 // because of a daemon hiccup.
-func hookStopDrain(socketPath, sessionID string, sessionCreated int64, myPane string, optCount int, label string, h harnessenv.Capture, out io.Writer) {
+func hookStopDrain(socketPath, sessionID string, sessionCreated int64, myPane string, optCount int, label string, h harness.Capture, out io.Writer) {
 	total, action, ok := sessionUnreadForHook(socketPath, sessionID, sessionCreated)
 	if !ok {
 		total, action = optCount, 0 // fall back to the tmux option value on op failure
@@ -689,7 +689,7 @@ func hookStopDrain(socketPath, sessionID string, sessionCreated int64, myPane st
 // alike. An unregistered session prints nothing, and unlike the tmux path
 // there is no session-name fallback to address — a harness identity either
 // resolved from the roster or doesn't exist.
-func hookStopPaneless(h harnessenv.Capture, out io.Writer) {
+func hookStopPaneless(h harness.Capture, out io.Writer) {
 	if h.SessionID == "" {
 		return
 	}
@@ -743,7 +743,7 @@ func hookStopPaneless(h harnessenv.Capture, out io.Writer) {
 // deregistration. A row with no stored pane_id carries no ownership
 // information (same convention as hookOwnsIdentity/hookStopOwnsAnyAlias) and
 // is never skipped on that basis alone.
-func stampHarnessLinks(aliases []string, h harnessenv.Capture, socketPath, sessionID, myPane string) {
+func stampHarnessLinks(aliases []string, h harness.Capture, socketPath, sessionID, myPane string) {
 	if h.SessionID == "" {
 		return
 	}
