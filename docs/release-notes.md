@@ -2,6 +2,12 @@
 
 There is no CHANGELOG.md in this repository yet. This file holds the notes for releases where the change is operator-visible enough to need explaining rather than just listing. Newest first.
 
+## 0.22.1 — session identity from tools-common
+
+**muster now resolves a session's identity with the family rule in tools-common/harness.** The one visible change: a Claude Code process that pi-claude-bridge runs to serve a pi turn now counts as that pi session. The bridge marks it with `AGENT_SESSION_CHILD=1` next to the `AGENT_SESSION_ID` it sets, so roster ownership and MCP caller identity attribute it to the pi session instead of registering it separately. A Claude session you start yourself from inside pi (no marker) is still its own session. Needs `@schuettc/pi-claude-bridge` 0.8.0-schuettc.6 or later, which sets the marker.
+
+Internally, muster's own copies of the channel MCP server and the harness identity code are replaced by `tools-common/channelmcp` and `tools-common/harness` (tools-common v0.4.0). No commands, flags or tools change.
+
 ## 0.22.0 — retract a standing broadcast
 
 **A standing broadcast can now be retracted, from Station, the CLI, or MCP.** A broadcast sent with `--standing` (`standing=true` on `send_message`) greets every session that starts later, once, until it reads it. Keyed standing orders (`muster standing set`) could always be retracted, but an ad-hoc standing broadcast had no key to name, so once sent it greeted every new session in the project with no way to stop it. Now:
