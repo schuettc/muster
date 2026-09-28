@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/schuettc/muster/internal/harnessenv"
 	"github.com/schuettc/muster/internal/tmuxenv"
+	"github.com/schuettc/tools-common/harness"
 )
 
 // panelessAliasCap bounds the suffix probe. Fifty sessions in one directory
@@ -86,7 +86,7 @@ func allocPanelessAlias(base, sessionID string, register func(alias string, ifAb
 // session UUID as both session_id (the tuple) and harness_session_id (the
 // uniform lookup key shared with handshake-launched tmux rows), project from
 // the enclosing checkout.
-func registerPanelessArgs(alias, role, model string, h harnessenv.Capture, ifAbsent bool) map[string]any {
+func registerPanelessArgs(alias, role, model string, h harness.Capture, ifAbsent bool) map[string]any {
 	return map[string]any{
 		"alias": alias, "role": role, "model_type": model,
 		"session_name": "", "session_id": h.SessionID, "session_created": 0,
@@ -104,7 +104,7 @@ func registerPanelessArgs(alias, role, model string, h harnessenv.Capture, ifAbs
 // id each time), else by the older harness_session_id link —
 // handshake-registered tmux rows (harness_session_id) and paneless rows
 // (tuple ("", uuid)) alike. Empty on any daemon failure or an unresolvable h.
-func conversationRows(h harnessenv.Capture) []agentRow {
+func conversationRows(h harness.Capture) []agentRow {
 	if h.TranscriptPath == "" && h.SessionID == "" {
 		return nil
 	}
@@ -151,7 +151,7 @@ func firstUnsuperseded(owned []agentRow) (agentRow, bool) {
 // + unread) so callers that want to surface it can; callers that don't care
 // may call this as a bare statement — Go permits discarding a value-returning
 // function's result.
-func reviveRow(ag agentRow, h harnessenv.Capture, model string) registerAck {
+func reviveRow(ag agentRow, h harness.Capture, model string) registerAck {
 	if model == "" {
 		model = ag.ModelType
 	}
@@ -179,7 +179,7 @@ func reviveRow(ag agentRow, h harnessenv.Capture, model string) registerAck {
 // (they belong to the conversation), while the tuple is the CURRENT
 // capture's (the conversation moved). Contrast reviveRow, which echoes the
 // stored tuple back for an in-place revival.
-func reclaimRow(ag agentRow, c tmuxenv.Capture, h harnessenv.Capture, model string) registerAck {
+func reclaimRow(ag agentRow, c tmuxenv.Capture, h harness.Capture, model string) registerAck {
 	if model == "" {
 		model = ag.ModelType
 	}

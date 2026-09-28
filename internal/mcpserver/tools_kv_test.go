@@ -5,15 +5,15 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/schuettc/muster/internal/harnessenv"
 	"github.com/schuettc/muster/internal/tmuxenv"
+	"github.com/schuettc/tools-common/harness"
 )
 
 func stubKVCaller(t *testing.T, aliasesJSON, agentsJSON string, handle func(string, map[string]any) (json.RawMessage, error)) {
 	t.Helper()
 	prevCall := callDaemon
 	t.Cleanup(func() { callDaemon = prevCall })
-	stubCallerCaptures(t, tmuxenv.Capture{}, harnessenv.Capture{SessionID: "hs-1"})
+	stubCallerCaptures(t, tmuxenv.Capture{}, harness.Capture{SessionID: "hs-1"})
 	callDaemon = func(op string, args map[string]any) (json.RawMessage, error) {
 		switch op {
 		case "session_aliases":

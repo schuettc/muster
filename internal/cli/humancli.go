@@ -16,7 +16,6 @@ import (
 
 	"github.com/schuettc/muster/internal/client"
 	"github.com/schuettc/muster/internal/device"
-	"github.com/schuettc/muster/internal/harnessenv"
 	"github.com/schuettc/muster/internal/nudge"
 	"github.com/schuettc/muster/internal/nudgeguard"
 	"github.com/schuettc/muster/internal/paths"
@@ -24,6 +23,7 @@ import (
 	"github.com/schuettc/muster/internal/store"
 	"github.com/schuettc/muster/internal/tmuxenv"
 	"github.com/schuettc/muster/internal/version"
+	"github.com/schuettc/tools-common/harness"
 )
 
 // nudgeRun lets tests intercept the tmux command executor for nudges.
@@ -649,7 +649,7 @@ func cmdTasks(args []string, out io.Writer) error {
 // kind=task threads are shown. The caller's tmux/harness identity is sent as
 // proof (spec 2026-08-21 §3.2): the daemon only moves alias's read watermark
 // for a caller who can prove it IS that session, sourced exactly like every
-// other mint/proof site (tmuxenv.CaptureEnv for the tuple, harnessenv.FromEnv
+// other mint/proof site (tmuxenv.CaptureEnv for the tuple, harness.FromEnv
 // for the harness UUID; no caller_pane_id — ownership is session-granular,
 // not pane-granular). Reading someone else's alias (an operator checking on
 // another agent, `muster inbox` run outside any session) still works — it
@@ -658,7 +658,7 @@ func cmdTasks(args []string, out io.Writer) error {
 // real drain of their own mail.
 func printThreads(out io.Writer, alias string, tasksOnly bool) error {
 	c := tmuxenv.CaptureEnv()
-	h := harnessenv.FromEnv()
+	h := harness.FromEnv()
 	raw, err := callData("get_inbox", map[string]any{
 		"alias":                     alias,
 		"caller_socket_path":        c.SocketPath,
