@@ -41,7 +41,7 @@ func legacyDB(t *testing.T, withAlters bool) string {
 				t.Fatal(err)
 			}
 		}
-		if _, err := raw.Exec(`INSERT INTO agents (alias, registered_at, last_seen, project, harness_session_id) VALUES ('keeper', 1, 2, 'p', 'h-1')`); err != nil {
+		if _, err := raw.Exec(`INSERT INTO agents (alias, registered_at, last_seen, project, harness_session_id, socket_path) VALUES ('keeper', 1, 2, 'p', 'h-1', '/nonexistent/sock')`); err != nil {
 			t.Fatal(err)
 		}
 	} else {
@@ -52,6 +52,9 @@ func legacyDB(t *testing.T, withAlters bool) string {
 	if _, err := raw.Exec(`INSERT INTO threads (kind, from_agent, to_kind, to_target, subject, created_at, updated_at) VALUES ('message', 'keeper', 'agent', 'other', 's', 10, 10)`); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := raw.Exec(`INSERT INTO entries (thread_id, from_agent, body, created_at) VALUES (1, 'keeper', 'hello', 11)`); err != nil {
+		t.Fatal(err)
+	}
 	return p
 }
 
@@ -59,8 +62,9 @@ func rowSums(t *testing.T, db *sql.DB) string {
 	t.Helper()
 	var b strings.Builder
 	for _, q := range []string{
-		`SELECT group_concat(alias || '|' || project || '|' || last_read_entry_id || '|' || harness_session_id, ';') FROM agents`,
+		`SELECT group_concat(alias || '|' || project || '|' || last_read_entry_id || '|' || harness_session_id || '|' || socket_path, ';') FROM agents`,
 		`SELECT group_concat(id || '|' || subject || '|' || origin_project, ';') FROM threads`,
+		`SELECT group_concat(id || '|' || thread_id || '|' || from_agent || '|' || body || '|' || created_at, ';') FROM entries`,
 	} {
 		var s sql.NullString
 		if err := db.QueryRow(q).Scan(&s); err != nil {
@@ -82,7 +86,7 @@ func TestOpenAdoptsLiveUnversionedDatabase(t *testing.T) {
 		t.Fatalf("user_version %d, want 1", v)
 	}
 	sums := rowSums(t, s.DB())
-	if !strings.Contains(sums, "keeper|p|0|h-1") || !strings.Contains(sums, "|s|") {
+	if !strings.Contains(sums, "keeper|p|0|h-1|/nonexistent/sock") || !strings.Contains(sums, "|s|") || !strings.Contains(sums, "1|1|keeper|hello|11") {
 		t.Fatalf("rows not intact: %q", sums)
 	}
 }
