@@ -1,26 +1,31 @@
 name: release
 
-# Merge to main = release. The VERSION file is the knob: when a merge lands on
-# main and no tag v<VERSION> exists yet, this workflow tags it, creates the
-# GitHub release (auto-generated notes), and attaches cross-compiled binaries
-# (cgo-free: darwin/linux × arm64/amd64) plus the hosted backend's Lambda zip,
-# all with sha256 checksums. Every binary
-# is stamped with this release's version/commit via -ldflags -X into
-# internal/version. A merge that doesn't bump VERSION releases nothing.
-# macOS binaries are signed and notarized IN THIS JOB, which is why it runs on
-# a macOS runner: codesign and notarytool exist nowhere else. Go cross-compiles
-# the linux targets from here with CGO_ENABLED=0, so every published artifact
-# still comes from one build. contrib/release-sign.sh remains for repairing an
-# already-published release by hand.
+# Merge to main = release, through the family release actions
+# (schuettc/tools-actions: release-version + go-release). The VERSION file is
+# the knob: when a merge lands on main and no tag v<VERSION> exists yet, the
+# release is cut, signed, notarized, stamp-checked, published to GitHub and
+# to muster.tools/dl (moving /dl/muster/latest). A merge that doesn't bump
+# VERSION releases nothing.
+#
+# MUSTER-SPECIFIC:
+#   - muster-deploy, the hosted backend's installer, ships SEPARATELY from the
+#     device tarballs (it links the AWS SDK; bundling it would put AWS code in
+#     the download every device unpacks). It has no `version` command, so only
+#     `muster` is stamp-checked (go-release runs only what stamp-check lists).
+#   - The Lambda zip for the optional hosted backend
+#     (contrib/cloudformation/muster-backend.yaml) is built before go-release
+#     into dist/ and attached as an extra asset. Three things about it are
+#     load-bearing: -tags lambda (without it runLambda is the stub and the
+#     function dies at every cold start), the name `bootstrap` (what
+#     provided.al2023 execs), and linux/arm64 (Architectures: [arm64]). Its
+#     file name carries the tag because CloudFormation only redeploys Lambda
+#     code when the S3 key changes.
 #
 # workflow_dispatch does two things, chosen by whether `tag` is given:
 #   - tag set    -> rebuild assets for that EXISTING release (backfill/repair).
 #   - tag empty  -> cut a PRE-RELEASE from the branch you dispatch on, tagged
-#                   v<VERSION>-rc.<run>. This is the dev channel: a real,
-#                   pinnable tag with the same assets as a release, marked
-#                   pre-release so it never becomes "Latest" and never collides
-#                   with the v<VERSION> that main will publish later. Use it to
-#                   put a build on a second machine before promoting.
+#                   v<VERSION>-rc.<run>: the dev channel. It publishes its
+#                   versioned /dl paths but never becomes "Latest".
 on:
   push:
     branches: [main]
@@ -33,255 +38,69 @@ on:
 
 permissions:
   contents: write
-  # OIDC: the Publish step assumes the tools-ops Release role to PutObject to
-  # the muster.tools Downloads bucket. The trust condition is this repo's
-  # `release` environment (declared below), not a ref — so it works with the
-  # release-on-push-to-main VERSION model with no tag gymnastics.
+  # OIDC: go-release assumes the tools-ops Release role to write to the
+  # muster.tools Downloads bucket. Trust is this repo's `release` environment.
   id-token: write
 
 jobs:
   release:
-    runs-on: macos-latest
-    # The signing secrets live in a protected environment rather than plain
-    # repository secrets, so a workflow run has to be for this environment to
-    # see the Developer ID certificate at all.
+    runs-on: macos-26
+    # The signing secrets live in this protected environment.
     environment: release
     steps:
-      - uses: actions/checkout@v4
-      - name: Resolve tag and mode
-        id: rel
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            if [ -n "${{ inputs.tag }}" ]; then
-              # Rebuild an existing release's assets. Nothing is created.
-              {
-                echo "tag=${{ inputs.tag }}"
-                echo "create=false"
-                echo "prerelease=false"
-                echo "skip=false"
-              } >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-            # Pre-release from whatever branch this was dispatched on. The
-            # -rc.<run> suffix is what keeps this off main's namespace: the run
-            # number is monotonic per workflow, so repeated dispatches at the
-            # same VERSION never collide with each other OR with the eventual
-            # v<VERSION>.
-            {
-              echo "tag=v$(tr -d ' \n' < VERSION)-rc.${{ github.run_number }}"
-              echo "create=true"
-              echo "prerelease=true"
-              echo "skip=false"
-            } >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          tag="v$(tr -d ' \n' < VERSION)"
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "prerelease=false" >> "$GITHUB_OUTPUT"
-          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "VERSION $tag already released — nothing to do."
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            echo "create=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-            echo "create=true" >> "$GITHUB_OUTPUT"
-          fi
-      - uses: actions/setup-go@v5
-        if: steps.rel.outputs.skip == 'false'
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ inputs.tag }}
+      - id: rel
+        uses: schuettc/tools-actions/release-version@v0.2.0
+        with:
+          mode: version-file
+          dispatch-tag: ${{ inputs.tag }}
+      - if: steps.rel.outputs.skip != 'true'
+        uses: actions/setup-go@v7.0.0
         with:
           go-version-file: go.mod
-      - name: Checkout the tag (asset-rebuild mode only)
-        if: steps.rel.outputs.skip == 'false' && steps.rel.outputs.create == 'false'
-        run: git fetch --tags && git checkout "${{ steps.rel.outputs.tag }}"
-      - name: Import the Developer ID certificate
-        if: steps.rel.outputs.skip == 'false'
+      - name: Build the Lambda zip
+        if: steps.rel.outputs.skip != 'true'
         env:
-          P12: ${{ secrets.APPLE_DEVELOPER_ID_P12 }}
-          P12_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_P12_PASSWORD }}
+          TAG: ${{ steps.rel.outputs.tag }}
+          V: ${{ steps.rel.outputs.version }}
+          C: ${{ steps.rel.outputs.commit }}
+          D: ${{ steps.rel.outputs.date }}
         run: |
           set -euo pipefail
-          # Fail rather than publish unsigned macOS binaries. An unsigned
-          # binary is quarantined by Gatekeeper on download and refuses to run,
-          # which reads to whoever downloads it as a broken build; no release
-          # is better than that.
-          [ -n "$P12" ] || { echo "::error::APPLE_DEVELOPER_ID_P12 is unset — refusing to publish unsigned macOS binaries."; exit 1; }
-          kc="$RUNNER_TEMP/build.keychain-db"
-          kcpw="$(uuidgen)"
-          security create-keychain -p "$kcpw" "$kc"
-          security set-keychain-settings -lut 21600 "$kc"
-          security unlock-keychain -p "$kcpw" "$kc"
-          printf %s "$P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
-          security import "$RUNNER_TEMP/cert.p12" -k "$kc" -P "$P12_PASSWORD" \
-            -T /usr/bin/codesign -T /usr/bin/security
-          rm -f "$RUNNER_TEMP/cert.p12"
-          # Without this, codesign blocks on a GUI keychain prompt that never
-          # comes and the job hangs until it times out.
-          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$kcpw" "$kc" >/dev/null
-          security list-keychains -d user -s "$kc" $(security list-keychains -d user | tr -d '"')
-          identity="$(security find-identity -v -p codesigning "$kc" \
-            | sed -n 's/.*"\(Developer ID Application:[^"]*\)".*/\1/p' | head -1)"
-          [ -n "$identity" ] || { echo "::error::no Developer ID Application identity in the imported certificate."; exit 1; }
-          echo "MUSTER_KEYCHAIN=$kc" >> "$GITHUB_ENV"
-          echo "MUSTER_SIGN_IDENTITY=$identity" >> "$GITHUB_ENV"
-          echo "signing as: $identity"
-
-      - name: Build and package all targets
-        if: steps.rel.outputs.skip == 'false'
-        env:
-          NOTARY_KEY: ${{ secrets.APPLE_NOTARY_KEY }}
-          NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
-          NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
-        run: |
-          set -euo pipefail
-          [ -n "$NOTARY_KEY" ] || { echo "::error::APPLE_NOTARY_KEY is unset — cannot notarize."; exit 1; }
-          printf %s "$NOTARY_KEY" | base64 --decode > "$RUNNER_TEMP/notary.p8"
-          tag="${{ steps.rel.outputs.tag }}"
-          version="${tag#v}"
-          commit="$(git rev-parse --short HEAD)"
-          date="$(date -u +%Y-%m-%d)"
-          ldflags="-s -w -X github.com/schuettc/muster/internal/version.version=${version} -X github.com/schuettc/muster/internal/version.commit=${commit} -X github.com/schuettc/muster/internal/version.date=${date}"
-          # Sign every darwin binary as it is built. --options runtime is the
-          # hardened runtime, which notarization requires; without it the
-          # submission is rejected rather than merely unsigned.
-          sign() {
-            case "$1" in
-              *_darwin_*) codesign --sign "$MUSTER_SIGN_IDENTITY" --options runtime \
-                            --timestamp --force "$1" ;;
-            esac
-          }
-          for target in darwin/arm64 darwin/amd64 linux/amd64 linux/arm64; do
-            goos="${target%/*}"; goarch="${target#*/}"
-            out="muster_${goos}_${goarch}"
-            CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
-              go build -trimpath -ldflags "$ldflags" -o "dist/${out}/muster" ./cmd/muster
-            sign "dist/${out}/muster"
-          done
-          # muster-deploy, the hosted backend's installer. Shipped SEPARATELY
-          # from the device tarballs above, not inside them: it links the AWS
-          # SDK (that is its job — it talks to CloudFormation and S3), and
-          # bundling it would put AWS code in the download every device
-          # unpacks. Anyone who never self-hosts never fetches this.
-          for target in darwin/arm64 darwin/amd64 linux/amd64 linux/arm64; do
-            goos="${target%/*}"; goarch="${target#*/}"
-            out="muster-deploy_${goos}_${goarch}"
-            CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
-              go build -trimpath -ldflags "$ldflags" -o "dist/${out}/muster-deploy" ./cmd/muster-deploy
-            sign "dist/${out}/muster-deploy"
-          done
-
-          # Notarize all four signed darwin binaries in ONE submission. Apple
-          # takes minutes per submission, and four sequential round trips would
-          # dominate the job. Bare executables cannot be stapled — stapler only
-          # works on bundles, dmgs and pkgs — so Gatekeeper verifies these
-          # online, exactly as it did when this was a local step.
-          ditto -c -k --keepParent dist "$RUNNER_TEMP/notarize.zip"
-          xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" \
-            --key "$RUNNER_TEMP/notary.p8" \
-            --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER_ID" \
-            --wait --timeout 30m | tee "$RUNNER_TEMP/notary.log"
-          grep -q "status: Accepted" "$RUNNER_TEMP/notary.log" || {
-            echo "::error::notarization did not return Accepted"
-            xcrun notarytool log "$(awk '/id:/{print $2; exit}' "$RUNNER_TEMP/notary.log")" \
-              --key "$RUNNER_TEMP/notary.p8" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER_ID" || true
-            exit 1
-          }
-
-          # Tar only after signing and notarization, so the archives contain
-          # the signed binaries rather than the originals.
-          for target in darwin/arm64 darwin/amd64 linux/amd64 linux/arm64; do
-            goos="${target%/*}"; goarch="${target#*/}"
-            tar -C "dist/muster_${goos}_${goarch}" -czf "dist/muster_${goos}_${goarch}.tar.gz" muster
-            tar -C "dist/muster-deploy_${goos}_${goarch}" -czf "dist/muster-deploy_${goos}_${goarch}.tar.gz" muster-deploy
-          done
-          # The Lambda artifact for the optional hosted backend
-          # (contrib/cloudformation/muster-backend.yaml). Three things about
-          # this build differ from the device binaries above and all three are
-          # load-bearing:
-          #
-          #   -tags lambda   is NOT optional. Without it the zip carries a
-          #                  binary whose runLambda is the stub, and the
-          #                  function dies at every cold start with "built
-          #                  without lambda mode". The device binaries are
-          #                  built WITHOUT the tag on purpose — that is what
-          #                  keeps the AWS SDK out of what people install.
-          #   bootstrap      is the filename provided.al2023 execs. Any other
-          #                  name and the runtime cannot start the function.
-          #   linux/arm64    matches Architectures: [arm64] in the template.
-          zipname="muster-lambda-arm64-${tag}.zip"
-          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 \
-            go build -tags lambda -trimpath -ldflags "$ldflags" -o dist/bootstrap ./cmd/muster
-          (cd dist && zip -qj "$zipname" bootstrap && rm bootstrap)
-          # Version-stamped, because CloudFormation only redeploys Lambda code
-          # when S3Key or S3ObjectVersion changes — a same-key overwrite leaves
-          # the old binary running with no error anywhere. A tagged filename
-          # makes the upgrade path correct by default.
-          (cd dist && shasum -a 256 *.tar.gz *.zip > checksums.txt)
-      - name: Create the release
-        if: steps.rel.outputs.create == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release create "${{ steps.rel.outputs.tag }}" \
-            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
-            --title "muster ${{ steps.rel.outputs.tag }}" --generate-notes \
-            ${{ steps.rel.outputs.prerelease == 'true' && '--prerelease' || '' }}
-      - name: Upload assets
-        if: steps.rel.outputs.skip == 'false'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release upload "${{ steps.rel.outputs.tag }}" dist/*.tar.gz dist/*.zip dist/checksums.txt --clobber --repo "$GITHUB_REPOSITORY"
-
-      # --- Publish to the muster.tools download domain -------------------------
-      # GitHub above is now the invisible durable backing store; install.sh
-      # pulls from muster.tools/dl. Immutable long-TTL for the versioned binary
-      # paths; the latest pointer is short-TTL and invalidated on write so it is
-      # never stale. The Release role can ONLY PutObject to Downloads and
-      # CreateInvalidation on the muster.tools distribution — no other access.
-      - name: Configure AWS credentials (downloads)
-        if: steps.rel.outputs.skip == 'false'
-        uses: aws-actions/configure-aws-credentials@v4
+          pkg=github.com/schuettc/muster/internal/version
+          mkdir -p dist
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -tags lambda -trimpath \
+            -ldflags "-s -w -X $pkg.version=$V -X $pkg.commit=$C -X $pkg.date=$D" \
+            -o dist/bootstrap ./cmd/muster
+          (cd dist && zip -qj "muster-lambda-arm64-${TAG}.zip" bootstrap && rm bootstrap)
+      - if: steps.rel.outputs.skip != 'true'
+        uses: schuettc/tools-actions/go-release@v0.2.0
         with:
-          role-to-assume: ${{ secrets.MUSTER_RELEASE_ROLE_ARN }}
-          aws-region: us-east-1
-      - name: Publish binaries to muster.tools/dl
-        if: steps.rel.outputs.skip == 'false'
-        env:
-          BUCKET: ${{ secrets.MUSTER_DOWNLOADS_BUCKET }}
-          TAG: ${{ steps.rel.outputs.tag }}
-        run: |
-          set -euo pipefail
-          version="${TAG#v}"   # bare semver; the family download contract keys paths on it
-          for f in dist/muster_*.tar.gz dist/muster-deploy_*.tar.gz; do
-            base="$(basename "$f")"
-            # shasum two-space format, naming the bare asset (not the dist/ path).
-            shasum -a 256 "$f" | awk -v n="$base" '{print $1"  "n}' > "$f.sha256"
-            aws s3 cp "$f"          "s3://$BUCKET/dl/muster/$version/$base"        --cache-control 'public,max-age=31536000,immutable'
-            aws s3 cp "$f.sha256"   "s3://$BUCKET/dl/muster/$version/$base.sha256" --cache-control 'public,max-age=31536000,immutable' --content-type text/plain
-          done
-      - name: Update latest pointer + invalidate
-        # Only a real, non-prerelease release moves `latest`. A workflow_dispatch
-        # asset-rebuild of an old tag (create=false) and an -rc pre-release
-        # (prerelease=true) both publish their versioned paths above but must
-        # never regress or hijack the pointer — mirrors GitHub's "pre-release
-        # never becomes Latest".
-        if: steps.rel.outputs.skip == 'false' && steps.rel.outputs.create == 'true' && steps.rel.outputs.prerelease == 'false'
-        env:
-          BUCKET: ${{ secrets.MUSTER_DOWNLOADS_BUCKET }}
-          TAG: ${{ steps.rel.outputs.tag }}
-        run: |
-          set -euo pipefail
-          version="${TAG#v}"
-          printf '%s' "$version" | aws s3 cp - "s3://$BUCKET/dl/muster/latest" \
-            --content-type text/plain --cache-control 'public,max-age=60,must-revalidate'
-          aws cloudfront create-invalidation --distribution-id ENNIY7RSDS2NI --paths '/dl/muster/latest'
-
-      - name: Destroy the signing material
-        # always(), because a failed build must not leave a usable Developer ID
-        # certificate or an App Store Connect key behind on the runner.
-        if: always()
-        run: |
-          rm -f "$RUNNER_TEMP/notary.p8" "$RUNNER_TEMP/cert.p12" "$RUNNER_TEMP/notarize.zip"
-          [ -n "${MUSTER_KEYCHAIN:-}" ] && security delete-keychain "$MUSTER_KEYCHAIN" || true
+          setup-go: "false"
+          binaries: |
+            muster=./cmd/muster
+            muster-deploy=./cmd/muster-deploy
+          ldflags: >-
+            -X github.com/schuettc/muster/internal/version.version={version}
+            -X github.com/schuettc/muster/internal/version.commit={commit}
+            -X github.com/schuettc/muster/internal/version.date={date}
+          stamp-check: muster
+          extra-assets: dist/*.zip
+          tag: ${{ steps.rel.outputs.tag }}
+          version: ${{ steps.rel.outputs.version }}
+          commit: ${{ steps.rel.outputs.commit }}
+          date: ${{ steps.rel.outputs.date }}
+          create: ${{ steps.rel.outputs.create }}
+          prerelease: ${{ steps.rel.outputs.prerelease }}
+          release-title: muster ${{ steps.rel.outputs.tag }}
+          apple-developer-id-p12: ${{ secrets.APPLE_DEVELOPER_ID_P12 }}
+          apple-developer-id-p12-password: ${{ secrets.APPLE_DEVELOPER_ID_P12_PASSWORD }}
+          apple-notary-key: ${{ secrets.APPLE_NOTARY_KEY }}
+          apple-notary-key-id: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          apple-notary-issuer-id: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+          dl-tool: muster
+          dl-role-arn: ${{ secrets.MUSTER_RELEASE_ROLE_ARN }}
+          dl-bucket: ${{ secrets.MUSTER_DOWNLOADS_BUCKET }}
+          dl-distribution-id: ENNIY7RSDS2NI
