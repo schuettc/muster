@@ -2,6 +2,20 @@
 
 There is no CHANGELOG.md in this repository yet. This file holds the notes for releases where the change is operator-visible enough to need explaining rather than just listing. Newest first.
 
+## 0.23.0 — the family CLI and the shared database module
+
+**muster's command line now runs on tools-common's tools.App, like every other .tools binary.** What you will notice:
+
+- `muster help` opens with an overview (the three modes, the files, the docs) above the commands grouped as Talk, Watch, Identity and Plumbing, each group sorted by name. Bare `muster` prints the short usage to stderr and exits 2.
+- `muster help <cmd>` and `muster <cmd> -h` show `Usage: muster <synopsis>`, the aliases (the MCP tool names, e.g. `get_inbox`), the one-line summary, the long help and the flags.
+- Errors read `muster <cmd>: <message>`, with exit codes 0 ok, 1 runtime error, 2 usage error. With `--json`, errors are the family JSON envelope.
+- `muster man` replaces `muster help --man`; `muster commands --json` is the family command index, now including the built-ins.
+- Every command's own output is unchanged, and hooks still exit 0 when there is nothing to do or no daemon.
+
+**The daemon's SQLite store opens through tools-common/sqlitedb.** Your existing database is adopted in place on first open (it becomes schema version 1; no rows change), and muster 0.22.x still opens it afterwards. The database and its -wal/-shm files are 0600 from creation, and two processes opening a new database at once both succeed. modernc.org/sqlite moves to v1.59.0.
+
+After updating, restart the daemon so it runs the new store code: `launchctl kickstart -k gui/$(id -u)/tools.muster.serve` (kempt's service label).
+
 ## 0.22.1 — session identity from tools-common
 
 **muster now resolves a session's identity with the family rule in tools-common/harness.** The one visible change: a Claude Code process that pi-claude-bridge runs to serve a pi turn now counts as that pi session. The bridge marks it with `AGENT_SESSION_CHILD=1` next to the `AGENT_SESSION_ID` it sets, so roster ownership and MCP caller identity attribute it to the pi session instead of registering it separately. A Claude session you start yourself from inside pi (no marker) is still its own session. Needs `@schuettc/pi-claude-bridge` 0.8.0-schuettc.6 or later, which sets the marker.
