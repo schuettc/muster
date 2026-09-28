@@ -5,8 +5,6 @@
 // three copies scattered across main packages.
 package version
 
-import tools "github.com/schuettc/tools-common"
-
 // version, commit, and date are overwritten at build time via:
 //
 //	-ldflags "-X github.com/schuettc/muster/internal/version.version=$(cat VERSION) \
@@ -31,13 +29,3 @@ func Commit() string { return commit }
 
 // Date returns the stamped build date ("" if unstamped).
 func Date() string { return date }
-
-// Line formats muster's canonical one-line version banner, e.g.
-// "muster 0.6.0 (a1b2c3d, 2026-01-02)". The FORMAT is delegated to the
-// shared tools-common module so every .tools-family binary renders its
-// version identically (elides an empty commit/date); only the "muster "
-// prefix is muster's own. This is the single formatting function so both
-// `muster version` and `muster --version` render identically.
-func Line() string {
-	return "muster " + tools.Version{Number: version, Commit: commit, Date: date}.String()
-}

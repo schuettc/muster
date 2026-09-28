@@ -1,131 +1,69 @@
 package cli
 
 import (
-	"bytes"
-	"errors"
 	"strings"
 	"testing"
 )
 
-// TestUsageGroupedSnapshot is the grouped-usage snapshot: every group header
-// appears in order, and every command's name + one-line summary is listed
-// under it (a padded-columns row, not just present anywhere in the output).
-func TestUsageGroupedSnapshot(t *testing.T) {
-	var buf bytes.Buffer
-	Usage(&buf)
-	out := buf.String()
-
-	headings := []string{"Talk:", "Watch:", "Identity:", "Plumbing:"}
-	lastIdx := -1
-	for _, h := range headings {
-		idx := strings.Index(out, h)
-		if idx < 0 {
-			t.Fatalf("Usage output missing heading %q:\n%s", h, out)
-		}
-		if idx < lastIdx {
-			t.Fatalf("heading %q out of order in Usage output:\n%s", h, out)
-		}
-		lastIdx = idx
+// `muster help` lists every command with its one-line summary under muster's
+// four groups, in order, below muster's overview (tools.Config.About).
+func TestHelpGroupedSnapshot(t *testing.T) {
+	out, _, code := musterCLI(t, "help")
+	if code != 0 {
+		t.Fatalf("help exited %d", code)
 	}
-
+	last := -1
+	for _, h := range []string{"\nTalk\n", "\nWatch\n", "\nIdentity\n", "\nPlumbing\n"} {
+		i := strings.Index(out, h)
+		if i < 0 || i < last {
+			t.Fatalf("heading %q missing or out of order:\n%s", strings.TrimSpace(h), out)
+		}
+		last = i
+	}
 	for _, c := range Registry {
-		if !strings.Contains(out, c.Name) {
-			t.Errorf("Usage output missing command name %q", c.Name)
-		}
-		if !strings.Contains(out, c.Summary) {
-			t.Errorf("Usage output missing summary for %q: %q", c.Name, c.Summary)
+		if !strings.Contains(out, "  "+c.Name+" ") || !strings.Contains(out, c.Summary) {
+			t.Errorf("help does not list %q with its summary", c.Name)
 		}
 	}
-
-	if !strings.Contains(out, "muster help <command>") {
-		t.Error("Usage output missing the 'muster help <command>' pointer")
-	}
-	if !strings.Contains(out, "muster.tools") {
-		t.Error("Usage output missing the muster.tools footer")
+	for _, want := range []string{"muster help <command>", "https://muster.tools", "three modes"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("help lacks %q", want)
+		}
 	}
 }
 
-// TestBareInvocationVsHelp mirrors main.go's split: Dispatch itself doesn't
-// decide exit codes for the truly-bare (zero args) case — main.go special-
-// cases that before ever calling Dispatch — but `muster help` (args =
-// ["help"]) must report success.
-func TestBareInvocationVsHelp(t *testing.T) {
-	var buf bytes.Buffer
-	if err := Dispatch([]string{"help"}, &buf); err != nil {
-		t.Fatalf("help: unexpected error: %v", err)
-	}
-	if !strings.Contains(buf.String(), "muster — local multi-agent coordination bus") {
-		t.Fatalf("help output missing banner:\n%s", buf.String())
-	}
-}
-
-// TestTopLevelHelpFlags checks `muster -h` and `muster --help` both render
-// the same grouped usage as `muster help`.
+// -h and --help at the top level are `help`.
 func TestTopLevelHelpFlags(t *testing.T) {
-	var wantBuf bytes.Buffer
-	Usage(&wantBuf)
-
+	want, _, _ := musterCLI(t, "help")
 	for _, arg := range []string{"-h", "--help"} {
-		var buf bytes.Buffer
-		if err := Dispatch([]string{arg}, &buf); err != nil {
-			t.Fatalf("%s: unexpected error: %v", arg, err)
-		}
-		if buf.String() != wantBuf.String() {
-			t.Fatalf("%s output does not match Usage():\ngot:\n%s\nwant:\n%s", arg, buf.String(), wantBuf.String())
+		if got, _, code := musterCLI(t, arg); code != 0 || got != want {
+			t.Fatalf("%s differs from help (exit %d)", arg, code)
 		}
 	}
 }
 
-// TestHelpForUnknownCommand checks the "unknown command in muster help <x>"
-// contract: a UsageError listing valid commands.
 func TestHelpForUnknownCommand(t *testing.T) {
-	var buf bytes.Buffer
-	err := HelpFor("bogus", &buf)
-	if err == nil {
-		t.Fatal("expected error for unknown command")
+	_, errw, code := musterCLI(t, "help", "nope")
+	if code != 2 || !strings.Contains(errw, `unknown command "nope"`) {
+		t.Fatalf("help nope: exit %d, stderr %q", code, errw)
 	}
-	var ue *UsageError
-	if !errors.As(err, &ue) {
-		t.Fatalf("expected *UsageError, got %T: %v", err, err)
+}
+
+// The man page keeps what muster's own renderer carried: the modes and the
+// files, now in the DESCRIPTION, and a quoted synopsis stays whole.
+func TestManPage(t *testing.T) {
+	out, _, code := musterCLI(t, "man")
+	if code != 0 || !strings.HasPrefix(out, ".TH MUSTER 1") {
+		t.Fatalf("man: exit %d, %.80q", code, out)
 	}
-	if !strings.Contains(err.Error(), "valid commands:") {
-		t.Fatalf("error missing valid-commands listing: %v", err)
+	for _, want := range []string{".SH DESCRIPTION", "three modes", "MUSTER_HOME", ".SH COMMANDS", `\(dqbody\(dq`} {
+		if !strings.Contains(out, want) {
+			t.Errorf("man lacks %q", want)
+		}
 	}
 	for _, c := range Registry {
-		if !strings.Contains(err.Error(), c.Name) {
-			t.Errorf("valid-commands listing missing %q: %v", c.Name, err)
-		}
-	}
-}
-
-// TestDispatchHelpMan checks `muster help --man` emits roff, not the
-// grouped usage — and that it's NOT itself listed as a command (hidden).
-func TestDispatchHelpMan(t *testing.T) {
-	var buf bytes.Buffer
-	if err := Dispatch([]string{"help", "--man"}, &buf); err != nil {
-		t.Fatalf("help --man: unexpected error: %v", err)
-	}
-	if !strings.HasPrefix(buf.String(), ".TH MUSTER 1") {
-		t.Fatalf("help --man output doesn't start with a .TH roff header:\n%.100s", buf.String())
-	}
-
-	var usageBuf bytes.Buffer
-	Usage(&usageBuf)
-	if strings.Contains(usageBuf.String(), "--man") {
-		t.Error("--man should be hidden from grouped usage output")
-	}
-}
-
-// TestDispatchVersion checks `version` and `--version` both print
-// version.Line()'s output and exit clean.
-func TestDispatchVersion(t *testing.T) {
-	for _, arg := range []string{"version", "--version"} {
-		var buf bytes.Buffer
-		if err := Dispatch([]string{arg}, &buf); err != nil {
-			t.Fatalf("%s: unexpected error: %v", arg, err)
-		}
-		if !strings.HasPrefix(buf.String(), "muster ") {
-			t.Fatalf("%s output = %q, want a line starting with \"muster \"", arg, buf.String())
+		if !strings.Contains(out, ".B "+c.Name) {
+			t.Errorf("man has no entry for %q", c.Name)
 		}
 	}
 }

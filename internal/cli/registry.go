@@ -6,84 +6,37 @@ import (
 	"io"
 	"os"
 
+	tools "github.com/schuettc/tools-common"
+
 	"github.com/schuettc/muster/internal/station"
 )
 
-// Group buckets a Command for the grouped bare/`help` listing and the man
-// page's SECTION headings. Order matters: groupOrder below is the only place
-// display order is decided, so adding a group means updating both here and
-// groupOrder.
-type Group int
-
 // The four command groups, in the order the operator sees them everywhere
-// (bare usage, `muster help`, the man page): talk first (the thing you do
-// most), watch second, identity third, plumbing last (daemon/dev internals,
-// rarely typed by hand).
+// (`muster help`, the man page): talk first (the thing you do most), watch
+// second, identity third, plumbing last (daemon/dev internals, rarely typed
+// by hand). groups below is the only place display order is decided.
 const (
-	GroupTalk Group = iota
-	GroupWatch
-	GroupIdentity
-	GroupPlumbing
+	GroupTalk     = "talk"
+	GroupWatch    = "watch"
+	GroupIdentity = "identity"
+	GroupPlumbing = "plumbing"
 )
 
-// groupOrder is display order for the four groups.
-var groupOrder = []Group{GroupTalk, GroupWatch, GroupIdentity, GroupPlumbing}
-
-// groupHeading names each group's listing header.
-var groupHeading = map[Group]string{
-	GroupTalk:     "Talk",
-	GroupWatch:    "Watch",
-	GroupIdentity: "Identity",
-	GroupPlumbing: "Plumbing",
+// groups is the display order and heading of each group.
+var groups = []tools.Group{
+	{Key: GroupTalk, Heading: "Talk"},
+	{Key: GroupWatch, Heading: "Watch"},
+	{Key: GroupIdentity, Heading: "Identity"},
+	{Key: GroupPlumbing, Heading: "Plumbing"},
 }
 
-// Command is one row of muster's command registry — the single table that
-// drives bare `muster` / `muster help` (grouped usage), `muster help <cmd>`
-// and `muster <cmd> -h/--help` (per-command usage), and the generated man
-// page. There is deliberately no second list anywhere: cmd/muster's main()
-// routes serve/mcp/debug itself (they need process-level setup this package
-// has no business doing — daemon startup, stdio protocol framing) but still
-// declares a Registry row so help/man rendering covers them; Run is nil for
-// exactly those three, everything else is dispatched through Dispatch.
-type Command struct {
-	// Name is the subcommand word, e.g. "send".
-	Name string
-	// Aliases are alternate words that resolve to this same command, used so
-	// the CLI accepts the MCP tool name for the same operation (`muster
-	// get_inbox` == `muster inbox`). An agent that crosses surfaces then never
-	// has to translate one namespace into the other — the mistranslation that
-	// left a CLI-driven session's mailbox badge lit (it knew the get_inbox
-	// TOOL, guessed a wrong `muster inbox` argument, and only peeked). Aliases
-	// resolve in lookup but are NOT listed as their own rows in usage/man, so
-	// the idiomatic name stays the one canonical command.
-	Aliases []string
-	// Synopsis is the argument shape shown after the name in usage output,
-	// e.g. `send <target> "body" [--from <alias>] ...`. It does NOT repeat
-	// "muster " or the command name.
-	Synopsis string
-	// Summary is the one-line description shown in grouped usage listings.
-	Summary string
-	// Help is one or more longer paragraphs shown by `muster help <cmd>` /
-	// `muster <cmd> -h`, below the synopsis. May be empty.
-	Help string
-	// Group buckets this command for display.
-	Group Group
-	// NewFlags builds a fresh *flag.FlagSet declaring this command's flags,
-	// for `PrintDefaults`-driven help/man rendering. It is the SAME
-	// constructor the command's real Run function calls to parse its own
-	// args (see e.g. newSendFlags) — one declaration, not a help-text copy
-	// that can drift from the real flags. nil means the command takes no
-	// flags.
-	NewFlags func() *flag.FlagSet
-	// Run executes the command. nil for serve/mcp/debug, which cmd/muster's
-	// main() owns directly (see the Command doc comment above).
-	Run func(args []string, out io.Writer) error
-}
-
-// Registry is every muster subcommand, operator-facing and plumbing alike.
-// Do not add a command anywhere else: Dispatch, Usage, HelpFor, and the man
-// renderer all walk this slice, so an entry here is the only thing required
-// for a command to show up consistently everywhere.
+// Registry is every muster subcommand, operator-facing and plumbing alike, as
+// tools.App commands. Do not add a command anywhere else: NewApp registers
+// this slice, and tools.App's dispatch, help, man and `commands --json` all
+// read from it. serve/mcp/channel/debug/lambda have Run == nil: cmd/muster's
+// main() routes them itself (process-level setup), and their rows exist so
+// help, man and the command index still cover them. version, help, man,
+// commands and update are tools.App built-ins.
 //
 // Built in init() rather than as a var literal on purpose: several Run
 // closures below call HelpFor, which (via lookup) reads Registry itself.
@@ -94,10 +47,10 @@ type Command struct {
 // literal trips a false-positive "initialization cycle for Registry" at
 // compile time. Assigning inside init() sidesteps that check entirely: it's
 // ordinary sequential code, not a variable initializer expression.
-var Registry []Command
+var Registry []tools.Command
 
 func init() {
-	Registry = []Command{
+	Registry = []tools.Command{
 		{
 			Name:     "send",
 			Aliases:  []string{"send_message"},
@@ -124,7 +77,7 @@ inbox/hook rendering: fyi (default, no action implied), reply-requested, or
 action-requested.`,
 			Group:    GroupTalk,
 			NewFlags: newSendFlags,
-			Run:      cmdSend,
+			Run:      adapt(cmdSend),
 		},
 		{
 			Name:     "nudge",
@@ -136,7 +89,7 @@ accepts an unattended submit. --no-submit types the line but leaves it for
 the operator (or the agent) to submit by hand.`,
 			Group:    GroupTalk,
 			NewFlags: newNudgeFlags,
-			Run:      cmdNudge,
+			Run:      adapt(cmdNudge),
 		},
 		{
 			Name:     "reply",
@@ -153,12 +106,13 @@ completes the read-and-respond loop from a plain shell — the fallback
 when a session has no muster MCP connection.`,
 			Group:    GroupTalk,
 			NewFlags: newReplyFlags,
-			Run:      cmdReply,
+			Run:      adapt(cmdReply),
 		},
 		{
-			Name:     "standing",
-			Synopsis: `standing <project> [--json] | standing set <project> [--key <k>] "body" [--from <alias>] | standing retract <project> [--key <k>] | standing retract --thread <id>`,
-			Summary:  "Manage a project's durable standing orders (its invariants).",
+			Name:        "standing",
+			Subcommands: []string{"set", "retract"},
+			Synopsis:    `standing <project> [--json] | standing set <project> [--key <k>] "body" [--from <alias>] | standing retract <project> [--key <k>] | standing retract --thread <id>`,
+			Summary:     "Manage a project's durable standing orders (its invariants).",
 			Help: `A standing order is a project's durable instruction that every session should
 read on start (e.g. its invariants / golden rules). Unlike an ad-hoc
 'send --broadcast --standing' it is KEYED and REPLACEABLE, so it stays a single
@@ -181,7 +135,7 @@ retract --thread is the way to retract an ad-hoc 'send --broadcast --standing'
 be a standing broadcast; get it from station or 'muster inbox'.`,
 			Group:    GroupTalk,
 			NewFlags: newStandingFlags,
-			Run:      cmdStanding,
+			Run:      adapt(cmdStanding),
 		},
 		{
 			Name:     "status",
@@ -198,7 +152,7 @@ default is a plain 'unread action alias' table. --alias restricts to one
 alias. Departed aliases are included — their mail still waits.`,
 			Group:    GroupWatch,
 			NewFlags: newStatusFlags,
-			Run:      cmdStatus,
+			Run:      adapt(cmdStatus),
 		},
 		{
 			Name:     "agents",
@@ -214,12 +168,12 @@ others show the first characters of their device id. Device is LOCATION, not
 identity: nothing is addressed by it, and an alias means the same agent from
 every device on the bus.`,
 			Group: GroupWatch,
-			Run: func(args []string, out io.Writer) error {
+			Run: adapt(func(args []string, out io.Writer) error {
 				if helpRequested(args) {
 					return HelpFor("agents", out)
 				}
 				return cmdAgents(out)
-			},
+			}),
 		},
 		{
 			Name:     "inbox",
@@ -236,7 +190,7 @@ session — still shows the threads, but as a peek: nothing is marked read, and
 a trailing notice says so. Every peek is journaled, so a sweep across aliases
 you don't own is visible in 'muster events' after the fact.`,
 			Group: GroupWatch,
-			Run:   cmdInbox,
+			Run:   adapt(cmdInbox),
 		},
 		{
 			Name:     "tasks",
@@ -244,7 +198,7 @@ you don't own is visible in 'muster events' after the fact.`,
 			Summary:  "Show an agent's task threads.",
 			Help:     `Same as 'muster inbox' but filtered to kind=task threads only.`,
 			Group:    GroupWatch,
-			Run:      cmdTasks,
+			Run:      adapt(cmdTasks),
 		},
 		{
 			Name:     "thread",
@@ -256,7 +210,7 @@ then every entry oldest-first with author, timestamp, and the verbatim
 body. The CLI half of the MCP get_thread tool. Side-effect-free: printing
 a thread never marks it read — 'muster inbox' owns the read watermark.`,
 			Group: GroupWatch,
-			Run:   cmdThread,
+			Run:   adapt(cmdThread),
 		},
 		{
 			Name:     "events",
@@ -268,7 +222,7 @@ mailbox actually lit." --aliases shows raw aliases instead of resolving
 current labels; --full-time prints dates, not just times.`,
 			Group:    GroupWatch,
 			NewFlags: newEventsFlags,
-			Run:      cmdEvents,
+			Run:      adapt(cmdEvents),
 		},
 		{
 			Name:     "watch",
@@ -279,7 +233,7 @@ current labels; --full-time prints dates, not just times.`,
 marks anything read.`,
 			Group:    GroupWatch,
 			NewFlags: newWatchFlags,
-			Run:      func(args []string, out io.Writer) error { return cmdWatch(args, out, watchOpts{}) },
+			Run:      adapt(func(args []string, out io.Writer) error { return cmdWatch(args, out, watchOpts{}) }),
 		},
 		{
 			Name:     "station",
@@ -288,7 +242,7 @@ marks anything read.`,
 			Help:     `A live, navigable projects → agents → threads view of the bus, built on the same event journal 'muster watch' tails.`,
 			Group:    GroupWatch,
 			NewFlags: station.FlagSet,
-			Run: func(args []string, out io.Writer) error {
+			Run: adapt(func(args []string, out io.Writer) error {
 				// station.Run launches a full-screen bubbletea program and its
 				// own flag.FlagSet doesn't discard -h output, so -h/--help is
 				// intercepted here first, via a throwaway parse against the same
@@ -299,7 +253,7 @@ marks anything read.`,
 					return HelpFor("station", out)
 				}
 				return station.Run(args)
-			},
+			}),
 		},
 		{
 			Name:     "register",
@@ -311,7 +265,7 @@ session name. Captures the calling session's project/pane/socket identity
 from tmux (internal/tmuxenv) so other commands can address it.`,
 			Group:    GroupIdentity,
 			NewFlags: newRegisterFlags,
-			Run:      cmdRegister,
+			Run:      adapt(cmdRegister),
 		},
 		{
 			Name:     "become",
@@ -331,7 +285,7 @@ or purge it first with 'muster gc --purge-agents'). Reclaiming prints an
 extra note — you inherit whatever inbox/history that name already carries.`,
 			Group:    GroupIdentity,
 			NewFlags: newBecomeFlags,
-			Run:      cmdBecome,
+			Run:      adapt(cmdBecome),
 		},
 		{
 			Name:     "deregister",
@@ -340,7 +294,7 @@ extra note — you inherit whatever inbox/history that name already carries.`,
 			Summary:  "Remove an agent's registration.",
 			Help:     `Alias precedence mirrors register: the explicit argument, then $MUSTER_ALIAS, then the tmux session name. A soft delete (tombstone) — see 'muster gc'.`,
 			Group:    GroupIdentity,
-			Run:      cmdDeregister,
+			Run:      adapt(cmdDeregister),
 		},
 		{
 			Name:     "label",
@@ -349,7 +303,7 @@ extra note — you inherit whatever inbox/history that name already carries.`,
 			Help:     `Requires a tmux session ($TMUX set). Sets (or, with --clear or a bare 'muster label', clears) this session's addressable label in one command. When a live Claude Code or Cursor agent is registered in this session, also types /rename <name> into its pane so the harness session name follows. --no-inject skips that typing — for callers whose name ALREADY came from the harness side (e.g. the statusline promoting a name that originated from a /rename), where re-typing it would loop text into a live pane.`,
 			Group:    GroupIdentity,
 			NewFlags: newLabelFlags,
-			Run:      cmdLabel,
+			Run:      adapt(cmdLabel),
 		},
 		{
 			Name:     "whereami",
@@ -363,7 +317,7 @@ object. Empty stdout and a nonzero exit when no pane resolves — never a
 cwd guess.`,
 			Group:    GroupIdentity,
 			NewFlags: newWhereamiFlags,
-			Run:      cmdWhereami,
+			Run:      adapt(cmdWhereami),
 		},
 		{
 			Name:     "device",
@@ -399,7 +353,7 @@ them — a seeded alias is a different alias, so it creates a second identity
 and leaves the mail on the first. Use 'muster become <new-alias>' to carry
 identity and inbox across.`,
 			Group: GroupIdentity,
-			Run:   cmdDevice,
+			Run:   adapt(cmdDevice),
 		},
 		{
 			Name:     "gc",
@@ -412,7 +366,7 @@ instead hard-deletes every departed or currently-dead agent row —
 irreversible, off by default.`,
 			Group:    GroupIdentity,
 			NewFlags: newGCFlags,
-			Run:      cmdGC,
+			Run:      adapt(cmdGC),
 		},
 		{
 			Name:     "serve",
@@ -483,7 +437,7 @@ inbox and, if there's unread mail, prints decision:block JSON telling the
 agent to drain it. model defaults to "claude" when omitted. Never blocks a
 session: every internal error is swallowed.`,
 			Group: GroupPlumbing,
-			Run:   func(args []string, out io.Writer) error { return cmdHook(args, os.Stdin, out) },
+			Run:   adapt(func(args []string, out io.Writer) error { return cmdHook(args, os.Stdin, out) }),
 		},
 		{
 			Name:     "setup",
@@ -509,20 +463,7 @@ block to add to your kempt.toml rather than editing files, unless --force is
 given. --print kempt emits that same canonical block and exits.`,
 			Group:    GroupPlumbing,
 			NewFlags: newSetupFlags,
-			Run:      cmdSetup,
-		},
-		{
-			Name:     "update",
-			Synopsis: "update",
-			Summary:  "Update muster to the latest release.",
-			Help: `Self-updates the running muster binary in place from the family download
-standard (muster.tools/dl): fetches the latest published release for this
-OS/arch, verifies its checksum, and atomically replaces this executable.
-Prints "muster is already the latest" and does nothing when the running
-version is current. Shared with the rest of the .tools family via
-tools-common, so every family binary self-updates the same way.`,
-			Group: GroupPlumbing,
-			Run:   cmdUpdate,
+			Run:      adapt(cmdSetup),
 		},
 		{
 			Name:     "debug",
@@ -534,26 +475,11 @@ exploring or debugging the wire protocol — not part of the stable operator
 surface.`,
 			Group: GroupPlumbing,
 		},
-		{
-			Name:     "commands",
-			Synopsis: "commands [--json]",
-			Summary:  "List every command (--json for the machine-readable index).",
-			Help: `Bare, this is the same grouped listing as bare 'muster' / 'muster help'.
---json instead emits the .tools-family command index (name, synopsis,
-summary, group, help, selfRouted, flags) that kempt, tackle, and galley
-already expose the same way — so a coding agent can discover muster's full
-command surface, including the process-mode commands (serve/mcp/debug/
-lambda/channel) that main() dispatches directly and so report
-selfRouted: true, without shelling out to 'muster help' and scraping text.`,
-			Group:    GroupPlumbing,
-			NewFlags: newCommandsFlags,
-			Run:      cmdCommands,
-		},
 	}
 }
 
-// lookup finds a Registry command by name.
-func lookup(name string) (Command, bool) {
+// lookup finds a Registry command by name or alias.
+func lookup(name string) (tools.Command, bool) {
 	for _, c := range Registry {
 		if c.Name == name {
 			return c, true
@@ -564,14 +490,5 @@ func lookup(name string) (Command, bool) {
 			}
 		}
 	}
-	return Command{}, false
-}
-
-// commandNames returns every registered command name, in Registry order.
-func commandNames() []string {
-	names := make([]string, 0, len(Registry))
-	for _, c := range Registry {
-		names = append(names, c.Name)
-	}
-	return names
+	return tools.Command{}, false
 }
