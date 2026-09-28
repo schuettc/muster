@@ -164,11 +164,13 @@ func TestForeignKeysStayOff(t *testing.T) {
 func TestConcurrentFirstOpenStore(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "bus.db")
 	var wg sync.WaitGroup
+	start := make(chan struct{})
 	errs := make(chan error, 4)
 	for i := 0; i < 4; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			<-start // release together, so the opens actually race
 			s, err := Open(p)
 			if err != nil {
 				errs <- err
@@ -177,6 +179,7 @@ func TestConcurrentFirstOpenStore(t *testing.T) {
 			errs <- s.Close()
 		}()
 	}
+	close(start)
 	wg.Wait()
 	close(errs)
 	for err := range errs {
