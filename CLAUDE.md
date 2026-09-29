@@ -17,9 +17,13 @@ Versions before v0.18.0 stay MIT in perpetuity.
 
 ## Build / test / run
 
-- **`just verify`** — the gate: `gofmt`, `golangci-lint`, `go test -race`, build,
-  `cross` (all four release targets plus the `-tags lambda` build). Run it before
-  every commit; CI runs the same recipe, so local and CI can't drift.
+- **`just verify`** — the gate, the same in every .tools repo: `just gate` runs
+  the family Go gate (tools-actions go-ci at the version `ci.yml` pins: gofmt,
+  vet, golangci-lint with the family config, `go test -race`, all four release
+  targets), then `just verify-extra` runs muster's own checks (the `-tags lambda`
+  build and `aws-free`). The pre-push hook and CI run exactly these, so local and
+  CI can't drift. There is no repo `.golangci.yml`: a real exception is an inline
+  `//nolint:<linter> // <why>`.
 - **`just verify-dynamo`** — the second gate, deliberately NOT part of `verify`
   because it needs Docker. Runs `internal/dynamostore` and the DynamoDB half of
   the cross-backend conformance suite against DynamoDB Local. Without an endpoint
@@ -108,8 +112,8 @@ register_agent resolves against that identity before ever inserting a row: a con
   links into the binary every device installs. Devices reach the hosted bus over
   plain HTTPS with a bearer token (`internal/remote`) and need no AWS
   credentials, profile, region, or SDK; that is the entire reason the Lambda
-  tier exists rather than devices talking to DynamoDB directly. `just cross`
-  (in `verify`) builds both configurations, and `.github/workflows/release.yml`
+  tier exists rather than devices talking to DynamoDB directly. `just verify`
+  builds both configurations, and `.github/workflows/release.yml`
   builds the device binaries without the tag and the Lambda zip with it — so
   check the build tag before adding an AWS import, and never widen that edge.
 - **One canonical module per concern** — identity capture lives in `internal/tmuxenv`,

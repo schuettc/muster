@@ -94,6 +94,9 @@ func TestThreadConcernsSessionJoinEquivalence(t *testing.T) {
 			}
 			out = append(out, id)
 		}
+		if err := rows.Err(); err != nil {
+			t.Fatal(err)
+		}
 		return out
 	}
 

@@ -1,7 +1,11 @@
+# .tools family standard: identical in every family repo. `lefthook install`
+# once per clone (kempt's dev package does it).
 pre-commit:
   commands:
-    fmt:
-      run: just fmt && git add -u
+    gofmt:
+      glob: "*.go"
+      run: |
+        test -z "$(gofmt -l {staged_files})" || { gofmt -l {staged_files}; echo "gofmt needed; run just fmt"; exit 1; }
 pre-push:
   commands:
     verify:

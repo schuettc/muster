@@ -56,8 +56,8 @@ const maxBodyBytes = 6 << 20
 // breaks every device simultaneously — which in practice means it never
 // happens.
 const (
-	TokenEnv         = "MUSTER_TOKEN"
-	PreviousTokenEnv = "MUSTER_TOKEN_PREVIOUS"
+	TokenEnv         = "MUSTER_TOKEN"          //nolint:gosec // the name of an env var, not a credential
+	PreviousTokenEnv = "MUSTER_TOKEN_PREVIOUS" //nolint:gosec // ditto
 )
 
 // Authenticator decides whether a presented bearer token is valid. The v1
@@ -144,7 +144,7 @@ func Handler(d *daemon.Daemon, auth Authenticator) func(context.Context, events.
 		if req.IsBase64Encoded {
 			decoded, err := base64.StdEncoding.DecodeString(req.Body)
 			if err != nil {
-				return errorResponse(http.StatusBadRequest, "decode base64 body: "+err.Error()), nil
+				return errorResponse(http.StatusBadRequest, "decode base64 body: "+err.Error()), nil //nolint:nilerr // a bad body is the caller's 400, not a Lambda failure
 			}
 			if len(decoded) > maxBodyBytes {
 				return errorResponse(http.StatusRequestEntityTooLarge,
@@ -155,7 +155,7 @@ func Handler(d *daemon.Daemon, auth Authenticator) func(context.Context, events.
 
 		var pr proto.Request
 		if err := json.Unmarshal(body, &pr); err != nil {
-			return errorResponse(http.StatusBadRequest, "decode request: "+err.Error()), nil
+			return errorResponse(http.StatusBadRequest, "decode request: "+err.Error()), nil //nolint:nilerr // a bad body is the caller's 400, not a Lambda failure
 		}
 
 		resp := d.Dispatch(pr)

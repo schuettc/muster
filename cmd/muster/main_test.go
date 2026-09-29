@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"net"
 	"os"
 	"os/exec"
@@ -76,7 +77,8 @@ func run(t *testing.T, args ...string) (stdout, stderr string, code int) {
 	err := cmd.Run()
 	code = 0
 	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
 			code = exitErr.ExitCode()
 		} else {
 			t.Fatalf("running %v: %v", args, err)
@@ -184,8 +186,8 @@ func runEnv(t *testing.T, env []string, args ...string) (stdout, stderr string, 
 	cmd.Stderr = &errBuf
 	err := cmd.Run()
 	if err != nil {
-		exitErr, ok := err.(*exec.ExitError)
-		if !ok {
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) {
 			t.Fatalf("running %v: %v", args, err)
 		}
 		code = exitErr.ExitCode()
