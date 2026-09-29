@@ -1,5 +1,5 @@
-# .tools family standard: identical in every family repo. `lefthook install`
-# once per clone (kempt's dev package does it).
+# .tools family standard: identical in every family repo. Run `just hooks`
+# once per clone to install them.
 pre-commit:
   commands:
     gofmt:
