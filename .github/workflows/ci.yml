@@ -22,7 +22,7 @@ jobs:
           go-version-file: go.mod
       - uses: extractions/setup-just@v4.0.0
       - run: just prepare
-      - uses: schuettc/tools-actions/go-ci@v0.6.0
+      - uses: schuettc/tools-actions/go-ci@v0.10.0
         with:
           setup-go: "false"
   extra:
