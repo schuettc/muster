@@ -9,6 +9,10 @@ default: verify
 
 verify: prepare gate verify-extra
 
+# Everything: verify plus this tool's slow checks (browser, containers), which
+# CI runs as their own required jobs.
+verify-all: verify verify-slow
+
 # The family Go gate: gofmt, vet, golangci-lint (family config), race tests,
 # cross-build. Fetched once per tools-actions version into ~/.cache.
 gate:
@@ -38,6 +42,9 @@ hooks:
 # Files the gate needs that are not committed (built before the gate, locally
 # and in CI). muster has none.
 prepare:
+
+# Slow checks CI runs as their own jobs: the DynamoDB tests (Docker).
+verify-slow: verify-dynamo
 
 # Version stamp: cmd/muster, justfile, and .github/workflows/release.yml all
 # target the SAME internal/version vars via -ldflags -X, so a local `just
