@@ -1,37 +1,43 @@
-name: CI
+# .tools family standard: identical in every family repo except the branch
+# list and the gate's OS list. The same checks `just verify` runs locally.
+# Checks that need a service container follow as their own jobs.
+name: ci
 on:
-  pull_request:
-    branches: [dev, main]
   push:
     branches: [dev, main]
+  pull_request:
+    branches: [dev, main]
+permissions:
+  contents: read
 jobs:
-  verify:
-    runs-on: ubuntu-latest
+  gate:
+    strategy:
+      matrix:
+        os: [ubuntu-26.04, macos-26]
+    runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-go@v7.0.0
         with:
-          go-version: "1.26"
-      - uses: extractions/setup-just@v4
-      - name: Cache golangci-lint binary
-        id: cache-golangci
-        uses: actions/cache@v6
+          go-version-file: go.mod
+      - uses: extractions/setup-just@v4.0.0
+      - run: just prepare
+      - uses: schuettc/tools-actions/go-ci@v0.6.0
         with:
-          path: ~/go/bin/golangci-lint
-          key: golangci-lint-v2.12.2-${{ runner.os }}
-      - name: Install golangci-lint
-        # Pinned + installed via the Go toolchain: deterministic and avoids the
-        # install.sh 'latest' checksum-verify flakiness. Keep this version in
-        # sync with the version developers run locally. Skipped on a cache hit —
-        # the compile is slow, the pinned binary never changes for a given key.
-        if: steps.cache-golangci.outputs.cache-hit != 'true'
-        run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
-      - name: Verify
-        run: just verify
+          setup-go: "false"
+  extra:
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+      - uses: extractions/setup-just@v4.0.0
+      - run: just verify-extra
 
   # The DynamoDB backend's real semantics — conditional writes, atomic
   # counters, transactions, the exactly-one idempotency claim — need an actual
-  # endpoint, so those tests SKIP without one. `just verify` above must stay
+  # endpoint, so those tests SKIP without one. `just verify` must stay
   # fast and container-free, which means it can compile and vet them but never
   # run them. This job is where they run: a separate gate, not a replacement.
   #
@@ -39,16 +45,16 @@ jobs:
   # suite, whose DynamoDB half is the only thing proving the two
   # implementations agree.
   dynamo:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     services:
       dynamodb:
         image: amazon/dynamodb-local
         ports: ["8000:8000"]
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-go@v7.0.0
         with:
-          go-version: "1.26"
+          go-version-file: go.mod
       # amazon/dynamodb-local declares no HEALTHCHECK, so the runner reports
       # the container "started" the moment it is created — before the JVM is
       # listening. Without this the job leans on `go test`'s compile time as an

@@ -420,6 +420,7 @@ func (s *Store) Tasks(q TaskQuery) ([]Thread, error) {
 }
 
 func (s *Store) queryThreads(clause string, args []any) ([]Thread, error) {
+	//nolint:gosec // clause is built from fixed SQL fragments; every value is a ? argument
 	rows, err := s.db.Query(`
 WITH recent AS (
     SELECT *, `+effectiveIntent+` AS eff_intent

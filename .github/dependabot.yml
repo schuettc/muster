@@ -12,3 +12,14 @@ updates:
       - dependency-name: github.com/schuettc/tools-common*
     commit-message:
       prefix: "chore(deps)"
+  # The family release (and CI) actions: take each tools-actions release as a
+  # PR into dev, like tools-common.
+  - package-ecosystem: github-actions
+    directory: /
+    target-branch: dev
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 3
+    allow:
+      - dependency-name: "schuettc/tools-actions"
