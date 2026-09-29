@@ -4,7 +4,7 @@ Newest first. Releases before 0.23.0 are noted only where the change needed expl
 
 ## Unreleased
 
-- Checked by the family lint set (tools-actions v0.5.0), which replaces muster's own `.golangci.yml`. Its few findings are fixed or carry a stated reason; no behaviour change.
+- Checked by the family lint set (tools-actions v0.6.0), which replaces muster's own `.golangci.yml`. Its few findings are fixed or carry a stated reason; no behaviour change.
 - `just verify` and the pre-push hook run exactly what CI runs, at the version CI pins; the Lambda build and the AWS-free check are `just verify-extra`. The pre-commit hook now checks formatting instead of rewriting files.
 - These notes moved from `docs/release-notes.md` to `CHANGELOG.md`.
 
