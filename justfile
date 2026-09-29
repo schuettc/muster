@@ -1,12 +1,13 @@
 # ---- .tools family standard: identical in every family repo ----------------
-# `just verify` is exactly what CI runs: the family gate (tools-actions go-ci,
-# at the version .github/workflows/ci.yml pins) and then this tool's extras.
+# `just verify` is exactly what CI runs: this tool's `prepare` (files the build
+# needs, e.g. an embedded asset), the family gate (tools-actions go-ci, at the
+# version .github/workflows/ci.yml pins), then this tool's `verify-extra`.
 # The pre-push hook (lefthook.yml) runs it too, so local and CI never differ.
 set shell := ["bash", "-euo", "pipefail", "-c"]
 
 default: verify
 
-verify: gate verify-extra
+verify: prepare gate verify-extra
 
 # The family Go gate: gofmt, vet, golangci-lint (family config), race tests,
 # cross-build. Fetched once per tools-actions version into ~/.cache.
@@ -34,6 +35,10 @@ hooks:
     echo "lefthook hooks installed in $d"
 
 # ---- muster -----------------------------------------------------------------
+# Files the gate needs that are not committed (built before the gate, locally
+# and in CI). muster has none.
+prepare:
+
 # Version stamp: cmd/muster, justfile, and .github/workflows/release.yml all
 # target the SAME internal/version vars via -ldflags -X, so a local `just
 # build`, `just verify`, and a release build report the same thing.
