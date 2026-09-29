@@ -24,11 +24,11 @@ import (
 func requireRegisteredFrom(from string) error {
 	raw, err := callDaemon("list_agents", nil)
 	if err != nil {
-		return nil // degrade open; the real op will surface the transport error
+		return nil //nolint:nilerr // degrade open; the real op will surface the transport error
 	}
 	var rows []rosterRow
 	if json.Unmarshal(raw, &rows) != nil {
-		return nil
+		return nil //nolint:nilerr // degrade open, as above
 	}
 	for _, r := range rows {
 		if r.Alias == from {

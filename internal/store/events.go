@@ -78,6 +78,7 @@ func (s *Store) Events(q EventQuery) ([]Event, error) {
 		order = "events.id ASC"
 	}
 	args = append(args, limit)
+	//nolint:gosec // only fixed SQL fragments are concatenated; every value is a ? argument
 	rows, err := s.db.Query(`
 SELECT events.id, events.ts, events.kind, events.agent, events.target,
        events.thread_id, events.count, events.detail,

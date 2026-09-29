@@ -1,5 +1,50 @@
-# muster developer tasks — the SAME targets CI runs, so local and CI can't drift.
-set shell := ["bash", "-uc"]
+# ---- .tools family standard: identical in every family repo ----------------
+# `just verify` is exactly what CI runs: this tool's `prepare` (files the build
+# needs, e.g. an embedded asset), the family gate (tools-actions go-ci, at the
+# version .github/workflows/ci.yml pins), then this tool's `verify-extra`.
+# The pre-push hook (lefthook.yml) runs it too, so local and CI never differ.
+set shell := ["bash", "-euo", "pipefail", "-c"]
+
+default: verify
+
+verify: prepare gate verify-extra
+
+# Everything: verify plus this tool's slow checks (browser, containers), which
+# CI runs as their own required jobs.
+verify-all: verify verify-slow
+
+# The family Go gate: gofmt, vet, golangci-lint (family config), race tests,
+# cross-build. Fetched once per tools-actions version into ~/.cache.
+gate:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    v="$(grep -oE 'go-ci@v[0-9]+\.[0-9]+\.[0-9]+' .github/workflows/ci.yml | head -1 | cut -d@ -f2)"
+    f="${XDG_CACHE_HOME:-$HOME/.cache}/tools-actions/$v/go-ci/local.sh"
+    [ -f "$f" ] || { mkdir -p "$(dirname "$f")"; curl -fsSL "https://raw.githubusercontent.com/schuettc/tools-actions/$v/go-ci/local.sh" -o "$f"; }
+    bash "$f"
+
+fmt:
+    gofmt -w $(git ls-files '*.go')
+
+# Install the lefthook hooks into this clone's own .git/hooks (once per
+# clone). A global core.hooksPath (casebook's recorder) forwards to them;
+# plain `lefthook install` refuses to run under one.
+hooks:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    d="$(cd "$(git rev-parse --git-common-dir)" && pwd)/hooks"
+    git config --local core.hooksPath "$d"
+    trap 'git config --local --unset core.hooksPath' EXIT
+    lefthook install --force >/dev/null
+    echo "lefthook hooks installed in $d"
+
+# ---- muster -----------------------------------------------------------------
+# Files the gate needs that are not committed (built before the gate, locally
+# and in CI). muster has none.
+prepare:
+
+# Slow checks CI runs as their own jobs: the DynamoDB tests (Docker).
+verify-slow: verify-dynamo
 
 # Version stamp: cmd/muster, justfile, and .github/workflows/release.yml all
 # target the SAME internal/version vars via -ldflags -X, so a local `just
@@ -9,40 +54,16 @@ commit := `git rev-parse --short HEAD 2>/dev/null || echo none`
 date := `date -u +%Y-%m-%d`
 ldflags := "-X github.com/schuettc/muster/internal/version.version=" + version + " -X github.com/schuettc/muster/internal/version.commit=" + commit + " -X github.com/schuettc/muster/internal/version.date=" + date
 
-# Format code.
-fmt:
-    gofmt -w .
-
-# Verify formatting is clean (used by verify/CI).
-fmt-check:
-    test -z "$(gofmt -l .)" || { echo "gofmt needed:"; gofmt -l .; exit 1; }
-
-# Static analysis.
-lint:
-    golangci-lint run ./...
-
-# Tests (race detector on).
-test:
-    go test -race ./...
-
 # Build the binary.
 build:
     CGO_ENABLED=0 go build -ldflags "{{ ldflags }}" -o bin/muster ./cmd/muster
 
-# Cross-compile all release targets (no output, fail fast). The last line
-# builds the Lambda artifact's configuration (-tags lambda, the only build that
-# links the AWS SDK): it is not part of any other recipe, so without it here
-# the tagged code would rot silently until a release tried to ship it.
-cross:
-    set -e; \
-    for goos in darwin linux; do \
-      for goarch in arm64 amd64; do \
-        CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" go build -ldflags "{{ ldflags }}" -o /dev/null ./cmd/muster; \
-        CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" go build -ldflags "{{ ldflags }}" -o /dev/null ./cmd/muster-deploy; \
-      done; \
-    done
-    CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -tags lambda -ldflags "{{ ldflags }}" -o /dev/null ./cmd/muster
-    just aws-free
+# Tool-specific checks beyond the gate (CI runs this too): the Lambda
+# artifact's build (-tags lambda, the only build that links the AWS SDK; no
+# other recipe builds it, so without this the tagged code would rot silently
+# until a release tried to ship it) and the AWS-free device binary.
+verify-extra: aws-free
+    CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -tags lambda -o /dev/null ./cmd/muster
 
 # Assert the device binary links no AWS code. This is the enforcement half of
 # CLAUDE.md's hard rule: cmd/muster-deploy and the -tags lambda build may
@@ -59,9 +80,6 @@ aws-free:
       exit 1
     fi
     echo "ok: cmd/muster links no AWS packages"
-
-# Full gate — what pre-push and CI run.
-verify: fmt-check lint test build cross
 
 # DynamoDB backend tests against DynamoDB Local, plus the DynamoDB half of the
 # cross-backend conformance suite. Requires Docker, so it is deliberately NOT

@@ -284,7 +284,7 @@ func (s *Store) Events(q store.EventQuery) ([]store.Event, error) {
 	// force more round trips. Unfiltered is station's common poll, and there
 	// the bound is exact.
 	if q.Agent == "" && len(filters) == 0 {
-		in.Limit = aws.Int32(int32(limit))
+		in.Limit = aws.Int32(int32(limit)) //nolint:gosec // clampEventLimit bounds limit to maxEventLimit
 	}
 
 	out, err := s.eventPage(ctx, in, q.Agent, concerning, limit)
