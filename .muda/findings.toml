@@ -1,2 +1,157 @@
 schema = 1
-findings = []
+
+[[findings]]
+  id = "F-001"
+  waste = "W4"
+  location = "workflow:.github/workflows/ci.yml/job:gate"
+  recipe = "R11"
+  basis = "suspected"
+  estimate = "Saving: up to ~3 min off CI's critical path per run that restores a warm Linux entry; low confidence, basis is one same-run cross-runner-type comparison (run 36625609989: gate ubuntu-26.04 285s on extra's entry vs gate macos-26 94s on its own full entry); runs that miss the cache gain nothing; dynamo (~90s) would likely become the critical path. Effort: small (ci.yml setup-go cache inputs plus deleting the main-scope Linux 66da80 entry)."
+  risk = "extra and dynamo lose cache writes; extra is in the family-standard ci.yml; deleting a cache entry is a repository write; the race recurs on the next go.sum key change unless only the gate can save the Linux key. Required checks and jobs must not be dropped or renamed."
+  status = "open"
+  pr = ""
+  exemption-id = ""
+
+  [[findings.evidence]]
+    kind = "log"
+    url = "https://github.com/schuettc/muster/actions/runs/36624782857/job/109598860215"
+    run_id = 36624782857
+    job_id = 109598860215
+    note = "extra: 'Cache saved with the key: setup-go-Linux-x64-ubuntu26-go-1.26.4-66da80ced82190eb09b24deb270c050caeb9cf3dccdd1a79fb02fd1376cb4158' (run that created the main-scope key; cache list created_at 2026-09-29T20:14:04Z)"
+
+  [[findings.evidence]]
+    kind = "log"
+    url = "https://github.com/schuettc/muster/actions/runs/36624782857/job/109598860537"
+    run_id = 36624782857
+    job_id = 109598860537
+    note = "gate (ubuntu-26.04): 'Failed to save: Unable to reserve cache with key ...66da80..., another job may be creating this cache.'"
+
+  [[findings.evidence]]
+    kind = "log"
+    url = "https://github.com/schuettc/muster/actions/runs/36624782857/job/109598859834"
+    run_id = 36624782857
+    job_id = 109598859834
+    note = "dynamo: same refused save on the shared key"
+
+  [[findings.evidence]]
+    kind = "log"
+    url = "https://github.com/schuettc/muster/actions/runs/36625609989/job/109601674581"
+    run_id = 36625609989
+    job_id = 109601674581
+    note = "gate (ubuntu-26.04): restores 171919250 B (~164 MB) from the main-scope entry, then 'go: downloading' aws-sdk modules; go vet 50s, go test -race 89s, cross-build 106s; job 285s; post: 'Cache hit occurred on the primary key ... not saving cache'"
+
+  [[findings.evidence]]
+    kind = "log"
+    url = "https://github.com/schuettc/muster/actions/runs/36625609989/job/109601674502"
+    run_id = 36625609989
+    job_id = 109601674502
+    note = "gate (macos-26), same run and tree: restores its own 450909160 B entry saved by the gate job; go vet 1s, go test 23s, cross-build 11s; job 94s. Different runner type: context, not R11's identical-work comparison"
+
+  [[findings.evidence]]
+    kind = "log"
+    url = "https://github.com/schuettc/muster/actions/runs/36524748295"
+    run_id = 36524748295
+    note = "previous key de52b7...: extra saved, gate (ubuntu-26.04) and dynamo refused (also run 36526624136); same pattern in PR scopes #168-#171 (Linux ~172 MB vs macOS ~451 MB in the cache list)"
+
+  [[findings.evidence]]
+    kind = "file"
+    url = "https://github.com/schuettc/muster/blob/5868c3d/.github/workflows/ci.yml#L20"
+    path = ".github/workflows/ci.yml"
+    line = 20
+    note = "gate, extra and dynamo all use actions/setup-go@v7.0.0 with go-version-file: go.mod and the default built-in cache, so all three race for one Linux key"
+
+  [[findings.evidence]]
+    kind = "file"
+    url = "https://github.com/schuettc/muster/blob/5868c3d/justfile#L65"
+    path = "justfile"
+    line = 65
+    note = "verify-extra builds only linux/arm64 -tags lambda ./cmd/muster plus go list: the winning save holds none of the gate's linux/amd64 vet, race-test or cross-build work"
+
+  [[findings.evidence]]
+    kind = "run"
+    url = "https://github.com/schuettc/muster/actions/runs/36625609989"
+    run_id = 36625609989
+    note = "R11 Detect step 3 not satisfied: the ubuntu gate has never restored an entry it saved itself, so no warm same-runner baseline exists; a restore (285s, this run) is no faster than misses (233-329s, e.g. 36618294855, 36613737722). What would settle it: one ubuntu gate run with the same go.sum and the same commands that restores an entry the gate job saved itself, compared phase by phase against run 36625609989. A fix that leaves the gate as the only Linux writer, plus deleting the `main`-scope entry, would produce exactly that."
+
+[[findings]]
+  id = "F-002"
+  waste = "W5"
+  location = "workflow:.github/workflows/ci.yml/job:gate/step:Run schuettc%2Ftools-actions%2Fgo-ci@v0.10.1"
+  recipe = "R5"
+  basis = "measured"
+  estimate = "Duplication measured; saving suspected: ~50s off the critical path if the 4 targets were split across the two legs (half of a cold ~105s cross-build; per-target times are not in the logs, so unproven); a few seconds once the ubuntu cache is warm (macOS warm cross-build 11s). Effort: small, but the fix belongs upstream in schuettc/tools-actions go-ci."
+  risk = "The family-standard ci.yml must be identical across repos except branch and OS lists, so per-repo, per-leg target lists are forbidden; an upstream go-ci change affects every family repo. Both gate legs must stay required checks."
+  status = "open"
+  pr = ""
+  exemption-id = ""
+
+  [[findings.evidence]]
+    kind = "log"
+    url = "https://github.com/schuettc/muster/actions/runs/36625609989/job/109601674581"
+    run_id = 36625609989
+    job_id = 109601674581
+    note = "gate (ubuntu-26.04) cross-build group: build darwin/arm64, darwin/amd64, linux/amd64, linux/arm64; 106s"
+
+  [[findings.evidence]]
+    kind = "log"
+    url = "https://github.com/schuettc/muster/actions/runs/36625609989/job/109601674502"
+    run_id = 36625609989
+    job_id = 109601674502
+    note = "gate (macos-26), same run and tree, same go1.26.4: the same cross-build group runs again (11s on a warm cache)"
+
+  [[findings.evidence]]
+    kind = "log"
+    url = "https://github.com/schuettc/muster/actions/runs/36618294855/job/109576866351"
+    run_id = 36618294855
+    job_id = 109576866351
+    note = "gate (macos-26) on a cold cache: cross-build 104s (2026-09-29T19:21:34Z-19:23:18Z)"
+
+  [[findings.evidence]]
+    kind = "file"
+    url = "https://github.com/schuettc/tools-actions/blob/v0.10.1/go-ci/ci.sh"
+    path = "go-ci/ci.sh (schuettc/tools-actions@v0.10.1)"
+    note = "cross-build loop runs CGO_ENABLED=0 GOOS/GOARCH go build for each of TARGETS (default darwin/arm64 darwin/amd64 linux/amd64 linux/arm64): host-independent, so both matrix legs compute the same thing"
+
+  [[findings.evidence]]
+    kind = "file"
+    url = "https://github.com/schuettc/muster/blob/5868c3d/.github/workflows/ci.yml#L25"
+    path = ".github/workflows/ci.yml"
+    line = 25
+    note = "go-ci@v0.10.1 called with default targets in a matrix over ubuntu-26.04 and macos-26"
+
+[[findings]]
+  id = "F-003"
+  waste = "W6"
+  location = "workflow:.github/workflows/ci.yml"
+  recipe = "R10"
+  basis = "suspected"
+  estimate = "No number: no basis until tree identity is proven. Effort: unknown (would need proof-based reuse, not skipping)."
+  risk = "ci.yml jobs are required checks on main; any reuse must be proof-scoped to tree, branch and workflow and must run full checks on any miss; never skip or path-filter required checks."
+  status = "open"
+  pr = ""
+  exemption-id = ""
+
+  [[findings.evidence]]
+    kind = "run"
+    url = "https://github.com/schuettc/muster/actions/runs/36624839171"
+    run_id = 36624839171
+    note = "pull_request run on a0a1ebd (main) executes the full ci.yml job set"
+
+  [[findings.evidence]]
+    kind = "run"
+    url = "https://github.com/schuettc/muster/actions/runs/36624782857"
+    run_id = 36624782857
+    note = "push run on a0a1ebd (main) executes the same job set; muda measure could not establish check identity (pull_request runs test a merge ref; matrix values unknown), so duplication is unproven"
+
+  [[findings.evidence]]
+    kind = "run"
+    url = "https://github.com/schuettc/muster/actions/runs/36528451066"
+    run_id = 36528451066
+    note = "push dev 9bf0ab6 alongside pull_request run 36528454624 on the same commit"
+
+  [[findings.evidence]]
+    kind = "file"
+    url = "https://github.com/schuettc/muster/blob/5868c3d/.github/workflows/ci.yml#L4"
+    path = ".github/workflows/ci.yml"
+    line = 4
+    note = "triggers on both push and pull_request for dev and main. What would settle it: compare the PR merge-ref tree tested with the pushed commit's tree for the same change"
