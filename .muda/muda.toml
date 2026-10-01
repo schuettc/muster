@@ -1,0 +1,13 @@
+schema = 1
+stacks = ["github-actions"]
+muda-version = "dev"
+
+[roles]
+  ".github/workflows/ci.yml" = "gate"
+  ".github/workflows/release.yml" = "deploy"
+  ".github/workflows/version-guard.yml" = "gate"
+  "dynamic/dependabot/dependabot-updates" = "other"
+
+[window]
+  since = "2026-09-29T05:07:00Z"
+  until = "2026-10-01T22:48:08.027879Z"
