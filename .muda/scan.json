@@ -1,0 +1,82 @@
+{
+  "schema": 1,
+  "repo": "schuettc/muster",
+  "ref": "main",
+  "since": "2026-09-29T05:07:00Z",
+  "until": "2026-10-01T22:48:10.748114Z",
+  "files": [
+    ".github/workflows/ci.yml",
+    ".github/workflows/release.yml",
+    ".github/workflows/version-guard.yml"
+  ],
+  "signals": [
+    {
+      "id": "no-concurrency",
+      "waste": [
+        "W6"
+      ],
+      "severity": "warn",
+      "summary": ".github/workflows/ci.yml triggers on push/pull_request but has no concurrency control",
+      "evidence": [
+        {
+          "kind": "file",
+          "url": "https://github.com/schuettc/muster/blob/main/.github/workflows/ci.yml#L5",
+          "path": ".github/workflows/ci.yml",
+          "line": 5,
+          "note": "push/pull_request trigger without concurrency"
+        }
+      ]
+    },
+    {
+      "id": "no-concurrency",
+      "waste": [
+        "W6"
+      ],
+      "severity": "warn",
+      "summary": ".github/workflows/release.yml triggers on push/pull_request but has no concurrency control",
+      "evidence": [
+        {
+          "kind": "file",
+          "url": "https://github.com/schuettc/muster/blob/main/.github/workflows/release.yml#L29",
+          "path": ".github/workflows/release.yml",
+          "line": 29,
+          "note": "push/pull_request trigger without concurrency"
+        }
+      ]
+    },
+    {
+      "id": "no-concurrency",
+      "waste": [
+        "W6"
+      ],
+      "severity": "warn",
+      "summary": ".github/workflows/version-guard.yml triggers on push/pull_request but has no concurrency control",
+      "evidence": [
+        {
+          "kind": "file",
+          "url": "https://github.com/schuettc/muster/blob/main/.github/workflows/version-guard.yml#L4",
+          "path": ".github/workflows/version-guard.yml",
+          "line": 4,
+          "note": "push/pull_request trigger without concurrency"
+        }
+      ]
+    },
+    {
+      "id": "no-path-filter",
+      "waste": [
+        "W6"
+      ],
+      "severity": "warn",
+      "summary": ".github/workflows/ci.yml triggers on push/pull_request without paths filter; p50=5m26s (≥5 min)",
+      "evidence": [
+        {
+          "kind": "file",
+          "url": "https://github.com/schuettc/muster/blob/main/.github/workflows/ci.yml#L5",
+          "path": ".github/workflows/ci.yml",
+          "line": 5,
+          "note": "push/pull_request without paths filter; p50=5m26s"
+        }
+      ]
+    }
+  ]
+}
