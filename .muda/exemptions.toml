@@ -1,2 +1,10 @@
 schema = 1
-exemptions = []
+
+[[exemptions]]
+  id = "E-001"
+  waste = "W4"
+  location = "gate:policy:workflow:.github/workflows/ci.yml@3f70c0636a6173759606f4e936006746a25f2a94a184075ae894244dfe83f2bf"
+  reason = "Changed workflow file; muda has no completeness attestation. Reviewed workflow_diffs: the only parsed changes are jobs.extra.steps[1].with.cache (absent -> false) and jobs.dynamo.steps[1].with.cache (absent -> false). No job, required check or needs edge changed; release.yml and version-guard.yml verified byte-identical."
+  agreed-by = "Court Schuett (repo owner)"
+  date = "2026-10-02"
+  review-by = "2026-11-01"
