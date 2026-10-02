@@ -1,3 +1,5 @@
+// Wire format notes live on the types below.
+
 // Package proto defines the daemon wire protocol: newline-delimited JSON.
 package proto
 
