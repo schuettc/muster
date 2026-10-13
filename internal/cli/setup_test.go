@@ -380,3 +380,13 @@ func TestSetupAgentFilter(t *testing.T) {
 		t.Error("codex not configured with --agent codex")
 	}
 }
+
+// TestKemptTemplateInstallsUserPromptSubmit: the kempt template is the
+// canonical setup, so it carries the Claude hook that marks a session working
+// exactly as `muster setup` does.
+func TestKemptTemplateInstallsUserPromptSubmit(t *testing.T) {
+	want := `UserPromptSubmit = [ { hooks = [ { type = "command", command = "~/.local/bin/muster hook UserPromptSubmit claude" } ] } ]`
+	if !strings.Contains(setupKemptTOML, want) {
+		t.Fatalf("setup_kempt.toml lacks the Claude UserPromptSubmit hook: want %s", want)
+	}
+}

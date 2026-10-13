@@ -6,7 +6,7 @@ Newest first. Releases before 0.23.0 are noted only where the change needed expl
 
 **Every agent row now says whether its session is working or idle, and since when.** `list_agents` carries `activity` (`working`, `idle`, or empty when never reported) and `activity_at` (unix ms), and `muster agents` shows them in a new ACTIVITY column after LIVE (`working 4m`, `idle 2h`, `—`). A coordinator can see a stalled peer without asking it.
 
-- New hook event `muster hook UserPromptSubmit <model>` marks the session working. Re-run `muster setup` to install it for Claude Code.
+- New hook event `muster hook UserPromptSubmit <model>` marks the session working. To install it for Claude Code, run `kempt apply` with the updated `[packages.muster]` block (`muster setup --print kempt` prints it), or re-run `muster setup` if you don't use kempt.
 - The Stop hook marks the session idle, unless it hands the agent mail (a block decision), which keeps it working. Every Stop now makes one extra daemon call for this.
 - Reading your own inbox with `get_inbox` also marks you working; a peek at someone else's inbox changes nothing.
 
