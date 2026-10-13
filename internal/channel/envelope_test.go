@@ -152,23 +152,23 @@ func TestGuidancePresencePerIntent(t *testing.T) {
 			}
 		}
 	}
-	if !strings.Contains(batchGuidance, "never reply") || !strings.Contains(batchGuidance, "get_inbox") {
-		t.Errorf("batch guidance lost a load-bearing phrase: %q", batchGuidance)
+	if bg := batchGuide(nil); !strings.Contains(bg, "never reply") || !strings.Contains(bg, "get_inbox") {
+		t.Errorf("batch guidance lost a load-bearing phrase: %q", bg)
 	}
 }
 
-// TestDrainClauseNamesCLIAndAlias locks in the A fix: the channel push must
-// tell the agent that reading a thread does NOT clear the badge, and give it
-// the drain in BOTH tool and CLI form, named to the session's own alias — the
+// TestDrainFirstNamesCLIAndAlias locks in the A fix: the channel push must
+// tell the agent to mark its mail read first, and give it the drain in BOTH
+// tool and CLI form, named to the session's own alias — the
 // CLI-only mistranslation ('muster inbox <a nearby label>' = a peek that
 // clears nothing) is exactly what left the badge lit and re-notifying.
-func TestDrainClauseNamesCLIAndAlias(t *testing.T) {
+func TestDrainFirstNamesCLIAndAlias(t *testing.T) {
 	mine := []string{"tools-workspace/auto-review-audit"}
 	// single event
 	content, _ := Format([]Event{{Kind: "reply", Agent: "lead", ThreadID: 40, Subject: "plan", Intent: "reply-requested"}}, mine)
 	_, guide := splitPush(t, content)
 	for _, want := range []string{
-		"does not clear the", // states the badge is not cleared by reading
+		"First mark it read", // the drain leads, before the thread is read
 		"get_inbox tool for alias 'tools-workspace/auto-review-audit'", // tool is the method, named alias
 		"no muster MCP tools?",                             // CLI is the fallback for a session without tools, not a coequal option
 		"muster inbox 'tools-workspace/auto-review-audit'", // CLI form, named alias
@@ -229,5 +229,43 @@ func TestFormatEmptyIsEmpty(t *testing.T) {
 	content, meta := Format(nil, nil)
 	if content != "" || meta != nil {
 		t.Errorf("nothing to say: %q %v", content, meta)
+	}
+}
+
+// TestGuidanceDrainsBeforeReading pins the drain-first order: get_inbox comes
+// before get_thread in every push, so the 📬 badge clears the moment the agent
+// starts on the mail instead of after it has replied.
+func TestGuidanceDrainsBeforeReading(t *testing.T) {
+	aliasSets := [][]string{nil, {"a"}, {"a", "b"}}
+	events := []Event{
+		{Kind: "send", ThreadID: 7, Intent: "action-requested"},
+		{Kind: "send", ThreadID: 7, Intent: "reply-requested"},
+		{Kind: "send", ThreadID: 7, Intent: "fyi"},
+		{Kind: "send", ThreadID: 7},
+		{Kind: "reply", ThreadID: 7, Intent: "reply-requested"},
+		{Kind: "reply", ThreadID: 7, Intent: "fyi"},
+	}
+	for _, aliases := range aliasSets {
+		for _, e := range events {
+			g := guidance(e, aliases)
+			inbox, thread := strings.Index(g, "get_inbox"), strings.Index(g, "get_thread")
+			if inbox < 0 || thread < 0 || inbox > thread {
+				t.Errorf("%s/%s aliases=%v: get_inbox must precede get_thread: %q", e.Kind, e.Intent, aliases, g)
+			}
+			if strings.Contains(g, "finish by draining") {
+				t.Errorf("stale trailing drain wording: %q", g)
+			}
+		}
+		b := batchGuide(aliases)
+		first := b
+		if i := strings.Index(b, ". "); i >= 0 {
+			first = b[:i]
+		}
+		if !strings.Contains(first, "get_inbox") {
+			t.Errorf("aliases=%v: batch guidance must drain in its first sentence: %q", aliases, b)
+		}
+		if strings.Contains(b, "finish by draining") {
+			t.Errorf("stale trailing drain wording: %q", b)
+		}
 	}
 }
