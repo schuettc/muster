@@ -49,7 +49,7 @@ ON CONFLICT(alias) DO UPDATE SET
 // agents included: their rows are history, not gone (see DepartAgent).
 func (s *Store) ListAgents() ([]Agent, error) {
 	rows, err := s.db.Query(`
-SELECT alias, role, model_type, socket_path, pane_id, session_name, session_id, session_created, device_id, device_name, harness_session_id, transcript_path, project, label, label_manual, registered_at, last_seen, last_read_entry_id, last_read_standing_entry_id, departed, superseded_by
+SELECT ` + agentColumns + `
 FROM agents ORDER BY alias`)
 	if err != nil {
 		return nil, err
@@ -58,7 +58,7 @@ FROM agents ORDER BY alias`)
 	var out []Agent
 	for rows.Next() {
 		var a Agent
-		if err := rows.Scan(&a.Alias, &a.Role, &a.ModelType, &a.SocketPath, &a.PaneID, &a.SessionName, &a.SessionID, &a.SessionCreated, &a.DeviceID, &a.DeviceName, &a.HarnessSessionID, &a.TranscriptPath, &a.Project, &a.Label, &a.LabelManual, &a.RegisteredAt, &a.LastSeen, &a.LastReadEntryID, &a.LastReadStandingEntryID, &a.Departed, &a.SupersededBy); err != nil {
+		if err := rows.Scan(&a.Alias, &a.Role, &a.ModelType, &a.SocketPath, &a.PaneID, &a.SessionName, &a.SessionID, &a.SessionCreated, &a.DeviceID, &a.DeviceName, &a.HarnessSessionID, &a.TranscriptPath, &a.Project, &a.Label, &a.LabelManual, &a.RegisteredAt, &a.LastSeen, &a.LastReadEntryID, &a.LastReadStandingEntryID, &a.Departed, &a.SupersededBy, &a.Activity, &a.ActivityAt); err != nil {
 			return nil, err
 		}
 		out = append(out, a)
@@ -73,9 +73,10 @@ func (s *Store) GetAgent(alias string) (Agent, bool, error) {
 	return s.scanOneAgent(`WHERE alias=?`, alias)
 }
 
-// agentColumns is the exact column list every single-row agent scan uses —
-// GetAgent and FindConversation alike — so the two can never drift apart.
-const agentColumns = `alias, role, model_type, socket_path, pane_id, session_name, session_id, session_created, device_id, device_name, harness_session_id, transcript_path, project, label, label_manual, registered_at, last_seen, last_read_entry_id, last_read_standing_entry_id, departed, superseded_by`
+// agentColumns is the exact column list every agent row scan uses —
+// ListAgents, GetAgent and FindConversation alike — so they can never drift
+// apart.
+const agentColumns = `alias, role, model_type, socket_path, pane_id, session_name, session_id, session_created, device_id, device_name, harness_session_id, transcript_path, project, label, label_manual, registered_at, last_seen, last_read_entry_id, last_read_standing_entry_id, departed, superseded_by, activity, activity_at`
 
 // scanOneAgent runs a `SELECT <agentColumns> FROM agents ` + where query with
 // args and scans the single resulting row. ok is false (not an error) when
@@ -84,7 +85,7 @@ const agentColumns = `alias, role, model_type, socket_path, pane_id, session_nam
 func (s *Store) scanOneAgent(where string, args ...any) (Agent, bool, error) {
 	var a Agent
 	err := s.db.QueryRow(`SELECT `+agentColumns+` FROM agents `+where, args...).
-		Scan(&a.Alias, &a.Role, &a.ModelType, &a.SocketPath, &a.PaneID, &a.SessionName, &a.SessionID, &a.SessionCreated, &a.DeviceID, &a.DeviceName, &a.HarnessSessionID, &a.TranscriptPath, &a.Project, &a.Label, &a.LabelManual, &a.RegisteredAt, &a.LastSeen, &a.LastReadEntryID, &a.LastReadStandingEntryID, &a.Departed, &a.SupersededBy)
+		Scan(&a.Alias, &a.Role, &a.ModelType, &a.SocketPath, &a.PaneID, &a.SessionName, &a.SessionID, &a.SessionCreated, &a.DeviceID, &a.DeviceName, &a.HarnessSessionID, &a.TranscriptPath, &a.Project, &a.Label, &a.LabelManual, &a.RegisteredAt, &a.LastSeen, &a.LastReadEntryID, &a.LastReadStandingEntryID, &a.Departed, &a.SupersededBy, &a.Activity, &a.ActivityAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Agent{}, false, nil
 	}
@@ -117,6 +118,14 @@ func (s *Store) FindConversation(deviceID, transcriptPath, socketPath, sessionID
 // TouchAgent bumps last_seen. No error if the agent is unknown.
 func (s *Store) TouchAgent(alias string) error {
 	_, err := s.db.Exec(`UPDATE agents SET last_seen=? WHERE alias=?`, clock.NowMillis(), alias)
+	return err
+}
+
+// SetActivity records alias's session as working or idle, stamping
+// activity_at with the time of the change. The daemon validates state;
+// unknown alias is a no-op.
+func (s *Store) SetActivity(alias, state string) error {
+	_, err := s.db.Exec(`UPDATE agents SET activity=?, activity_at=? WHERE alias=?`, state, clock.NowMillis(), alias)
 	return err
 }
 

@@ -265,6 +265,31 @@ func (s *Store) TouchAgent(alias string) error {
 	return nil
 }
 
+// SetActivity records alias's session state and stamps activity_at.
+// RegisterAgent's UpdateItem never names either attribute, so a re-register
+// leaves them alone. attribute_exists(pk) keeps an unknown alias a no-op
+// rather than an upsert, exactly as on TouchAgent.
+func (s *Store) SetActivity(alias, state string) error {
+	_, err := s.c.UpdateItem(backgroundCtx(), &dynamodb.UpdateItemInput{
+		TableName:                aws.String(s.table),
+		Key:                      agentKey(alias),
+		UpdateExpression:         aws.String("SET #activity = :a, #activity_at = :t"),
+		ConditionExpression:      aws.String("attribute_exists(pk)"),
+		ExpressionAttributeNames: map[string]string{"#activity": "activity", "#activity_at": "activity_at"},
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":a": attrS(state),
+			":t": attrN(clock.NowMillis()),
+		},
+	})
+	if err != nil {
+		if isConditionFailed(err) {
+			return nil // unknown alias: no-op, matching the SQLite contract
+		}
+		return fmt.Errorf("dynamostore: set activity on %q: %w", alias, err)
+	}
+	return nil
+}
+
 // DepartAgent tombstones alias: sets departed in place, preserving identity,
 // project, label, and read state. Unknown alias is a no-op. RegisterAgent's
 // upsert is the only way back to departed=false.
@@ -422,6 +447,10 @@ func (s *Store) Become(from, to string) error {
 	clone["registered_at"] = attrN(now)
 	clone["last_seen"] = attrN(now)
 	delete(clone, "superseded_by")
+	// The SQLite clone lists its columns and leaves activity out, so the new
+	// alias starts unknown until its session's next hook reports it.
+	delete(clone, "activity")
+	delete(clone, "activity_at")
 
 	_, err = s.c.TransactWriteItems(ctx, &dynamodb.TransactWriteItemsInput{
 		TransactItems: []types.TransactWriteItem{
@@ -861,6 +890,8 @@ func itemToAgent(item map[string]types.AttributeValue) store.Agent {
 		LastReadStandingEntryID: numAttr(item, "last_read_standing_entry_id"),
 		Departed:                boolAttr(item, "departed"),
 		SupersededBy:            strAttr(item, "superseded_by"),
+		Activity:                strAttr(item, "activity"),
+		ActivityAt:              numAttr(item, "activity_at"),
 	}
 }
 
