@@ -428,14 +428,15 @@ lambda) — the binary devices run reports that and exits.`,
 		},
 		{
 			Name:     "hook",
-			Synopsis: "hook <SessionStart|SessionEnd|Stop> [model]",
+			Synopsis: "hook <SessionStart|SessionEnd|Stop|UserPromptSubmit> [model]",
 			Summary:  "Session-lifecycle hook entry point for agent harness configs.",
 			Help: `The single entry point an agent harness's hook config (Claude Code,
 Codex, Cursor, ...) points at directly — not normally typed by hand. SessionStart
 registers, SessionEnd deregisters, Stop checks the calling tmux session's
 inbox and, if there's unread mail, prints decision:block JSON telling the
-agent to drain it. model defaults to "claude" when omitted. Never blocks a
-session: every internal error is swallowed.`,
+agent to drain it. UserPromptSubmit marks the session working, and Stop marks
+it idle unless it hands the agent mail. model defaults to "claude" when
+omitted. Never blocks a session: every internal error is swallowed.`,
 			Group: GroupPlumbing,
 			Run:   adapt(func(args []string, out io.Writer) error { return cmdHook(args, os.Stdin, out) }),
 		},

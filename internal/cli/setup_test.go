@@ -113,6 +113,32 @@ func TestSetupApplyClaude(t *testing.T) {
 	}
 }
 
+// TestSetupClaudeInstallsUserPromptSubmit: Claude Code gets the hook that
+// marks a session working, and a second run adds nothing.
+func TestSetupClaudeInstallsUserPromptSubmit(t *testing.T) {
+	home := setupHome(t)
+	if err := os.MkdirAll(filepath.Join(home, ".claude"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runSetup(t)
+	path := filepath.Join(home, ".claude", "settings.json")
+	hooks, _ := readJSON(t, path)["hooks"].(map[string]any)
+	want := []any{map[string]any{"hooks": []any{map[string]any{
+		"type": "command", "command": "~/.local/bin/muster hook UserPromptSubmit claude",
+	}}}}
+	if got := hooks["UserPromptSubmit"]; !reflect.DeepEqual(got, want) {
+		t.Fatalf("hooks.UserPromptSubmit = %#v, want %#v", got, want)
+	}
+	first, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runSetup(t)
+	if again, _ := os.ReadFile(path); !bytes.Equal(again, first) {
+		t.Fatalf("re-run changed settings.json:\n%s\nvs\n%s", first, again)
+	}
+}
+
 func TestSetupIdempotent(t *testing.T) {
 	home := setupHome(t)
 	if err := os.MkdirAll(filepath.Join(home, ".claude"), 0o755); err != nil {

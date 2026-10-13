@@ -2,6 +2,18 @@
 
 Newest first. Releases before 0.23.0 are noted only where the change needed explaining.
 
+## 0.24.0 — working or idle, and drain first
+
+**Every agent row now says whether its session is working or idle, and since when.** `list_agents` carries `activity` (`working`, `idle`, or empty when never reported) and `activity_at` (unix ms), and `muster agents` shows them in a new ACTIVITY column after LIVE (`working 4m`, `idle 2h`, `—`). A coordinator can see a stalled peer without asking it.
+
+- New hook event `muster hook UserPromptSubmit <model>` marks the session working. Re-run `muster setup` to install it for Claude Code.
+- The Stop hook marks the session idle, unless it hands the agent mail (a block decision), which keeps it working. Every Stop now makes one extra daemon call for this.
+- Reading your own inbox with `get_inbox` also marks you working; a peek at someone else's inbox changes nothing.
+
+**Channel pushes tell the agent to drain first.** The guidance on a pushed message now starts with "First mark it read: call your get_inbox tool…", before it says to read the thread, so the 📬 badge clears as soon as the agent starts on the mail rather than after it replies.
+
+The SQLite database moves to schema version 2 (two new columns on `agents`) on first open. muster 0.23.x refuses a version-2 database, so downgrading after this release needs the database restored from before the upgrade. Restart the daemon after updating: `launchctl kickstart -k gui/$(id -u)/tools.muster.serve`.
+
 ## 0.23.1
 
 - Releases are built through the family release actions (tools-actions); the assets, signing and `/dl` paths are unchanged.
