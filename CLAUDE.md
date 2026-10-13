@@ -77,8 +77,8 @@ only once the PR is open.
 ## The naming contract
 
 The tmux option pair `@claude_task` / `@claude_task_manual` is the neutral
-meeting point between muster and the operator's dotfiles (spec:
-docs/superpowers/specs/2026-08-05-conversation-identity-naming-design.md).
+meeting point between muster and the operator's dotfiles (its design spec is
+no longer tracked; the last copy is in commit `726d7ed`).
 Intentional gestures (prefix T, `muster label`, the SessionStart projection
 of a transcript custom-title) set both; automatic syncs write only the label
 and defer to the flag; readers trust the pair. The conversation's transcript

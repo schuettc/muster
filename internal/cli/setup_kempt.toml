@@ -45,7 +45,7 @@ only = { os = "darwin" }
 
   [[packages.muster.json-merge]]
   file = "~/.claude/settings.json"
-  merge = { hooks = { SessionStart = [ { matcher = "startup|resume", hooks = [ { type = "command", command = "~/.local/bin/muster hook SessionStart claude" } ] } ], Stop = [ { hooks = [ { type = "command", command = "~/.local/bin/muster hook Stop claude" } ] } ], SessionEnd = [ { hooks = [ { type = "command", command = "~/.local/bin/muster hook SessionEnd claude" } ] } ] } }
+  merge = { hooks = { SessionStart = [ { matcher = "startup|resume", hooks = [ { type = "command", command = "~/.local/bin/muster hook SessionStart claude" } ] } ], UserPromptSubmit = [ { hooks = [ { type = "command", command = "~/.local/bin/muster hook UserPromptSubmit claude" } ] } ], Stop = [ { hooks = [ { type = "command", command = "~/.local/bin/muster hook Stop claude" } ] } ], SessionEnd = [ { hooks = [ { type = "command", command = "~/.local/bin/muster hook SessionEnd claude" } ] } ] } }
 
   [[packages.muster.json-merge]]
   file = "~/.codex/hooks.json"

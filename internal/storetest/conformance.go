@@ -75,6 +75,9 @@ var cases = []conformanceCase{
 	{"SetSessionLabelRefusesAnUnprovenIncarnation", testSetSessionLabelZeroIncarnation},
 	{"DepartStaleSiblingsGhostGuard", testDepartStaleSiblings},
 	{"DepartStaleSiblingsNoOpsOnEmptyTuple", testDepartStaleSiblingsEmptyTuple},
+	{"SetActivityStampsStateAndTime", testSetActivityStamps},
+	{"SetActivityUnknownAliasIsNoOp", testSetActivityUnknown},
+	{"ReRegisterKeepsActivity", testReRegisterKeepsActivity},
 	{"DepartStaleSiblingsSparesACollidingDevice", testDepartStaleSiblingsDeviceCollision},
 
 	// Threads and entries.
@@ -259,6 +262,15 @@ func mustRegisterLegacy(t *testing.T, s store.API, a store.Agent) {
 	if err := s.RegisterAgent(a); err != nil {
 		t.Fatalf("RegisterAgent(%q): %v", a.Alias, err)
 	}
+}
+
+func mustGetAgent(t *testing.T, s store.API, alias string) store.Agent {
+	t.Helper()
+	a, ok, err := s.GetAgent(alias)
+	if err != nil || !ok {
+		t.Fatalf("GetAgent(%q) = ok %v, err %v", alias, ok, err)
+	}
+	return a
 }
 
 func mustThread(t *testing.T, s store.API, th store.Thread, body string) int64 {
@@ -1099,6 +1111,59 @@ func testMarkReadUnknown(t *testing.T, s store.API) {
 	}
 	if len(agents) != 0 {
 		t.Fatalf("MarkRead created %d phantom row(s): %+v", len(agents), agents)
+	}
+}
+
+// testSetActivityStamps: SetActivity records the state and stamps
+// activity_at with the time of the change; a later call overwrites both.
+func testSetActivityStamps(t *testing.T, s store.API) {
+	mustRegister(t, s, store.Agent{Alias: "worker"})
+	before := clock.NowMillis()
+	if err := s.SetActivity("worker", "working"); err != nil {
+		t.Fatalf("SetActivity working: %v", err)
+	}
+	got := mustGetAgent(t, s, "worker")
+	if got.Activity != "working" || got.ActivityAt < before {
+		t.Fatalf("after working: activity=%q at=%d, want working at >= %d", got.Activity, got.ActivityAt, before)
+	}
+	mid := clock.NowMillis()
+	if err := s.SetActivity("worker", "idle"); err != nil {
+		t.Fatalf("SetActivity idle: %v", err)
+	}
+	got = mustGetAgent(t, s, "worker")
+	if got.Activity != "idle" || got.ActivityAt < mid {
+		t.Fatalf("after idle: activity=%q at=%d, want idle at >= %d", got.Activity, got.ActivityAt, mid)
+	}
+}
+
+func testSetActivityUnknown(t *testing.T, s store.API) {
+	if err := s.SetActivity("nobody", "working"); err != nil {
+		t.Fatalf("SetActivity on an unknown alias: %v", err)
+	}
+	agents, err := s.ListAgents()
+	if err != nil {
+		t.Fatalf("ListAgents: %v", err)
+	}
+	if len(agents) != 0 {
+		t.Fatalf("SetActivity created %d phantom row(s): %+v", len(agents), agents)
+	}
+}
+
+// testReRegisterKeepsActivity: a brand-new row reports unknown activity, and
+// re-registering an existing alias neither inserts nor overwrites it.
+func testReRegisterKeepsActivity(t *testing.T, s store.API) {
+	mustRegister(t, s, store.Agent{Alias: "a", Role: "r1"})
+	if got := mustGetAgent(t, s, "a"); got.Activity != "" || got.ActivityAt != 0 {
+		t.Fatalf("new row activity=%q at=%d, want empty/0", got.Activity, got.ActivityAt)
+	}
+	if err := s.SetActivity("a", "working"); err != nil {
+		t.Fatalf("SetActivity: %v", err)
+	}
+	want := mustGetAgent(t, s, "a")
+	mustRegister(t, s, store.Agent{Alias: "a", Role: "r2"})
+	got := mustGetAgent(t, s, "a")
+	if got.Activity != want.Activity || got.ActivityAt != want.ActivityAt {
+		t.Fatalf("re-register changed activity: %q@%d -> %q@%d", want.Activity, want.ActivityAt, got.Activity, got.ActivityAt)
 	}
 }
 

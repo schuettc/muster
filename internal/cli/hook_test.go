@@ -2149,3 +2149,146 @@ func TestSessionAliasesForHookFallbackStaysEmptyWithNoSessionName(t *testing.T) 
 		t.Fatalf("fallback aliases = %q, want a single empty string (nothing to seed)", got)
 	}
 }
+
+// activitySession boots a test daemon with one agent "act" on the tmux
+// tuple (/tmp/sockAct, $7, created 100), points the ambient tmux env at that
+// tuple, and reports @muster_inbox as inbox. It returns a reader for the
+// agent's activity.
+func activitySession(t *testing.T, inbox string) func() (string, int64) {
+	t.Helper()
+	s := startTestDaemon(t)
+	if _, err := callData("register_agent", map[string]any{
+		"alias": "act", "role": "peer", "model_type": "claude",
+		"socket_path": "/tmp/sockAct", "session_id": "$7", "session_created": 100, "pane_id": "%1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TMUX", "/tmp/sockAct,1,0")
+	t.Setenv("TMUX_PANE", "%1")
+	prev := tmuxenv.Run
+	tmuxenv.Run = hookRun(map[string]string{"@muster_inbox": inbox, "#{session_id}": "$7", "#{session_created}": "100"})
+	t.Cleanup(func() { tmuxenv.Run = prev })
+	return func() (string, int64) {
+		t.Helper()
+		a, _, err := s.GetAgent("act")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return a.Activity, a.ActivityAt
+	}
+}
+
+func runHookEvent(t *testing.T, args []string, input string) string {
+	t.Helper()
+	var buf bytes.Buffer
+	if err := cmdHook(args, strings.NewReader(input), &buf); err != nil {
+		t.Fatalf("hook %v: %v", args, err)
+	}
+	return buf.String()
+}
+
+func TestHookUserPromptSubmitMarksWorking(t *testing.T) {
+	activity := activitySession(t, "0")
+	if out := runHookEvent(t, []string{"UserPromptSubmit", "claude"}, `{"session_id":"h1"}`); out != "" {
+		t.Fatalf("UserPromptSubmit must print nothing, got %q", out)
+	}
+	if state, at := activity(); state != "working" || at == 0 {
+		t.Fatalf("activity = %q@%d, want working", state, at)
+	}
+}
+
+func TestHookStopNoMailMarksIdle(t *testing.T) {
+	activity := activitySession(t, "0")
+	if out := runHookEvent(t, []string{"Stop"}, `{}`); out != "" {
+		t.Fatalf("no mail: Stop must print nothing, got %q", out)
+	}
+	if state, _ := activity(); state != "idle" {
+		t.Fatalf("activity = %q, want idle", state)
+	}
+}
+
+// TestHookStopBlockLeavesWorking: a Stop that hands the agent its mail keeps
+// it going, so it must not be marked idle.
+func TestHookStopBlockLeavesWorking(t *testing.T) {
+	activity := activitySession(t, "1")
+	if _, err := callData("register_agent", map[string]any{
+		"alias": "sender", "role": "peer", "model_type": "claude",
+		"socket_path": "/tmp/sockOther", "session_id": "$8", "session_created": 100,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := callData("send_message", map[string]any{
+		"from": "sender", "to_kind": "agent", "to_target": "act", "subject": "s", "body": "b",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := callData("set_activity", map[string]any{"aliases": []string{"act"}, "state": "working"}); err != nil {
+		t.Fatal(err)
+	}
+	_, before := activity()
+	out := runHookEvent(t, []string{"Stop"}, `{}`)
+	if !strings.Contains(out, `"decision":"block"`) {
+		t.Fatalf("unread mail: want a block decision, got %q", out)
+	}
+	if state, at := activity(); state != "working" || at != before {
+		t.Fatalf("blocking Stop changed activity to %q@%d (was working@%d)", state, at, before)
+	}
+}
+
+// TestHookStopLoopGuardMarksIdle: the loop-guard Stop is the session really
+// stopping after handling the mail it was handed, so it marks idle — for
+// Claude's stop_hook_active and Cursor's loop_count alike.
+func TestHookStopLoopGuardMarksIdle(t *testing.T) {
+	for _, tc := range []struct {
+		args  []string
+		input string
+	}{
+		{[]string{"Stop"}, `{"stop_hook_active":true}`},
+		{[]string{"Stop", "cursor"}, `{"loop_count":1}`},
+	} {
+		t.Run(tc.input, func(t *testing.T) {
+			activity := activitySession(t, "1")
+			if out := runHookEvent(t, tc.args, tc.input); out != "" {
+				t.Fatalf("loop guard must print nothing, got %q", out)
+			}
+			if state, _ := activity(); state != "idle" {
+				t.Fatalf("activity = %q, want idle", state)
+			}
+		})
+	}
+}
+
+func TestHookStopAbortedMarksIdle(t *testing.T) {
+	activity := activitySession(t, "1")
+	if out := runHookEvent(t, []string{"Stop", "cursor"}, `{"status":"aborted"}`); out != "" {
+		t.Fatalf("aborted Stop must print nothing, got %q", out)
+	}
+	if state, _ := activity(); state != "idle" {
+		t.Fatalf("activity = %q, want idle", state)
+	}
+}
+
+// TestHookUserPromptSubmitDaemonDown: no daemon listening — the hook still
+// returns promptly, prints nothing, and never fails the session.
+func TestHookUserPromptSubmitDaemonDown(t *testing.T) {
+	dir, cleanup, err := mustertest.ShortHome()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(cleanup)
+	t.Setenv("MUSTER_HOME", dir)
+	t.Setenv("MUSTER_NO_AUTOSPAWN", "1")
+	t.Setenv("TMUX", "/tmp/sockAct,1,0")
+	prev := tmuxenv.Run
+	tmuxenv.Run = hookRun(map[string]string{"#{session_id}": "$7", "#{session_created}": "100"})
+	t.Cleanup(func() { tmuxenv.Run = prev })
+	start := time.Now()
+	for _, event := range []string{"UserPromptSubmit", "Stop"} {
+		if out := runHookEvent(t, []string{event}, `{}`); out != "" {
+			t.Fatalf("%s with daemon down printed %q", event, out)
+		}
+	}
+	if d := time.Since(start); d > 5*time.Second {
+		t.Fatalf("hooks took %v with the daemon down", d)
+	}
+}

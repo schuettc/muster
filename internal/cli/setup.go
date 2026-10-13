@@ -243,9 +243,10 @@ func agentOps(home, agent, mbAbs, mbTilde string, noHooks bool) []fileOp {
 				fileOp{
 					path: settings,
 					disp: "~/.claude/settings.json",
-					desc: "SessionStart/Stop/SessionEnd hooks",
+					desc: "SessionStart/UserPromptSubmit/Stop/SessionEnd hooks",
 					desired: mustJSON(`{"hooks":{` +
 						`"SessionStart":[{"matcher":"startup|resume","hooks":[{"type":"command","command":"` + mbTilde + ` hook SessionStart claude"}]}],` +
+						`"UserPromptSubmit":[{"hooks":[{"type":"command","command":"` + mbTilde + ` hook UserPromptSubmit claude"}]}],` +
 						`"Stop":[{"hooks":[{"type":"command","command":"` + mbTilde + ` hook Stop claude"}]}],` +
 						`"SessionEnd":[{"hooks":[{"type":"command","command":"` + mbTilde + ` hook SessionEnd claude"}]}]}}`),
 				},

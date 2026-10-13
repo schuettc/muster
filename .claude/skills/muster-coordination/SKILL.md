@@ -47,7 +47,9 @@ address you by a name that means something.
 
 ## The core loop
 
-- **`list_agents`** — who's on the bus (project, label, liveness).
+- **`list_agents`** — who's on the bus (project, label, liveness). Check a peer's
+  `activity` (working/idle, since `activity_at`) before assuming it is still working
+  on what you sent it.
 - **`send_message(to, body, …)`** / **`reply(thread_id, body)`** — message a peer, or
   continue a thread you were addressed on. **Broadcast is hard-gated** by the
   broadcast storm guard (v0.17.0): a first broadcast returns its blast radius and

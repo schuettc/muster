@@ -82,8 +82,8 @@ func TestOpenAdoptsLiveUnversionedDatabase(t *testing.T) {
 		t.Fatalf("Open on a muster 0.22.1 database: %v", err)
 	}
 	defer func() { _ = s.Close() }()
-	if v := userVersion(t, s.DB()); v != 1 {
-		t.Fatalf("user_version %d, want 1", v)
+	if v := userVersion(t, s.DB()); v != 2 {
+		t.Fatalf("user_version %d, want 2", v)
 	}
 	sums := rowSums(t, s.DB())
 	if !strings.Contains(sums, "keeper|p|0|h-1|/nonexistent/sock") || !strings.Contains(sums, "|s|") || !strings.Contains(sums, "1|1|keeper|hello|11") {
@@ -97,7 +97,7 @@ func TestOpenAddsMissingColumns(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = s.Close() }()
-	for _, col := range []string{"harness_session_id", "transcript_path", "wake"} {
+	for _, col := range []string{"harness_session_id", "transcript_path", "activity", "activity_at", "wake"} {
 		table := "agents"
 		if col == "wake" {
 			table = "threads"
@@ -122,8 +122,8 @@ func TestReopenIsNoOp(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = s.Close() }()
-	if v := userVersion(t, s.DB()); v != 1 {
-		t.Fatalf("user_version %d after reopen, want 1", v)
+	if v := userVersion(t, s.DB()); v != 2 {
+		t.Fatalf("user_version %d after reopen, want 2", v)
 	}
 	if again := rowSums(t, s.DB()); again != first {
 		t.Fatalf("reopen changed rows:\n%s\nvs\n%s", first, again)
