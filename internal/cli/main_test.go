@@ -21,7 +21,26 @@ import (
 func TestMain(m *testing.M) {
 	tmuxenv.ProcessArgv = func(int) string { return "" }
 	unsetHarnessIdentity()
-	os.Exit(m.Run())
+	home := isolateDaemon()
+	code := m.Run()
+	_ = os.RemoveAll(home)
+	os.Exit(code)
+}
+
+// isolateDaemon points every test at an empty MUSTER_HOME and turns off the
+// client's auto-spawn. Every Stop hook now dials the daemon to mark the
+// session idle, so a hook test that starts no test daemon would otherwise
+// reach the developer's live bus (paths.SocketPath falls back to the real
+// home) or, with nothing listening, re-exec the test binary as a "daemon".
+// Tests that need a daemon set their own MUSTER_HOME via startTestDaemon.
+func isolateDaemon() string {
+	dir, err := os.MkdirTemp("", "mcli")
+	if err != nil {
+		panic(err)
+	}
+	_ = os.Setenv("MUSTER_HOME", dir)
+	_ = os.Setenv("MUSTER_NO_AUTOSPAWN", "1")
+	return dir
 }
 
 // unsetHarnessIdentity clears the variables tools-common/harness resolves a

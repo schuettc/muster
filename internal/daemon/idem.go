@@ -47,6 +47,8 @@ var writeOps = map[string]bool{
 	// response would replay into ErrBecomeToExists and tell the caller its own
 	// completed claim failed. stamp_harness_session is a plain attribute write.
 	"become": true, "stamp_harness_session": true,
+	// set_activity is a plain attribute write, last-write-wins like kv_set.
+	"set_activity": true,
 }
 
 // IsWriteOp reports whether op mutates state, and so whether an idempotency

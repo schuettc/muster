@@ -8,7 +8,9 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/schuettc/muster/internal/clock"
 	"github.com/schuettc/muster/internal/daemon"
 	"github.com/schuettc/muster/internal/mustertest"
 	"github.com/schuettc/muster/internal/paths"
@@ -56,6 +58,60 @@ func TestAgentsCommandListsRegistered(t *testing.T) {
 	out := buf.String()
 	if !strings.Contains(out, "backend") || !strings.Contains(out, "consumer") || !strings.Contains(out, "claude") || !strings.Contains(out, "codex") {
 		t.Fatalf("agents output missing rows:\n%s", out)
+	}
+}
+
+// TestAgentsShowsActivity: the ACTIVITY column, right after LIVE, renders
+// each session's state and how long it has held it, or — when unknown.
+func TestAgentsShowsActivity(t *testing.T) {
+	s := startTestDaemon(t)
+	for _, alias := range []string{"busy", "resting", "silent"} {
+		// A manual label keeps LABEL off "—", so a "—" on the row is ACTIVITY's.
+		if _, err := callData("register_agent", map[string]any{"alias": alias, "model_type": "claude", "label": alias, "label_manual": true}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	now := time.Now()
+	stamp := func(alias, state string, ago time.Duration) {
+		t.Helper()
+		clock.SetForTesting(func() int64 { return now.Add(-ago).UnixMilli() })
+		defer clock.ResetForTesting()
+		if err := s.SetActivity(alias, state); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stamp("busy", "working", 4*time.Minute+10*time.Second)
+	stamp("resting", "idle", 2*time.Hour+5*time.Minute)
+
+	var buf bytes.Buffer
+	if err := Dispatch([]string{"agents"}, &buf); err != nil {
+		t.Fatalf("agents: %v", err)
+	}
+	lines := strings.Split(buf.String(), "\n")
+	header := strings.Fields(lines[0])
+	col := -1
+	for i, h := range header {
+		if h == "ACTIVITY" {
+			col = i
+		}
+	}
+	if col < 1 || header[col-1] != "LIVE" {
+		t.Fatalf("ACTIVITY column must follow LIVE: %q", lines[0])
+	}
+	want := map[string]string{"busy": "working 4m", "resting": "idle 2h", "silent": "—"}
+	for alias, cell := range want {
+		found := false
+		for _, line := range lines {
+			if strings.Contains(line, alias) {
+				found = true
+				if !strings.Contains(line, cell) {
+					t.Errorf("%s row missing %q: %q", alias, cell, line)
+				}
+			}
+		}
+		if !found {
+			t.Errorf("no row for %s:\n%s", alias, buf.String())
+		}
 	}
 }
 

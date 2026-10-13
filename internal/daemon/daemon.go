@@ -1150,6 +1150,9 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 				}
 			}
 		}
+		// The owner reading its mail is the start of work on it. Best-effort:
+		// a failed stamp must not fail a read that already persisted.
+		_ = d.s.SetActivity(alias, "working")
 		d.logEvent(store.Event{Kind: "read", Agent: alias, Detail: detail})
 		return ok(map[string]any{"threads": threads, "marked_read": true})
 	case "mark_read":
@@ -1417,6 +1420,33 @@ func (d *Daemon) dispatch(req proto.Request) proto.Response {
 			return fail(err)
 		}
 		return ok(map[string]any{"updated": n})
+	case "set_activity":
+		// A session's hooks report it working (prompt submitted) or idle
+		// (stopped without being handed mail) for every alias it owns. Not
+		// journaled: it fires on every turn, and the row's activity_at already
+		// says when. Unknown aliases are skipped, not refused — a hook's alias
+		// list can race a deregister.
+		state := str(a, "state")
+		if state != "working" && state != "idle" {
+			return fail(fmt.Errorf("set_activity: state must be working or idle, got %q", state))
+		}
+		aliases, err := activityAliases(a["aliases"])
+		if err != nil {
+			return fail(err)
+		}
+		updated := 0
+		for _, alias := range aliases {
+			if _, found, err := d.s.GetAgent(alias); err != nil {
+				return fail(err)
+			} else if !found {
+				continue
+			}
+			if err := d.s.SetActivity(alias, state); err != nil {
+				return fail(err)
+			}
+			updated++
+		}
+		return ok(map[string]any{"updated": updated})
 	case "stamp_harness_session":
 		if err := d.s.StampHarness(str(a, "alias"), str(a, "harness_session_id"), str(a, "transcript_path")); err != nil {
 			return fail(err)
@@ -1551,6 +1581,28 @@ func paginateEntries(entries []store.Entry, offset, limit int64) []store.Entry {
 }
 
 // compactStrings removes adjacent duplicates from a sorted slice, in place.
+// activityAliases decodes set_activity's aliases arg: a JSON array of
+// strings off the wire, or a []string from an in-process caller.
+func activityAliases(raw any) ([]string, error) {
+	switch v := raw.(type) {
+	case nil:
+		return nil, nil
+	case []string:
+		return v, nil
+	case []any:
+		out := make([]string, 0, len(v))
+		for _, x := range v {
+			s, ok := x.(string)
+			if !ok {
+				return nil, fmt.Errorf("set_activity: aliases must contain strings")
+			}
+			out = append(out, s)
+		}
+		return out, nil
+	}
+	return nil, fmt.Errorf("set_activity: aliases must be an array")
+}
+
 func compactStrings(sorted []string) []string {
 	if len(sorted) == 0 {
 		return sorted

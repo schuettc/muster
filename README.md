@@ -393,8 +393,11 @@ of typed by hand:
   mail to it. On `SessionStart` with `source:"resume"`, the hook reclaims
   every alias the resumed conversation owns onto the new tmux session and
   reports the unread backlog into the session's context.
+- **UserPromptSubmit** (Claude Code) → marks the session `working` in
+  `list_agents` / `muster agents`.
 - **Stop** (turn end) → if the session has unread muster mail, the hook tells the
-  agent to drain its inbox and reply, autonomously.
+  agent to drain its inbox and reply, autonomously; otherwise it marks the
+  session `idle`.
 - **SessionEnd** (Claude Code) → `muster deregister`; `muster gc` covers the rest.
 
 The muster binary is its own hook — point your harness at `muster hook <event>

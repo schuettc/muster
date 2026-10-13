@@ -12,7 +12,7 @@ import (
 	"github.com/schuettc/tools-common/harness"
 )
 
-// cmdHook implements "muster hook <SessionStart|SessionEnd|Stop> [model]" —
+// cmdHook implements "muster hook <SessionStart|SessionEnd|Stop|UserPromptSubmit> [model]" —
 // the single entry point an agent harness's hook config points at directly
 // (in place of a copied contrib/muster-session-hook.sh). model defaults to
 // "claude" when omitted.
@@ -31,7 +31,7 @@ func cmdHook(args []string, stdin io.Reader, out io.Writer) error {
 		return HelpFor("hook", out)
 	}
 	if len(args) < 1 {
-		return fmt.Errorf("usage: muster hook <SessionStart|SessionEnd|Stop> [model]")
+		return fmt.Errorf("usage: muster hook <SessionStart|SessionEnd|Stop|UserPromptSubmit> [model]")
 	}
 	// A harness that spawns a nested Claude Code (or other hooked harness)
 	// as a subprocess sets this in the child's env: the child inherits
@@ -131,6 +131,10 @@ func cmdHook(args []string, stdin io.Reader, out io.Writer) error {
 		hookSessionEnd(hookCapture(), harness.FromHookPayload(payload))
 	case "Stop":
 		hookStop(payload, out)
+	case "UserPromptSubmit":
+		// Prints nothing: Claude Code adds a UserPromptSubmit hook's stdout
+		// to the prompt's context.
+		hookActivity(harness.FromHookPayload(payload), "working")
 	}
 	return nil
 }
@@ -581,27 +585,61 @@ type stopReason struct {
 // this fix, hookStop gated on the literal $TMUX env var alone, so it ALWAYS
 // took the paneless branch in production and stampHarnessLinks (the resume
 // spec's repair path, below) never ran.
+//
+// Every Stop that does not hand the agent mail marks the session idle
+// (hookActivity), the loop-guard and aborted/error returns included: the
+// session really is stopping. A Stop that prints a block decision keeps the
+// agent going, so it leaves the session working. The idle mark is a
+// separate daemon call from the drain, so the cheap @muster_inbox gate still
+// decides whether Stop drains, but every Stop now dials the daemon.
 func hookStop(payload []byte, out io.Writer) {
+	h := harness.FromHookPayload(payload)
+	if !hookStopBlocks(payload, h, out) {
+		hookActivity(h, "idle")
+	}
+}
+
+// hookStopBlocks is hookStop's drain decision; it reports whether it printed
+// a block decision.
+func hookStopBlocks(payload []byte, h harness.Capture, out io.Writer) bool {
 	var in stopInput
 	_ = json.Unmarshal(payload, &in) // invalid/empty JSON -> zero value (false)
 	if in.StopHookActive || in.LoopCount > 0 {
-		return // loop guard: we already triggered a continuation this cycle
+		return false // loop guard: we already triggered a continuation this cycle
 	}
 	if in.Status == "aborted" || in.Status == "error" {
-		return
+		return false
 	}
-
-	h := harness.FromHookPayload(payload)
-
 	if os.Getenv("TMUX") != "" {
-		hookStopTmuxEnv(h, out)
-		return
+		return hookStopTmuxEnv(h, out)
 	}
 	if c := tmuxenv.CaptureFromAncestry(); c.SocketPath != "" && c.PaneID != "" {
-		hookStopWalked(c, h, out)
+		return hookStopWalked(c, h, out)
+	}
+	return hookStopPaneless(h, out)
+}
+
+// hookActivity reports this session working or idle for every alias it
+// owns, resolved the way hookStop resolves its session: the ambient tmux
+// session, else the ancestry walk's, else the harness conversation's live
+// rows. Best-effort: any failure is swallowed, and nothing is printed.
+func hookActivity(h harness.Capture, state string) {
+	var aliases []string
+	if os.Getenv("TMUX") != "" {
+		aliases = sessionAliasesForHook(tmuxenv.SocketFromEnv(), tmuxenv.CurrentSessionID(), tmuxenv.CurrentSessionCreated())
+	} else if c := tmuxenv.CaptureFromAncestry(); c.SocketPath != "" && c.PaneID != "" {
+		aliases = sessionAliasesForHook(c.SocketPath, c.SessionID, c.SessionCreated)
+	} else {
+		for _, ag := range conversationRows(h) {
+			if !ag.Departed {
+				aliases = append(aliases, ag.Alias)
+			}
+		}
+	}
+	if len(aliases) == 0 {
 		return
 	}
-	hookStopPaneless(h, out)
+	_, _ = callData("set_activity", map[string]any{"aliases": aliases, "state": state})
 }
 
 // hookStopTmuxEnv is hookStop's tmux path when the harness passed $TMUX
@@ -611,15 +649,15 @@ func hookStop(payload []byte, out io.Writer) {
 // environment. The incarnation the daemon queries by comes from the same
 // ambient read (tmuxenv.CurrentSessionCreated) — the walked path below gets
 // it from its Capture instead.
-func hookStopTmuxEnv(h harness.Capture, out io.Writer) {
+func hookStopTmuxEnv(h harness.Capture, out io.Writer) bool {
 	optCount, err := strconv.Atoi(tmuxenv.CurrentSessionOption("@muster_inbox"))
 	if err != nil || optCount <= 0 {
-		return // cheap gate: no daemon calls unless the tmux option says there's mail
+		return false // cheap gate: no daemon calls unless the tmux option says there's mail
 	}
 	socketPath := tmuxenv.SocketFromEnv()
 	sessionID := tmuxenv.CurrentSessionID()
 	label := tmuxenv.CurrentSessionOption(tmuxenv.LabelOption())
-	hookStopDrain(socketPath, sessionID, tmuxenv.CurrentSessionCreated(), os.Getenv("TMUX_PANE"), optCount, label, h, out)
+	return hookStopDrain(socketPath, sessionID, tmuxenv.CurrentSessionCreated(), os.Getenv("TMUX_PANE"), optCount, label, h, out)
 }
 
 // hookStopWalked is finding F1's new branch: the harness stripped $TMUX from
@@ -629,13 +667,13 @@ func hookStopTmuxEnv(h harness.Capture, out io.Writer) {
 // nothing here — every tmux read instead goes through the socket-aware query
 // seam (tmuxenv.SessionOption / SessionLabel) against the WALKED capture's
 // own tuple, never the (absent) ambient environment.
-func hookStopWalked(c tmuxenv.Capture, h harness.Capture, out io.Writer) {
+func hookStopWalked(c tmuxenv.Capture, h harness.Capture, out io.Writer) bool {
 	optCount, err := strconv.Atoi(tmuxenv.SessionOption(c.SocketPath, c.PaneID, "@muster_inbox"))
 	if err != nil || optCount <= 0 {
-		return // cheap gate: no daemon calls unless the tmux option says there's mail
+		return false // cheap gate: no daemon calls unless the tmux option says there's mail
 	}
 	label, _ := tmuxenv.SessionLabel(c.SocketPath, c.PaneID)
-	hookStopDrain(c.SocketPath, c.SessionID, c.SessionCreated, c.PaneID, optCount, label, h, out)
+	return hookStopDrain(c.SocketPath, c.SessionID, c.SessionCreated, c.PaneID, optCount, label, h, out)
 }
 
 // hookStopDrain is the daemon-facing core shared by hookStopTmuxEnv and
@@ -647,13 +685,13 @@ func hookStopWalked(c tmuxenv.Capture, h harness.Capture, out io.Writer) {
 // read the option from. Either call's failure (or an empty alias list) falls
 // back to today's single session-name behavior so the hook never goes silent
 // because of a daemon hiccup.
-func hookStopDrain(socketPath, sessionID string, sessionCreated int64, myPane string, optCount int, label string, h harness.Capture, out io.Writer) {
+func hookStopDrain(socketPath, sessionID string, sessionCreated int64, myPane string, optCount int, label string, h harness.Capture, out io.Writer) bool {
 	total, action, ok := sessionUnreadForHook(socketPath, sessionID, sessionCreated)
 	if !ok {
 		total, action = optCount, 0 // fall back to the tmux option value on op failure
 	}
 	if total <= 0 {
-		return
+		return false
 	}
 	aliases := sessionAliasesForHook(socketPath, sessionID, sessionCreated)
 
@@ -669,15 +707,16 @@ func hookStopDrain(socketPath, sessionID string, sessionCreated int64, myPane st
 	stampHarnessLinks(aliases, h, socketPath, sessionID, myPane)
 
 	if !hookStopOwnsAnyAlias(aliases, myPane) {
-		return // roster names a live owner and it isn't me: don't drain a sibling's mail
+		return false // roster names a live owner and it isn't me: don't drain a sibling's mail
 	}
 
 	reason := hookReason(total, action, aliases, label)
 	b, err := json.Marshal(stopReason{Decision: "block", Reason: reason})
 	if err != nil {
-		return
+		return false
 	}
 	_, _ = fmt.Fprintln(out, string(b)) // best-effort: a hook's stdout write failing has nowhere to report to
+	return true
 }
 
 // hookStopPaneless is the Stop-hook inbox check for sessions with no tmux in
@@ -689,9 +728,9 @@ func hookStopDrain(socketPath, sessionID string, sessionCreated int64, myPane st
 // alike. An unregistered session prints nothing, and unlike the tmux path
 // there is no session-name fallback to address — a harness identity either
 // resolved from the roster or doesn't exist.
-func hookStopPaneless(h harness.Capture, out io.Writer) {
+func hookStopPaneless(h harness.Capture, out io.Writer) bool {
 	if h.SessionID == "" {
-		return
+		return false
 	}
 	var aliases []string
 	var label string
@@ -710,7 +749,7 @@ func hookStopPaneless(h harness.Capture, out io.Writer) {
 		}
 	}
 	if len(aliases) == 0 {
-		return
+		return false
 	}
 	// Unread comes from ONE tuple: the handshake row's tmux tuple when the
 	// session has one (its mail lives there), else the paneless tuple. A
@@ -723,13 +762,14 @@ func hookStopPaneless(h harness.Capture, out io.Writer) {
 	}
 	total, action, ok := sessionUnreadForHook(sock, sid, created)
 	if !ok || total <= 0 {
-		return
+		return false
 	}
 	b, err := json.Marshal(stopReason{Decision: "block", Reason: hookReason(total, action, aliases, label)})
 	if err != nil {
-		return
+		return false
 	}
 	_, _ = fmt.Fprintln(out, string(b)) // best-effort: a hook's stdout write failing has nowhere to report to
+	return true
 }
 
 // stampHarnessLinks attaches h.SessionID to every alias of MY tuple that

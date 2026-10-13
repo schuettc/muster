@@ -139,6 +139,10 @@ type API interface {
 	// (non-departed) rows are ever returned.
 	FindConversation(deviceID, transcriptPath, socketPath, sessionID string, sessionCreated int64, paneID string) (Agent, bool, error)
 	StampHarness(alias, harnessSessionID, transcriptPath string) error
+	// SetActivity records alias's session state ("working" or "idle") and
+	// stamps ActivityAt with now. Unknown alias is a no-op; RegisterAgent
+	// never touches either field.
+	SetActivity(alias, state string) error
 	// Become claims a new name for an existing identity: it clones from onto
 	// to and retires from, stamping from.superseded_by = to. It is a
 	// compare-and-swap, not a read-then-write — the to-must-not-exist guard

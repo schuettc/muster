@@ -173,6 +173,8 @@ type AgentView struct {
 	Departed     bool   `json:"departed" jsonschema:"true for a deregistered agent: its alias still accepts mail (it may return) but its label no longer resolves"`
 	RegisteredAt int64  `json:"registered_at" jsonschema:"when the agent first registered (unix ms)"`
 	LastSeen     int64  `json:"last_seen" jsonschema:"when the agent was last active (unix ms)"`
+	Activity     string `json:"activity" jsonschema:"working or idle: whether this agent's session is mid-turn or waiting for input; empty when unknown. Check it before assuming a peer is still working on something."`
+	ActivityAt   int64  `json:"activity_at" jsonschema:"when activity last changed (unix ms)"`
 }
 
 // ThreadView is the tool-facing shape of a message/task thread. LastFrom,

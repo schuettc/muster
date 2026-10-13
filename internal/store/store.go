@@ -34,7 +34,7 @@ type Store struct{ db *sql.DB }
 func Open(dbPath string) (*Store, error) {
 	ctx := context.Background()
 	d, err := sqlitedb.Open(ctx, dbPath, sqlitedb.Options{
-		Migrations:       []sqlitedb.Step{adoptLegacySchema},
+		Migrations:       []sqlitedb.Step{adoptLegacySchema, addActivity},
 		NoForeignKeys:    true,
 		AdoptUnversioned: true,
 	})
@@ -83,6 +83,21 @@ func adoptLegacySchema(ctx context.Context, tx *sql.Tx) error {
 	}
 	for _, ddl := range columnAlters {
 		if _, err := tx.ExecContext(ctx, ddl); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+			return err
+		}
+	}
+	return nil
+}
+
+// addActivity is step 2 (user_version 1 -> 2): the per-agent working/idle
+// state the hooks report (see Store.SetActivity). activity is empty (unknown),
+// 'working' or 'idle'; activity_at is when it last changed, unix ms.
+func addActivity(ctx context.Context, tx *sql.Tx) error {
+	for _, ddl := range []string{
+		`ALTER TABLE agents ADD COLUMN activity TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE agents ADD COLUMN activity_at INTEGER NOT NULL DEFAULT 0`,
+	} {
+		if _, err := tx.ExecContext(ctx, ddl); err != nil {
 			return err
 		}
 	}

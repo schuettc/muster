@@ -98,6 +98,13 @@ type Agent struct {
 	// uses this as ground truth to skip resurrecting a retired seed, rather
 	// than inferring it from tuple coincidence.
 	SupersededBy string `json:"superseded_by"`
+	// Activity is whether this agent's session is mid-turn ("working") or
+	// waiting for input ("idle"), as its hooks last reported it (see
+	// SetActivity). "" = unknown: never reported. RegisterAgent leaves it
+	// alone, so a re-register does not forget it.
+	Activity string `json:"activity"`
+	// ActivityAt is when Activity last changed (unix ms); 0 = never.
+	ActivityAt int64 `json:"activity_at"`
 }
 
 // TaskQuery selects task threads by exact metadata fields. Empty fields do not

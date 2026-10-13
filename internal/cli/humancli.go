@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/schuettc/muster/internal/client"
 	"github.com/schuettc/muster/internal/device"
@@ -119,6 +120,11 @@ type agentRow struct {
 	// row with SupersededBy set must never reclaim on resume, regardless of
 	// whether its successor is currently live.
 	SupersededBy string `json:"superseded_by"`
+	// Activity and ActivityAt mirror store.Agent's: working or idle as the
+	// session's hooks last reported, and since when (unix ms). cmdAgents
+	// renders them as the ACTIVITY column.
+	Activity   string `json:"activity"`
+	ActivityAt int64  `json:"activity_at"`
 }
 
 // threadRow decodes daemon thread responses (get_inbox, get_thread, list_tasks).
@@ -214,10 +220,11 @@ func cmdAgents(out io.Writer) error {
 	disp := aliasDisplay(all)
 
 	tw := tabwriter.NewWriter(out, 0, 2, 2, ' ', 0)
-	header := "PROJECT\tALIAS\tLABEL\tMODEL\tLIVE"
+	header := "PROJECT\tALIAS\tLABEL\tMODEL\tLIVE\tACTIVITY"
 	if showDevice {
-		header = "PROJECT\tALIAS\tLABEL\tMODEL\tDEVICE\tLIVE"
+		header = "PROJECT\tALIAS\tLABEL\tMODEL\tDEVICE\tLIVE\tACTIVITY"
 	}
+	now := time.Now()
 	if _, err := fmt.Fprintln(tw, header); err != nil {
 		return err
 	}
@@ -253,18 +260,37 @@ func cmdAgents(out io.Writer) error {
 			// would read as "dead" for what is usually a live session.
 			live = "◌"
 		}
+		activity := "—"
+		if a.Activity != "" {
+			activity = a.Activity + " " + ago(a.ActivityAt, now)
+		}
 		var err error
 		if showDevice {
-			_, err = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
-				proj, disp[a.Alias], label, a.ModelType, deviceCell(a.DeviceID, a.DeviceName, localDevice), live)
+			_, err = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+				proj, disp[a.Alias], label, a.ModelType, deviceCell(a.DeviceID, a.DeviceName, localDevice), live, activity)
 		} else {
-			_, err = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", proj, disp[a.Alias], label, a.ModelType, live)
+			_, err = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", proj, disp[a.Alias], label, a.ModelType, live, activity)
 		}
 		if err != nil {
 			return err
 		}
 	}
 	return tw.Flush()
+}
+
+// ago renders how long before now the unix-ms instant ms was, in the one
+// largest whole unit: <1m, Nm, Nh, Nd.
+func ago(ms int64, now time.Time) string {
+	d := now.Sub(time.UnixMilli(ms))
+	switch {
+	case d < time.Minute:
+		return "<1m"
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d/time.Minute))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh", int(d/time.Hour))
+	}
+	return fmt.Sprintf("%dd", int(d/(24*time.Hour)))
 }
 
 // deviceShortLen is how much of a device id identifies it in the roster.
