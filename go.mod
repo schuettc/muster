@@ -1,4 +1,4 @@
-module github.com/schuettc/muster
+module github.com/subaud-tools/muster
 
 go 1.26.4
 
@@ -18,8 +18,8 @@ require (
 	github.com/modelcontextprotocol/go-sdk v1.6.1
 	github.com/muesli/termenv v0.16.0
 	github.com/pelletier/go-toml/v2 v2.4.3
-	github.com/schuettc/tools-common v0.11.0
-	github.com/schuettc/tools-common/sqlitedb v0.1.0
+	github.com/subaud-tools/tools-common v0.12.0
+	github.com/subaud-tools/tools-common/sqlitedb v0.2.0
 )
 
 require (

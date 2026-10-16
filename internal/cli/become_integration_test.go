@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/schuettc/muster/internal/tmuxenv"
+	"github.com/subaud-tools/muster/internal/tmuxenv"
 )
 
 // TestStopHookDrainsSeedStragglerAfterBecome: mail sent to the retired seed

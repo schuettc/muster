@@ -4,7 +4,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/schuettc/muster/internal/clock"
+	"github.com/subaud-tools/muster/internal/clock"
 )
 
 // ErrNotClaimable is returned when claiming a task that is not open.

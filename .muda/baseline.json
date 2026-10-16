@@ -1,0 +1,3299 @@
+{
+  "schema": 1,
+  "repo": "schuettc/muster",
+  "since": "2026-09-29T05:07:00Z",
+  "until": "2026-10-01T22:48:08.027879Z",
+  "workflows": [
+    {
+      "path": ".github/workflows/ci.yml",
+      "name": "ci",
+      "role": "gate",
+      "role_reason": "triggered by pull_request",
+      "events": [
+        "pull_request",
+        "push"
+      ],
+      "runs": 17,
+      "reruns": 0,
+      "failures": 0,
+      "p50_ns": 326000000000,
+      "p90_ns": 407000000000,
+      "runs_end_estimated": 0,
+      "queue_p50_ns": 3000000000,
+      "queue_p90_ns": 8000000000,
+      "success_rate": 1,
+      "carried_over_jobs": 0,
+      "jobs": [
+        {
+          "name": "dynamo",
+          "runs": 17,
+          "p50_ns": 89000000000,
+          "p90_ns": 96000000000,
+          "queue_p50_ns": 3000000000,
+          "queue_p90_ns": 9000000000,
+          "steps": [
+            {
+              "name": "Set up job",
+              "occurrence": 1,
+              "runs": 17,
+              "p50_ns": 1000000000,
+              "p90_ns": 2000000000,
+              "evidence": [
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36527551519/job/109273809684#step:1:1",
+                  "run_id": 36527551519,
+                  "job_id": 109273809684,
+                  "step": "Set up job",
+                  "note": "p50 step duration sample (1s)"
+                },
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36528923880/job/109277964109#step:1:1",
+                  "run_id": 36528923880,
+                  "job_id": 109277964109,
+                  "step": "Set up job",
+                  "note": "p90 step duration sample (2s)"
+                }
+              ]
+            },
+            {
+              "name": "Initialize containers",
+              "occurrence": 1,
+              "runs": 17,
+              "p50_ns": 8000000000,
+              "p90_ns": 9000000000,
+              "evidence": [
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36526624136/job/109270984481#step:2:1",
+                  "run_id": 36526624136,
+                  "job_id": 109270984481,
+                  "step": "Initialize containers",
+                  "note": "p50 step duration sample (8s)"
+                },
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36625609989/job/109601674731#step:2:1",
+                  "run_id": 36625609989,
+                  "job_id": 109601674731,
+                  "step": "Initialize containers",
+                  "note": "p90 step duration sample (9s)"
+                }
+              ]
+            },
+            {
+              "name": "Run actions/checkout@v7.0.1",
+              "occurrence": 1,
+              "runs": 17,
+              "p50_ns": 1000000000,
+              "p90_ns": 3000000000,
+              "evidence": [
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36613737722/job/109561364130#step:3:1",
+                  "run_id": 36613737722,
+                  "job_id": 109561364130,
+                  "step": "Run actions/checkout@v7.0.1",
+                  "note": "p50 step duration sample (1s)"
+                },
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36528451066/job/109276530077#step:3:1",
+                  "run_id": 36528451066,
+                  "job_id": 109276530077,
+                  "step": "Run actions/checkout@v7.0.1",
+                  "note": "p90 step duration sample (3s)"
+                }
+              ]
+            },
+            {
+              "name": "Run actions/setup-go@v7.0.0",
+              "occurrence": 1,
+              "runs": 17,
+              "p50_ns": 9000000000,
+              "p90_ns": 11000000000,
+              "evidence": [
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36624839171/job/109599049895#step:4:1",
+                  "run_id": 36624839171,
+                  "job_id": 109599049895,
+                  "step": "Run actions/setup-go@v7.0.0",
+                  "note": "p50 step duration sample (9s)"
+                },
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36528019485/job/109275235595#step:4:1",
+                  "run_id": 36528019485,
+                  "job_id": 109275235595,
+                  "step": "Run actions/setup-go@v7.0.0",
+                  "note": "p90 step duration sample (11s)"
+                }
+              ]
+            },
+            {
+              "name": "Wait for DynamoDB Local",
+              "occurrence": 1,
+              "runs": 17,
+              "p50_ns": 0,
+              "p90_ns": 0,
+              "evidence": [
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36528451066/job/109276530077#step:5:1",
+                  "run_id": 36528451066,
+                  "job_id": 109276530077,
+                  "step": "Wait for DynamoDB Local",
+                  "note": "p50 step duration sample (0s)"
+                },
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36625609989/job/109601674731#step:5:1",
+                  "run_id": 36625609989,
+                  "job_id": 109601674731,
+                  "step": "Wait for DynamoDB Local",
+                  "note": "p90 step duration sample (0s)"
+                }
+              ]
+            },
+            {
+              "name": "DynamoDB backend + conformance tests",
+              "occurrence": 1,
+              "runs": 17,
+              "p50_ns": 65000000000,
+              "p90_ns": 68000000000,
+              "evidence": [
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36525750411/job/109268308062#step:6:1",
+                  "run_id": 36525750411,
+                  "job_id": 109268308062,
+                  "step": "DynamoDB backend + conformance tests",
+                  "note": "p50 step duration sample (1m5s)"
+                },
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36624782857/job/109598859834#step:6:1",
+                  "run_id": 36624782857,
+                  "job_id": 109598859834,
+                  "step": "DynamoDB backend + conformance tests",
+                  "note": "p90 step duration sample (1m8s)"
+                }
+              ]
+            },
+            {
+              "name": "Post Run actions/setup-go@v7.0.0",
+              "occurrence": 1,
+              "runs": 17,
+              "p50_ns": 0,
+              "p90_ns": 2000000000,
+              "evidence": [
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36625609989/job/109601674731#step:10:1",
+                  "run_id": 36625609989,
+                  "job_id": 109601674731,
+                  "step": "Post Run actions/setup-go@v7.0.0",
+                  "note": "p50 step duration sample (0s)"
+                },
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36618294855/job/109576865834#step:10:1",
+                  "run_id": 36618294855,
+                  "job_id": 109576865834,
+                  "step": "Post Run actions/setup-go@v7.0.0",
+                  "note": "p90 step duration sample (2s)"
+                }
+              ]
+            },
+            {
+              "name": "Post Run actions/checkout@v7.0.1",
+              "occurrence": 1,
+              "runs": 17,
+              "p50_ns": 0,
+              "p90_ns": 1000000000,
+              "evidence": [
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36618294855/job/109576865834#step:11:1",
+                  "run_id": 36618294855,
+                  "job_id": 109576865834,
+                  "step": "Post Run actions/checkout@v7.0.1",
+                  "note": "p50 step duration sample (0s)"
+                },
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36613737722/job/109561364130#step:11:1",
+                  "run_id": 36613737722,
+                  "job_id": 109561364130,
+                  "step": "Post Run actions/checkout@v7.0.1",
+                  "note": "p90 step duration sample (1s)"
+                }
+              ]
+            },
+            {
+              "name": "Stop containers",
+              "occurrence": 1,
+              "runs": 17,
+              "p50_ns": 0,
+              "p90_ns": 1000000000,
+              "evidence": [
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36625609989/job/109601674731#step:12:1",
+                  "run_id": 36625609989,
+                  "job_id": 109601674731,
+                  "step": "Stop containers",
+                  "note": "p50 step duration sample (0s)"
+                },
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36624839171/job/109599049895#step:12:1",
+                  "run_id": 36624839171,
+                  "job_id": 109599049895,
+                  "step": "Stop containers",
+                  "note": "p90 step duration sample (1s)"
+                }
+              ]
+            },
+            {
+              "name": "Complete job",
+              "occurrence": 1,
+              "runs": 17,
+              "p50_ns": 0,
+              "p90_ns": 0,
+              "evidence": [
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36528451066/job/109276530077#step:13:1",
+                  "run_id": 36528451066,
+                  "job_id": 109276530077,
+                  "step": "Complete job",
+                  "note": "p50 step duration sample (0s)"
+                },
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36624839171/job/109599049895#step:13:1",
+                  "run_id": 36624839171,
+                  "job_id": 109599049895,
+                  "step": "Complete job",
+                  "note": "p90 step duration sample (0s)"
+                }
+              ]
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "job",
+              "url": "https://github.com/schuettc/muster/actions/runs/36625609989/job/109601674731",
+              "run_id": 36625609989,
+              "job_id": 109601674731,
+              "note": "p50 job duration sample (1m29s)"
+            },
+            {
+              "kind": "job",
+              "url": "https://github.com/schuettc/muster/actions/runs/36528923880/job/109277964109",
+              "run_id": 36528923880,
+              "job_id": 109277964109,
+              "note": "p90 job duration sample (1m36s)"
+            }
+          ],
+          "queue_evidence": [
+            {
+              "kind": "job",
+              "url": "https://github.com/schuettc/muster/actions/runs/36524748295/job/109265197251",
+              "run_id": 36524748295,
+              "job_id": 109265197251,
+              "note": "p50 job queue sample (3s)"
+            },
+            {
+              "kind": "job",
+              "url": "https://github.com/schuettc/muster/actions/runs/36618294855/job/109576865834",
+              "run_id": 36618294855,
+              "job_id": 109576865834,
+              "note": "p90 job queue sample (9s)"
+            }
+          ]
+        },
+        {
+          "name": "extra",
+          "runs": 17,
+          "p50_ns": 40000000000,
+          "p90_ns": 58000000000,
+          "queue_p50_ns": 2000000000,
+          "queue_p90_ns": 4000000000,
+          "steps": [
+            {
+              "name": "Set up job",
+              "occurrence": 1,
+              "runs": 17,
+              "p50_ns": 1000000000,
+              "p90_ns": 2000000000,
+              "evidence": [
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36618294855/job/109576866296#step:1:1",
+                  "run_id": 36618294855,
+                  "job_id": 109576866296,
+                  "step": "Set up job",
+                  "note": "p50 step duration sample (1s)"
+                },
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36528923880/job/109277964495#step:1:1",
+                  "run_id": 36528923880,
+                  "job_id": 109277964495,
+                  "step": "Set up job",
+                  "note": "p90 step duration sample (2s)"
+                }
+              ]
+            },
+            {
+              "name": "Run actions/checkout@v7.0.1",
+              "occurrence": 1,
+              "runs": 17,
+              "p50_ns": 1000000000,
+              "p90_ns": 2000000000,
+              "evidence": [
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36527551519/job/109273809477#step:2:1",
+                  "run_id": 36527551519,
+                  "job_id": 109273809477,
+                  "step": "Run actions/checkout@v7.0.1",
+                  "note": "p50 step duration sample (1s)"
+                },
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36613737722/job/109561364462#step:2:1",
+                  "run_id": 36613737722,
+                  "job_id": 109561364462,
+                  "step": "Run actions/checkout@v7.0.1",
+                  "note": "p90 step duration sample (2s)"
+                }
+              ]
+            },
+            {
+              "name": "Run actions/setup-go@v7.0.0",
+              "occurrence": 1,
+              "runs": 17,
+              "p50_ns": 9000000000,
+              "p90_ns": 11000000000,
+              "evidence": [
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36524748295/job/109265197347#step:3:1",
+                  "run_id": 36524748295,
+                  "job_id": 109265197347,
+                  "step": "Run actions/setup-go@v7.0.0",
+                  "note": "p50 step duration sample (9s)"
+                },
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36525311450/job/109266933801#step:3:1",
+                  "run_id": 36525311450,
+                  "job_id": 109266933801,
+                  "step": "Run actions/setup-go@v7.0.0",
+                  "note": "p90 step duration sample (11s)"
+                }
+              ]
+            },
+            {
+              "name": "Run extractions/setup-just@v4.0.0",
+              "occurrence": 1,
+              "runs": 17,
+              "p50_ns": 1000000000,
+              "p90_ns": 1000000000,
+              "evidence": [
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36528451066/job/109276530195#step:4:1",
+                  "run_id": 36528451066,
+                  "job_id": 109276530195,
+                  "step": "Run extractions/setup-just@v4.0.0",
+                  "note": "p50 step duration sample (1s)"
+                },
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36625609989/job/109601674308#step:4:1",
+                  "run_id": 36625609989,
+                  "job_id": 109601674308,
+                  "step": "Run extractions/setup-just@v4.0.0",
+                  "note": "p90 step duration sample (1s)"
+                }
+              ]
+            },
+            {
+              "name": "Run just verify-extra",
+              "occurrence": 1,
+              "runs": 17,
+              "p50_ns": 25000000000,
+              "p90_ns": 39000000000,
+              "evidence": [
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36528923880/job/109277964495#step:5:1",
+                  "run_id": 36528923880,
+                  "job_id": 109277964495,
+                  "step": "Run just verify-extra",
+                  "note": "p50 step duration sample (25s)"
+                },
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36624839171/job/109599050005#step:5:1",
+                  "run_id": 36624839171,
+                  "job_id": 109599050005,
+                  "step": "Run just verify-extra",
+                  "note": "p90 step duration sample (39s)"
+                }
+              ]
+            },
+            {
+              "name": "Post Run actions/setup-go@v7.0.0",
+              "occurrence": 1,
+              "runs": 17,
+              "p50_ns": 2000000000,
+              "p90_ns": 4000000000,
+              "evidence": [
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36524748295/job/109265197347#step:9:1",
+                  "run_id": 36524748295,
+                  "job_id": 109265197347,
+                  "step": "Post Run actions/setup-go@v7.0.0",
+                  "note": "p50 step duration sample (2s)"
+                },
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36613737722/job/109561364462#step:9:1",
+                  "run_id": 36613737722,
+                  "job_id": 109561364462,
+                  "step": "Post Run actions/setup-go@v7.0.0",
+                  "note": "p90 step duration sample (4s)"
+                }
+              ]
+            },
+            {
+              "name": "Post Run actions/checkout@v7.0.1",
+              "occurrence": 1,
+              "runs": 17,
+              "p50_ns": 0,
+              "p90_ns": 1000000000,
+              "evidence": [
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36528923880/job/109277964495#step:10:1",
+                  "run_id": 36528923880,
+                  "job_id": 109277964495,
+                  "step": "Post Run actions/checkout@v7.0.1",
+                  "note": "p50 step duration sample (0s)"
+                },
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36527551519/job/109273809477#step:10:1",
+                  "run_id": 36527551519,
+                  "job_id": 109273809477,
+                  "step": "Post Run actions/checkout@v7.0.1",
+                  "note": "p90 step duration sample (1s)"
+                }
+              ]
+            },
+            {
+              "name": "Complete job",
+              "occurrence": 1,
+              "runs": 17,
+              "p50_ns": 0,
+              "p90_ns": 0,
+              "evidence": [
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36528451066/job/109276530195#step:11:1",
+                  "run_id": 36528451066,
+                  "job_id": 109276530195,
+                  "step": "Complete job",
+                  "note": "p50 step duration sample (0s)"
+                },
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36624839171/job/109599050005#step:11:1",
+                  "run_id": 36624839171,
+                  "job_id": 109599050005,
+                  "step": "Complete job",
+                  "note": "p90 step duration sample (0s)"
+                }
+              ]
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "job",
+              "url": "https://github.com/schuettc/muster/actions/runs/36528923880/job/109277964495",
+              "run_id": 36528923880,
+              "job_id": 109277964495,
+              "note": "p50 job duration sample (40s)"
+            },
+            {
+              "kind": "job",
+              "url": "https://github.com/schuettc/muster/actions/runs/36620669164/job/109584941385",
+              "run_id": 36620669164,
+              "job_id": 109584941385,
+              "note": "p90 job duration sample (58s)"
+            }
+          ],
+          "queue_evidence": [
+            {
+              "kind": "job",
+              "url": "https://github.com/schuettc/muster/actions/runs/36528923880/job/109277964495",
+              "run_id": 36528923880,
+              "job_id": 109277964495,
+              "note": "p50 job queue sample (2s)"
+            },
+            {
+              "kind": "job",
+              "url": "https://github.com/schuettc/muster/actions/runs/36625609989/job/109601674308",
+              "run_id": 36625609989,
+              "job_id": 109601674308,
+              "note": "p90 job queue sample (4s)"
+            }
+          ]
+        },
+        {
+          "name": "gate (macos-26)",
+          "runs": 17,
+          "p50_ns": 280000000000,
+          "p90_ns": 398000000000,
+          "queue_p50_ns": 7000000000,
+          "queue_p90_ns": 16000000000,
+          "steps": [
+            {
+              "name": "Set up job",
+              "occurrence": 1,
+              "runs": 17,
+              "p50_ns": 3000000000,
+              "p90_ns": 4000000000,
+              "evidence": [
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36528454624/job/109276540777#step:1:1",
+                  "run_id": 36528454624,
+                  "job_id": 109276540777,
+                  "step": "Set up job",
+                  "note": "p50 step duration sample (3s)"
+                },
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36624782857/job/109598860447#step:1:1",
+                  "run_id": 36624782857,
+                  "job_id": 109598860447,
+                  "step": "Set up job",
+                  "note": "p90 step duration sample (4s)"
+                }
+              ]
+            },
+            {
+              "name": "Run actions/checkout@v7.0.1",
+              "occurrence": 1,
+              "runs": 17,
+              "p50_ns": 2000000000,
+              "p90_ns": 3000000000,
+              "evidence": [
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36525750411/job/109268308154#step:2:1",
+                  "run_id": 36525750411,
+                  "job_id": 109268308154,
+                  "step": "Run actions/checkout@v7.0.1",
+                  "note": "p50 step duration sample (2s)"
+                },
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36528451066/job/109276530211#step:2:1",
+                  "run_id": 36528451066,
+                  "job_id": 109276530211,
+                  "step": "Run actions/checkout@v7.0.1",
+                  "note": "p90 step duration sample (3s)"
+                }
+              ]
+            },
+            {
+              "name": "Run actions/setup-go@v7.0.0",
+              "occurrence": 1,
+              "runs": 15,
+              "p50_ns": 24000000000,
+              "p90_ns": 32000000000,
+              "evidence": [
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36525750411/job/109268308154#step:3:1",
+                  "run_id": 36525750411,
+                  "job_id": 109268308154,
+                  "step": "Run actions/setup-go@v7.0.0",
+                  "note": "p50 step duration sample (24s)"
+                },
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36526624136/job/109270984595#step:3:1",
+                  "run_id": 36526624136,
+                  "job_id": 109270984595,
+                  "step": "Run actions/setup-go@v7.0.0",
+                  "note": "p90 step duration sample (32s)"
+                }
+              ]
+            },
+            {
+              "name": "Run schuettc/tools-actions/go-ci@v0.5.0",
+              "occurrence": 1,
+              "runs": 1,
+              "p50_ns": 351000000000,
+              "p90_ns": 351000000000,
+              "evidence": [
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36524748295/job/109265197507#step:3:1",
+                  "run_id": 36524748295,
+                  "job_id": 109265197507,
+                  "step": "Run schuettc/tools-actions/go-ci@v0.5.0",
+                  "note": "p50 step duration sample (5m51s)"
+                },
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36524748295/job/109265197507#step:3:1",
+                  "run_id": 36524748295,
+                  "job_id": 109265197507,
+                  "step": "Run schuettc/tools-actions/go-ci@v0.5.0",
+                  "note": "p90 step duration sample (5m51s)"
+                }
+              ]
+            },
+            {
+              "name": "Run schuettc/tools-actions/go-ci@v0.6.0",
+              "occurrence": 1,
+              "runs": 10,
+              "p50_ns": 196000000000,
+              "p90_ns": 273000000000,
+              "evidence": [
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36527129462/job/109272527730#step:6:1",
+                  "run_id": 36527129462,
+                  "job_id": 109272527730,
+                  "step": "Run schuettc/tools-actions/go-ci@v0.6.0",
+                  "note": "p50 step duration sample (3m16s)"
+                },
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36525311450/job/109266933830#step:6:1",
+                  "run_id": 36525311450,
+                  "job_id": 109266933830,
+                  "step": "Run schuettc/tools-actions/go-ci@v0.6.0",
+                  "note": "p90 step duration sample (4m33s)"
+                }
+              ]
+            },
+            {
+              "name": "Run extractions/setup-just@v4.0.0",
+              "occurrence": 1,
+              "runs": 15,
+              "p50_ns": 1000000000,
+              "p90_ns": 2000000000,
+              "evidence": [
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36620669164/job/109584941708#step:4:1",
+                  "run_id": 36620669164,
+                  "job_id": 109584941708,
+                  "step": "Run extractions/setup-just@v4.0.0",
+                  "note": "p50 step duration sample (1s)"
+                },
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36613737722/job/109561364613#step:4:1",
+                  "run_id": 36613737722,
+                  "job_id": 109561364613,
+                  "step": "Run extractions/setup-just@v4.0.0",
+                  "note": "p90 step duration sample (2s)"
+                }
+              ]
+            },
+            {
+              "name": "Post Run schuettc/tools-actions/go-ci@v0.5.0",
+              "occurrence": 1,
+              "runs": 1,
+              "p50_ns": 0,
+              "p90_ns": 0,
+              "evidence": [
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36524748295/job/109265197507#step:5:1",
+                  "run_id": 36524748295,
+                  "job_id": 109265197507,
+                  "step": "Post Run schuettc/tools-actions/go-ci@v0.5.0",
+                  "note": "p50 step duration sample (0s)"
+                },
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36524748295/job/109265197507#step:5:1",
+                  "run_id": 36524748295,
+                  "job_id": 109265197507,
+                  "step": "Post Run schuettc/tools-actions/go-ci@v0.5.0",
+                  "note": "p90 step duration sample (0s)"
+                }
+              ]
+            },
+            {
+              "name": "Post Run schuettc/tools-actions/go-ci@v0.6.0",
+              "occurrence": 1,
+              "runs": 10,
+              "p50_ns": 0,
+              "p90_ns": 0,
+              "evidence": [
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36527551519/job/109273809812#step:10:1",
+                  "run_id": 36527551519,
+                  "job_id": 109273809812,
+                  "step": "Post Run schuettc/tools-actions/go-ci@v0.6.0",
+                  "note": "p50 step duration sample (0s)"
+                },
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36528923880/job/109277964391#step:10:1",
+                  "run_id": 36528923880,
+                  "job_id": 109277964391,
+                  "step": "Post Run schuettc/tools-actions/go-ci@v0.6.0",
+                  "note": "p90 step duration sample (0s)"
+                }
+              ]
+            },
+            {
+              "name": "Run just prepare",
+              "occurrence": 1,
+              "runs": 15,
+              "p50_ns": 0,
+              "p90_ns": 1000000000,
+              "evidence": [
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36613737722/job/109561364613#step:5:1",
+                  "run_id": 36613737722,
+                  "job_id": 109561364613,
+                  "step": "Run just prepare",
+                  "note": "p50 step duration sample (0s)"
+                },
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36527551519/job/109273809812#step:5:1",
+                  "run_id": 36527551519,
+                  "job_id": 109273809812,
+                  "step": "Run just prepare",
+                  "note": "p90 step duration sample (1s)"
+                }
+              ]
+            },
+            {
+              "name": "Post Run actions/checkout@v7.0.1",
+              "occurrence": 1,
+              "runs": 17,
+              "p50_ns": 1000000000,
+              "p90_ns": 2000000000,
+              "evidence": [
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36528454624/job/109276540777#step:12:1",
+                  "run_id": 36528454624,
+                  "job_id": 109276540777,
+                  "step": "Post Run actions/checkout@v7.0.1",
+                  "note": "p50 step duration sample (1s)"
+                },
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36524748295/job/109265197507#step:6:1",
+                  "run_id": 36524748295,
+                  "job_id": 109265197507,
+                  "step": "Post Run actions/checkout@v7.0.1",
+                  "note": "p90 step duration sample (2s)"
+                }
+              ]
+            },
+            {
+              "name": "Run schuettc/tools-actions/go-ci@v0.10.0",
+              "occurrence": 1,
+              "runs": 1,
+              "p50_ns": 269000000000,
+              "p90_ns": 269000000000,
+              "evidence": [
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36613737722/job/109561364613#step:6:1",
+                  "run_id": 36613737722,
+                  "job_id": 109561364613,
+                  "step": "Run schuettc/tools-actions/go-ci@v0.10.0",
+                  "note": "p50 step duration sample (4m29s)"
+                },
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36613737722/job/109561364613#step:6:1",
+                  "run_id": 36613737722,
+                  "job_id": 109561364613,
+                  "step": "Run schuettc/tools-actions/go-ci@v0.10.0",
+                  "note": "p90 step duration sample (4m29s)"
+                }
+              ]
+            },
+            {
+              "name": "Run schuettc/tools-actions/go-ci@v0.10.1",
+              "occurrence": 1,
+              "runs": 5,
+              "p50_ns": 258000000000,
+              "p90_ns": 338000000000,
+              "evidence": [
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36618294855/job/109576866351#step:6:1",
+                  "run_id": 36618294855,
+                  "job_id": 109576866351,
+                  "step": "Run schuettc/tools-actions/go-ci@v0.10.1",
+                  "note": "p50 step duration sample (4m18s)"
+                },
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36624782857/job/109598860447#step:6:1",
+                  "run_id": 36624782857,
+                  "job_id": 109598860447,
+                  "step": "Run schuettc/tools-actions/go-ci@v0.10.1",
+                  "note": "p90 step duration sample (5m38s)"
+                }
+              ]
+            },
+            {
+              "name": "Complete job",
+              "occurrence": 1,
+              "runs": 17,
+              "p50_ns": 1000000000,
+              "p90_ns": 4000000000,
+              "evidence": [
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36624839171/job/109599049540#step:13:1",
+                  "run_id": 36624839171,
+                  "job_id": 109599049540,
+                  "step": "Complete job",
+                  "note": "p50 step duration sample (1s)"
+                },
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36618294855/job/109576866351#step:13:1",
+                  "run_id": 36618294855,
+                  "job_id": 109576866351,
+                  "step": "Complete job",
+                  "note": "p90 step duration sample (4s)"
+                }
+              ]
+            },
+            {
+              "name": "Post Run schuettc/tools-actions/go-ci@v0.10.0",
+              "occurrence": 1,
+              "runs": 1,
+              "p50_ns": 0,
+              "p90_ns": 0,
+              "evidence": [
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36613737722/job/109561364613#step:10:1",
+                  "run_id": 36613737722,
+                  "job_id": 109561364613,
+                  "step": "Post Run schuettc/tools-actions/go-ci@v0.10.0",
+                  "note": "p50 step duration sample (0s)"
+                },
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36613737722/job/109561364613#step:10:1",
+                  "run_id": 36613737722,
+                  "job_id": 109561364613,
+                  "step": "Post Run schuettc/tools-actions/go-ci@v0.10.0",
+                  "note": "p90 step duration sample (0s)"
+                }
+              ]
+            },
+            {
+              "name": "Post Run schuettc/tools-actions/go-ci@v0.10.1",
+              "occurrence": 1,
+              "runs": 5,
+              "p50_ns": 0,
+              "p90_ns": 1000000000,
+              "evidence": [
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36624839171/job/109599049540#step:10:1",
+                  "run_id": 36624839171,
+                  "job_id": 109599049540,
+                  "step": "Post Run schuettc/tools-actions/go-ci@v0.10.1",
+                  "note": "p50 step duration sample (0s)"
+                },
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36620669164/job/109584941708#step:10:1",
+                  "run_id": 36620669164,
+                  "job_id": 109584941708,
+                  "step": "Post Run schuettc/tools-actions/go-ci@v0.10.1",
+                  "note": "p90 step duration sample (1s)"
+                }
+              ]
+            },
+            {
+              "name": "Post Run actions/setup-go@v7.0.0",
+              "occurrence": 1,
+              "runs": 15,
+              "p50_ns": 1000000000,
+              "p90_ns": 25000000000,
+              "evidence": [
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36526624136/job/109270984595#step:11:1",
+                  "run_id": 36526624136,
+                  "job_id": 109270984595,
+                  "step": "Post Run actions/setup-go@v7.0.0",
+                  "note": "p50 step duration sample (1s)"
+                },
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36620669164/job/109584941708#step:11:1",
+                  "run_id": 36620669164,
+                  "job_id": 109584941708,
+                  "step": "Post Run actions/setup-go@v7.0.0",
+                  "note": "p90 step duration sample (25s)"
+                }
+              ]
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "job",
+              "url": "https://github.com/schuettc/muster/actions/runs/36526624136/job/109270984595",
+              "run_id": 36526624136,
+              "job_id": 109270984595,
+              "note": "p50 job duration sample (4m40s)"
+            },
+            {
+              "kind": "job",
+              "url": "https://github.com/schuettc/muster/actions/runs/36624782857/job/109598860447",
+              "run_id": 36624782857,
+              "job_id": 109598860447,
+              "note": "p90 job duration sample (6m38s)"
+            }
+          ],
+          "queue_evidence": [
+            {
+              "kind": "job",
+              "url": "https://github.com/schuettc/muster/actions/runs/36527129462/job/109272527730",
+              "run_id": 36527129462,
+              "job_id": 109272527730,
+              "note": "p50 job queue sample (7s)"
+            },
+            {
+              "kind": "job",
+              "url": "https://github.com/schuettc/muster/actions/runs/36524748295/job/109265197507",
+              "run_id": 36524748295,
+              "job_id": 109265197507,
+              "note": "p90 job queue sample (16s)"
+            }
+          ]
+        },
+        {
+          "name": "gate (ubuntu-26.04)",
+          "runs": 17,
+          "p50_ns": 285000000000,
+          "p90_ns": 325000000000,
+          "queue_p50_ns": 3000000000,
+          "queue_p90_ns": 8000000000,
+          "steps": [
+            {
+              "name": "Set up job",
+              "occurrence": 1,
+              "runs": 17,
+              "p50_ns": 2000000000,
+              "p90_ns": 3000000000,
+              "evidence": [
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36527551519/job/109273809611#step:1:1",
+                  "run_id": 36527551519,
+                  "job_id": 109273809611,
+                  "step": "Set up job",
+                  "note": "p50 step duration sample (2s)"
+                },
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36526624136/job/109270984593#step:1:1",
+                  "run_id": 36526624136,
+                  "job_id": 109270984593,
+                  "step": "Set up job",
+                  "note": "p90 step duration sample (3s)"
+                }
+              ]
+            },
+            {
+              "name": "Run actions/checkout@v7.0.1",
+              "occurrence": 1,
+              "runs": 17,
+              "p50_ns": 1000000000,
+              "p90_ns": 2000000000,
+              "evidence": [
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36528923880/job/109277964460#step:2:1",
+                  "run_id": 36528923880,
+                  "job_id": 109277964460,
+                  "step": "Run actions/checkout@v7.0.1",
+                  "note": "p50 step duration sample (1s)"
+                },
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36620669164/job/109584941756#step:2:1",
+                  "run_id": 36620669164,
+                  "job_id": 109584941756,
+                  "step": "Run actions/checkout@v7.0.1",
+                  "note": "p90 step duration sample (2s)"
+                }
+              ]
+            },
+            {
+              "name": "Run actions/setup-go@v7.0.0",
+              "occurrence": 1,
+              "runs": 15,
+              "p50_ns": 9000000000,
+              "p90_ns": 13000000000,
+              "evidence": [
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36613737722/job/109561364415#step:3:1",
+                  "run_id": 36613737722,
+                  "job_id": 109561364415,
+                  "step": "Run actions/setup-go@v7.0.0",
+                  "note": "p50 step duration sample (9s)"
+                },
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36525311450/job/109266933955#step:3:1",
+                  "run_id": 36525311450,
+                  "job_id": 109266933955,
+                  "step": "Run actions/setup-go@v7.0.0",
+                  "note": "p90 step duration sample (13s)"
+                }
+              ]
+            },
+            {
+              "name": "Run schuettc/tools-actions/go-ci@v0.5.0",
+              "occurrence": 1,
+              "runs": 1,
+              "p50_ns": 312000000000,
+              "p90_ns": 312000000000,
+              "evidence": [
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36524748295/job/109265197416#step:3:1",
+                  "run_id": 36524748295,
+                  "job_id": 109265197416,
+                  "step": "Run schuettc/tools-actions/go-ci@v0.5.0",
+                  "note": "p50 step duration sample (5m12s)"
+                },
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36524748295/job/109265197416#step:3:1",
+                  "run_id": 36524748295,
+                  "job_id": 109265197416,
+                  "step": "Run schuettc/tools-actions/go-ci@v0.5.0",
+                  "note": "p90 step duration sample (5m12s)"
+                }
+              ]
+            },
+            {
+              "name": "Run schuettc/tools-actions/go-ci@v0.6.0",
+              "occurrence": 1,
+              "runs": 10,
+              "p50_ns": 270000000000,
+              "p90_ns": 286000000000,
+              "evidence": [
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36525750411/job/109268308012#step:6:1",
+                  "run_id": 36525750411,
+                  "job_id": 109268308012,
+                  "step": "Run schuettc/tools-actions/go-ci@v0.6.0",
+                  "note": "p50 step duration sample (4m30s)"
+                },
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36526624136/job/109270984593#step:6:1",
+                  "run_id": 36526624136,
+                  "job_id": 109270984593,
+                  "step": "Run schuettc/tools-actions/go-ci@v0.6.0",
+                  "note": "p90 step duration sample (4m46s)"
+                }
+              ]
+            },
+            {
+              "name": "Run extractions/setup-just@v4.0.0",
+              "occurrence": 1,
+              "runs": 15,
+              "p50_ns": 1000000000,
+              "p90_ns": 1000000000,
+              "evidence": [
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36527129462/job/109272527724#step:4:1",
+                  "run_id": 36527129462,
+                  "job_id": 109272527724,
+                  "step": "Run extractions/setup-just@v4.0.0",
+                  "note": "p50 step duration sample (1s)"
+                },
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36620669164/job/109584941756#step:4:1",
+                  "run_id": 36620669164,
+                  "job_id": 109584941756,
+                  "step": "Run extractions/setup-just@v4.0.0",
+                  "note": "p90 step duration sample (1s)"
+                }
+              ]
+            },
+            {
+              "name": "Post Run schuettc/tools-actions/go-ci@v0.5.0",
+              "occurrence": 1,
+              "runs": 1,
+              "p50_ns": 5000000000,
+              "p90_ns": 5000000000,
+              "evidence": [
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36524748295/job/109265197416#step:5:1",
+                  "run_id": 36524748295,
+                  "job_id": 109265197416,
+                  "step": "Post Run schuettc/tools-actions/go-ci@v0.5.0",
+                  "note": "p50 step duration sample (5s)"
+                },
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36524748295/job/109265197416#step:5:1",
+                  "run_id": 36524748295,
+                  "job_id": 109265197416,
+                  "step": "Post Run schuettc/tools-actions/go-ci@v0.5.0",
+                  "note": "p90 step duration sample (5s)"
+                }
+              ]
+            },
+            {
+              "name": "Post Run schuettc/tools-actions/go-ci@v0.6.0",
+              "occurrence": 1,
+              "runs": 10,
+              "p50_ns": 0,
+              "p90_ns": 0,
+              "evidence": [
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36527129462/job/109272527724#step:10:1",
+                  "run_id": 36527129462,
+                  "job_id": 109272527724,
+                  "step": "Post Run schuettc/tools-actions/go-ci@v0.6.0",
+                  "note": "p50 step duration sample (0s)"
+                },
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36528454624/job/109276540636#step:10:1",
+                  "run_id": 36528454624,
+                  "job_id": 109276540636,
+                  "step": "Post Run schuettc/tools-actions/go-ci@v0.6.0",
+                  "note": "p90 step duration sample (0s)"
+                }
+              ]
+            },
+            {
+              "name": "Run just prepare",
+              "occurrence": 1,
+              "runs": 15,
+              "p50_ns": 0,
+              "p90_ns": 0,
+              "evidence": [
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36528454624/job/109276540636#step:5:1",
+                  "run_id": 36528454624,
+                  "job_id": 109276540636,
+                  "step": "Run just prepare",
+                  "note": "p50 step duration sample (0s)"
+                },
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36624839171/job/109599050007#step:5:1",
+                  "run_id": 36624839171,
+                  "job_id": 109599050007,
+                  "step": "Run just prepare",
+                  "note": "p90 step duration sample (0s)"
+                }
+              ]
+            },
+            {
+              "name": "Post Run actions/checkout@v7.0.1",
+              "occurrence": 1,
+              "runs": 17,
+              "p50_ns": 0,
+              "p90_ns": 1000000000,
+              "evidence": [
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36528923880/job/109277964460#step:12:1",
+                  "run_id": 36528923880,
+                  "job_id": 109277964460,
+                  "step": "Post Run actions/checkout@v7.0.1",
+                  "note": "p50 step duration sample (0s)"
+                },
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36525255679/job/109266763251#step:6:1",
+                  "run_id": 36525255679,
+                  "job_id": 109266763251,
+                  "step": "Post Run actions/checkout@v7.0.1",
+                  "note": "p90 step duration sample (1s)"
+                }
+              ]
+            },
+            {
+              "name": "Run schuettc/tools-actions/go-ci@v0.10.0",
+              "occurrence": 1,
+              "runs": 1,
+              "p50_ns": 242000000000,
+              "p90_ns": 242000000000,
+              "evidence": [
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36613737722/job/109561364415#step:6:1",
+                  "run_id": 36613737722,
+                  "job_id": 109561364415,
+                  "step": "Run schuettc/tools-actions/go-ci@v0.10.0",
+                  "note": "p50 step duration sample (4m2s)"
+                },
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36613737722/job/109561364415#step:6:1",
+                  "run_id": 36613737722,
+                  "job_id": 109561364415,
+                  "step": "Run schuettc/tools-actions/go-ci@v0.10.0",
+                  "note": "p90 step duration sample (4m2s)"
+                }
+              ]
+            },
+            {
+              "name": "Run schuettc/tools-actions/go-ci@v0.10.1",
+              "occurrence": 1,
+              "runs": 5,
+              "p50_ns": 263000000000,
+              "p90_ns": 305000000000,
+              "evidence": [
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36625609989/job/109601674581#step:6:1",
+                  "run_id": 36625609989,
+                  "job_id": 109601674581,
+                  "step": "Run schuettc/tools-actions/go-ci@v0.10.1",
+                  "note": "p50 step duration sample (4m23s)"
+                },
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36624839171/job/109599050007#step:6:1",
+                  "run_id": 36624839171,
+                  "job_id": 109599050007,
+                  "step": "Run schuettc/tools-actions/go-ci@v0.10.1",
+                  "note": "p90 step duration sample (5m5s)"
+                }
+              ]
+            },
+            {
+              "name": "Complete job",
+              "occurrence": 1,
+              "runs": 17,
+              "p50_ns": 0,
+              "p90_ns": 0,
+              "evidence": [
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36528451066/job/109276530162#step:13:1",
+                  "run_id": 36528451066,
+                  "job_id": 109276530162,
+                  "step": "Complete job",
+                  "note": "p50 step duration sample (0s)"
+                },
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36624839171/job/109599050007#step:13:1",
+                  "run_id": 36624839171,
+                  "job_id": 109599050007,
+                  "step": "Complete job",
+                  "note": "p90 step duration sample (0s)"
+                }
+              ]
+            },
+            {
+              "name": "Post Run schuettc/tools-actions/go-ci@v0.10.0",
+              "occurrence": 1,
+              "runs": 1,
+              "p50_ns": 0,
+              "p90_ns": 0,
+              "evidence": [
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36613737722/job/109561364415#step:10:1",
+                  "run_id": 36613737722,
+                  "job_id": 109561364415,
+                  "step": "Post Run schuettc/tools-actions/go-ci@v0.10.0",
+                  "note": "p50 step duration sample (0s)"
+                },
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36613737722/job/109561364415#step:10:1",
+                  "run_id": 36613737722,
+                  "job_id": 109561364415,
+                  "step": "Post Run schuettc/tools-actions/go-ci@v0.10.0",
+                  "note": "p90 step duration sample (0s)"
+                }
+              ]
+            },
+            {
+              "name": "Post Run schuettc/tools-actions/go-ci@v0.10.1",
+              "occurrence": 1,
+              "runs": 5,
+              "p50_ns": 0,
+              "p90_ns": 0,
+              "evidence": [
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36624782857/job/109598860537#step:10:1",
+                  "run_id": 36624782857,
+                  "job_id": 109598860537,
+                  "step": "Post Run schuettc/tools-actions/go-ci@v0.10.1",
+                  "note": "p50 step duration sample (0s)"
+                },
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36625609989/job/109601674581#step:10:1",
+                  "run_id": 36625609989,
+                  "job_id": 109601674581,
+                  "step": "Post Run schuettc/tools-actions/go-ci@v0.10.1",
+                  "note": "p90 step duration sample (0s)"
+                }
+              ]
+            },
+            {
+              "name": "Post Run actions/setup-go@v7.0.0",
+              "occurrence": 1,
+              "runs": 15,
+              "p50_ns": 3000000000,
+              "p90_ns": 6000000000,
+              "evidence": [
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36618294855/job/109576866392#step:11:1",
+                  "run_id": 36618294855,
+                  "job_id": 109576866392,
+                  "step": "Post Run actions/setup-go@v7.0.0",
+                  "note": "p50 step duration sample (3s)"
+                },
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36528454624/job/109276540636#step:11:1",
+                  "run_id": 36528454624,
+                  "job_id": 109276540636,
+                  "step": "Post Run actions/setup-go@v7.0.0",
+                  "note": "p90 step duration sample (6s)"
+                }
+              ]
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "job",
+              "url": "https://github.com/schuettc/muster/actions/runs/36625609989/job/109601674581",
+              "run_id": 36625609989,
+              "job_id": 109601674581,
+              "note": "p50 job duration sample (4m45s)"
+            },
+            {
+              "kind": "job",
+              "url": "https://github.com/schuettc/muster/actions/runs/36524748295/job/109265197416",
+              "run_id": 36524748295,
+              "job_id": 109265197416,
+              "note": "p90 job duration sample (5m25s)"
+            }
+          ],
+          "queue_evidence": [
+            {
+              "kind": "job",
+              "url": "https://github.com/schuettc/muster/actions/runs/36525255679/job/109266763251",
+              "run_id": 36525255679,
+              "job_id": 109266763251,
+              "note": "p50 job queue sample (3s)"
+            },
+            {
+              "kind": "job",
+              "url": "https://github.com/schuettc/muster/actions/runs/36618294855/job/109576866392",
+              "run_id": 36618294855,
+              "job_id": 109576866392,
+              "note": "p90 job queue sample (8s)"
+            }
+          ]
+        }
+      ],
+      "critical_path": [
+        "gate"
+      ],
+      "critical_path_detail": {
+        "ref": "a0a1ebdcca0eb2306492ecddcd038173f36966a6",
+        "branch": "main",
+        "event": "push",
+        "source_run_id": 36624782857,
+        "definition_url": "https://github.com/schuettc/muster/blob/a0a1ebdcca0eb2306492ecddcd038173f36966a6/.github/workflows/ci.yml",
+        "basis_runs": 17,
+        "unmatched_runs": 0,
+        "rejected": [],
+        "p50_ns": 317000000000,
+        "nodes": [
+          {
+            "job": "gate",
+            "kind": "matrix",
+            "runs": 17,
+            "p50_ns": 317000000000,
+            "evidence": [
+              {
+                "kind": "run",
+                "url": "https://github.com/schuettc/muster/actions/runs/36618294855",
+                "run_id": 36618294855,
+                "note": "p50 matrix duration sample (5m17s): span of jobs 109576866351, 109576866392"
+              },
+              {
+                "kind": "file",
+                "url": "https://github.com/schuettc/muster/blob/a0a1ebdcca0eb2306492ecddcd038173f36966a6/.github/workflows/ci.yml#L13",
+                "path": ".github/workflows/ci.yml",
+                "line": 13,
+                "note": "job definition and needs at a0a1ebdcca0eb2306492ecddcd038173f36966a6"
+              }
+            ]
+          }
+        ]
+      },
+      "evidence": [
+        {
+          "kind": "run",
+          "url": "https://github.com/schuettc/muster/actions/runs/36524748295",
+          "run_id": 36524748295,
+          "note": "success in 8m28s (start to last job completed); pull_request on chore/family-standard; attempt 1"
+        },
+        {
+          "kind": "run",
+          "url": "https://github.com/schuettc/muster/actions/runs/36525255679",
+          "run_id": 36525255679,
+          "note": "success in 5m9s (start to last job completed); pull_request on chore/family-standard; attempt 1"
+        },
+        {
+          "kind": "run",
+          "url": "https://github.com/schuettc/muster/actions/runs/36525311450",
+          "run_id": 36525311450,
+          "note": "success in 5m58s (start to last job completed); pull_request on chore/family-standard; attempt 1"
+        },
+        {
+          "kind": "run",
+          "url": "https://github.com/schuettc/muster/actions/runs/36525750411",
+          "run_id": 36525750411,
+          "note": "success in 5m26s (start to last job completed); pull_request on chore/family-standard; attempt 1"
+        },
+        {
+          "kind": "run",
+          "url": "https://github.com/schuettc/muster/actions/runs/36526624136",
+          "run_id": 36526624136,
+          "note": "success in 5m13s (start to last job completed); push on dev; attempt 1"
+        },
+        {
+          "kind": "run",
+          "url": "https://github.com/schuettc/muster/actions/runs/36527129462",
+          "run_id": 36527129462,
+          "note": "success in 3m59s (start to last job completed); pull_request on release/v0.23.1; attempt 1"
+        },
+        {
+          "kind": "run",
+          "url": "https://github.com/schuettc/muster/actions/runs/36527551519",
+          "run_id": 36527551519,
+          "note": "success in 4m26s (start to last job completed); push on dev; attempt 1"
+        },
+        {
+          "kind": "run",
+          "url": "https://github.com/schuettc/muster/actions/runs/36528019485",
+          "run_id": 36528019485,
+          "note": "success in 4m51s (start to last job completed); pull_request on chore/sync-main-into-dev; attempt 1"
+        },
+        {
+          "kind": "run",
+          "url": "https://github.com/schuettc/muster/actions/runs/36528451066",
+          "run_id": 36528451066,
+          "note": "success in 4m48s (start to last job completed); push on dev; attempt 1"
+        },
+        {
+          "kind": "run",
+          "url": "https://github.com/schuettc/muster/actions/runs/36528454624",
+          "run_id": 36528454624,
+          "note": "success in 5m32s (start to last job completed); pull_request on dev; attempt 1"
+        },
+        {
+          "kind": "run",
+          "url": "https://github.com/schuettc/muster/actions/runs/36528923880",
+          "run_id": 36528923880,
+          "note": "success in 4m26s (start to last job completed); push on main; attempt 1"
+        },
+        {
+          "kind": "run",
+          "url": "https://github.com/schuettc/muster/actions/runs/36613737722",
+          "run_id": 36613737722,
+          "note": "success in 5m42s (start to last job completed); pull_request on chore/tools-actions-v0.10.0; attempt 1"
+        },
+        {
+          "kind": "run",
+          "url": "https://github.com/schuettc/muster/actions/runs/36618294855",
+          "run_id": 36618294855,
+          "note": "success in 5m26s (start to last job completed); pull_request on chore/tools-actions-v0.10.1; attempt 1"
+        },
+        {
+          "kind": "run",
+          "url": "https://github.com/schuettc/muster/actions/runs/36620669164",
+          "run_id": 36620669164,
+          "note": "success in 5m48s (start to last job completed); pull_request on dev; attempt 1"
+        },
+        {
+          "kind": "run",
+          "url": "https://github.com/schuettc/muster/actions/runs/36624782857",
+          "run_id": 36624782857,
+          "note": "success in 6m47s (start to last job completed); push on main; attempt 1"
+        },
+        {
+          "kind": "run",
+          "url": "https://github.com/schuettc/muster/actions/runs/36624839171",
+          "run_id": 36624839171,
+          "note": "success in 5m26s (start to last job completed); pull_request on main; attempt 1"
+        },
+        {
+          "kind": "run",
+          "url": "https://github.com/schuettc/muster/actions/runs/36625609989",
+          "run_id": 36625609989,
+          "note": "success in 4m49s (start to last job completed); push on dev; attempt 1"
+        },
+        {
+          "kind": "run",
+          "url": "https://github.com/schuettc/muster/actions/runs/36525750411",
+          "run_id": 36525750411,
+          "note": "p50 run duration sample (5m26s)"
+        },
+        {
+          "kind": "run",
+          "url": "https://github.com/schuettc/muster/actions/runs/36624782857",
+          "run_id": 36624782857,
+          "note": "p90 run duration sample (6m47s)"
+        },
+        {
+          "kind": "job",
+          "url": "https://github.com/schuettc/muster/actions/runs/36613737722/job/109561364462",
+          "run_id": 36613737722,
+          "job_id": 109561364462,
+          "note": "p50 job queue sample (3s)"
+        },
+        {
+          "kind": "job",
+          "url": "https://github.com/schuettc/muster/actions/runs/36625609989/job/109601674502",
+          "run_id": 36625609989,
+          "job_id": 109601674502,
+          "note": "p90 job queue sample (8s)"
+        }
+      ]
+    },
+    {
+      "path": ".github/workflows/release.yml",
+      "name": "release",
+      "role": "deploy",
+      "role_reason": "job release uses environment: release",
+      "events": [
+        "push"
+      ],
+      "runs": 2,
+      "reruns": 0,
+      "failures": 0,
+      "p50_ns": 20000000000,
+      "p90_ns": 97000000000,
+      "runs_end_estimated": 0,
+      "queue_p50_ns": 8000000000,
+      "queue_p90_ns": 10000000000,
+      "success_rate": 1,
+      "carried_over_jobs": 0,
+      "jobs": [
+        {
+          "name": "release",
+          "runs": 2,
+          "p50_ns": 10000000000,
+          "p90_ns": 88000000000,
+          "queue_p50_ns": 8000000000,
+          "queue_p90_ns": 10000000000,
+          "steps": [
+            {
+              "name": "Set up job",
+              "occurrence": 1,
+              "runs": 2,
+              "p50_ns": 2000000000,
+              "p90_ns": 3000000000,
+              "evidence": [
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36528923869/job/109277964164#step:1:1",
+                  "run_id": 36528923869,
+                  "job_id": 109277964164,
+                  "step": "Set up job",
+                  "note": "p50 step duration sample (2s)"
+                },
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36624782826/job/109598856456#step:1:1",
+                  "run_id": 36624782826,
+                  "job_id": 109598856456,
+                  "step": "Set up job",
+                  "note": "p90 step duration sample (3s)"
+                }
+              ]
+            },
+            {
+              "name": "Run actions/checkout@v7.0.1",
+              "occurrence": 1,
+              "runs": 2,
+              "p50_ns": 1000000000,
+              "p90_ns": 2000000000,
+              "evidence": [
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36528923869/job/109277964164#step:2:1",
+                  "run_id": 36528923869,
+                  "job_id": 109277964164,
+                  "step": "Run actions/checkout@v7.0.1",
+                  "note": "p50 step duration sample (1s)"
+                },
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36624782826/job/109598856456#step:2:1",
+                  "run_id": 36624782826,
+                  "job_id": 109598856456,
+                  "step": "Run actions/checkout@v7.0.1",
+                  "note": "p90 step duration sample (2s)"
+                }
+              ]
+            },
+            {
+              "name": "Run schuettc/tools-actions/release-version@v0.10.1",
+              "occurrence": 1,
+              "runs": 1,
+              "p50_ns": 0,
+              "p90_ns": 0,
+              "evidence": [
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36624782826/job/109598856456#step:3:1",
+                  "run_id": 36624782826,
+                  "job_id": 109598856456,
+                  "step": "Run schuettc/tools-actions/release-version@v0.10.1",
+                  "note": "p50 step duration sample (0s)"
+                },
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36624782826/job/109598856456#step:3:1",
+                  "run_id": 36624782826,
+                  "job_id": 109598856456,
+                  "step": "Run schuettc/tools-actions/release-version@v0.10.1",
+                  "note": "p90 step duration sample (0s)"
+                }
+              ]
+            },
+            {
+              "name": "Run schuettc/tools-actions/release-version@v0.6.0",
+              "occurrence": 1,
+              "runs": 1,
+              "p50_ns": 1000000000,
+              "p90_ns": 1000000000,
+              "evidence": [
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36528923869/job/109277964164#step:3:1",
+                  "run_id": 36528923869,
+                  "job_id": 109277964164,
+                  "step": "Run schuettc/tools-actions/release-version@v0.6.0",
+                  "note": "p50 step duration sample (1s)"
+                },
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36528923869/job/109277964164#step:3:1",
+                  "run_id": 36528923869,
+                  "job_id": 109277964164,
+                  "step": "Run schuettc/tools-actions/release-version@v0.6.0",
+                  "note": "p90 step duration sample (1s)"
+                }
+              ]
+            },
+            {
+              "name": "Run actions/setup-go@v7.0.0",
+              "occurrence": 1,
+              "runs": 1,
+              "p50_ns": 21000000000,
+              "p90_ns": 21000000000,
+              "evidence": [
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36528923869/job/109277964164#step:4:1",
+                  "run_id": 36528923869,
+                  "job_id": 109277964164,
+                  "step": "Run actions/setup-go@v7.0.0",
+                  "note": "p50 step duration sample (21s)"
+                },
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36528923869/job/109277964164#step:4:1",
+                  "run_id": 36528923869,
+                  "job_id": 109277964164,
+                  "step": "Run actions/setup-go@v7.0.0",
+                  "note": "p90 step duration sample (21s)"
+                }
+              ]
+            },
+            {
+              "name": "Build the Lambda zip",
+              "occurrence": 1,
+              "runs": 1,
+              "p50_ns": 3000000000,
+              "p90_ns": 3000000000,
+              "evidence": [
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36528923869/job/109277964164#step:5:1",
+                  "run_id": 36528923869,
+                  "job_id": 109277964164,
+                  "step": "Build the Lambda zip",
+                  "note": "p50 step duration sample (3s)"
+                },
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36528923869/job/109277964164#step:5:1",
+                  "run_id": 36528923869,
+                  "job_id": 109277964164,
+                  "step": "Build the Lambda zip",
+                  "note": "p90 step duration sample (3s)"
+                }
+              ]
+            },
+            {
+              "name": "Run schuettc/tools-actions/go-release@v0.6.0",
+              "occurrence": 1,
+              "runs": 1,
+              "p50_ns": 55000000000,
+              "p90_ns": 55000000000,
+              "evidence": [
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36528923869/job/109277964164#step:6:1",
+                  "run_id": 36528923869,
+                  "job_id": 109277964164,
+                  "step": "Run schuettc/tools-actions/go-release@v0.6.0",
+                  "note": "p50 step duration sample (55s)"
+                },
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36528923869/job/109277964164#step:6:1",
+                  "run_id": 36528923869,
+                  "job_id": 109277964164,
+                  "step": "Run schuettc/tools-actions/go-release@v0.6.0",
+                  "note": "p90 step duration sample (55s)"
+                }
+              ]
+            },
+            {
+              "name": "Post Run schuettc/tools-actions/go-release@v0.6.0",
+              "occurrence": 1,
+              "runs": 1,
+              "p50_ns": 0,
+              "p90_ns": 0,
+              "evidence": [
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36528923869/job/109277964164#step:10:1",
+                  "run_id": 36528923869,
+                  "job_id": 109277964164,
+                  "step": "Post Run schuettc/tools-actions/go-release@v0.6.0",
+                  "note": "p50 step duration sample (0s)"
+                },
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36528923869/job/109277964164#step:10:1",
+                  "run_id": 36528923869,
+                  "job_id": 109277964164,
+                  "step": "Post Run schuettc/tools-actions/go-release@v0.6.0",
+                  "note": "p90 step duration sample (0s)"
+                }
+              ]
+            },
+            {
+              "name": "Post Run actions/setup-go@v7.0.0",
+              "occurrence": 1,
+              "runs": 1,
+              "p50_ns": 0,
+              "p90_ns": 0,
+              "evidence": [
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36528923869/job/109277964164#step:11:1",
+                  "run_id": 36528923869,
+                  "job_id": 109277964164,
+                  "step": "Post Run actions/setup-go@v7.0.0",
+                  "note": "p50 step duration sample (0s)"
+                },
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36528923869/job/109277964164#step:11:1",
+                  "run_id": 36528923869,
+                  "job_id": 109277964164,
+                  "step": "Post Run actions/setup-go@v7.0.0",
+                  "note": "p90 step duration sample (0s)"
+                }
+              ]
+            },
+            {
+              "name": "Post Run actions/checkout@v7.0.1",
+              "occurrence": 1,
+              "runs": 2,
+              "p50_ns": 0,
+              "p90_ns": 1000000000,
+              "evidence": [
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36528923869/job/109277964164#step:12:1",
+                  "run_id": 36528923869,
+                  "job_id": 109277964164,
+                  "step": "Post Run actions/checkout@v7.0.1",
+                  "note": "p50 step duration sample (0s)"
+                },
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36624782826/job/109598856456#step:12:1",
+                  "run_id": 36624782826,
+                  "job_id": 109598856456,
+                  "step": "Post Run actions/checkout@v7.0.1",
+                  "note": "p90 step duration sample (1s)"
+                }
+              ]
+            },
+            {
+              "name": "Complete job",
+              "occurrence": 1,
+              "runs": 2,
+              "p50_ns": 0,
+              "p90_ns": 1000000000,
+              "evidence": [
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36624782826/job/109598856456#step:13:1",
+                  "run_id": 36624782826,
+                  "job_id": 109598856456,
+                  "step": "Complete job",
+                  "note": "p50 step duration sample (0s)"
+                },
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36528923869/job/109277964164#step:13:1",
+                  "run_id": 36528923869,
+                  "job_id": 109277964164,
+                  "step": "Complete job",
+                  "note": "p90 step duration sample (1s)"
+                }
+              ]
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "job",
+              "url": "https://github.com/schuettc/muster/actions/runs/36624782826/job/109598856456",
+              "run_id": 36624782826,
+              "job_id": 109598856456,
+              "note": "p50 job duration sample (10s)"
+            },
+            {
+              "kind": "job",
+              "url": "https://github.com/schuettc/muster/actions/runs/36528923869/job/109277964164",
+              "run_id": 36528923869,
+              "job_id": 109277964164,
+              "note": "p90 job duration sample (1m28s)"
+            }
+          ],
+          "queue_evidence": [
+            {
+              "kind": "job",
+              "url": "https://github.com/schuettc/muster/actions/runs/36528923869/job/109277964164",
+              "run_id": 36528923869,
+              "job_id": 109277964164,
+              "note": "p50 job queue sample (8s)"
+            },
+            {
+              "kind": "job",
+              "url": "https://github.com/schuettc/muster/actions/runs/36624782826/job/109598856456",
+              "run_id": 36624782826,
+              "job_id": 109598856456,
+              "note": "p90 job queue sample (10s)"
+            }
+          ]
+        }
+      ],
+      "critical_path": [
+        "release"
+      ],
+      "critical_path_detail": {
+        "ref": "a0a1ebdcca0eb2306492ecddcd038173f36966a6",
+        "branch": "main",
+        "event": "push",
+        "source_run_id": 36624782826,
+        "definition_url": "https://github.com/schuettc/muster/blob/a0a1ebdcca0eb2306492ecddcd038173f36966a6/.github/workflows/release.yml",
+        "basis_runs": 2,
+        "unmatched_runs": 0,
+        "rejected": [],
+        "p50_ns": 10000000000,
+        "nodes": [
+          {
+            "job": "release",
+            "kind": "job",
+            "runs": 2,
+            "p50_ns": 10000000000,
+            "evidence": [
+              {
+                "kind": "job",
+                "url": "https://github.com/schuettc/muster/actions/runs/36624782826/job/109598856456",
+                "run_id": 36624782826,
+                "job_id": 109598856456,
+                "note": "p50 job duration sample (10s)"
+              },
+              {
+                "kind": "file",
+                "url": "https://github.com/schuettc/muster/blob/a0a1ebdcca0eb2306492ecddcd038173f36966a6/.github/workflows/release.yml#L46",
+                "path": ".github/workflows/release.yml",
+                "line": 46,
+                "note": "job definition and needs at a0a1ebdcca0eb2306492ecddcd038173f36966a6"
+              }
+            ]
+          }
+        ]
+      },
+      "evidence": [
+        {
+          "kind": "run",
+          "url": "https://github.com/schuettc/muster/actions/runs/36528923869",
+          "run_id": 36528923869,
+          "note": "success in 1m37s (start to last job completed); push on main; attempt 1"
+        },
+        {
+          "kind": "run",
+          "url": "https://github.com/schuettc/muster/actions/runs/36624782826",
+          "run_id": 36624782826,
+          "note": "success in 20s (start to last job completed); push on main; attempt 1"
+        },
+        {
+          "kind": "run",
+          "url": "https://github.com/schuettc/muster/actions/runs/36624782826",
+          "run_id": 36624782826,
+          "note": "p50 run duration sample (20s)"
+        },
+        {
+          "kind": "run",
+          "url": "https://github.com/schuettc/muster/actions/runs/36528923869",
+          "run_id": 36528923869,
+          "note": "p90 run duration sample (1m37s)"
+        },
+        {
+          "kind": "job",
+          "url": "https://github.com/schuettc/muster/actions/runs/36528923869/job/109277964164",
+          "run_id": 36528923869,
+          "job_id": 109277964164,
+          "note": "p50 job queue sample (8s)"
+        },
+        {
+          "kind": "job",
+          "url": "https://github.com/schuettc/muster/actions/runs/36624782826/job/109598856456",
+          "run_id": 36624782826,
+          "job_id": 109598856456,
+          "note": "p90 job queue sample (10s)"
+        }
+      ]
+    },
+    {
+      "path": ".github/workflows/version-guard.yml",
+      "name": "version-guard",
+      "role": "gate",
+      "role_reason": "triggered by pull_request",
+      "events": [
+        "pull_request"
+      ],
+      "runs": 3,
+      "reruns": 0,
+      "failures": 0,
+      "p50_ns": 9000000000,
+      "p90_ns": 9000000000,
+      "runs_end_estimated": 0,
+      "queue_p50_ns": 2000000000,
+      "queue_p90_ns": 3000000000,
+      "success_rate": 1,
+      "carried_over_jobs": 0,
+      "jobs": [
+        {
+          "name": "version-guard",
+          "runs": 3,
+          "p50_ns": 6000000000,
+          "p90_ns": 6000000000,
+          "queue_p50_ns": 2000000000,
+          "queue_p90_ns": 3000000000,
+          "steps": [
+            {
+              "name": "Set up job",
+              "occurrence": 1,
+              "runs": 3,
+              "p50_ns": 1000000000,
+              "p90_ns": 1000000000,
+              "evidence": [
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36620669168/job/109584941673#step:1:1",
+                  "run_id": 36620669168,
+                  "job_id": 109584941673,
+                  "step": "Set up job",
+                  "note": "p50 step duration sample (1s)"
+                },
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36620671624/job/109584951657#step:1:1",
+                  "run_id": 36620671624,
+                  "job_id": 109584951657,
+                  "step": "Set up job",
+                  "note": "p90 step duration sample (1s)"
+                }
+              ]
+            },
+            {
+              "name": "Run actions/checkout@v7.0.1",
+              "occurrence": 1,
+              "runs": 3,
+              "p50_ns": 1000000000,
+              "p90_ns": 2000000000,
+              "evidence": [
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36620669168/job/109584941673#step:2:1",
+                  "run_id": 36620669168,
+                  "job_id": 109584941673,
+                  "step": "Run actions/checkout@v7.0.1",
+                  "note": "p50 step duration sample (1s)"
+                },
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36620671624/job/109584951657#step:2:1",
+                  "run_id": 36620671624,
+                  "job_id": 109584951657,
+                  "step": "Run actions/checkout@v7.0.1",
+                  "note": "p90 step duration sample (2s)"
+                }
+              ]
+            },
+            {
+              "name": "Run schuettc/tools-actions/version-guard@v0.10.1",
+              "occurrence": 1,
+              "runs": 2,
+              "p50_ns": 0,
+              "p90_ns": 0,
+              "evidence": [
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36620669168/job/109584941673#step:3:1",
+                  "run_id": 36620669168,
+                  "job_id": 109584941673,
+                  "step": "Run schuettc/tools-actions/version-guard@v0.10.1",
+                  "note": "p50 step duration sample (0s)"
+                },
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36620671624/job/109584951657#step:3:1",
+                  "run_id": 36620671624,
+                  "job_id": 109584951657,
+                  "step": "Run schuettc/tools-actions/version-guard@v0.10.1",
+                  "note": "p90 step duration sample (0s)"
+                }
+              ]
+            },
+            {
+              "name": "Run schuettc/tools-actions/version-guard@v0.6.0",
+              "occurrence": 1,
+              "runs": 1,
+              "p50_ns": 0,
+              "p90_ns": 0,
+              "evidence": [
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36528454695/job/109276540456#step:3:1",
+                  "run_id": 36528454695,
+                  "job_id": 109276540456,
+                  "step": "Run schuettc/tools-actions/version-guard@v0.6.0",
+                  "note": "p50 step duration sample (0s)"
+                },
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36528454695/job/109276540456#step:3:1",
+                  "run_id": 36528454695,
+                  "job_id": 109276540456,
+                  "step": "Run schuettc/tools-actions/version-guard@v0.6.0",
+                  "note": "p90 step duration sample (0s)"
+                }
+              ]
+            },
+            {
+              "name": "Post Run actions/checkout@v7.0.1",
+              "occurrence": 1,
+              "runs": 3,
+              "p50_ns": 0,
+              "p90_ns": 1000000000,
+              "evidence": [
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36620671624/job/109584951657#step:6:1",
+                  "run_id": 36620671624,
+                  "job_id": 109584951657,
+                  "step": "Post Run actions/checkout@v7.0.1",
+                  "note": "p50 step duration sample (0s)"
+                },
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36620669168/job/109584941673#step:6:1",
+                  "run_id": 36620669168,
+                  "job_id": 109584941673,
+                  "step": "Post Run actions/checkout@v7.0.1",
+                  "note": "p90 step duration sample (1s)"
+                }
+              ]
+            },
+            {
+              "name": "Complete job",
+              "occurrence": 1,
+              "runs": 3,
+              "p50_ns": 0,
+              "p90_ns": 0,
+              "evidence": [
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36620669168/job/109584941673#step:7:1",
+                  "run_id": 36620669168,
+                  "job_id": 109584941673,
+                  "step": "Complete job",
+                  "note": "p50 step duration sample (0s)"
+                },
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36620671624/job/109584951657#step:7:1",
+                  "run_id": 36620671624,
+                  "job_id": 109584951657,
+                  "step": "Complete job",
+                  "note": "p90 step duration sample (0s)"
+                }
+              ]
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "job",
+              "url": "https://github.com/schuettc/muster/actions/runs/36620669168/job/109584941673",
+              "run_id": 36620669168,
+              "job_id": 109584941673,
+              "note": "p50 job duration sample (6s)"
+            },
+            {
+              "kind": "job",
+              "url": "https://github.com/schuettc/muster/actions/runs/36620671624/job/109584951657",
+              "run_id": 36620671624,
+              "job_id": 109584951657,
+              "note": "p90 job duration sample (6s)"
+            }
+          ],
+          "queue_evidence": [
+            {
+              "kind": "job",
+              "url": "https://github.com/schuettc/muster/actions/runs/36620671624/job/109584951657",
+              "run_id": 36620671624,
+              "job_id": 109584951657,
+              "note": "p50 job queue sample (2s)"
+            },
+            {
+              "kind": "job",
+              "url": "https://github.com/schuettc/muster/actions/runs/36620669168/job/109584941673",
+              "run_id": 36620669168,
+              "job_id": 109584941673,
+              "note": "p90 job queue sample (3s)"
+            }
+          ]
+        }
+      ],
+      "critical_path": [
+        "version-guard"
+      ],
+      "critical_path_detail": {
+        "ref": "d34534b9c431b6a64d55487555a61ddb2cab93f6",
+        "branch": "dev",
+        "event": "pull_request",
+        "source_run_id": 36620671624,
+        "definition_url": "https://github.com/schuettc/muster/blob/d34534b9c431b6a64d55487555a61ddb2cab93f6/.github/workflows/version-guard.yml",
+        "basis_runs": 3,
+        "unmatched_runs": 0,
+        "rejected": [],
+        "p50_ns": 6000000000,
+        "nodes": [
+          {
+            "job": "version-guard",
+            "kind": "job",
+            "runs": 3,
+            "p50_ns": 6000000000,
+            "evidence": [
+              {
+                "kind": "job",
+                "url": "https://github.com/schuettc/muster/actions/runs/36620669168/job/109584941673",
+                "run_id": 36620669168,
+                "job_id": 109584941673,
+                "note": "p50 job duration sample (6s)"
+              },
+              {
+                "kind": "file",
+                "url": "https://github.com/schuettc/muster/blob/d34534b9c431b6a64d55487555a61ddb2cab93f6/.github/workflows/version-guard.yml#L11",
+                "path": ".github/workflows/version-guard.yml",
+                "line": 11,
+                "note": "job definition and needs at d34534b9c431b6a64d55487555a61ddb2cab93f6"
+              }
+            ]
+          }
+        ]
+      },
+      "evidence": [
+        {
+          "kind": "run",
+          "url": "https://github.com/schuettc/muster/actions/runs/36528454695",
+          "run_id": 36528454695,
+          "note": "success in 7s (start to last job completed); pull_request on dev; attempt 1"
+        },
+        {
+          "kind": "run",
+          "url": "https://github.com/schuettc/muster/actions/runs/36620669168",
+          "run_id": 36620669168,
+          "note": "success in 9s (start to last job completed); pull_request on dev; attempt 1"
+        },
+        {
+          "kind": "run",
+          "url": "https://github.com/schuettc/muster/actions/runs/36620671624",
+          "run_id": 36620671624,
+          "note": "success in 9s (start to last job completed); pull_request on dev; attempt 1"
+        },
+        {
+          "kind": "run",
+          "url": "https://github.com/schuettc/muster/actions/runs/36620669168",
+          "run_id": 36620669168,
+          "note": "p50 run duration sample (9s)"
+        },
+        {
+          "kind": "run",
+          "url": "https://github.com/schuettc/muster/actions/runs/36620671624",
+          "run_id": 36620671624,
+          "note": "p90 run duration sample (9s)"
+        },
+        {
+          "kind": "job",
+          "url": "https://github.com/schuettc/muster/actions/runs/36620671624/job/109584951657",
+          "run_id": 36620671624,
+          "job_id": 109584951657,
+          "note": "p50 job queue sample (2s)"
+        },
+        {
+          "kind": "job",
+          "url": "https://github.com/schuettc/muster/actions/runs/36620669168/job/109584941673",
+          "run_id": 36620669168,
+          "job_id": 109584941673,
+          "note": "p90 job queue sample (3s)"
+        }
+      ]
+    },
+    {
+      "path": "dynamic/dependabot/dependabot-updates",
+      "name": "Dependabot Updates",
+      "role": "other",
+      "role_reason": "no role rule matched",
+      "events": [
+        "dynamic"
+      ],
+      "runs": 2,
+      "reruns": 0,
+      "failures": 0,
+      "p50_ns": 30000000000,
+      "p90_ns": 34000000000,
+      "runs_end_estimated": 0,
+      "queue_p50_ns": 2000000000,
+      "queue_p90_ns": 3000000000,
+      "success_rate": 1,
+      "carried_over_jobs": 0,
+      "jobs": [
+        {
+          "name": "Dependabot",
+          "runs": 2,
+          "p50_ns": 27000000000,
+          "p90_ns": 30000000000,
+          "queue_p50_ns": 2000000000,
+          "queue_p90_ns": 3000000000,
+          "steps": [
+            {
+              "name": "Set up job",
+              "occurrence": 1,
+              "runs": 2,
+              "p50_ns": 0,
+              "p90_ns": 2000000000,
+              "evidence": [
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36528930069/job/109277986894#step:1:1",
+                  "run_id": 36528930069,
+                  "job_id": 109277986894,
+                  "step": "Set up job",
+                  "note": "p50 step duration sample (0s)"
+                },
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36528931797/job/109277992462#step:1:1",
+                  "run_id": 36528931797,
+                  "job_id": 109277992462,
+                  "step": "Set up job",
+                  "note": "p90 step duration sample (2s)"
+                }
+              ]
+            },
+            {
+              "name": "Create job directory",
+              "occurrence": 1,
+              "runs": 2,
+              "p50_ns": 0,
+              "p90_ns": 1000000000,
+              "evidence": [
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36528931797/job/109277992462#step:2:1",
+                  "run_id": 36528931797,
+                  "job_id": 109277992462,
+                  "step": "Create job directory",
+                  "note": "p50 step duration sample (0s)"
+                },
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36528930069/job/109277986894#step:2:1",
+                  "run_id": 36528930069,
+                  "job_id": 109277986894,
+                  "step": "Create job directory",
+                  "note": "p90 step duration sample (1s)"
+                }
+              ]
+            },
+            {
+              "name": "Run Dependabot",
+              "occurrence": 1,
+              "runs": 2,
+              "p50_ns": 24000000000,
+              "p90_ns": 26000000000,
+              "evidence": [
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36528930069/job/109277986894#step:3:1",
+                  "run_id": 36528930069,
+                  "job_id": 109277986894,
+                  "step": "Run Dependabot",
+                  "note": "p50 step duration sample (24s)"
+                },
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36528931797/job/109277992462#step:3:1",
+                  "run_id": 36528931797,
+                  "job_id": 109277992462,
+                  "step": "Run Dependabot",
+                  "note": "p90 step duration sample (26s)"
+                }
+              ]
+            },
+            {
+              "name": "Post Run Dependabot",
+              "occurrence": 1,
+              "runs": 2,
+              "p50_ns": 0,
+              "p90_ns": 0,
+              "evidence": [
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36528930069/job/109277986894#step:6:1",
+                  "run_id": 36528930069,
+                  "job_id": 109277986894,
+                  "step": "Post Run Dependabot",
+                  "note": "p50 step duration sample (0s)"
+                },
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36528931797/job/109277992462#step:6:1",
+                  "run_id": 36528931797,
+                  "job_id": 109277992462,
+                  "step": "Post Run Dependabot",
+                  "note": "p90 step duration sample (0s)"
+                }
+              ]
+            },
+            {
+              "name": "Complete job",
+              "occurrence": 1,
+              "runs": 2,
+              "p50_ns": 0,
+              "p90_ns": 0,
+              "evidence": [
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36528930069/job/109277986894#step:7:1",
+                  "run_id": 36528930069,
+                  "job_id": 109277986894,
+                  "step": "Complete job",
+                  "note": "p50 step duration sample (0s)"
+                },
+                {
+                  "kind": "step",
+                  "url": "https://github.com/schuettc/muster/actions/runs/36528931797/job/109277992462#step:7:1",
+                  "run_id": 36528931797,
+                  "job_id": 109277992462,
+                  "step": "Complete job",
+                  "note": "p90 step duration sample (0s)"
+                }
+              ]
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "job",
+              "url": "https://github.com/schuettc/muster/actions/runs/36528930069/job/109277986894",
+              "run_id": 36528930069,
+              "job_id": 109277986894,
+              "note": "p50 job duration sample (27s)"
+            },
+            {
+              "kind": "job",
+              "url": "https://github.com/schuettc/muster/actions/runs/36528931797/job/109277992462",
+              "run_id": 36528931797,
+              "job_id": 109277992462,
+              "note": "p90 job duration sample (30s)"
+            }
+          ],
+          "queue_evidence": [
+            {
+              "kind": "job",
+              "url": "https://github.com/schuettc/muster/actions/runs/36528930069/job/109277986894",
+              "run_id": 36528930069,
+              "job_id": 109277986894,
+              "note": "p50 job queue sample (2s)"
+            },
+            {
+              "kind": "job",
+              "url": "https://github.com/schuettc/muster/actions/runs/36528931797/job/109277992462",
+              "run_id": 36528931797,
+              "job_id": 109277992462,
+              "note": "p90 job queue sample (3s)"
+            }
+          ]
+        }
+      ],
+      "critical_path": [],
+      "critical_path_detail": {
+        "branch": "dev",
+        "event": "dynamic",
+        "source_run_id": 36528931797,
+        "basis_runs": 0,
+        "unmatched_runs": 0,
+        "rejected": [],
+        "p50_ns": 0,
+        "nodes": [],
+        "unavailable": "GitHub-managed workflow: there is no workflow file to read"
+      },
+      "evidence": [
+        {
+          "kind": "run",
+          "url": "https://github.com/schuettc/muster/actions/runs/36528930069",
+          "run_id": 36528930069,
+          "note": "success in 30s (start to last job completed); dynamic on dev; attempt 1"
+        },
+        {
+          "kind": "run",
+          "url": "https://github.com/schuettc/muster/actions/runs/36528931797",
+          "run_id": 36528931797,
+          "note": "success in 34s (start to last job completed); dynamic on dev; attempt 1"
+        },
+        {
+          "kind": "run",
+          "url": "https://github.com/schuettc/muster/actions/runs/36528930069",
+          "run_id": 36528930069,
+          "note": "p50 run duration sample (30s)"
+        },
+        {
+          "kind": "run",
+          "url": "https://github.com/schuettc/muster/actions/runs/36528931797",
+          "run_id": 36528931797,
+          "note": "p90 run duration sample (34s)"
+        },
+        {
+          "kind": "job",
+          "url": "https://github.com/schuettc/muster/actions/runs/36528930069/job/109277986894",
+          "run_id": 36528930069,
+          "job_id": 109277986894,
+          "note": "p50 job queue sample (2s)"
+        },
+        {
+          "kind": "job",
+          "url": "https://github.com/schuettc/muster/actions/runs/36528931797/job/109277992462",
+          "run_id": 36528931797,
+          "job_id": 109277992462,
+          "note": "p90 job queue sample (3s)"
+        }
+      ]
+    }
+  ],
+  "sinks": [
+    {
+      "workflow": ".github/workflows/ci.yml",
+      "job": "gate (ubuntu-26.04)",
+      "step": "Run schuettc/tools-actions/go-ci@v0.6.0",
+      "occurrence": 1,
+      "runs": 10,
+      "p50_ns": 270000000000,
+      "p90_ns": 286000000000,
+      "weight_ns": 2700000000000,
+      "evidence": [
+        {
+          "kind": "step",
+          "url": "https://github.com/schuettc/muster/actions/runs/36525750411/job/109268308012#step:6:1",
+          "run_id": 36525750411,
+          "job_id": 109268308012,
+          "step": "Run schuettc/tools-actions/go-ci@v0.6.0",
+          "note": "p50 step duration sample (4m30s)"
+        },
+        {
+          "kind": "step",
+          "url": "https://github.com/schuettc/muster/actions/runs/36526624136/job/109270984593#step:6:1",
+          "run_id": 36526624136,
+          "job_id": 109270984593,
+          "step": "Run schuettc/tools-actions/go-ci@v0.6.0",
+          "note": "p90 step duration sample (4m46s)"
+        }
+      ]
+    },
+    {
+      "workflow": ".github/workflows/ci.yml",
+      "job": "gate (macos-26)",
+      "step": "Run schuettc/tools-actions/go-ci@v0.6.0",
+      "occurrence": 1,
+      "runs": 10,
+      "p50_ns": 196000000000,
+      "p90_ns": 273000000000,
+      "weight_ns": 1960000000000,
+      "evidence": [
+        {
+          "kind": "step",
+          "url": "https://github.com/schuettc/muster/actions/runs/36527129462/job/109272527730#step:6:1",
+          "run_id": 36527129462,
+          "job_id": 109272527730,
+          "step": "Run schuettc/tools-actions/go-ci@v0.6.0",
+          "note": "p50 step duration sample (3m16s)"
+        },
+        {
+          "kind": "step",
+          "url": "https://github.com/schuettc/muster/actions/runs/36525311450/job/109266933830#step:6:1",
+          "run_id": 36525311450,
+          "job_id": 109266933830,
+          "step": "Run schuettc/tools-actions/go-ci@v0.6.0",
+          "note": "p90 step duration sample (4m33s)"
+        }
+      ]
+    },
+    {
+      "workflow": ".github/workflows/ci.yml",
+      "job": "gate (ubuntu-26.04)",
+      "step": "Run schuettc/tools-actions/go-ci@v0.10.1",
+      "occurrence": 1,
+      "runs": 5,
+      "p50_ns": 263000000000,
+      "p90_ns": 305000000000,
+      "weight_ns": 1315000000000,
+      "evidence": [
+        {
+          "kind": "step",
+          "url": "https://github.com/schuettc/muster/actions/runs/36625609989/job/109601674581#step:6:1",
+          "run_id": 36625609989,
+          "job_id": 109601674581,
+          "step": "Run schuettc/tools-actions/go-ci@v0.10.1",
+          "note": "p50 step duration sample (4m23s)"
+        },
+        {
+          "kind": "step",
+          "url": "https://github.com/schuettc/muster/actions/runs/36624839171/job/109599050007#step:6:1",
+          "run_id": 36624839171,
+          "job_id": 109599050007,
+          "step": "Run schuettc/tools-actions/go-ci@v0.10.1",
+          "note": "p90 step duration sample (5m5s)"
+        }
+      ]
+    },
+    {
+      "workflow": ".github/workflows/ci.yml",
+      "job": "gate (macos-26)",
+      "step": "Run schuettc/tools-actions/go-ci@v0.10.1",
+      "occurrence": 1,
+      "runs": 5,
+      "p50_ns": 258000000000,
+      "p90_ns": 338000000000,
+      "weight_ns": 1290000000000,
+      "evidence": [
+        {
+          "kind": "step",
+          "url": "https://github.com/schuettc/muster/actions/runs/36618294855/job/109576866351#step:6:1",
+          "run_id": 36618294855,
+          "job_id": 109576866351,
+          "step": "Run schuettc/tools-actions/go-ci@v0.10.1",
+          "note": "p50 step duration sample (4m18s)"
+        },
+        {
+          "kind": "step",
+          "url": "https://github.com/schuettc/muster/actions/runs/36624782857/job/109598860447#step:6:1",
+          "run_id": 36624782857,
+          "job_id": 109598860447,
+          "step": "Run schuettc/tools-actions/go-ci@v0.10.1",
+          "note": "p90 step duration sample (5m38s)"
+        }
+      ]
+    },
+    {
+      "workflow": ".github/workflows/ci.yml",
+      "job": "dynamo",
+      "step": "DynamoDB backend + conformance tests",
+      "occurrence": 1,
+      "runs": 17,
+      "p50_ns": 65000000000,
+      "p90_ns": 68000000000,
+      "weight_ns": 1105000000000,
+      "evidence": [
+        {
+          "kind": "step",
+          "url": "https://github.com/schuettc/muster/actions/runs/36525750411/job/109268308062#step:6:1",
+          "run_id": 36525750411,
+          "job_id": 109268308062,
+          "step": "DynamoDB backend + conformance tests",
+          "note": "p50 step duration sample (1m5s)"
+        },
+        {
+          "kind": "step",
+          "url": "https://github.com/schuettc/muster/actions/runs/36624782857/job/109598859834#step:6:1",
+          "run_id": 36624782857,
+          "job_id": 109598859834,
+          "step": "DynamoDB backend + conformance tests",
+          "note": "p90 step duration sample (1m8s)"
+        }
+      ]
+    },
+    {
+      "workflow": ".github/workflows/ci.yml",
+      "job": "extra",
+      "step": "Run just verify-extra",
+      "occurrence": 1,
+      "runs": 17,
+      "p50_ns": 25000000000,
+      "p90_ns": 39000000000,
+      "weight_ns": 425000000000,
+      "evidence": [
+        {
+          "kind": "step",
+          "url": "https://github.com/schuettc/muster/actions/runs/36528923880/job/109277964495#step:5:1",
+          "run_id": 36528923880,
+          "job_id": 109277964495,
+          "step": "Run just verify-extra",
+          "note": "p50 step duration sample (25s)"
+        },
+        {
+          "kind": "step",
+          "url": "https://github.com/schuettc/muster/actions/runs/36624839171/job/109599050005#step:5:1",
+          "run_id": 36624839171,
+          "job_id": 109599050005,
+          "step": "Run just verify-extra",
+          "note": "p90 step duration sample (39s)"
+        }
+      ]
+    },
+    {
+      "workflow": ".github/workflows/ci.yml",
+      "job": "gate (macos-26)",
+      "step": "Run actions/setup-go@v7.0.0",
+      "occurrence": 1,
+      "runs": 15,
+      "p50_ns": 24000000000,
+      "p90_ns": 32000000000,
+      "weight_ns": 360000000000,
+      "evidence": [
+        {
+          "kind": "step",
+          "url": "https://github.com/schuettc/muster/actions/runs/36525750411/job/109268308154#step:3:1",
+          "run_id": 36525750411,
+          "job_id": 109268308154,
+          "step": "Run actions/setup-go@v7.0.0",
+          "note": "p50 step duration sample (24s)"
+        },
+        {
+          "kind": "step",
+          "url": "https://github.com/schuettc/muster/actions/runs/36526624136/job/109270984595#step:3:1",
+          "run_id": 36526624136,
+          "job_id": 109270984595,
+          "step": "Run actions/setup-go@v7.0.0",
+          "note": "p90 step duration sample (32s)"
+        }
+      ]
+    },
+    {
+      "workflow": ".github/workflows/ci.yml",
+      "job": "gate (macos-26)",
+      "step": "Run schuettc/tools-actions/go-ci@v0.5.0",
+      "occurrence": 1,
+      "runs": 1,
+      "p50_ns": 351000000000,
+      "p90_ns": 351000000000,
+      "weight_ns": 351000000000,
+      "evidence": [
+        {
+          "kind": "step",
+          "url": "https://github.com/schuettc/muster/actions/runs/36524748295/job/109265197507#step:3:1",
+          "run_id": 36524748295,
+          "job_id": 109265197507,
+          "step": "Run schuettc/tools-actions/go-ci@v0.5.0",
+          "note": "p50 step duration sample (5m51s)"
+        },
+        {
+          "kind": "step",
+          "url": "https://github.com/schuettc/muster/actions/runs/36524748295/job/109265197507#step:3:1",
+          "run_id": 36524748295,
+          "job_id": 109265197507,
+          "step": "Run schuettc/tools-actions/go-ci@v0.5.0",
+          "note": "p90 step duration sample (5m51s)"
+        }
+      ]
+    },
+    {
+      "workflow": ".github/workflows/ci.yml",
+      "job": "gate (ubuntu-26.04)",
+      "step": "Run schuettc/tools-actions/go-ci@v0.5.0",
+      "occurrence": 1,
+      "runs": 1,
+      "p50_ns": 312000000000,
+      "p90_ns": 312000000000,
+      "weight_ns": 312000000000,
+      "evidence": [
+        {
+          "kind": "step",
+          "url": "https://github.com/schuettc/muster/actions/runs/36524748295/job/109265197416#step:3:1",
+          "run_id": 36524748295,
+          "job_id": 109265197416,
+          "step": "Run schuettc/tools-actions/go-ci@v0.5.0",
+          "note": "p50 step duration sample (5m12s)"
+        },
+        {
+          "kind": "step",
+          "url": "https://github.com/schuettc/muster/actions/runs/36524748295/job/109265197416#step:3:1",
+          "run_id": 36524748295,
+          "job_id": 109265197416,
+          "step": "Run schuettc/tools-actions/go-ci@v0.5.0",
+          "note": "p90 step duration sample (5m12s)"
+        }
+      ]
+    },
+    {
+      "workflow": ".github/workflows/ci.yml",
+      "job": "gate (macos-26)",
+      "step": "Run schuettc/tools-actions/go-ci@v0.10.0",
+      "occurrence": 1,
+      "runs": 1,
+      "p50_ns": 269000000000,
+      "p90_ns": 269000000000,
+      "weight_ns": 269000000000,
+      "evidence": [
+        {
+          "kind": "step",
+          "url": "https://github.com/schuettc/muster/actions/runs/36613737722/job/109561364613#step:6:1",
+          "run_id": 36613737722,
+          "job_id": 109561364613,
+          "step": "Run schuettc/tools-actions/go-ci@v0.10.0",
+          "note": "p50 step duration sample (4m29s)"
+        },
+        {
+          "kind": "step",
+          "url": "https://github.com/schuettc/muster/actions/runs/36613737722/job/109561364613#step:6:1",
+          "run_id": 36613737722,
+          "job_id": 109561364613,
+          "step": "Run schuettc/tools-actions/go-ci@v0.10.0",
+          "note": "p90 step duration sample (4m29s)"
+        }
+      ]
+    }
+  ],
+  "signals": [
+    {
+      "id": "slow-step",
+      "waste": [],
+      "severity": "info",
+      "summary": "#1 time sink: .github/workflows/ci.yml / gate (ubuntu-26.04) / Run schuettc/tools-actions/go-ci@v0.6.0: p50 4m30s × 10 runs = 45m0s",
+      "evidence": [
+        {
+          "kind": "step",
+          "url": "https://github.com/schuettc/muster/actions/runs/36525750411/job/109268308012#step:6:1",
+          "run_id": 36525750411,
+          "job_id": 109268308012,
+          "step": "Run schuettc/tools-actions/go-ci@v0.6.0",
+          "note": "p50 step duration sample (4m30s)"
+        },
+        {
+          "kind": "step",
+          "url": "https://github.com/schuettc/muster/actions/runs/36526624136/job/109270984593#step:6:1",
+          "run_id": 36526624136,
+          "job_id": 109270984593,
+          "step": "Run schuettc/tools-actions/go-ci@v0.6.0",
+          "note": "p90 step duration sample (4m46s)"
+        }
+      ]
+    },
+    {
+      "id": "slow-step",
+      "waste": [],
+      "severity": "info",
+      "summary": "#2 time sink: .github/workflows/ci.yml / gate (macos-26) / Run schuettc/tools-actions/go-ci@v0.6.0: p50 3m16s × 10 runs = 32m40s",
+      "evidence": [
+        {
+          "kind": "step",
+          "url": "https://github.com/schuettc/muster/actions/runs/36527129462/job/109272527730#step:6:1",
+          "run_id": 36527129462,
+          "job_id": 109272527730,
+          "step": "Run schuettc/tools-actions/go-ci@v0.6.0",
+          "note": "p50 step duration sample (3m16s)"
+        },
+        {
+          "kind": "step",
+          "url": "https://github.com/schuettc/muster/actions/runs/36525311450/job/109266933830#step:6:1",
+          "run_id": 36525311450,
+          "job_id": 109266933830,
+          "step": "Run schuettc/tools-actions/go-ci@v0.6.0",
+          "note": "p90 step duration sample (4m33s)"
+        }
+      ]
+    },
+    {
+      "id": "slow-step",
+      "waste": [],
+      "severity": "info",
+      "summary": "#3 time sink: .github/workflows/ci.yml / gate (ubuntu-26.04) / Run schuettc/tools-actions/go-ci@v0.10.1: p50 4m23s × 5 runs = 21m55s",
+      "evidence": [
+        {
+          "kind": "step",
+          "url": "https://github.com/schuettc/muster/actions/runs/36625609989/job/109601674581#step:6:1",
+          "run_id": 36625609989,
+          "job_id": 109601674581,
+          "step": "Run schuettc/tools-actions/go-ci@v0.10.1",
+          "note": "p50 step duration sample (4m23s)"
+        },
+        {
+          "kind": "step",
+          "url": "https://github.com/schuettc/muster/actions/runs/36624839171/job/109599050007#step:6:1",
+          "run_id": 36624839171,
+          "job_id": 109599050007,
+          "step": "Run schuettc/tools-actions/go-ci@v0.10.1",
+          "note": "p90 step duration sample (5m5s)"
+        }
+      ]
+    },
+    {
+      "id": "slow-step",
+      "waste": [],
+      "severity": "info",
+      "summary": "#4 time sink: .github/workflows/ci.yml / gate (macos-26) / Run schuettc/tools-actions/go-ci@v0.10.1: p50 4m18s × 5 runs = 21m30s",
+      "evidence": [
+        {
+          "kind": "step",
+          "url": "https://github.com/schuettc/muster/actions/runs/36618294855/job/109576866351#step:6:1",
+          "run_id": 36618294855,
+          "job_id": 109576866351,
+          "step": "Run schuettc/tools-actions/go-ci@v0.10.1",
+          "note": "p50 step duration sample (4m18s)"
+        },
+        {
+          "kind": "step",
+          "url": "https://github.com/schuettc/muster/actions/runs/36624782857/job/109598860447#step:6:1",
+          "run_id": 36624782857,
+          "job_id": 109598860447,
+          "step": "Run schuettc/tools-actions/go-ci@v0.10.1",
+          "note": "p90 step duration sample (5m38s)"
+        }
+      ]
+    },
+    {
+      "id": "slow-step",
+      "waste": [],
+      "severity": "info",
+      "summary": "#5 time sink: .github/workflows/ci.yml / dynamo / DynamoDB backend + conformance tests: p50 1m5s × 17 runs = 18m25s",
+      "evidence": [
+        {
+          "kind": "step",
+          "url": "https://github.com/schuettc/muster/actions/runs/36525750411/job/109268308062#step:6:1",
+          "run_id": 36525750411,
+          "job_id": 109268308062,
+          "step": "DynamoDB backend + conformance tests",
+          "note": "p50 step duration sample (1m5s)"
+        },
+        {
+          "kind": "step",
+          "url": "https://github.com/schuettc/muster/actions/runs/36624782857/job/109598859834#step:6:1",
+          "run_id": 36624782857,
+          "job_id": 109598859834,
+          "step": "DynamoDB backend + conformance tests",
+          "note": "p90 step duration sample (1m8s)"
+        }
+      ]
+    },
+    {
+      "id": "slow-step",
+      "waste": [],
+      "severity": "info",
+      "summary": "#6 time sink: .github/workflows/ci.yml / extra / Run just verify-extra: p50 25s × 17 runs = 7m5s",
+      "evidence": [
+        {
+          "kind": "step",
+          "url": "https://github.com/schuettc/muster/actions/runs/36528923880/job/109277964495#step:5:1",
+          "run_id": 36528923880,
+          "job_id": 109277964495,
+          "step": "Run just verify-extra",
+          "note": "p50 step duration sample (25s)"
+        },
+        {
+          "kind": "step",
+          "url": "https://github.com/schuettc/muster/actions/runs/36624839171/job/109599050005#step:5:1",
+          "run_id": 36624839171,
+          "job_id": 109599050005,
+          "step": "Run just verify-extra",
+          "note": "p90 step duration sample (39s)"
+        }
+      ]
+    },
+    {
+      "id": "slow-step",
+      "waste": [],
+      "severity": "info",
+      "summary": "#7 time sink: .github/workflows/ci.yml / gate (macos-26) / Run actions/setup-go@v7.0.0: p50 24s × 15 runs = 6m0s",
+      "evidence": [
+        {
+          "kind": "step",
+          "url": "https://github.com/schuettc/muster/actions/runs/36525750411/job/109268308154#step:3:1",
+          "run_id": 36525750411,
+          "job_id": 109268308154,
+          "step": "Run actions/setup-go@v7.0.0",
+          "note": "p50 step duration sample (24s)"
+        },
+        {
+          "kind": "step",
+          "url": "https://github.com/schuettc/muster/actions/runs/36526624136/job/109270984595#step:3:1",
+          "run_id": 36526624136,
+          "job_id": 109270984595,
+          "step": "Run actions/setup-go@v7.0.0",
+          "note": "p90 step duration sample (32s)"
+        }
+      ]
+    },
+    {
+      "id": "slow-step",
+      "waste": [],
+      "severity": "info",
+      "summary": "#8 time sink: .github/workflows/ci.yml / gate (macos-26) / Run schuettc/tools-actions/go-ci@v0.5.0: p50 5m51s × 1 runs = 5m51s",
+      "evidence": [
+        {
+          "kind": "step",
+          "url": "https://github.com/schuettc/muster/actions/runs/36524748295/job/109265197507#step:3:1",
+          "run_id": 36524748295,
+          "job_id": 109265197507,
+          "step": "Run schuettc/tools-actions/go-ci@v0.5.0",
+          "note": "p50 step duration sample (5m51s)"
+        },
+        {
+          "kind": "step",
+          "url": "https://github.com/schuettc/muster/actions/runs/36524748295/job/109265197507#step:3:1",
+          "run_id": 36524748295,
+          "job_id": 109265197507,
+          "step": "Run schuettc/tools-actions/go-ci@v0.5.0",
+          "note": "p90 step duration sample (5m51s)"
+        }
+      ]
+    },
+    {
+      "id": "slow-step",
+      "waste": [],
+      "severity": "info",
+      "summary": "#9 time sink: .github/workflows/ci.yml / gate (ubuntu-26.04) / Run schuettc/tools-actions/go-ci@v0.5.0: p50 5m12s × 1 runs = 5m12s",
+      "evidence": [
+        {
+          "kind": "step",
+          "url": "https://github.com/schuettc/muster/actions/runs/36524748295/job/109265197416#step:3:1",
+          "run_id": 36524748295,
+          "job_id": 109265197416,
+          "step": "Run schuettc/tools-actions/go-ci@v0.5.0",
+          "note": "p50 step duration sample (5m12s)"
+        },
+        {
+          "kind": "step",
+          "url": "https://github.com/schuettc/muster/actions/runs/36524748295/job/109265197416#step:3:1",
+          "run_id": 36524748295,
+          "job_id": 109265197416,
+          "step": "Run schuettc/tools-actions/go-ci@v0.5.0",
+          "note": "p90 step duration sample (5m12s)"
+        }
+      ]
+    },
+    {
+      "id": "slow-step",
+      "waste": [],
+      "severity": "info",
+      "summary": "#10 time sink: .github/workflows/ci.yml / gate (macos-26) / Run schuettc/tools-actions/go-ci@v0.10.0: p50 4m29s × 1 runs = 4m29s",
+      "evidence": [
+        {
+          "kind": "step",
+          "url": "https://github.com/schuettc/muster/actions/runs/36613737722/job/109561364613#step:6:1",
+          "run_id": 36613737722,
+          "job_id": 109561364613,
+          "step": "Run schuettc/tools-actions/go-ci@v0.10.0",
+          "note": "p50 step duration sample (4m29s)"
+        },
+        {
+          "kind": "step",
+          "url": "https://github.com/schuettc/muster/actions/runs/36613737722/job/109561364613#step:6:1",
+          "run_id": 36613737722,
+          "job_id": 109561364613,
+          "step": "Run schuettc/tools-actions/go-ci@v0.10.0",
+          "note": "p90 step duration sample (4m29s)"
+        }
+      ]
+    }
+  ],
+  "unavailable": [
+    {
+      "what": "critical path of dynamic/dependabot/dependabot-updates",
+      "why": "GitHub-managed workflow: there is no workflow file to read",
+      "evidence": [
+        {
+          "kind": "run",
+          "url": "https://github.com/schuettc/muster/actions/runs/36528931797",
+          "run_id": 36528931797
+        }
+      ]
+    },
+    {
+      "what": "tree-rechecked on tree 652b596bf9e7 (dev)",
+      "why": "jobs with the same executed step names ran across origins, but 1 executions' check identity could not be established; they are not claimed as duplicates",
+      "evidence": [
+        {
+          "kind": "job",
+          "url": "https://github.com/schuettc/muster/actions/runs/36528454624/job/109276540506",
+          "run_id": 36528454624,
+          "job_id": 109276540506,
+          "note": "job \"extra\" in .github/workflows/ci.yml (pull_request): pull_request runs do not check out head_commit's tree (a merge, base or default-branch ref), so the tree tested is unproven"
+        }
+      ]
+    },
+    {
+      "what": "tree-rechecked on tree 652b596bf9e7 (dev)",
+      "why": "jobs with the same executed step names ran across origins, but 6 executions' check identity could not be established; they are not claimed as duplicates",
+      "evidence": [
+        {
+          "kind": "job",
+          "url": "https://github.com/schuettc/muster/actions/runs/36527551519/job/109273809611",
+          "run_id": 36527551519,
+          "job_id": 109273809611,
+          "note": "job \"gate (ubuntu-26.04)\" in .github/workflows/ci.yml (push): matrix job: which matrix values this execution ran is unknown"
+        },
+        {
+          "kind": "job",
+          "url": "https://github.com/schuettc/muster/actions/runs/36527551519/job/109273809812",
+          "run_id": 36527551519,
+          "job_id": 109273809812,
+          "note": "job \"gate (macos-26)\" in .github/workflows/ci.yml (push): matrix job: which matrix values this execution ran is unknown"
+        },
+        {
+          "kind": "job",
+          "url": "https://github.com/schuettc/muster/actions/runs/36528451066/job/109276530162",
+          "run_id": 36528451066,
+          "job_id": 109276530162,
+          "note": "job \"gate (ubuntu-26.04)\" in .github/workflows/ci.yml (push): matrix job: which matrix values this execution ran is unknown"
+        },
+        {
+          "kind": "job",
+          "url": "https://github.com/schuettc/muster/actions/runs/36528454624/job/109276540636",
+          "run_id": 36528454624,
+          "job_id": 109276540636,
+          "note": "job \"gate (ubuntu-26.04)\" in .github/workflows/ci.yml (pull_request): pull_request runs do not check out head_commit's tree (a merge, base or default-branch ref), so the tree tested is unproven"
+        },
+        {
+          "kind": "job",
+          "url": "https://github.com/schuettc/muster/actions/runs/36528451066/job/109276530211",
+          "run_id": 36528451066,
+          "job_id": 109276530211,
+          "note": "job \"gate (macos-26)\" in .github/workflows/ci.yml (push): matrix job: which matrix values this execution ran is unknown"
+        },
+        {
+          "kind": "job",
+          "url": "https://github.com/schuettc/muster/actions/runs/36528454624/job/109276540777",
+          "run_id": 36528454624,
+          "job_id": 109276540777,
+          "note": "job \"gate (macos-26)\" in .github/workflows/ci.yml (pull_request): pull_request runs do not check out head_commit's tree (a merge, base or default-branch ref), so the tree tested is unproven"
+        }
+      ]
+    },
+    {
+      "what": "tree-rechecked on tree 652b596bf9e7 (dev)",
+      "why": "jobs with the same executed step names ran across origins, but 1 executions' check identity could not be established; they are not claimed as duplicates",
+      "evidence": [
+        {
+          "kind": "job",
+          "url": "https://github.com/schuettc/muster/actions/runs/36528454624/job/109276540327",
+          "run_id": 36528454624,
+          "job_id": 109276540327,
+          "note": "job \"dynamo\" in .github/workflows/ci.yml (pull_request): pull_request runs do not check out head_commit's tree (a merge, base or default-branch ref), so the tree tested is unproven"
+        }
+      ]
+    },
+    {
+      "what": "tree-rechecked on tree f971b4f9adb0 (dev)",
+      "why": "jobs with the same executed step names ran across origins, but 1 executions' check identity could not be established; they are not claimed as duplicates",
+      "evidence": [
+        {
+          "kind": "job",
+          "url": "https://github.com/schuettc/muster/actions/runs/36620669164/job/109584941385",
+          "run_id": 36620669164,
+          "job_id": 109584941385,
+          "note": "job \"extra\" in .github/workflows/ci.yml (pull_request): pull_request runs do not check out head_commit's tree (a merge, base or default-branch ref), so the tree tested is unproven"
+        }
+      ]
+    },
+    {
+      "what": "tree-rechecked on tree f971b4f9adb0 (dev)",
+      "why": "jobs with the same executed step names ran across origins, but 4 executions' check identity could not be established; they are not claimed as duplicates",
+      "evidence": [
+        {
+          "kind": "job",
+          "url": "https://github.com/schuettc/muster/actions/runs/36620669164/job/109584941756",
+          "run_id": 36620669164,
+          "job_id": 109584941756,
+          "note": "job \"gate (ubuntu-26.04)\" in .github/workflows/ci.yml (pull_request): pull_request runs do not check out head_commit's tree (a merge, base or default-branch ref), so the tree tested is unproven"
+        },
+        {
+          "kind": "job",
+          "url": "https://github.com/schuettc/muster/actions/runs/36620669164/job/109584941708",
+          "run_id": 36620669164,
+          "job_id": 109584941708,
+          "note": "job \"gate (macos-26)\" in .github/workflows/ci.yml (pull_request): pull_request runs do not check out head_commit's tree (a merge, base or default-branch ref), so the tree tested is unproven"
+        },
+        {
+          "kind": "job",
+          "url": "https://github.com/schuettc/muster/actions/runs/36625609989/job/109601674581",
+          "run_id": 36625609989,
+          "job_id": 109601674581,
+          "note": "job \"gate (ubuntu-26.04)\" in .github/workflows/ci.yml (push): matrix job: which matrix values this execution ran is unknown"
+        },
+        {
+          "kind": "job",
+          "url": "https://github.com/schuettc/muster/actions/runs/36625609989/job/109601674502",
+          "run_id": 36625609989,
+          "job_id": 109601674502,
+          "note": "job \"gate (macos-26)\" in .github/workflows/ci.yml (push): matrix job: which matrix values this execution ran is unknown"
+        }
+      ]
+    },
+    {
+      "what": "tree-rechecked on tree f971b4f9adb0 (dev)",
+      "why": "jobs with the same executed step names ran across origins, but 1 executions' check identity could not be established; they are not claimed as duplicates",
+      "evidence": [
+        {
+          "kind": "job",
+          "url": "https://github.com/schuettc/muster/actions/runs/36620669164/job/109584941971",
+          "run_id": 36620669164,
+          "job_id": 109584941971,
+          "note": "job \"dynamo\" in .github/workflows/ci.yml (pull_request): pull_request runs do not check out head_commit's tree (a merge, base or default-branch ref), so the tree tested is unproven"
+        }
+      ]
+    },
+    {
+      "what": "tree-rechecked on tree f971b4f9adb0 (main)",
+      "why": "jobs with the same executed step names ran across origins, but 1 executions' check identity could not be established; they are not claimed as duplicates",
+      "evidence": [
+        {
+          "kind": "job",
+          "url": "https://github.com/schuettc/muster/actions/runs/36624839171/job/109599049895",
+          "run_id": 36624839171,
+          "job_id": 109599049895,
+          "note": "job \"dynamo\" in .github/workflows/ci.yml (pull_request): pull_request runs do not check out head_commit's tree (a merge, base or default-branch ref), so the tree tested is unproven"
+        }
+      ]
+    },
+    {
+      "what": "tree-rechecked on tree f971b4f9adb0 (main)",
+      "why": "jobs with the same executed step names ran across origins, but 1 executions' check identity could not be established; they are not claimed as duplicates",
+      "evidence": [
+        {
+          "kind": "job",
+          "url": "https://github.com/schuettc/muster/actions/runs/36624839171/job/109599050005",
+          "run_id": 36624839171,
+          "job_id": 109599050005,
+          "note": "job \"extra\" in .github/workflows/ci.yml (pull_request): pull_request runs do not check out head_commit's tree (a merge, base or default-branch ref), so the tree tested is unproven"
+        }
+      ]
+    },
+    {
+      "what": "tree-rechecked on tree f971b4f9adb0 (main)",
+      "why": "jobs with the same executed step names ran across origins, but 4 executions' check identity could not be established; they are not claimed as duplicates",
+      "evidence": [
+        {
+          "kind": "job",
+          "url": "https://github.com/schuettc/muster/actions/runs/36624782857/job/109598860537",
+          "run_id": 36624782857,
+          "job_id": 109598860537,
+          "note": "job \"gate (ubuntu-26.04)\" in .github/workflows/ci.yml (push): matrix job: which matrix values this execution ran is unknown"
+        },
+        {
+          "kind": "job",
+          "url": "https://github.com/schuettc/muster/actions/runs/36624782857/job/109598860447",
+          "run_id": 36624782857,
+          "job_id": 109598860447,
+          "note": "job \"gate (macos-26)\" in .github/workflows/ci.yml (push): matrix job: which matrix values this execution ran is unknown"
+        },
+        {
+          "kind": "job",
+          "url": "https://github.com/schuettc/muster/actions/runs/36624839171/job/109599050007",
+          "run_id": 36624839171,
+          "job_id": 109599050007,
+          "note": "job \"gate (ubuntu-26.04)\" in .github/workflows/ci.yml (pull_request): pull_request runs do not check out head_commit's tree (a merge, base or default-branch ref), so the tree tested is unproven"
+        },
+        {
+          "kind": "job",
+          "url": "https://github.com/schuettc/muster/actions/runs/36624839171/job/109599049540",
+          "run_id": 36624839171,
+          "job_id": 109599049540,
+          "note": "job \"gate (macos-26)\" in .github/workflows/ci.yml (pull_request): pull_request runs do not check out head_commit's tree (a merge, base or default-branch ref), so the tree tested is unproven"
+        }
+      ]
+    }
+  ]
+}

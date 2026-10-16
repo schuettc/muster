@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/schuettc/muster/internal/proto"
-	"github.com/schuettc/muster/internal/store"
+	"github.com/subaud-tools/muster/internal/proto"
+	"github.com/subaud-tools/muster/internal/store"
 )
 
 // dispatchTask creates an open task from → to and returns its thread ID.

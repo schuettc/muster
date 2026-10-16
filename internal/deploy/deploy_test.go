@@ -13,7 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	cfntypes "github.com/aws/aws-sdk-go-v2/service/cloudformation/types"
 
-	cfn "github.com/schuettc/muster/contrib/cloudformation"
+	cfn "github.com/subaud-tools/muster/contrib/cloudformation"
 )
 
 func TestReleaseTagAddsVPrefixExactlyOnce(t *testing.T) {
@@ -36,8 +36,8 @@ func TestArtifactNameMatchesReleaseWorkflow(t *testing.T) {
 	if got, want := ArtifactName("v0.11.0"), "muster-lambda-arm64-v0.11.0.zip"; got != want {
 		t.Fatalf("ArtifactName = %q, want %q", got, want)
 	}
-	if got, want := ArtifactURL("schuettc/muster", "v0.11.0"),
-		"https://github.com/schuettc/muster/releases/download/v0.11.0/muster-lambda-arm64-v0.11.0.zip"; got != want {
+	if got, want := ArtifactURL("subaud-tools/muster", "v0.11.0"),
+		"https://github.com/subaud-tools/muster/releases/download/v0.11.0/muster-lambda-arm64-v0.11.0.zip"; got != want {
 		t.Fatalf("ArtifactURL = %q, want %q", got, want)
 	}
 }

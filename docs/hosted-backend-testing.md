@@ -63,7 +63,7 @@ On **each** machine:
 #    muster_{darwin,linux}_{arm64,amd64}.tar.gz — NOT version-stamped,
 #    the tag in the URL path is what selects the build.
 curl -fsSL -o /tmp/muster-rc.tar.gz \
-  https://github.com/schuettc/muster/releases/download/<rc-tag>/muster_darwin_arm64.tar.gz
+  https://github.com/subaud-tools/muster/releases/download/<rc-tag>/muster_darwin_arm64.tar.gz
 tar xzf /tmp/muster-rc.tar.gz -C /tmp
 install -m755 /tmp/muster ~/.local/bin/muster-rc
 muster-rc --version        # expect <rc-tag>

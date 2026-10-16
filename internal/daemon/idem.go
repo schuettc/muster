@@ -6,7 +6,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/schuettc/muster/internal/proto"
+	"github.com/subaud-tools/muster/internal/proto"
 )
 
 // writeOps are the ops that mutate state. Idempotency applies to all of them

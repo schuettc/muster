@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"io"
 
-	tools "github.com/schuettc/tools-common"
+	tools "github.com/subaud-tools/tools-common"
 )
 
 // usageErrorf is a usage error (exit 2) in the family format.

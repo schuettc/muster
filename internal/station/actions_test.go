@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/schuettc/muster/internal/store"
-	"github.com/schuettc/muster/internal/tmuxenv"
+	"github.com/subaud-tools/muster/internal/store"
+	"github.com/subaud-tools/muster/internal/tmuxenv"
 )
 
 // nudgeCall records one fakeNudger.Nudge invocation.

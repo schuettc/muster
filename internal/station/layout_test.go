@@ -10,8 +10,8 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
 
-	"github.com/schuettc/muster/internal/display"
-	"github.com/schuettc/muster/internal/render"
+	"github.com/subaud-tools/muster/internal/display"
+	"github.com/subaud-tools/muster/internal/render"
 )
 
 // init forces lipgloss's default renderer to a real color profile: `go

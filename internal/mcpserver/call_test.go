@@ -5,10 +5,10 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/schuettc/muster/internal/daemon"
-	"github.com/schuettc/muster/internal/mustertest"
-	"github.com/schuettc/muster/internal/paths"
-	"github.com/schuettc/muster/internal/store"
+	"github.com/subaud-tools/muster/internal/daemon"
+	"github.com/subaud-tools/muster/internal/mustertest"
+	"github.com/subaud-tools/muster/internal/paths"
+	"github.com/subaud-tools/muster/internal/store"
 )
 
 func startTestDaemon(t *testing.T) string {

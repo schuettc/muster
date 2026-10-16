@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/schuettc/muster/internal/mustertest"
-	"github.com/schuettc/muster/internal/tmuxenv"
-	"github.com/schuettc/tools-common/harness"
+	"github.com/subaud-tools/muster/internal/mustertest"
+	"github.com/subaud-tools/muster/internal/tmuxenv"
+	"github.com/subaud-tools/tools-common/harness"
 )
 
 func TestHookStopLoopGuard(t *testing.T) {

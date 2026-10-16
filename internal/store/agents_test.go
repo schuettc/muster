@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/schuettc/muster/internal/clock"
+	"github.com/subaud-tools/muster/internal/clock"
 )
 
 // TestMarkReadRecordsEntryWatermark: no incrementing fake clock needed — the

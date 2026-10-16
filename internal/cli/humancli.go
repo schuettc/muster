@@ -15,15 +15,15 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/schuettc/muster/internal/client"
-	"github.com/schuettc/muster/internal/device"
-	"github.com/schuettc/muster/internal/nudge"
-	"github.com/schuettc/muster/internal/nudgeguard"
-	"github.com/schuettc/muster/internal/paths"
-	"github.com/schuettc/muster/internal/proto"
-	"github.com/schuettc/muster/internal/store"
-	"github.com/schuettc/muster/internal/tmuxenv"
-	"github.com/schuettc/tools-common/harness"
+	"github.com/subaud-tools/muster/internal/client"
+	"github.com/subaud-tools/muster/internal/device"
+	"github.com/subaud-tools/muster/internal/nudge"
+	"github.com/subaud-tools/muster/internal/nudgeguard"
+	"github.com/subaud-tools/muster/internal/paths"
+	"github.com/subaud-tools/muster/internal/proto"
+	"github.com/subaud-tools/muster/internal/store"
+	"github.com/subaud-tools/muster/internal/tmuxenv"
+	"github.com/subaud-tools/tools-common/harness"
 )
 
 // nudgeRun lets tests intercept the tmux command executor for nudges.

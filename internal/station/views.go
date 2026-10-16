@@ -8,8 +8,8 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/schuettc/muster/internal/display"
-	"github.com/schuettc/muster/internal/render"
+	"github.com/subaud-tools/muster/internal/display"
+	"github.com/subaud-tools/muster/internal/render"
 )
 
 // This file is every L0/L1/L2-content View()-side rendering function (spec

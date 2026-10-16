@@ -7,8 +7,8 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/schuettc/muster/internal/display"
-	"github.com/schuettc/muster/internal/render"
+	"github.com/subaud-tools/muster/internal/display"
+	"github.com/subaud-tools/muster/internal/render"
 )
 
 // This file is the nav-stack's own rendering surface (spec §5-LOCK): the

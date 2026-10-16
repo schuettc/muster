@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/schuettc/muster/internal/clock"
-	"github.com/schuettc/muster/internal/store"
-	"github.com/schuettc/muster/internal/tmuxenv"
+	"github.com/subaud-tools/muster/internal/clock"
+	"github.com/subaud-tools/muster/internal/store"
+	"github.com/subaud-tools/muster/internal/tmuxenv"
 )
 
 // startCLITestDaemon boots a real in-process daemon on a temp socket and

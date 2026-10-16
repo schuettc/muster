@@ -10,10 +10,10 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/schuettc/muster/internal/clock"
-	"github.com/schuettc/muster/internal/device"
-	"github.com/schuettc/muster/internal/tmuxenv"
-	"github.com/schuettc/tools-common/harness"
+	"github.com/subaud-tools/muster/internal/clock"
+	"github.com/subaud-tools/muster/internal/device"
+	"github.com/subaud-tools/muster/internal/tmuxenv"
+	"github.com/subaud-tools/tools-common/harness"
 )
 
 // newRegisterFlagsWithVals declares register's flags and returns typed

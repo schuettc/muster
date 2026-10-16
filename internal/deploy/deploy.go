@@ -34,7 +34,7 @@ import (
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 
-	cfn "github.com/schuettc/muster/contrib/cloudformation"
+	cfn "github.com/subaud-tools/muster/contrib/cloudformation"
 )
 
 // Options configures one deployment. Zero values are meaningful defaults

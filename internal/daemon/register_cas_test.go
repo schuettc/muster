@@ -5,7 +5,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/schuettc/muster/internal/store"
+	"github.com/subaud-tools/muster/internal/store"
 )
 
 // TestRegisterAgentIfAbsentSucceedsWhenAbsent covers the common case: no

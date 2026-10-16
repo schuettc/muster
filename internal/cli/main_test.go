@@ -4,7 +4,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/schuettc/muster/internal/tmuxenv"
+	"github.com/subaud-tools/muster/internal/tmuxenv"
 )
 
 // TestMain pins the ancestor-argv seam away for the whole package. cmdHook's

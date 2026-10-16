@@ -6,9 +6,9 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/schuettc/muster/internal/nudgeguard"
-	"github.com/schuettc/muster/internal/render"
-	"github.com/schuettc/muster/internal/store"
+	"github.com/subaud-tools/muster/internal/nudgeguard"
+	"github.com/subaud-tools/muster/internal/render"
+	"github.com/subaud-tools/muster/internal/store"
 )
 
 // This file holds the operator-action Cmds (spec §5): the composer's

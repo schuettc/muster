@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"sync"
 
-	"github.com/schuettc/muster/internal/device"
+	"github.com/subaud-tools/muster/internal/device"
 )
 
 // dispAlias renders one alias for a human: this machine's prefix comes off,

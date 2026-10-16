@@ -5,9 +5,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/schuettc/muster/internal/daemon"
-	"github.com/schuettc/muster/internal/mustertest"
-	"github.com/schuettc/muster/internal/store"
+	"github.com/subaud-tools/muster/internal/daemon"
+	"github.com/subaud-tools/muster/internal/mustertest"
+	"github.com/subaud-tools/muster/internal/store"
 )
 
 // A real daemon on a temp socket; two registered agents; the carrier for

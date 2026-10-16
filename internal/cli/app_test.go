@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	tools "github.com/schuettc/tools-common"
+	tools "github.com/subaud-tools/tools-common"
 
-	"github.com/schuettc/muster/internal/version"
+	"github.com/subaud-tools/muster/internal/version"
 )
 
 // musterCLI runs muster exactly as the binary does for every command main()

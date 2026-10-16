@@ -1,15 +1,15 @@
 // Package version holds muster's build-time version stamp. It exists so
 // exactly one pair of variables gets the -ldflags -X treatment — cmd/muster,
 // the justfile, and .github/workflows/release.yml all target
-// github.com/schuettc/muster/internal/version.{version,commit} rather than
+// github.com/subaud-tools/muster/internal/version.{version,commit} rather than
 // three copies scattered across main packages.
 package version
 
 // version, commit, and date are overwritten at build time via:
 //
-//	-ldflags "-X github.com/schuettc/muster/internal/version.version=$(cat VERSION) \
-//	          -X github.com/schuettc/muster/internal/version.commit=$(git rev-parse --short HEAD) \
-//	          -X github.com/schuettc/muster/internal/version.date=$(date -u +%Y-%m-%d)"
+//	-ldflags "-X github.com/subaud-tools/muster/internal/version.version=$(cat VERSION) \
+//	          -X github.com/subaud-tools/muster/internal/version.commit=$(git rev-parse --short HEAD) \
+//	          -X github.com/subaud-tools/muster/internal/version.date=$(date -u +%Y-%m-%d)"
 //
 // A plain `go build` / `go run` (no ldflags — local dev, `go test`, an
 // unstamped checkout) leaves them at these defaults, so `muster version`

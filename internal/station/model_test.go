@@ -9,7 +9,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/schuettc/muster/internal/render"
+	"github.com/subaud-tools/muster/internal/render"
 )
 
 // flattenCmds executes cmd and, if it resolves to a tea.BatchMsg, recurses

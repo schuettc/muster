@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/schuettc/muster/internal/display"
+	"github.com/subaud-tools/muster/internal/display"
 )
 
 func TestEventsCommandPrintsLog(t *testing.T) {

@@ -12,8 +12,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/schuettc/muster/internal/proto"
-	"github.com/schuettc/muster/internal/store"
+	"github.com/subaud-tools/muster/internal/proto"
+	"github.com/subaud-tools/muster/internal/store"
 )
 
 // threadCount decodes a list_threads response and reports how many threads it

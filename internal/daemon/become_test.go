@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/schuettc/muster/internal/mustertest"
-	"github.com/schuettc/muster/internal/paths"
-	"github.com/schuettc/muster/internal/store"
+	"github.com/subaud-tools/muster/internal/mustertest"
+	"github.com/subaud-tools/muster/internal/paths"
+	"github.com/subaud-tools/muster/internal/store"
 )
 
 // TestBecomeOpClaimsAndReports: end-to-end over the wire — identity moves,

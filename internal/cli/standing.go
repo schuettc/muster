@@ -8,7 +8,7 @@ import (
 	"io"
 	"strings"
 
-	"github.com/schuettc/muster/internal/store"
+	"github.com/subaud-tools/muster/internal/store"
 )
 
 // standingBoolFlags: only --json takes no value; --key/--from are value flags.

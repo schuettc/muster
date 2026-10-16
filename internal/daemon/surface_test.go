@@ -5,9 +5,9 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/schuettc/muster/internal/mustertest"
-	"github.com/schuettc/muster/internal/proto"
-	"github.com/schuettc/muster/internal/store"
+	"github.com/subaud-tools/muster/internal/mustertest"
+	"github.com/subaud-tools/muster/internal/proto"
+	"github.com/subaud-tools/muster/internal/store"
 )
 
 // snapAgentsTable reads every column of the agents table, ordered by alias,

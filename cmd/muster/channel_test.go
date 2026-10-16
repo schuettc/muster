@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/schuettc/muster/internal/tmuxenv"
+	"github.com/subaud-tools/muster/internal/tmuxenv"
 )
 
 // The channel MCP server is spawned env-stripped by some harnesses (Claude
