@@ -7,7 +7,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/schuettc/muster/internal/mustertest"
+	"github.com/subaud-tools/muster/internal/mustertest"
 )
 
 func withRun(t *testing.T, fn func(args ...string) (string, error)) {

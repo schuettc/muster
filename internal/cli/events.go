@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/schuettc/muster/internal/render"
+	"github.com/subaud-tools/muster/internal/render"
 )
 
 // eventRow and eventsPage are humancli's aliases for the shared render types

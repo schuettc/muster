@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/schuettc/muster/internal/store"
+	"github.com/subaud-tools/muster/internal/store"
 )
 
 func newStatusFlagsWithVals() (fs *flag.FlagSet, jsonOut *bool, alias *string) {

@@ -10,12 +10,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/schuettc/muster/internal/clock"
-	"github.com/schuettc/muster/internal/daemon"
-	"github.com/schuettc/muster/internal/mustertest"
-	"github.com/schuettc/muster/internal/paths"
-	"github.com/schuettc/muster/internal/store"
-	"github.com/schuettc/muster/internal/tmuxenv"
+	"github.com/subaud-tools/muster/internal/clock"
+	"github.com/subaud-tools/muster/internal/daemon"
+	"github.com/subaud-tools/muster/internal/mustertest"
+	"github.com/subaud-tools/muster/internal/paths"
+	"github.com/subaud-tools/muster/internal/store"
+	"github.com/subaud-tools/muster/internal/tmuxenv"
 )
 
 // startTestDaemon boots a real in-process daemon on a temp socket, returning

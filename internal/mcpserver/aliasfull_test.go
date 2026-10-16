@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/schuettc/muster/internal/device"
+	"github.com/subaud-tools/muster/internal/device"
 )
 
 // TestModelSurfacesKeepTheFullAlias is the counterweight to every stripping

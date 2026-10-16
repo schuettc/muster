@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/schuettc/muster/internal/store"
+	"github.com/subaud-tools/muster/internal/store"
 )
 
 func TestStandingCLIRoundTrip(t *testing.T) {

@@ -3,8 +3,8 @@ package daemon
 import (
 	"fmt"
 
-	"github.com/schuettc/muster/internal/device"
-	"github.com/schuettc/muster/internal/resolve"
+	"github.com/subaud-tools/muster/internal/device"
+	"github.com/subaud-tools/muster/internal/resolve"
 )
 
 // requireKnownAlias is resolveAgentTarget's counterpart for an ACTOR alias —

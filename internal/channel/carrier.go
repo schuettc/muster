@@ -10,8 +10,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/schuettc/muster/internal/client"
-	"github.com/schuettc/muster/internal/proto"
+	"github.com/subaud-tools/muster/internal/client"
+	"github.com/subaud-tools/muster/internal/proto"
 )
 
 // DefaultInterval is the poll cadence when MUSTER_CHANNEL_INTERVAL is unset;

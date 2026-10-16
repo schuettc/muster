@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/schuettc/muster/internal/store"
+	"github.com/subaud-tools/muster/internal/store"
 )
 
 // standing_set creates a listable, greeting order; standing_list returns it;

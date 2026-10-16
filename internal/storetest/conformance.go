@@ -39,8 +39,8 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/schuettc/muster/internal/clock"
-	"github.com/schuettc/muster/internal/store"
+	"github.com/subaud-tools/muster/internal/clock"
+	"github.com/subaud-tools/muster/internal/store"
 )
 
 // RunConformance runs the full behavioural suite against newStore. Each

@@ -12,7 +12,7 @@
 # identity in the keychain), MUSTER_NOTARY_PROFILE (default: muster-notary).
 set -eu
 tag="${1:?usage: release-sign.sh <tag>}"
-repo="${MUSTER_REPO_SLUG:-schuettc/muster}"
+repo="${MUSTER_REPO_SLUG:-subaud-tools/muster}"
 profile="${MUSTER_NOTARY_PROFILE:-muster-notary}"
 identity="${MUSTER_SIGN_IDENTITY:-$(security find-identity -v -p codesigning \
   | sed -n 's/.*"\(Developer ID Application:[^"]*\)".*/\1/p' | head -1)}"
@@ -29,7 +29,7 @@ git clone --quiet --depth 1 --branch "$tag" "https://github.com/$repo" "$src"
 # regress `muster version` to "dev (none)"
 version="${tag#v}"
 commit="$(cd "$src" && git rev-parse --short HEAD)"
-ldflags="-s -w -X github.com/schuettc/muster/internal/version.version=${version} -X github.com/schuettc/muster/internal/version.commit=${commit}"
+ldflags="-s -w -X github.com/subaud-tools/muster/internal/version.version=${version} -X github.com/subaud-tools/muster/internal/version.commit=${commit}"
 # Every darwin binary the release ships has to be signed. An unsigned one is
 # quarantined by Gatekeeper on download and refuses to run, which looks like a
 # broken build rather than a missing signature.

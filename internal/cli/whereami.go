@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/schuettc/muster/internal/tmuxenv"
+	"github.com/subaud-tools/muster/internal/tmuxenv"
 )
 
 // newWhereamiFlagsWithVals declares whereami's flags and returns typed

@@ -12,17 +12,17 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/schuettc/muster/internal/channel"
-	"github.com/schuettc/muster/internal/cli"
-	"github.com/schuettc/muster/internal/client"
-	"github.com/schuettc/muster/internal/daemon"
-	"github.com/schuettc/muster/internal/device"
-	"github.com/schuettc/muster/internal/mcpserver"
-	"github.com/schuettc/muster/internal/paths"
-	"github.com/schuettc/muster/internal/proto"
-	"github.com/schuettc/muster/internal/remote"
-	"github.com/schuettc/muster/internal/store"
-	"github.com/schuettc/muster/internal/wake"
+	"github.com/subaud-tools/muster/internal/channel"
+	"github.com/subaud-tools/muster/internal/cli"
+	"github.com/subaud-tools/muster/internal/client"
+	"github.com/subaud-tools/muster/internal/daemon"
+	"github.com/subaud-tools/muster/internal/device"
+	"github.com/subaud-tools/muster/internal/mcpserver"
+	"github.com/subaud-tools/muster/internal/paths"
+	"github.com/subaud-tools/muster/internal/proto"
+	"github.com/subaud-tools/muster/internal/remote"
+	"github.com/subaud-tools/muster/internal/store"
+	"github.com/subaud-tools/muster/internal/wake"
 )
 
 func main() {

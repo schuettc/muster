@@ -39,9 +39,9 @@ import (
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-lambda-go/lambda"
 
-	"github.com/schuettc/muster/internal/daemon"
-	"github.com/schuettc/muster/internal/dynamostore"
-	"github.com/schuettc/muster/internal/proto"
+	"github.com/subaud-tools/muster/internal/daemon"
+	"github.com/subaud-tools/muster/internal/dynamostore"
+	"github.com/subaud-tools/muster/internal/proto"
 )
 
 // maxBodyBytes caps the request body. Lambda's own synchronous payload limit

@@ -3,7 +3,7 @@ package station
 import (
 	"sort"
 
-	"github.com/schuettc/muster/internal/device"
+	"github.com/subaud-tools/muster/internal/device"
 )
 
 // This file is the station navigation/data-derivation concern (spec

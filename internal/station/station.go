@@ -13,11 +13,11 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/schuettc/muster/internal/client"
-	"github.com/schuettc/muster/internal/paths"
-	"github.com/schuettc/muster/internal/proto"
-	"github.com/schuettc/muster/internal/render"
-	"github.com/schuettc/muster/internal/tmuxenv"
+	"github.com/subaud-tools/muster/internal/client"
+	"github.com/subaud-tools/muster/internal/paths"
+	"github.com/subaud-tools/muster/internal/proto"
+	"github.com/subaud-tools/muster/internal/render"
+	"github.com/subaud-tools/muster/internal/tmuxenv"
 )
 
 // daemonCaller is station's own daemon-transport wrapper (a render.Caller

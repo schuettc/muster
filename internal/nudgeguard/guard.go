@@ -5,9 +5,9 @@ package nudgeguard
 import (
 	"fmt"
 
-	"github.com/schuettc/muster/internal/device"
-	"github.com/schuettc/muster/internal/store"
-	"github.com/schuettc/muster/internal/tmuxenv"
+	"github.com/subaud-tools/muster/internal/device"
+	"github.com/subaud-tools/muster/internal/store"
+	"github.com/subaud-tools/muster/internal/tmuxenv"
 )
 
 // Checker supplies the identity and tmux liveness probes used by Check. It is

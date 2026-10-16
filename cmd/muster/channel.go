@@ -9,11 +9,11 @@ import (
 	"strconv"
 	"syscall"
 
-	"github.com/schuettc/muster/internal/channel"
-	"github.com/schuettc/muster/internal/paths"
-	"github.com/schuettc/muster/internal/tmuxenv"
-	"github.com/schuettc/muster/internal/version"
-	"github.com/schuettc/tools-common/channelmcp"
+	"github.com/subaud-tools/muster/internal/channel"
+	"github.com/subaud-tools/muster/internal/paths"
+	"github.com/subaud-tools/muster/internal/tmuxenv"
+	"github.com/subaud-tools/muster/internal/version"
+	"github.com/subaud-tools/tools-common/channelmcp"
 )
 
 // channelCapture resolves the tmux identity the channel pushes for: the

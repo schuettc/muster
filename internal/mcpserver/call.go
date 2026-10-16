@@ -5,9 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/schuettc/muster/internal/client"
-	"github.com/schuettc/muster/internal/paths"
-	"github.com/schuettc/muster/internal/proto"
+	"github.com/subaud-tools/muster/internal/client"
+	"github.com/subaud-tools/muster/internal/paths"
+	"github.com/subaud-tools/muster/internal/proto"
 )
 
 // rosterRow is the full-fidelity decode of a list_agents row — the fields

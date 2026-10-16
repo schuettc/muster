@@ -3,7 +3,7 @@ package daemon
 import (
 	"fmt"
 
-	"github.com/schuettc/muster/internal/store"
+	"github.com/subaud-tools/muster/internal/store"
 )
 
 var defaultTaskStatuses = []string{"open", "claimed", "needs_info", "blocked"}

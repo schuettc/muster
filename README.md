@@ -33,14 +33,14 @@ station` is the full-screen operator TUI. Messages and tasks carry an intent
 not deleted, so its history stays visible and re-registering its alias revives
 it; and target resolution is canonical — an unknown `send`/`task_create` target
 (CLI or MCP) fails loudly instead of addressing a thread to nobody. See
-[releases](https://github.com/schuettc/muster/releases) for the full changelog.
+[releases](https://github.com/subaud-tools/muster/releases) for the full changelog.
 
 ## Setup
 
 ```bash
 # 1. install the binary (macOS or Linux; on Windows use WSL2)
 curl -fsSL https://muster.tools/install.sh | sh
-#    (or build from source with Go 1.26+: go install github.com/schuettc/muster/cmd/muster@latest)
+#    (or build from source with Go 1.26+: go install github.com/subaud-tools/muster/cmd/muster@latest)
 
 # 2. register the MCP server with each agent
 claude mcp add muster -s user -- muster mcp     # Claude Code

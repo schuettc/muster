@@ -1,7 +1,7 @@
 name: release
 
 # Merge to main = release, through the family release actions
-# (schuettc/tools-actions: release-version + go-release). The VERSION file is
+# (subaud-tools/tools-actions: release-version + go-release). The VERSION file is
 # the knob: when a merge lands on main and no tag v<VERSION> exists yet, the
 # release is cut, signed, notarized, stamp-checked, published to GitHub and
 # to muster.tools/dl (moving /dl/muster/latest). A merge that doesn't bump
@@ -52,7 +52,7 @@ jobs:
         with:
           ref: ${{ inputs.tag }}
       - id: rel
-        uses: schuettc/tools-actions/release-version@v0.10.4
+        uses: subaud-tools/tools-actions/release-version@v0.11.0
         with:
           mode: version-file
           dispatch-tag: ${{ inputs.tag }}
@@ -69,23 +69,23 @@ jobs:
           D: ${{ steps.rel.outputs.date }}
         run: |
           set -euo pipefail
-          pkg=github.com/schuettc/muster/internal/version
+          pkg=github.com/subaud-tools/muster/internal/version
           mkdir -p dist
           CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -tags lambda -trimpath \
             -ldflags "-s -w -X $pkg.version=$V -X $pkg.commit=$C -X $pkg.date=$D" \
             -o dist/bootstrap ./cmd/muster
           (cd dist && zip -qj "muster-lambda-arm64-${TAG}.zip" bootstrap && rm bootstrap)
       - if: steps.rel.outputs.skip != 'true'
-        uses: schuettc/tools-actions/go-release@v0.10.4
+        uses: subaud-tools/tools-actions/go-release@v0.11.0
         with:
           setup-go: "false"
           binaries: |
             muster=./cmd/muster
             muster-deploy=./cmd/muster-deploy
           ldflags: >-
-            -X github.com/schuettc/muster/internal/version.version={version}
-            -X github.com/schuettc/muster/internal/version.commit={commit}
-            -X github.com/schuettc/muster/internal/version.date={date}
+            -X github.com/subaud-tools/muster/internal/version.version={version}
+            -X github.com/subaud-tools/muster/internal/version.commit={commit}
+            -X github.com/subaud-tools/muster/internal/version.date={date}
           stamp-check: muster
           extra-assets: dist/*.zip
           tag: ${{ steps.rel.outputs.tag }}

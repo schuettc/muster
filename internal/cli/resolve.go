@@ -3,8 +3,8 @@ package cli
 import (
 	"encoding/json"
 
-	"github.com/schuettc/muster/internal/resolve"
-	"github.com/schuettc/muster/internal/tmuxenv"
+	"github.com/subaud-tools/muster/internal/resolve"
+	"github.com/subaud-tools/muster/internal/tmuxenv"
 )
 
 // enrichedAgent is an agentRow with live tmux-derived state overlaid.

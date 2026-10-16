@@ -5,7 +5,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/schuettc/muster/internal/display"
+	"github.com/subaud-tools/muster/internal/display"
 )
 
 // This file is the conversation view's body-rendering path (iteration-three

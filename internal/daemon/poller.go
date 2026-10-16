@@ -5,8 +5,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/schuettc/muster/internal/proto"
-	"github.com/schuettc/muster/internal/store"
+	"github.com/subaud-tools/muster/internal/proto"
+	"github.com/subaud-tools/muster/internal/store"
 )
 
 // DefaultPollInterval is how often a remote-mode daemon asks the bus whether

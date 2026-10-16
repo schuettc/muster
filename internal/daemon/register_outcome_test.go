@@ -3,7 +3,7 @@ package daemon
 import (
 	"testing"
 
-	"github.com/schuettc/muster/internal/proto"
+	"github.com/subaud-tools/muster/internal/proto"
 )
 
 // TestRegisterAgentOutcomeClassification covers the three register outcomes

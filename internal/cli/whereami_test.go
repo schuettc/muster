@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/schuettc/muster/internal/tmuxenv"
+	"github.com/subaud-tools/muster/internal/tmuxenv"
 )
 
 // stubAncestryMatch wires AncestorPIDs/SocketDir/Run so the ancestry walk

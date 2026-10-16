@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/schuettc/muster/internal/tmuxenv"
-	"github.com/schuettc/tools-common/harness"
+	"github.com/subaud-tools/muster/internal/tmuxenv"
+	"github.com/subaud-tools/tools-common/harness"
 )
 
 func stubCallerCaptures(t *testing.T, c tmuxenv.Capture, h harness.Capture) {

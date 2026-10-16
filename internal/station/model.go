@@ -20,9 +20,9 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/schuettc/muster/internal/device"
-	"github.com/schuettc/muster/internal/nudge"
-	"github.com/schuettc/muster/internal/render"
+	"github.com/subaud-tools/muster/internal/device"
+	"github.com/subaud-tools/muster/internal/nudge"
+	"github.com/subaud-tools/muster/internal/render"
 )
 
 // keyMap is station's canonical key vocabulary (spec §5-LOCK: "enter/esc/g/

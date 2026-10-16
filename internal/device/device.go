@@ -8,7 +8,7 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
-	"github.com/schuettc/muster/internal/paths"
+	"github.com/subaud-tools/muster/internal/paths"
 )
 
 // FileName is the device id's filename within paths.Home().

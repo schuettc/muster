@@ -8,10 +8,10 @@ import (
 	"path/filepath"
 	"strings"
 
-	tools "github.com/schuettc/tools-common"
+	tools "github.com/subaud-tools/tools-common"
 
-	"github.com/schuettc/muster/internal/paths"
-	"github.com/schuettc/muster/internal/version"
+	"github.com/subaud-tools/muster/internal/paths"
+	"github.com/subaud-tools/muster/internal/version"
 )
 
 // about is muster's overview: `muster help` prints it above the grouped

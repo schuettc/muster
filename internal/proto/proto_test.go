@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/schuettc/muster/internal/proto"
+	"github.com/subaud-tools/muster/internal/proto"
 )
 
 func TestRequestOmitsEmptyIdemKey(t *testing.T) {

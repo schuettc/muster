@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/schuettc/muster/internal/dynamostore"
-	"github.com/schuettc/muster/internal/store"
-	"github.com/schuettc/muster/internal/storetest"
+	"github.com/subaud-tools/muster/internal/dynamostore"
+	"github.com/subaud-tools/muster/internal/store"
+	"github.com/subaud-tools/muster/internal/storetest"
 )
 
 // TestSQLiteConformance runs the suite against the specification backend. It

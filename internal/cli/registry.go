@@ -6,9 +6,9 @@ import (
 	"io"
 	"os"
 
-	tools "github.com/schuettc/tools-common"
+	tools "github.com/subaud-tools/tools-common"
 
-	"github.com/schuettc/muster/internal/station"
+	"github.com/subaud-tools/muster/internal/station"
 )
 
 // The four command groups, in the order the operator sees them everywhere

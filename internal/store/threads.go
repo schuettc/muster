@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/schuettc/muster/internal/clock"
+	"github.com/subaud-tools/muster/internal/clock"
 )
 
 // ErrThreadNotFound is returned when an operation targets a threadID that

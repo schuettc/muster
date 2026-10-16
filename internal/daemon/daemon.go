@@ -14,11 +14,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/schuettc/muster/internal/device"
-	"github.com/schuettc/muster/internal/display"
-	"github.com/schuettc/muster/internal/proto"
-	"github.com/schuettc/muster/internal/store"
-	"github.com/schuettc/muster/internal/wake"
+	"github.com/subaud-tools/muster/internal/device"
+	"github.com/subaud-tools/muster/internal/display"
+	"github.com/subaud-tools/muster/internal/proto"
+	"github.com/subaud-tools/muster/internal/store"
+	"github.com/subaud-tools/muster/internal/wake"
 )
 
 // replyPreviewWidth caps how much of a reply's body is journaled into the

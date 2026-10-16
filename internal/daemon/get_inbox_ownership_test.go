@@ -3,7 +3,7 @@ package daemon
 import (
 	"testing"
 
-	"github.com/schuettc/muster/internal/store"
+	"github.com/subaud-tools/muster/internal/store"
 )
 
 // TestGetInboxOwnedMarksRead: a caller who proves the tmux tuple that owns

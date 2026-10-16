@@ -107,7 +107,7 @@ curl -fsSL https://muster.tools/install.sh | sh -s -- --with-deploy
 ```
 
 (or grab the `muster-deploy_<os>_<arch>.tar.gz` asset from
-<https://github.com/schuettc/muster/releases> by hand). Then:
+<https://github.com/subaud-tools/muster/releases> by hand). Then:
 
 ```sh
 muster-deploy --region us-east-1
@@ -188,7 +188,7 @@ is the manual equivalent.
 Use this if you would rather see every step, or if you need to change something
 `muster-deploy` does not expose. You need the release assets:
 `muster-lambda-arm64-<tag>.zip` from
-<https://github.com/schuettc/muster/releases>, and
+<https://github.com/subaud-tools/muster/releases>, and
 `contrib/cloudformation/muster-backend.yaml` from this repository — the same
 file `muster-deploy` embeds, so both paths deploy identical bytes.
 

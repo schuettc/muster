@@ -2,6 +2,10 @@
 
 Newest first. Releases before 0.23.0 are noted only where the change needed explaining.
 
+## 0.25.0 — module path
+
+Module path is now github.com/subaud-tools/muster; the source lives at github.com/subaud-tools/muster.
+
 ## 0.24.0 — working or idle, and drain first
 
 **Every agent row now says whether its session is working or idle, and since when.** `list_agents` carries `activity` (`working`, `idle`, or empty when never reported) and `activity_at` (unix ms), and `muster agents` shows them in a new ACTIVITY column after LIVE (`working 4m`, `idle 2h`, `—`). A coordinator can see a stalled peer without asking it.

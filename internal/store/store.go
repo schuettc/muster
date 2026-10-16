@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/schuettc/tools-common/sqlitedb"
+	"github.com/subaud-tools/tools-common/sqlitedb"
 )
 
 //go:embed schema.sql

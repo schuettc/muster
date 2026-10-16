@@ -10,11 +10,11 @@ import (
 
 	"github.com/aws/aws-lambda-go/events"
 
-	"github.com/schuettc/muster/internal/daemon"
-	"github.com/schuettc/muster/internal/lambdamode"
-	"github.com/schuettc/muster/internal/mustertest"
-	"github.com/schuettc/muster/internal/proto"
-	"github.com/schuettc/muster/internal/store"
+	"github.com/subaud-tools/muster/internal/daemon"
+	"github.com/subaud-tools/muster/internal/lambdamode"
+	"github.com/subaud-tools/muster/internal/mustertest"
+	"github.com/subaud-tools/muster/internal/proto"
+	"github.com/subaud-tools/muster/internal/store"
 )
 
 // newLambdaTestStore builds a bare *store.Store. The handler is a transport

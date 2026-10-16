@@ -5,7 +5,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/schuettc/muster/internal/store"
+	"github.com/subaud-tools/muster/internal/store"
 )
 
 // getAgentForTest fetches one agent row via the get_agent op, failing the

@@ -6,9 +6,9 @@ import (
 	"fmt"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/schuettc/muster/internal/device"
-	"github.com/schuettc/muster/internal/tmuxenv"
-	"github.com/schuettc/tools-common/harness"
+	"github.com/subaud-tools/muster/internal/device"
+	"github.com/subaud-tools/muster/internal/tmuxenv"
+	"github.com/subaud-tools/tools-common/harness"
 )
 
 // RegisterAgentIn is the input to register_agent. socket_path/pane_id are NOT
