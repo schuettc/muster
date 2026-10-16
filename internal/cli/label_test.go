@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/schuettc/muster/internal/tmuxenv"
+	"github.com/subaud-tools/muster/internal/tmuxenv"
 )
 
 func TestLabelSetsOptionsAndRefreshes(t *testing.T) {

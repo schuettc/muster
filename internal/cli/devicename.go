@@ -5,7 +5,7 @@ import (
 	"io"
 	"strings"
 
-	"github.com/schuettc/muster/internal/device"
+	"github.com/subaud-tools/muster/internal/device"
 )
 
 // cmdDevice prints this machine's device name, or sets it when given one.

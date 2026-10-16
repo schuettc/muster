@@ -12,10 +12,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/schuettc/muster/internal/daemon"
-	"github.com/schuettc/muster/internal/mustertest"
-	"github.com/schuettc/muster/internal/proto"
-	"github.com/schuettc/muster/internal/remote"
+	"github.com/subaud-tools/muster/internal/daemon"
+	"github.com/subaud-tools/muster/internal/mustertest"
+	"github.com/subaud-tools/muster/internal/proto"
+	"github.com/subaud-tools/muster/internal/remote"
 )
 
 // recorder captures what the upstream saw. Every field is guarded because the

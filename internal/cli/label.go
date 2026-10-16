@@ -9,8 +9,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/schuettc/muster/internal/nudge"
-	"github.com/schuettc/muster/internal/tmuxenv"
+	"github.com/subaud-tools/muster/internal/nudge"
+	"github.com/subaud-tools/muster/internal/tmuxenv"
 )
 
 // newLabelFlagsWithVals declares label's flags and returns typed access to

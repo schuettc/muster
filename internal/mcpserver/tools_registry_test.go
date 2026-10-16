@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/schuettc/muster/internal/device"
-	"github.com/schuettc/muster/internal/tmuxenv"
+	"github.com/subaud-tools/muster/internal/device"
+	"github.com/subaud-tools/muster/internal/tmuxenv"
 )
 
 // TestMCPRegistrationSeedsTheModelSuppliedAlias pins device.SeedMinted's own

@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/schuettc/muster/internal/mustertest"
+	"github.com/subaud-tools/muster/internal/mustertest"
 )
 
 // TestAliasDisplayStripsTheLocalPrefix is the everyday case: this machine's

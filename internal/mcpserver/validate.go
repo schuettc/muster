@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/schuettc/muster/internal/tmuxenv"
+	"github.com/subaud-tools/muster/internal/tmuxenv"
 )
 
 // requireRegisteredFrom gates the MCP thread-minting ops (send_message,

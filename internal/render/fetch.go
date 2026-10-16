@@ -11,7 +11,7 @@ import (
 	"encoding/json"
 	"strconv"
 
-	"github.com/schuettc/muster/internal/tmuxenv"
+	"github.com/subaud-tools/muster/internal/tmuxenv"
 )
 
 // Caller sends one daemon op and returns its Data as JSON, or an error if the

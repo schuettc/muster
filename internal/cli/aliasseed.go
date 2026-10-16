@@ -1,6 +1,6 @@
 package cli
 
-import "github.com/schuettc/muster/internal/device"
+import "github.com/subaud-tools/muster/internal/device"
 
 // seedAlias prefixes an alias with this machine's device name, adopting a name
 // first if the operator has not chosen one.

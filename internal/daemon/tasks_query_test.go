@@ -6,8 +6,8 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/schuettc/muster/internal/proto"
-	"github.com/schuettc/muster/internal/store"
+	"github.com/subaud-tools/muster/internal/proto"
+	"github.com/subaud-tools/muster/internal/store"
 )
 
 func TestListTasksDefaultsAndValidation(t *testing.T) {

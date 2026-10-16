@@ -17,7 +17,7 @@ import (
 // Repo is the GitHub repository release artifacts are fetched from. A
 // self-hoster building their own fork overrides this with -repo rather than
 // editing it, so the default can stay the canonical upstream.
-const Repo = "schuettc/muster"
+const Repo = "subaud-tools/muster"
 
 // maxArtifactBytes caps a downloaded Lambda zip. The real artifact is ~7MB;
 // this bounds what a redirected or hijacked URL can write to disk and to

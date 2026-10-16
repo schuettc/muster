@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/schuettc/muster/internal/device"
-	"github.com/schuettc/muster/internal/display"
+	"github.com/subaud-tools/muster/internal/device"
+	"github.com/subaud-tools/muster/internal/display"
 )
 
 // rawFieldWidth bounds display.Sanitize's width cap for row fields (subject,

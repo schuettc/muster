@@ -10,7 +10,7 @@ import (
 	"os/exec"
 	"time"
 
-	"github.com/schuettc/muster/internal/proto"
+	"github.com/subaud-tools/muster/internal/proto"
 )
 
 // Call sends one request, dialing socketPath and spawning `muster serve` if the

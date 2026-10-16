@@ -7,11 +7,11 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/schuettc/muster/internal/client"
-	"github.com/schuettc/muster/internal/clock"
-	"github.com/schuettc/muster/internal/paths"
-	"github.com/schuettc/muster/internal/proto"
-	"github.com/schuettc/muster/internal/store"
+	"github.com/subaud-tools/muster/internal/client"
+	"github.com/subaud-tools/muster/internal/clock"
+	"github.com/subaud-tools/muster/internal/paths"
+	"github.com/subaud-tools/muster/internal/proto"
+	"github.com/subaud-tools/muster/internal/store"
 )
 
 // startTestDaemon boots a real in-process daemon on a temp socket.

@@ -7,8 +7,8 @@ import (
 	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/schuettc/muster/internal/tmuxenv"
-	"github.com/schuettc/tools-common/harness"
+	"github.com/subaud-tools/muster/internal/tmuxenv"
+	"github.com/subaud-tools/tools-common/harness"
 )
 
 // SendMessageIn is the input to send_message. Only the message content and a

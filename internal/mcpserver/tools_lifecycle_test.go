@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/schuettc/muster/internal/tmuxenv"
-	"github.com/schuettc/tools-common/harness"
+	"github.com/subaud-tools/muster/internal/tmuxenv"
+	"github.com/subaud-tools/tools-common/harness"
 )
 
 func TestCurrentAgentReturnsCallerAndOwnedAliases(t *testing.T) {

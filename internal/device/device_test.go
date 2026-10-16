@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/schuettc/muster/internal/device"
-	"github.com/schuettc/muster/internal/mustertest"
+	"github.com/subaud-tools/muster/internal/device"
+	"github.com/subaud-tools/muster/internal/mustertest"
 )
 
 func TestIDIsStableAcrossCalls(t *testing.T) {

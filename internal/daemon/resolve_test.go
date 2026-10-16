@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/schuettc/muster/internal/proto"
+	"github.com/subaud-tools/muster/internal/proto"
 )
 
 // TestSendMessageResolvesManualLabelInSenderProject is the direct fix for

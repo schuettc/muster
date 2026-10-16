@@ -7,11 +7,11 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/schuettc/muster/internal/daemon"
-	"github.com/schuettc/muster/internal/mustertest"
-	"github.com/schuettc/muster/internal/paths"
-	"github.com/schuettc/muster/internal/store"
-	"github.com/schuettc/muster/internal/tmuxenv"
+	"github.com/subaud-tools/muster/internal/daemon"
+	"github.com/subaud-tools/muster/internal/mustertest"
+	"github.com/subaud-tools/muster/internal/paths"
+	"github.com/subaud-tools/muster/internal/store"
+	"github.com/subaud-tools/muster/internal/tmuxenv"
 )
 
 // startStationTestDaemon boots a real in-process daemon on a temp socket —

@@ -39,9 +39,9 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/schuettc/muster/internal/daemon"
-	"github.com/schuettc/muster/internal/paths"
-	"github.com/schuettc/muster/internal/proto"
+	"github.com/subaud-tools/muster/internal/daemon"
+	"github.com/subaud-tools/muster/internal/paths"
+	"github.com/subaud-tools/muster/internal/proto"
 )
 
 // TokenFile is the token's name inside paths.Home(). Exported so setup docs

@@ -11,10 +11,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/schuettc/muster/internal/device"
-	"github.com/schuettc/muster/internal/proto"
-	"github.com/schuettc/muster/internal/store"
-	"github.com/schuettc/muster/internal/wake"
+	"github.com/subaud-tools/muster/internal/device"
+	"github.com/subaud-tools/muster/internal/proto"
+	"github.com/subaud-tools/muster/internal/store"
+	"github.com/subaud-tools/muster/internal/wake"
 )
 
 // Upstream is the hosted bus as this daemon sees it: one whole proto.Request

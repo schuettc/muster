@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/schuettc/muster/internal/client"
-	"github.com/schuettc/muster/internal/proto"
-	"github.com/schuettc/muster/internal/store"
-	"github.com/schuettc/muster/internal/wake"
+	"github.com/subaud-tools/muster/internal/client"
+	"github.com/subaud-tools/muster/internal/proto"
+	"github.com/subaud-tools/muster/internal/store"
+	"github.com/subaud-tools/muster/internal/wake"
 )
 
 // fakeUpstream is a hosted bus that records what it was asked and answers from

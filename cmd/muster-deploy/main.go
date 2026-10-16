@@ -18,9 +18,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/schuettc/muster/internal/deploy"
-	"github.com/schuettc/muster/internal/paths"
-	"github.com/schuettc/muster/internal/version"
+	"github.com/subaud-tools/muster/internal/deploy"
+	"github.com/subaud-tools/muster/internal/paths"
+	"github.com/subaud-tools/muster/internal/version"
 )
 
 func main() { os.Exit(run()) }

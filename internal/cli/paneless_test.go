@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/schuettc/muster/internal/tmuxenv"
+	"github.com/subaud-tools/muster/internal/tmuxenv"
 )
 
 // pinAncestryWalkAway neuters tmuxenv.CaptureFromAncestry for the duration of

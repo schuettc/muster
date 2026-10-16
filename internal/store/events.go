@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/schuettc/muster/internal/clock"
+	"github.com/subaud-tools/muster/internal/clock"
 )
 
 // maxEventLimit bounds any single Events query.

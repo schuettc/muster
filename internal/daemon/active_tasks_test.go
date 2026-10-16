@@ -5,9 +5,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/schuettc/muster/internal/clock"
-	"github.com/schuettc/muster/internal/proto"
-	"github.com/schuettc/muster/internal/store"
+	"github.com/subaud-tools/muster/internal/clock"
+	"github.com/subaud-tools/muster/internal/proto"
+	"github.com/subaud-tools/muster/internal/store"
 )
 
 func decodeThreadList(t *testing.T, response proto.Response) (threads []store.Thread, truncated bool, retainedIDs []int64) {

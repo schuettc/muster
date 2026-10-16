@@ -4,7 +4,7 @@ import (
 	"database/sql"
 	"errors"
 
-	"github.com/schuettc/muster/internal/clock"
+	"github.com/subaud-tools/muster/internal/clock"
 )
 
 // Idempotency record states. A record is created pending by the caller that
